@@ -10,12 +10,12 @@ from pathlib import Path
 import time
 from datetime import datetime
 import numpy as np
-import utils
+import mokap.utils as utils
 import os
 import subprocess
 from dotenv import load_dotenv
 import pypylon.pylon as py
-import files_op
+import mokap.files_op as files_op
 import paramiko
 import scipy
 from collections import deque

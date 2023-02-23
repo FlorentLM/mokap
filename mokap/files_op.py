@@ -8,8 +8,8 @@ import numpy as np
 import shutil
 
 
-videos_folder = Path('../videos')
-data_folder = Path('../data')
+videos_folder = Path('./videos')
+data_folder = Path('./data')
 
 
 def mk_folder(name=''):

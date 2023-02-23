@@ -5,25 +5,16 @@ from mokap import hardware as hw
 
 hw.enable_usb()
 
-fps = 50
+fps = 180
 
 mgr = hw.Manager(triggered=False)
 self = mgr
 
-mgr.set_exposure(20000)     # in µs (max = 4318)
+mgr.set_exposure(5555)     # in µs (max = 4318)
 mgr.set_framerate(fps)      # in fps (max = 220)
 mgr.set_scale(2)            # in 1/x
 
 mgr.cameras['top'].exposure = 3000
-
-# import time
-# duration = 50
-# mgr.on()
-# mgr.record()
-# time.sleep(duration)
-# mgr.pause()
-# mgr.off()
-
 
 ##
 
