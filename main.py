@@ -16,6 +16,15 @@ mgr.set_scale(2)            # in 1/x
 
 mgr.cameras['top'].exposure = 3000
 
+# duration = 50
+# mgr.on()
+# import time
+# mgr.record()
+# time.sleep(duration)
+# mgr.pause()
+# mgr.off()
+
+
 ##
 
 if __name__ == '__main__':

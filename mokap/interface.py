@@ -249,7 +249,7 @@ class VideoWindow:
         self.title_var.set(f'{self._pos.title()} camera')
         self.window.title(self.title_var.get())
         self.resolution_var.set(f"Resolution: {self.parent.mgr.cameras[self.idx].height}×{self.parent.mgr.cameras[self.idx].width} px")
-        self.exposure_var.set(f"Exposure: {self.parent.mgr.cameras[self.idx].exposure} ms")
+        self.exposure_var.set(f"Exposure: {self.parent.mgr.cameras[self.idx].exposure} µs")
         if self.parent.mgr.acquiring:
             self.capture_fps_var.set(f"Acquisition: {self.parent.capture_fps[self.idx]:.2f} fps")
         else:
