@@ -24,9 +24,6 @@ mgr.cameras['top'].exposure = 3000
 # mgr.pause()
 # mgr.off()
 
-
-##
-
 if __name__ == '__main__':
     GUI(mgr)
 
