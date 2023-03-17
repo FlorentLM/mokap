@@ -169,6 +169,7 @@ class CamList(MutableSequence):
             self._list = list()
 
         self.POS_TO_IDX = {
+            # Clockwise
             'top': 0,
             'north-west': 1,
             'north-east': 2,
@@ -221,11 +222,12 @@ class Camera:
     # TODO: use enums instead?
 
     SERIAL_TO_POS = {
+        # Clockwise
         '40166059': 'top',          # red tag
-        '40166127': 'north-west',   # pink tag
-        '40189363': 'north-east',   # silver tag
-        '40182542': 'south-west',   # white tag
-        '40182207': 'south-east'    # yellow tag
+        '40182207': 'north-west',   # green tag
+        '40182542': 'north-east',  # yellow tag
+        '40166127': 'south-east',  # blue tag
+        '40189363': 'south-west'   # zebra tag
     }
 
     SENSOR_W = 1440
