@@ -13,6 +13,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
+import screeninfo
 
 THEME = 'light'
 
@@ -165,31 +166,31 @@ class VideoWindow:
         self._pos = self.parent.mgr.cameras[self.idx].pos
         
         match self._pos:
+            case 'north-west' | 'virtual_2':
+                x = 0
+                y = 0
+                col_fg = '#ffffff'
+                col_bg = '#15ab79'
             case 'south-west' | 'virtual_4':
                 x = 0
-                y = 0
-                col_fg = '#515151'
-                col_bg = '#ffffff'
-            case 'south-east' | 'virtual_3':
-                x = 0
-                y = parent.screen_dims[0] - parent.max_videowindows_dims[0]
+                y = parent.max_videowindows_dims[0] * 2
                 col_fg = '#000000'
-                col_bg = '#fff153'
-            case 'north-west' | 'virtual_2':
-                x = parent.screen_dims[1] - parent.max_videowindows_dims[1]
-                y = 0
-                col_fg = '#ffffff'
-                col_bg = '#fb95b5'
+                col_bg = '#ffffff'
             case 'north-east' | 'virtual_1':
                 x = parent.screen_dims[1] - parent.max_videowindows_dims[1]
-                y = parent.screen_dims[0] - parent.max_videowindows_dims[0]
+                y = 0
+                col_fg = '#000000'
+                col_bg = '#fff139'
+            case 'south-east' | 'virtual_3':
+                x = parent.screen_dims[1] - parent.max_videowindows_dims[1]
+                y = parent.max_videowindows_dims[0] * 2
                 col_fg = '#ffffff'
-                col_bg = '#989898'
+                col_bg = '#435fc4'
             case 'top' | 'virtual_0':
                 x = parent.screen_dims[1] // 2 - parent.max_videowindows_dims[1] // 2
-                y = parent.screen_dims[0] // 2 - parent.max_videowindows_dims[0] // 2 - GUI.WTITLEBAR_H // 2
+                y = 0
                 col_fg = '#ffffff'
-                col_bg = '#b91025'
+                col_bg = '#e03228'
             case _:
                 x = parent.screen_dims[1] // 2 - parent.max_videowindows_dims[1] // 2
                 y = parent.screen_dims[0] // 2 - parent.max_videowindows_dims[0] // 2 - GUI.WTITLEBAR_H // 2
@@ -383,9 +384,9 @@ class GUI:
 
         # Deduce control window size and position
         w = self.max_videowindows_dims[1]
-        h = self.max_videowindows_dims[0] // 2
+        h = int(self.max_videowindows_dims[0] // 2.1)
         x = self.screen_dims[1] // 2 - w // 2
-        y = 0
+        y = self.max_videowindows_dims[0] * 2
         self.root.geometry(f"{w}x{h}+{x}+{y}")
 
         # Create control window
@@ -422,7 +423,9 @@ class GUI:
 
     @property
     def screen_dims(self):
-        return np.array([self.root.winfo_screenheight(), self.root.winfo_screenwidth()])
+        monitors = screeninfo.get_monitors()
+        primary = next(m for m in monitors if m.is_primary)
+        return np.array([primary.height, primary.width])
 
     def _create_controls(self):
 
