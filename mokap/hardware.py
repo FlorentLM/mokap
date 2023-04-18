@@ -40,6 +40,9 @@ def setup_ulimit():
     if current_limit < 2048:
         print(f'[WARN] Current file descriptors limit is too small (n={current_limit}), increasing it to maximum value (n={hard_limit})')
         os.popen(f'ulimit -n {hard_limit}')
+    else:
+        print(f'[INFO] Current file descriptors limit seems fine (n={current_limit})')
+
 
 
 def enable_usb():
@@ -483,6 +486,8 @@ class Manager:
     }
 
     def __init__(self, triggered=True):
+
+        setup_ulimit()
 
         self._default_scale = 1
         self._default_exposure = 4318
