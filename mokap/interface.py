@@ -6,7 +6,7 @@ from PIL import Image, ImageTk
 import numpy as np
 from datetime import datetime
 from threading import Thread, Event
-import sv_ttk
+# import sv_ttk
 from matplotlib import style as mplstyle
 mplstyle.use('ggplot')
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -392,7 +392,7 @@ class GUI:
         # Create control window
         self._create_controls()
 
-        sv_ttk.set_theme(THEME.lower())
+        # sv_ttk.set_theme(THEME.lower())
 
         self.update()               # Called once to init
         self.root.mainloop()
@@ -424,7 +424,10 @@ class GUI:
     @property
     def screen_dims(self):
         monitors = screeninfo.get_monitors()
-        primary = next(m for m in monitors if m.is_primary)
+        if len(monitors) > 1:
+            primary = next(m for m in monitors if m.is_primary)
+        else:
+            primary = monitors[0]
         return np.array([primary.height, primary.width])
 
     def _create_controls(self):
