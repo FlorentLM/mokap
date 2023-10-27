@@ -5,11 +5,14 @@ from pathlib import Path
 from datetime import datetime
 import numpy as np
 import shutil
-from shlex import split
+import shlex
 
+##
 
 videos_folder = Path('/mnt/data/Videos')
 data_folder = Path('/mnt/data/RawFrames')
+
+##
 
 
 COMPRESSED = {'codec': 'libx265',
@@ -25,6 +28,8 @@ LOSSLESS_2 = {'codec': 'libx265',
                 'ftype': 'mp4'}
 
 DEFAULT_FMT = COMPRESSED
+
+##
 
 def mk_folder(name=''):
 
@@ -148,7 +153,7 @@ def videos_from_zarr(filepath, cams=None, format=None, force=False):
 
         savepath = outfolder / outname
 
-        process = sp.Popen(split(
+        process = sp.Popen(shlex.split(
             f'ffmpeg -y -s {w}x{h} -pix_fmt gray -f rawvideo -r {fps_calc:.2f} -i pipe: -c:v {conv_settings["codec"]} {conv_settings["params"]} -pix_fmt gray -an {savepath.as_posix()}'),
             stdin=sp.PIPE)
 
@@ -162,3 +167,37 @@ def videos_from_zarr(filepath, cams=None, format=None, force=False):
         (filepath / 'converted').touch()
 
         print('Done.')
+
+def convert_videos(path, output_format=None):
+
+    path = Path(path)
+
+    if path.is_file():
+        to_convert = [path]
+        ftype = 'file'
+    else:
+        to_convert = list(path.glob('*'))
+        ftype = 'folder contents'
+
+    conv_settings = DEFAULT_FMT
+    if output_format is not None:
+        if 'compr' in str(output_format):
+            conv_settings = COMPRESSED
+        elif '1' in str(output_format):
+            conv_settings = LOSSLESS_1
+        elif '2' in str(output_format):
+            conv_settings = LOSSLESS_2
+        else:
+            conv_settings = DEFAULT_FMT
+
+    for f in to_convert:
+
+        output_name = f.stem + f'.{conv_settings["ftype"]}'
+        savepath = f.parent / output_name
+
+        process = sp.Popen(shlex.split(f'ffmpeg -i {f.as_posix()} -c:v {conv_settings["codec"]} {conv_settings["params"]} -pix_fmt gray -an {savepath.as_posix()}'))
+
+        process.wait()
+        process.terminate()
+
+    print(f'Done converting {path.name} {ftype}.')

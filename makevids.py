@@ -9,3 +9,5 @@ if __name__ == '__main__':
         videos_from_zarr(folder)
 
 ##
+
+convert_videos('/mnt/storage/Videos/230607-1826')
