@@ -168,7 +168,7 @@ def videos_from_zarr(filepath, cams=None, format=None, force=False):
 
         print('Done.')
 
-def convert_videos(path, output_format=None):
+def convert_videos(path, output_format=None, extension=''):
 
     path = Path(path)
 
@@ -176,7 +176,7 @@ def convert_videos(path, output_format=None):
         to_convert = [path]
         ftype = 'file'
     else:
-        to_convert = list(path.glob('*'))
+        to_convert = list(path.glob(f'*.{extension.strip(".").lower()}'))
         ftype = 'folder contents'
 
     conv_settings = DEFAULT_FMT
