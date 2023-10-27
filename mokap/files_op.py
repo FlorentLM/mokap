@@ -1,16 +1,30 @@
 import re
 import subprocess as sp
-import shlex
 import zarr
 from pathlib import Path
 from datetime import datetime
 import numpy as np
 import shutil
+from shlex import split
 
 
-videos_folder = Path('./videos')
-data_folder = Path('./data')
+videos_folder = Path('/mnt/data/Videos')
+data_folder = Path('/mnt/data/RawFrames')
 
+
+COMPRESSED = {'codec': 'libx265',
+                'params': '-crf 1 -preset veryfast',
+                'ftype': 'mp4'}
+
+LOSSLESS_1 = {'codec': 'ffv1',
+                'params': '-level 3',
+                'ftype': 'avi'}
+
+LOSSLESS_2 = {'codec': 'libx265',
+                'params': '-x265-params lossless=1 -preset veryfast',
+                'ftype': 'mp4'}
+
+DEFAULT_FMT = COMPRESSED
 
 def mk_folder(name=''):
 
@@ -75,11 +89,11 @@ def natural_sort_key(s):
             for text in re.split(_nsre, s)]
 
 
-def videos_from_zarr(filepath, cams=None):
+def videos_from_zarr(filepath, cams=None, format=None, force=False):
 
     filepath = Path(filepath)
 
-    if (filepath / 'converted').exists():
+    if (filepath / 'converted').exists() and not force:
         return
 
     root = zarr.open((filepath / f'{filepath.stem}.zarr').as_posix(), mode="r")
@@ -93,6 +107,17 @@ def videos_from_zarr(filepath, cams=None):
             cams = set(cams)
     else:
         cams = set(range(nb_cams))
+
+    conv_settings = DEFAULT_FMT
+    if format is not None:
+        if 'compr' in str(format):
+            conv_settings = COMPRESSED
+        elif '1' in str(format):
+            conv_settings = LOSSLESS_1
+        elif '2' in str(format):
+            conv_settings = LOSSLESS_2
+        else:
+            conv_settings = DEFAULT_FMT
 
     for c in cams:
 
@@ -115,7 +140,7 @@ def videos_from_zarr(filepath, cams=None):
               f"Actual (mean):\n  {fps_calc:.2f} fps\n"
               f"--> Error = {(1-(fps_calc/fps_raw))*100:.2f}%")
 
-        outname = f"vid_cam{c}_sess{s}.avi"
+        outname = f'vid_cam{c}_sess{s}.{conv_settings["ftype"]}'
 
         outfolder = videos_folder / filepath.stem
         if not outfolder.exists():
@@ -123,8 +148,8 @@ def videos_from_zarr(filepath, cams=None):
 
         savepath = outfolder / outname
 
-        process = sp.Popen(shlex.split(
-            f'ffmpeg -y -s {w}x{h} -pixel_format gray -f rawvideo -r {fps_calc:.2f} -i pipe: -vcodec ffv1 -level 3 -pix_fmt gray {savepath.as_posix()}'),
+        process = sp.Popen(split(
+            f'ffmpeg -y -s {w}x{h} -pix_fmt gray -f rawvideo -r {fps_calc:.2f} -i pipe: -c:v {conv_settings["codec"]} {conv_settings["params"]} -pix_fmt gray -an {savepath.as_posix()}'),
             stdin=sp.PIPE)
 
         for i in range(nb_frames):
