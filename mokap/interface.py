@@ -346,7 +346,7 @@ class GUI:
         # Init default things
         self.mgr = mgr
         self.editing_disabled = True
-        self._capture_fps = np.zeros(self.mgr.nb_cameras, dtype=np.uintc)
+        self._capture_fps = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
         self._capture_clock = datetime.now()
         self._counter = 0
 
@@ -739,6 +739,7 @@ class GUI:
         if self.mgr.acquiring:
             now = datetime.now()
             capture_dt = (now - self._capture_clock).total_seconds()
+
             self._capture_fps = self.mgr.indices / capture_dt
 
             self._current_buffers = self.mgr.get_current_framebuffer()

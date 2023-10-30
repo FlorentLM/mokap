@@ -325,11 +325,11 @@ class Camera:
                 self.ptr.TriggerMode = "On"
                 self.ptr.TriggerSource = "Line4"
                 self.ptr.TriggerActivation.Value = 'FallingEdge'
-                self.ptr.AcquisitionFrameRateEnable = False
+                self.ptr.AcquisitionFrameRateEnable.SetValue(False)
             else:
                 self.ptr.TriggerSelector = "FrameStart"
                 self.ptr.TriggerMode = "Off"
-                self.ptr.AcquisitionFrameRateEnable = True
+                self.ptr.AcquisitionFrameRateEnable.SetValue(True)
 
         self.scale = self._scale
         self.framerate = self._framerate
@@ -351,8 +351,7 @@ class Camera:
 
     def start_grabbing(self) -> NoReturn:
         if self._connected:
-            # self.ptr.StartGrabbing(py.GrabStrategy_LatestImageOnly)
-            self.ptr.StartGrabbing(py.GrabStrategy_OneByOne)
+            self.ptr.StartGrabbing(py.GrabStrategy_LatestImageOnly)
             self._is_grabbing = True
         else:
             print(f"Camera {self.wid} is not connected.")
@@ -449,12 +448,15 @@ class Camera:
                 # And keep a local value to avoid querying the camera every time we read it
                 self._framerate = value
             else:
-                if not self.triggered:
+                if self.triggered:
+                    self.ptr.AcquisitionFrameRateEnable.SetValue(False)
+                    self._framerate = self.ptr.ResultingFramerate.GetValue()
+                else:
+                    self.ptr.AcquisitionFrameRateEnable.SetValue(True)
                     self.ptr.AcquisitionFrameRate = value
                     # And keep a local value to avoid querying the camera every time we read it
                     self._framerate = value
-                else:
-                    self._framerate = self.ptr.ResultingFramerate.GetValue()
+
     @property
     def width(self) -> int:
         return self._width
@@ -660,9 +662,9 @@ class Manager:
 
         grabbed_frames = 0
 
-        self.barrier.wait()
-
         while self._acquiring.is_set():
+
+            self.barrier.wait()
 
             with cam.ptr.RetrieveResult(100, py.TimeoutHandling_Return) as res:
                 if res and res.GrabSucceeded():
@@ -756,6 +758,7 @@ class Manager:
         self._executor = ThreadPoolExecutor(max_workers=40)
 
         self.barrier = Barrier(self._nb_cams, timeout=5)
+
         for i, cam in enumerate(self.cameras):
             self._executor.submit(self._grab_frames, i, self._framestore)
             self._executor.submit(self._writer, i, self._framestore)
