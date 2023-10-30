@@ -226,9 +226,9 @@ class Camera:
 
     SERIAL_TO_POS = {
         # Clockwise
-        '40166059': 'top',          # red tag
+        '40182542': 'top',          # red tag
         '40182207': 'north-west',   # green tag
-        '40182542': 'north-east',  # yellow tag
+        '40166059': 'north-east',  # yellow tag
         '40166127': 'south-east',  # blue tag
         '40189363': 'south-west'   # zebra tag
     }
