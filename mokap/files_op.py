@@ -212,6 +212,7 @@ def convert_videos(path, filter='*', output_format=None, delete_source=False):
         conv_settings = DEFAULT_FMT
 
     for f in to_convert:
+        # TODO - Add check to prevent converting to same format, or converting from lossy to lossless!
 
         output_name = f.stem + f'.{conv_settings["ftype"]}'
         savepath = f.parent / output_name
