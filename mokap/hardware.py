@@ -26,7 +26,7 @@ from numcodecs import Blosc, Delta
 blosc.use_threads = False
 
 
-NB_CAMS = 5
+MAX_CAMS = 99
 ALLOW_VIRTUAL = False
 
 
@@ -55,7 +55,7 @@ def disable_usb():
     ret = out.read()
 
 
-def get_devices(nb_cams=NB_CAMS, allow_virtual=ALLOW_VIRTUAL) -> list[py.DeviceInfo]:
+def get_devices(max_cams=MAX_CAMS, allow_virtual=ALLOW_VIRTUAL) -> tuple[list[py.DeviceInfo], list[py.DeviceInfo]]:
     instance = py.TlFactory.GetInstance()
 
     # List connected devices and get pointers to them
@@ -65,18 +65,19 @@ def get_devices(nb_cams=NB_CAMS, allow_virtual=ALLOW_VIRTUAL) -> list[py.DeviceI
     real_devices = instance.EnumerateDevices([dev_filter, ])
     nb_real = len(real_devices)
 
-    if allow_virtual and nb_real < nb_cams:
-        os.environ["PYLON_CAMEMU"] = f"{nb_cams - nb_real}"
+    if allow_virtual and nb_real < max_cams:
+        os.environ["PYLON_CAMEMU"] = f"{max_cams - nb_real}"
         dev_filter.SetDeviceClass("BaslerCamEmu")
         virtual_devices = instance.EnumerateDevices([dev_filter, ])
 
     else:
         os.environ.pop("PYLON_CAMEMU", None)
         virtual_devices = []
-        real_devices = real_devices[:nb_cams]
-
-    all_devices = [r for r in real_devices] + [v for v in virtual_devices]
-    return all_devices
+        real_devices = real_devices[:max_cams]
+    #
+    # all_devices = [r for r in real_devices] + [v for v in virtual_devices]
+    # return all_devices
+    return [r for r in real_devices], [v for v in virtual_devices]
 
 
 def ping(ip: str) -> NoReturn:
@@ -245,7 +246,7 @@ class Camera:
                  framerate=200,
                  exposure=3200,
                  triggered=True,
-                 scale=1):
+                 binning=1):
 
         self._ptr = None
         self._dptr = None
@@ -259,7 +260,7 @@ class Camera:
         self._framerate = framerate
         self._exposure = exposure
         self._triggered = triggered
-        self._scale = scale
+        self._binning = binning
 
         self._weak_id = f"{random.choice(string.ascii_letters[:26])}{random.randint(100, 999)}"
         Camera._instances_dict[self._weak_id] = self
@@ -288,7 +289,8 @@ class Camera:
     def connect(self, cam_ptr=None) -> NoReturn:
 
         if cam_ptr is None:
-            devices = get_devices()
+            real_cams, virtual_cams = get_devices()
+            devices = real_cams + virtual_cams
             self._ptr = py.InstantCamera(py.TlFactory.GetInstance().CreateDevice(devices[self._idx]))
         else:
             self._ptr = cam_ptr
@@ -331,7 +333,7 @@ class Camera:
                 self.ptr.TriggerMode = "Off"
                 self.ptr.AcquisitionFrameRateEnable.SetValue(True)
 
-        self.scale = self._scale
+        self.binning = self._binning
         self.framerate = self._framerate
         self.exposure = self._exposure
 
@@ -396,11 +398,12 @@ class Camera:
         return self._exposure
 
     @property
-    def scale(self) -> int:
-        return self._scale
+    def binning(self) -> int:
+        return self._binning
 
-    @scale.setter
-    def scale(self, value: int) -> NoReturn:
+    @binning.setter
+    def binning(self, value: int) -> NoReturn:
+        assert value in [1, 2, 3, 4]
         if self._connected:
             if 'virtual' not in self.pos:
                 self.ptr.BinningVertical.SetValue(value)
@@ -419,7 +422,7 @@ class Camera:
             self.ptr.Height = self._height
 
         # And keep a local value to avoid querying the camera every time we read it
-        self._scale = value
+        self._binning = value
 
     @exposure.setter
     def exposure(self, value: int) -> NoReturn:
@@ -487,55 +490,93 @@ class Manager:
         'south-west': 4
     }
 
-    def __init__(self, triggered=True):
+    def __init__(self,
+                 framerate=220,
+                 exposure=4318,
+                 triggered=False,
+                 binning=1):
 
         setup_ulimit()
 
-        self._default_scale = 1
-        self._default_exposure = 4318
-        self._default_framerate = 100
+        self._binning = binning
+        self._exposure = exposure
+        self._framerate = framerate
         self._triggered = triggered
 
         self._savepath = None
         self._acquisition_name = ''
 
-        if self._triggered:
-            self.trigger = SSHTrigger()
-            if not self.trigger.connected:
-                raise AssertionError('Connection problem with the trigger...')
-        else:
-            self.trigger = None
-
-        devices = get_devices(nb_cams=NB_CAMS, allow_virtual=ALLOW_VIRTUAL)
-        self._nb_cams = len(devices)
-
         self._executor = None
 
         self._acquiring = Event()
         self._recording = Event()
-        self._finished_saving = [Event()] * self._nb_cams
-        self._getting_reference = Event()
 
-        self._file_access = Lock()
+
+        # self._getting_reference = Event()
+        self._barrier = None
+
+        self._file_access_lock = Lock()
         self._zarr_length = 36000
         self._z_frames = None
 
         self._framestore = FrameStore()
 
-        self._grabbed_frames = RawArray('I', self._nb_cams)
-        self._saved_frames = RawArray('I', self._nb_cams)
-
-        self.array = py.InstantCameraArray(self._nb_cams)
+        self._frames_buffers = []
+        self._nb_cams = 0
         self.cameras = CamList([])
+        self.trigger = None
+        self.ICarray = None
+
+        self._grabbed_frames_idx = None
+        self._saved_frames_idx = None
+        self._finished_saving = []
+
+    @property
+    def triggered(self) -> bool:
+        return self._triggered
+
+    @triggered.setter
+    def triggered(self, value: bool):
+        if not self._triggered and value is True:
+            external_trigger = SSHTrigger()
+            if external_trigger.connected:
+                self.trigger = external_trigger
+                self._triggered = True
+                print('Trigger mode enabled.')
+            else:
+                print("Connection problem with the trigger. Trigger mode can't be enabled.")
+                self.trigger = None
+                self._triggered = False
+        elif self._triggered and value is False:
+            self.trigger = None
+            self._triggered = False
+            print('Trigger mode disabled.')
+
+        # TODO - Refresh cameras on trigger mode change
+
+    def list_devices(self):
+
+        real_cams, virtual_cams = get_devices(max_cams=MAX_CAMS, allow_virtual=ALLOW_VIRTUAL)
+        devices = real_cams + virtual_cams
+        print(f"Found {len(devices)} cameras connected ({len(real_cams)} physical, {len(virtual_cams)} virtual).")
+
+        return devices
+
+    def connect(self):
+        devices = self.list_devices()
+
+        nb_cams = len(devices)
+
+        self.ICarray = py.InstantCameraArray(nb_cams)
 
         # Create the cameras and put them in auto-sorting CamList
-        for i in range(self._nb_cams):
-            dptr, cptr = devices[i], self.array[i]
+        for i in range(nb_cams):
+            dptr, cptr = devices[i], self.ICarray[i]
             cptr.Attach(py.TlFactory.GetInstance().CreateDevice(dptr))
-            cam = Camera(framerate=self._default_framerate,
-                         exposure=self._default_exposure,
+            cam = Camera(framerate=self._framerate,
+                         exposure=self._exposure,
                          triggered=self._triggered,
-                         scale=self._default_scale)
+                         binning=self._binning)
             cam.connect(cptr)
             self.cameras.add(cam)
             print(f"[INFO-{i}] Attached {cam}.")
@@ -545,37 +586,52 @@ class Manager:
         for i, cam in enumerate(self.cameras):
             self._frames_buffers.append(bytearray(b'\0' * cam.height * cam.width))
 
-        self._reference_image = None
-        self._reference_length = 100
-        self._reference_buffer = np.zeros((self._reference_length,
-                                           self.cameras['top'].height,
-                                           self.cameras['top'].width), dtype='<u1')
+        self._nb_cams = len(self.cameras)
 
-    def set_framerate(self, value: int) -> NoReturn:
+        self._grabbed_frames_idx = RawArray('I', self._nb_cams)
+        self._saved_frames_idx = RawArray('I', self._nb_cams)
+
+        self._finished_saving = [Event()] * self._nb_cams
+
+    @property
+    def framerate(self) -> int:
+        return self._framerate
+
+    @framerate.setter
+    def framerate(self, value: int) -> NoReturn:
         self._framerate = value
         for cam in self.cameras:
             cam.framerate = value
 
-    def set_exposure(self, value: int) -> NoReturn:
+    @property
+    def exposure(self) -> int:
+        return self._exposure
+
+    @exposure.setter
+    def exposure(self, value: int) -> NoReturn:
         self._exposure = value
         for cam in self.cameras:
             cam.exposure = value
 
-    def set_scale(self, value: int) -> NoReturn:
-        self._scale = value
+    @property
+    def binning(self) -> int:
+        return self._binning
+
+    @binning.setter
+    def binning(self, value: int) -> NoReturn:
+        self._binning = value
         for i, cam in enumerate(self.cameras):
-            cam.scale = value
+            cam.binning = value
             # And update the bytearray to the new size
             self._frames_buffers[i] = bytearray(b'\0' * cam.height * cam.width)
 
-        self._reference_buffer = np.zeros((self._reference_length,
-                                           self.cameras['top'].height,
-                                           self.cameras['top'].width), dtype='<u1')
-
     def disconnect(self) -> NoReturn:
-        self.array.Close()
+        self.ICarray.Close()
         for cam in self.cameras:
             cam.disconnect()
+
+        self.cameras = CamList([])
+        self.ICarray = None
 
     def _init_storage(self) -> NoReturn:
 
@@ -601,30 +657,36 @@ class Manager:
         self._z_times = root.zeros('times', shape=(1, 2), dtype='M8[ns]')
 
         for i, cam in enumerate(self.cameras):
-            root.attrs[i] = {'scale': cam.scale,
+            root.attrs[i] = {'scale': cam.binning,
                              'framerate': cam.framerate,
                              'exposure': cam.exposure,
                              'triggered': cam.triggered,
                              'pos': cam.pos}
 
-        self._saved_frames = RawArray('I', self._nb_cams)
+        self._grabbed_frames_idx = RawArray('I', self._nb_cams)
+        self._saved_frames_idx = RawArray('I', self._nb_cams)
 
     def _trim_storage(self, mode='min') -> NoReturn:
-        with self._file_access:
-            cut = min if mode == 'min' else max
-            frame_limit = cut(self._saved_frames)
+
+        cut = min if mode == 'min' else max
+        frame_limit = cut(self._saved_frames_idx)
+
+        with self._file_access_lock:
             sh = self._z_frames.shape
             new_shape = (sh[0], frame_limit, sh[2], sh[3])
             self._z_frames.resize(new_shape)
-            print(f'[INFO] Storage trimmed to {frame_limit}.')
+
+        print(f'[INFO] Storage trimmed to {frame_limit}.')
 
     def _extend_storage(self) -> NoReturn:
-        with self._file_access:
+
+        with self._file_access_lock:
             sh = self._z_frames.shape
-            self._zarr_length *= 2
+            new_length = self._zarr_length * 2
+            self._zarr_length = new_length
             new_shape = (sh[0], self._zarr_length, sh[2], sh[3])
             self._z_frames.resize(new_shape)
-            print(f'[INFO] Storage extended to {self._zarr_length}.')
+        print(f'[INFO] Storage extended to {new_length}.')
 
     def _writer(self, cam_idx: int, framestore: FrameStore) -> NoReturn:
 
@@ -645,10 +707,10 @@ class Manager:
                 if not saving_started:
                     saving_started = True
 
-                self._z_frames[cam_idx, self._saved_frames[cam_idx]:self._saved_frames[cam_idx] + nb, :, :] = data
-                self._saved_frames[cam_idx] += nb
+                self._z_frames[cam_idx, self._saved_frames_idx[cam_idx]:self._saved_frames_idx[cam_idx] + nb, :, :] = data
+                self._saved_frames_idx[cam_idx] += nb
 
-                if self._saved_frames[cam_idx] >= self._zarr_length * 0.9:
+                if self._saved_frames_idx[cam_idx] >= self._zarr_length * 0.9:
                     print('[INFO] Storage 90% full: extending...')
                     self._extend_storage()
 
@@ -664,7 +726,7 @@ class Manager:
 
         while self._acquiring.is_set():
 
-            self.barrier.wait()
+            self._barrier.wait()
 
             with cam.ptr.RetrieveResult(100, py.TimeoutHandling_Return) as res:
                 if res and res.GrabSucceeded():
@@ -674,40 +736,13 @@ class Manager:
                     res.Release()
 
                     self._frames_buffers[cam_idx][:] = framedata.data.tobytes()
-                    self._grabbed_frames[cam_idx] = frame_idx
+                    self._grabbed_frames_idx[cam_idx] = frame_idx
 
                     if self._recording.is_set():
 
                         if frame_idx > grabbed_frames:
                             framestore.put(framedata, qidx=cam_idx)
                             grabbed_frames += 1
-
-    def acquire_reference(self) -> NoReturn:
-
-        if self._acquiring.is_set():
-            i = 0
-            start = self._grabbed_frames[self.pti['top']]
-
-            print(f'Loading up reference over {self._reference_length} frames...')
-            while i < self._reference_length:
-                self._reference_buffer[i] = self.get_current_framearray(self.pti['top'])
-
-                if self._grabbed_frames[self.pti['top']] > start:
-                    i += 1
-        else:
-            raise RuntimeError('Must be acquiring!!')
-
-        ref = scipy.ndimage.gaussian_filter(self._reference_buffer.mean(axis=0), 2).astype('<u1')
-
-        # im = Image.fromarray(self._reference_buffer.mean(axis=0))
-        # ref = np.array(im.filter(ImageFilter.GaussianBlur(radius=2)).astype('<u1'))
-
-        self._reference_image = np.round((ref / np.max(ref)) * 255).astype('<u1', copy=True)
-        self._reference_buffer.fill(0)
-        print(f'Reference ready.')
-
-    def clear_reference(self) -> NoReturn:
-        self._reference_image = None
 
     def _reset_name(self):
         if self._savepath is not None:
@@ -717,13 +752,12 @@ class Manager:
 
     def _cleanup(self) -> NoReturn:
         self._trim_storage()
-
         self._reset_name()
 
         self._start_times = []
         self._stop_times = []
 
-        self._saved_frames = RawArray('I', self._nb_cams)
+        self._saved_frames_idx = RawArray('I', self._nb_cams)
 
     def record(self) -> NoReturn:
         self._recording.set()
@@ -755,9 +789,8 @@ class Manager:
 
         self._acquiring.set()
 
+        self._barrier = Barrier(self._nb_cams, timeout=5)
         self._executor = ThreadPoolExecutor(max_workers=40)
-
-        self.barrier = Barrier(self._nb_cams, timeout=5)
 
         for i, cam in enumerate(self.cameras):
             self._executor.submit(self._grab_frames, i, self._framestore)
@@ -772,7 +805,7 @@ class Manager:
 
         self._acquiring.clear()
 
-        self.array.StopGrabbing()
+        self.ICarray.StopGrabbing()
         for cam in self.cameras:
             cam.stop_grabbing()
 
@@ -782,6 +815,7 @@ class Manager:
         self._cleanup()
 
         self._executor = None
+        self._barrier = None
 
         print(f'[INFO] Grabbing stopped.')
 
@@ -800,10 +834,6 @@ class Manager:
         self._init_storage()
 
     @property
-    def reference(self) -> Union[None, np.array]:
-        return self._reference_image
-
-    @property
     def nb_cameras(self) -> int:
         return self._nb_cams
 
@@ -817,11 +847,15 @@ class Manager:
 
     @property
     def indices_buf(self) -> RawArray:
-        return self._grabbed_frames
+        if self._grabbed_frames_idx is None:
+            print('Please connect at least 1 camera first.')
+        return self._grabbed_frames_idx
 
     @property
     def indices(self) -> np.array:
-        return np.frombuffer(self._grabbed_frames, dtype=np.uintc)
+        if self._grabbed_frames_idx is None:
+            print('Please connect at least 1 camera first.')
+        return np.frombuffer(self._grabbed_frames_idx, dtype=np.uintc)
 
     def get_current_framebuffer(self, i=None) -> Union[bytearray, list[bytearray]]:
         if i is None:

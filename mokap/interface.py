@@ -712,27 +712,28 @@ class GUI:
         sys.exit()
 
     def _ant_detection(self):
-
-        while self._autodetection_enabled.is_set():
-
-            # thresh = self.reference_slider.get()
-
-            frame = np.frombuffer(self.current_buffers[0], dtype=np.uint8).reshape(self._reference.shape)
-
-            if frame is not None and self._reference is not None:
-                normalized = (frame / frame.max()) * 255
-                absdif = np.abs(normalized - self._reference).astype('<u1')
-                # gauss = scipy.ndimage.gaussian_filter(absdif, 0.25)
-                # thresh = np.clip(np.round(absdif).astype('<u1'), thrmin, thrmax)
-
-                spread = np.max(absdif) - np.min(absdif)
-
-                if spread >= 100:   # TODO - make sure this value is good
-                    self.gui_recording()
-                else:
-                    self.gui_pause()
-
-                self._absdif[:] = absdif.data.tobytes()
+        pass
+    #
+    #     while self._autodetection_enabled.is_set():
+    #
+    #         # thresh = self.reference_slider.get()
+    #
+    #         frame = np.frombuffer(self.current_buffers[0], dtype=np.uint8).reshape(self._reference.shape)
+    #
+    #         if frame is not None and self._reference is not None:
+    #             normalized = (frame / frame.max()) * 255
+    #             absdif = np.abs(normalized - self._reference).astype('<u1')
+    #             # gauss = scipy.ndimage.gaussian_filter(absdif, 0.25)
+    #             # thresh = np.clip(np.round(absdif).astype('<u1'), thrmin, thrmax)
+    #
+    #             spread = np.max(absdif) - np.min(absdif)
+    #
+    #             if spread >= 100:   # TODO - make sure this value is good
+    #                 self.gui_recording()
+    #             else:
+    #                 self.gui_pause()
+    #
+    #             self._absdif[:] = absdif.data.tobytes()
 
     def update(self):
 
