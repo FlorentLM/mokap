@@ -23,4 +23,6 @@ mgr.binning = 2
 mgr.connect()
 
 if __name__ == '__main__':
+    if mgr.nb_cameras == 0:
+        exit()
     GUI(mgr)

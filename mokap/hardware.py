@@ -16,13 +16,19 @@ import subprocess
 from dotenv import load_dotenv
 import pypylon.pylon as py
 import mokap.files_op as files_op
-import paramiko
-import scipy
+# import scipy
 from collections import deque
 import zarr
 from numcodecs import blosc
 from numcodecs import Blosc, Delta
 # from PIL import Image, ImageFilter
+
+import warnings
+from cryptography.utils import CryptographyDeprecationWarning
+with warnings.catch_warnings():
+    warnings.filterwarnings('ignore', category=CryptographyDeprecationWarning)
+    import paramiko
+
 blosc.use_threads = False
 
 
@@ -42,7 +48,6 @@ def setup_ulimit():
         os.popen(f'ulimit -n {hard_limit}')
     else:
         print(f'[INFO] Current file descriptors limit seems fine (n={current_limit})')
-
 
 
 def enable_usb():
