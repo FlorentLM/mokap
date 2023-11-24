@@ -610,17 +610,18 @@ class GUI:
                 self.gui_pause()
 
     def gui_acquire_ref(self):
-        self.mgr.acquire_reference()
 
-        while self.mgr.reference is None:
-            time.sleep(0.1)
-        assert self.mgr.reference is not None
+        # self.mgr.acquire_reference()
+        #
+        # while self.mgr.reference is None:
+        #     time.sleep(0.1)
+        # assert self.mgr.reference is not None
 
-        self._reference = np.copy(self.mgr.reference)
+        # self._reference = np.copy(self.mgr.reference)
 
-        self._autodetection_enabled.set()
-        self._autodetection_thread = Thread(target=self._ant_detection, daemon=False)
-        self._autodetection_thread.start()
+        # self._autodetection_enabled.set()
+        # self._autodetection_thread = Thread(target=self._ant_detection, daemon=False)
+        # self._autodetection_thread.start()
 
         self.button_acqref.config(state="disabled")
         self.button_clearref.config(state="normal")
@@ -629,15 +630,15 @@ class GUI:
 
     def gui_clear_ref(self):
 
-        self._autodetection_enabled.clear()
-        self._autodetection_thread = None
-
-        self.mgr.clear_reference()
-        self._reference = None
-
-        self._absdif[:] = b'\0' * len(self._absdif)
-
-        self.gui_hide_diff()
+        # self._autodetection_enabled.clear()
+        # self._autodetection_thread = None
+        #
+        # self.mgr.clear_reference()
+        # self._reference = None
+        #
+        # self._absdif[:] = b'\0' * len(self._absdif)
+        #
+        # self.gui_hide_diff()
 
         self.button_acqref.config(state="normal")
         self.button_clearref.config(state="disabled")
@@ -679,7 +680,7 @@ class GUI:
 
         self._autodetection_enabled.clear()
         self._autodetection_thread = None
-        self.gui_hide_diff()
+        # self.gui_hide_diff()
 
         if self.mgr.acquiring:
 
