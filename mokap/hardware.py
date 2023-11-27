@@ -644,7 +644,7 @@ class Manager:
             # Sanity check - should always be true
             all_w = [c.width for c in self.cameras]
             all_h = [c.height for c in self.cameras]
-            print(all_w)
+
             assert np.allclose(*all_w)
             assert np.allclose(*all_h)
 
@@ -761,7 +761,8 @@ class Manager:
         self._savepath = None
 
     def _cleanup(self) -> NoReturn:
-        self._trim_storage()
+        if self._z_frames is not None:
+            self._trim_storage()
         self._reset_name()
 
         self._start_times = []
@@ -836,7 +837,7 @@ class Manager:
     @savepath.setter
     def savepath(self, value='') -> NoReturn:
         # Cleanup if a previous folder was created and not used
-        self._reset_name()
+        self._cleanup()
 
         self._savepath = files_op.mk_folder(name=value)
         self._acquisition_name = self._savepath.stem
