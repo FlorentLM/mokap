@@ -704,7 +704,7 @@ class Manager:
         saving_started = False
         while self._acquiring.is_set():
 
-            # time.sleep(random.uniform(min_wait, max_wait))
+            time.sleep(random.uniform(min_wait, max_wait))
 
             data = framestore.get_all(qidx=cam_idx)
             nb = len(data)
@@ -732,7 +732,7 @@ class Manager:
 
         while self._acquiring.is_set():
 
-            self._barrier.wait()
+            self._barrier.wait()    # TODO - check if this is only needed when no hardware trigger
 
             with cam.ptr.RetrieveResult(100, py.TimeoutHandling_Return) as res:
                 if res and res.GrabSucceeded():

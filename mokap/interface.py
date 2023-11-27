@@ -270,7 +270,7 @@ class VideoWindow:
         self._fps = 0
         self.visible = Event()
         self.visible.set()
-        
+
     def _update_vars(self):
         self.title_var.set(f'{self._cam_name.title()} camera')
         self.window.title(self.title_var.get())
@@ -283,24 +283,27 @@ class VideoWindow:
         self.display_fps_var.set(f"Display: {self._fps:.2f} fps")
 
     def _update_video(self):
-        frame = None
 
-        if self.parent.mgr.acquiring and self.parent.current_buffers is not None:
-            # if 'top' in self._pos and self.parent.show_diff:
-            #     frame = np.frombuffer(self.parent.absdif, dtype=np.uint8).reshape(self._source_shape)
-            # else:
-            frame = np.frombuffer(self.parent.current_buffers[self.idx], dtype=np.uint8).reshape(self._source_shape)
+        if self.parent.mgr.acquiring:
+            if self.parent.current_buffers is not None:
+                # if 'top' in self._pos and self.parent.show_diff:
+                #     frame = np.frombuffer(self.parent.absdif, dtype=np.uint8).reshape(self._source_shape)
+                # else:
+                frame = np.frombuffer(self.parent.current_buffers[self.idx], dtype=np.uint8).reshape(self._source_shape)
 
-        if frame is not None:
-            imgdata = Image.fromarray(frame)
-            img = imgdata.resize((self.video_dims[1], self.video_dims[0]))
+                imgdata = Image.fromarray(frame)
+                img = imgdata.resize((self.video_dims[1], self.video_dims[0]))
+            else:
+                img = None
+
         else:
             img = Image.fromarray(np.random.randint(0, 255, self.video_dims, dtype='<u1'))
             # img = Image.fromarray(np.zeros(shape=self.video_dims, dtype='<u1'))
 
-        imgtk = ImageTk.PhotoImage(image=img)
-        self.imagecontainer.imgtk = imgtk
-        self.imagecontainer.configure(image=imgtk)
+        if img is not None:
+            imgtk = ImageTk.PhotoImage(image=img)
+            self.imagecontainer.imgtk = imgtk
+            self.imagecontainer.configure(image=imgtk)
 
     def update(self):
 
