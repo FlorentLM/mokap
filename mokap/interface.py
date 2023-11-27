@@ -14,8 +14,33 @@ from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 import screeninfo
+import colorsys
 
 THEME = 'light'
+
+
+def lightness_hex(hex_str: str, lightness: float):
+    """ Brightens or darkens a colour in hex """
+    hash = False
+    short = False
+
+    if hex_str.startswith('#'):
+        hash = True
+        hex_str = hex_str.lstrip('#')
+
+    if len(hex_str) == 3:
+        short = True
+        hex_str = ''.join([c + c for c in hex_str])
+    h, l, s = colorsys.rgb_to_hls(*tuple(int(hex_str[i:i + 2], 16) for i in (0, 2, 4)))
+
+    new_l = np.clip(255 * lightness, 0, 255.0)
+
+    r, g, b = colorsys.hls_to_rgb(h, new_l, s)
+
+    new_hex = f'{"#" if hash else ""}{int(r):02x}{int(g):02x}{int(b):02x}'
+    if short:
+        return new_hex[::2]
+    return new_hex
 
 
 class GraphWidget:
@@ -163,39 +188,39 @@ class VideoWindow:
         VideoWindow.videowindows_ids.append(self.idx)
 
         self._source_shape = (self.parent.mgr.cameras[self.idx].height, self.parent.mgr.cameras[self.idx].width)
-        self._pos = self.parent.mgr.cameras[self.idx].pos
+        self._cam_name = self.parent.mgr.cameras[self.idx].pos
         
-        match self._pos:
+        match self._cam_name:
             case 'north-west' | 'virtual_2':
                 x = 0
                 y = 0
-                col_fg = '#ffffff'
-                col_bg = '#15ab79'
+                self._color = '#15ab79'
+                self._color_2 = '#ffffff'
             case 'south-west' | 'virtual_4':
                 x = 0
                 y = parent.max_videowindows_dims[0] * 2
-                col_fg = '#000000'
-                col_bg = '#ffffff'
+                self._color = '#ffffff'
+                self._color_2 = '#000000'
             case 'north-east' | 'virtual_1':
                 x = parent.screen_dims[1] - parent.max_videowindows_dims[1]
                 y = 0
-                col_fg = '#000000'
-                col_bg = '#fff139'
+                self._color = '#fff139'
+                self._color_2 = '#000000'
             case 'south-east' | 'virtual_3':
                 x = parent.screen_dims[1] - parent.max_videowindows_dims[1]
                 y = parent.max_videowindows_dims[0] * 2
-                col_fg = '#ffffff'
-                col_bg = '#435fc4'
+                self._color = '#435fc4'
+                self._color_2 = '#ffffff'
             case 'top' | 'virtual_0':
                 x = parent.screen_dims[1] // 2 - parent.max_videowindows_dims[1] // 2
                 y = 0
-                col_fg = '#ffffff'
-                col_bg = '#e03228'
+                self._color = '#e03228'
+                self._color_2 = '#ffffff'
             case _:
                 x = parent.screen_dims[1] // 2 - parent.max_videowindows_dims[1] // 2
                 y = parent.screen_dims[0] // 2 - parent.max_videowindows_dims[0] // 2 - GUI.WTITLEBAR_H // 2
-                col_fg = '#ffffff'
-                col_bg = '#F0A108'
+                self._color = '#F0A108'
+                self._color_2 = '#ffffff'
 
         h, w = parent.max_videowindows_dims
         self.window.geometry(f"{w}x{h}+{x}+{y}")
@@ -219,7 +244,7 @@ class VideoWindow:
         infoframe = tk.Frame(self.window, height=self.INFO_PANEL_MIN_H)
         infoframe.pack(fill=tk.BOTH, expand=True)
 
-        title = tk.Label(infoframe, fg=col_fg, bg=col_bg, anchor=tk.N, justify='center',
+        title = tk.Label(infoframe, fg=self.color_2, bg=self.color, anchor=tk.N, justify='center',
                          font=parent.bold, textvariable=self.title_var)
         title.pack(fill=tk.BOTH)
 
@@ -247,7 +272,7 @@ class VideoWindow:
         self.visible.set()
         
     def _update_vars(self):
-        self.title_var.set(f'{self._pos.title()} camera')
+        self.title_var.set(f'{self._cam_name.title()} camera')
         self.window.title(self.title_var.get())
         self.resolution_var.set(f"Resolution: {self.parent.mgr.cameras[self.idx].height}×{self.parent.mgr.cameras[self.idx].width} px")
         self.exposure_var.set(f"Exposure: {self.parent.mgr.cameras[self.idx].exposure} µs")
@@ -261,10 +286,10 @@ class VideoWindow:
         frame = None
 
         if self.parent.mgr.acquiring and self.parent.current_buffers is not None:
-            if 'top' in self._pos and self.parent.show_diff:
-                frame = np.frombuffer(self.parent.absdif, dtype=np.uint8).reshape(self._source_shape)
-            else:
-                frame = np.frombuffer(self.parent.current_buffers[self.idx], dtype=np.uint8).reshape(self._source_shape)
+            # if 'top' in self._pos and self.parent.show_diff:
+            #     frame = np.frombuffer(self.parent.absdif, dtype=np.uint8).reshape(self._source_shape)
+            # else:
+            frame = np.frombuffer(self.parent.current_buffers[self.idx], dtype=np.uint8).reshape(self._source_shape)
 
         if frame is not None:
             imgdata = Image.fromarray(frame)
@@ -279,7 +304,7 @@ class VideoWindow:
 
     def update(self):
 
-        while self.visible.is_set():
+        while True:
 
             # Update display fps counter
             now = datetime.now()
@@ -293,7 +318,27 @@ class VideoWindow:
             self._update_video()
             self._update_vars()
 
-        print('Exited thread')
+            self.visible.wait()
+
+    def toggle_visibility(self):
+        if self.visible.is_set():
+            self.visible.clear()
+            self.window.withdraw()
+        else:
+            self.visible.set()
+            self.window.deiconify()
+
+    @property
+    def name(self):
+        return self._cam_name
+
+    @property
+    def color(self):
+        return self._color
+
+    @property
+    def color_2(self):
+        return self._color_2
 
     @property
     def count(self):
@@ -430,6 +475,9 @@ class GUI:
             primary = monitors[0]
         return np.array([primary.height, primary.width])
 
+    def nothing(self):
+        pass
+
     def _create_controls(self):
 
         ipadx = 2
@@ -439,6 +487,11 @@ class GUI:
 
         left_half = tk.Frame(self.root)
         left_half.pack(fill=tk.BOTH, side=tk.LEFT, expand=True)
+
+        right_half = tk.Frame(self.root)
+        right_half.pack(fill=tk.BOTH, side=tk.LEFT, expand=True)
+
+        # LEFT HALF
 
         acquisition_label = tk.Label(left_half, text='Acquisition:', anchor=tk.W)
         acquisition_label.pack(ipadx=ipadx, ipady=ipady, padx=padx, pady=pady, fill=tk.X)
@@ -485,29 +538,29 @@ class GUI:
         self.button_recpause.pack(ipadx=ipadx, ipady=ipady, padx=padx, pady=pady * 2, fill=tk.X, expand=True)
 
         #
-        reference_layout_frame = tk.Frame(left_half, height=50)
-        reference_layout_frame.pack(ipadx=ipadx, ipady=ipady, padx=padx, pady=pady, fill=tk.X)
-
-        reference_buttons_frame = tk.Frame(reference_layout_frame)
-        reference_buttons_frame.pack(fill=tk.X)
-
-        self.button_acqref = tk.Button(reference_buttons_frame, text="Acquire ref.", anchor=tk.CENTER,
-                                       font=self.regular,
-                                       command=self.gui_acquire_ref,
-                                       state='disabled')
-        self.button_acqref.pack(ipadx=ipadx, ipady=ipady, padx=padx, fill=tk.X, side=tk.LEFT, expand=True)
-
-        self.button_clearref = tk.Button(reference_buttons_frame, text="Clear ref.", anchor=tk.CENTER, font=self.regular,
-                                       command=self.gui_clear_ref,
-                                       state='disabled')
-        self.button_clearref.pack(ipadx=ipadx, ipady=ipady, padx=padx, fill=tk.X, side=tk.LEFT, expand=True)
-
-        self.button_show_diff = tk.Button(reference_buttons_frame, text="Show diff.", anchor=tk.CENTER,
-                                       font=self.regular,
-                                       command=self.gui_toggle_show_diff,
-                                       state='disabled')
-
-        self.button_show_diff.pack(ipadx=ipadx, ipady=ipady, padx=padx, fill=tk.X, side=tk.LEFT, expand=True)
+        # reference_layout_frame = tk.Frame(left_half, height=50)
+        # reference_layout_frame.pack(ipadx=ipadx, ipady=ipady, padx=padx, pady=pady, fill=tk.X)
+        #
+        # reference_buttons_frame = tk.Frame(reference_layout_frame)
+        # reference_buttons_frame.pack(fill=tk.X)
+        #
+        # self.button_acqref = tk.Button(reference_buttons_frame, text="Acquire ref.", anchor=tk.CENTER,
+        #                                font=self.regular,
+        #                                command=self.gui_acquire_ref,
+        #                                state='disabled')
+        # self.button_acqref.pack(ipadx=ipadx, ipady=ipady, padx=padx, fill=tk.X, side=tk.LEFT, expand=True)
+        #
+        # self.button_clearref = tk.Button(reference_buttons_frame, text="Clear ref.", anchor=tk.CENTER, font=self.regular,
+        #                                command=self.gui_clear_ref,
+        #                                state='disabled')
+        # self.button_clearref.pack(ipadx=ipadx, ipady=ipady, padx=padx, fill=tk.X, side=tk.LEFT, expand=True)
+        #
+        # self.button_show_diff = tk.Button(reference_buttons_frame, text="Show diff.", anchor=tk.CENTER,
+        #                                font=self.regular,
+        #                                command=self.gui_toggle_show_diff,
+        #                                state='disabled')
+        #
+        # self.button_show_diff.pack(ipadx=ipadx, ipady=ipady, padx=padx, fill=tk.X, side=tk.LEFT, expand=True)
 
         # reference_slider_frame = tk.Frame(reference_layout_frame)
         # reference_slider_frame.pack(fill=tk.X)
@@ -527,7 +580,7 @@ class GUI:
         #                              command=self.gui_toggle_graph)
         # self.button_graph.pack(ipadx=ipadx, ipady=ipady, padx=padx, pady=pady, anchor=tk.SW)
 
-        self.button_exit = tk.Button(left_half, text="Exit (Esc)", anchor=tk.CENTER, font=self.regular,
+        self.button_exit = tk.Button(left_half, text="Exit (Esc)", anchor=tk.CENTER, font=self.bold,
                                      bg='#EE4457', fg='White',
                                      command=self.quit)
         self.button_exit.pack(ipadx=ipadx, ipady=ipady, padx=padx, pady=pady, anchor=tk.SE)
@@ -540,6 +593,31 @@ class GUI:
         # graph_frame.pack(ipadx=ipadx, ipady=ipady, padx=padx, pady=pady, fill=tk.X)
         #
         # self.graph = GraphWidget(canvas=graph_frame, master=self)
+
+        # RIGHT HALF
+
+        visibility_label = tk.Label(right_half, text='Show previews:', anchor=tk.W)
+        visibility_label.pack()
+
+        windows_list_frame = tk.Frame(right_half)
+        windows_list_frame.pack()
+
+        self._vis_checkboxes = []
+        for window in self.video_windows:
+            vis_var = tk.IntVar()
+            vis_checkbox = tk.Checkbutton(windows_list_frame, text=f" {window.name.title()} camera", anchor=tk.W,
+                                          font=self.bold,
+                                          fg=window.color_2,
+                                          bg=window.color,
+                                          selectcolor=window.color,
+                                          activebackground=window.color,
+                                          activeforeground=window.color,
+                                          variable=vis_var,
+                                          command=window.toggle_visibility,
+                                          state='normal')
+            vis_var.set(1)
+            vis_checkbox.pack(ipadx=ipadx, ipady=ipady, padx=padx, pady=pady, fill=tk.X, expand=True)
+            self._vis_checkboxes.append(vis_var)
 
     def _handle_keypress(self, event):
         match event.keycode:
@@ -563,9 +641,9 @@ class GUI:
     #         # self._graph_thread.start()
     #         self.right_half.pack(fill=tk.BOTH, side=tk.LEFT, expand=True)
 
-    @property
-    def show_diff(self):
-        return self._show_diff.is_set()
+    # @property
+    # def show_diff(self):
+    #     return self._show_diff.is_set()
 
     @property
     def absdif(self):
@@ -609,7 +687,7 @@ class GUI:
             else:
                 self.gui_pause()
 
-    def gui_acquire_ref(self):
+    # def gui_acquire_ref(self):
 
         # self.mgr.acquire_reference()
         #
@@ -623,12 +701,12 @@ class GUI:
         # self._autodetection_thread = Thread(target=self._ant_detection, daemon=False)
         # self._autodetection_thread.start()
 
-        self.button_acqref.config(state="disabled")
-        self.button_clearref.config(state="normal")
-        self.button_show_diff.config(state="normal")
-        self.button_recpause.config(state="disabled")
+        # self.button_acqref.config(state="disabled")
+        # self.button_clearref.config(state="normal")
+        # self.button_show_diff.config(state="normal")
+        # self.button_recpause.config(state="disabled")
 
-    def gui_clear_ref(self):
+    # def gui_clear_ref(self):
 
         # self._autodetection_enabled.clear()
         # self._autodetection_thread = None
@@ -640,26 +718,26 @@ class GUI:
         #
         # self.gui_hide_diff()
 
-        self.button_acqref.config(state="normal")
-        self.button_clearref.config(state="disabled")
-        self.button_show_diff.config(state="disabled")
-        self.button_recpause.config(state="normal")
+        # self.button_acqref.config(state="normal")
+        # self.button_clearref.config(state="disabled")
+        # self.button_show_diff.config(state="disabled")
+        # self.button_recpause.config(state="normal")
 
-    def gui_show_diff(self):
-        if not self._show_diff.is_set():
-            self.button_show_diff.config(text='Hide diff.')
-            self._show_diff.set()
+    # def gui_show_diff(self):
+    #     if not self._show_diff.is_set():
+    #         self.button_show_diff.config(text='Hide diff.')
+    #         self._show_diff.set()
+    #
+    # def gui_hide_diff(self):
+    #     if self._show_diff.is_set():
+    #         self.button_show_diff.config(text='Show diff.')
+    #         self._show_diff.clear()
 
-    def gui_hide_diff(self):
-        if self._show_diff.is_set():
-            self.button_show_diff.config(text='Show diff.')
-            self._show_diff.clear()
-
-    def gui_toggle_show_diff(self):
-        if self._show_diff.is_set():
-            self.gui_hide_diff()
-        else:
-            self.gui_show_diff()
+    # def gui_toggle_show_diff(self):
+    #     if self._show_diff.is_set():
+    #         self.gui_hide_diff()
+    #     else:
+    #         self.gui_show_diff()
 
     def gui_acquire(self):
 
@@ -673,7 +751,7 @@ class GUI:
 
             self.button_start.config(state="disabled")
             self.button_stop.config(state="normal")
-            self.button_acqref.config(state="normal")
+            # self.button_acqref.config(state="normal")
             self.button_recpause.config(state="normal")
 
     def gui_snow(self):
@@ -691,9 +769,9 @@ class GUI:
 
             self.button_start.config(state="normal")
             self.button_stop.config(state="disabled")
-            self.button_acqref.config(state="disabled")
-            self.button_clearref.config(state="disabled")
-            self.button_show_diff.config(state="disabled")
+            # self.button_acqref.config(state="disabled")
+            # self.button_clearref.config(state="disabled")
+            # self.button_show_diff.config(state="disabled")
             self.button_recpause.config(state="disabled")
 
             self.userentry_var.set('')
@@ -712,8 +790,7 @@ class GUI:
         self.root.destroy()
         sys.exit()
 
-    def _ant_detection(self):
-        pass
+    # def _ant_detection(self):
     #
     #     while self._autodetection_enabled.is_set():
     #
