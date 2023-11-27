@@ -640,14 +640,19 @@ class Manager:
 
     def _init_storage(self) -> NoReturn:
 
-        # Sanity check - should always be true
-        all_w = [c.width for c in self.cameras]
-        all_h = [c.height for c in self.cameras]
-        assert np.allclose(*all_w)
-        assert np.allclose(*all_h)
+        if self.nb_cameras > 1:
+            # Sanity check - should always be true
+            all_w = [c.width for c in self.cameras]
+            all_h = [c.height for c in self.cameras]
+            print(all_w)
+            assert np.allclose(*all_w)
+            assert np.allclose(*all_h)
 
-        w = all_w[0]
-        h = all_h[0]
+            w = all_w[0]
+            h = all_h[0]
+        else:
+            w = int(self.cameras[0].width)
+            h = int(self.cameras[0].height)
 
         filters = [Delta(dtype='<u1')]
         compressor = Blosc(cname='zstd', clevel=1, shuffle=Blosc.SHUFFLE)
