@@ -12,7 +12,6 @@ mgr = hw.Manager()
 # mgr.exposure = 5555
 mgr.exposure = 10000
 # mgr.exposure = 4318
-# mgr.cameras['top'].exposure = 3000
 
 # Set framerate in images per second
 mgr.framerate = 100
@@ -21,6 +20,9 @@ mgr.framerate = 100
 mgr.binning = 2
 
 mgr.connect()
+
+# Reduce top camera exposure
+# mgr.cameras['top'].exposure = 3000
 
 if __name__ == '__main__':
     if mgr.nb_cameras == 0:

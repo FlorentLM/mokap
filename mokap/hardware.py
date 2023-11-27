@@ -436,10 +436,6 @@ class Camera:
                 self.ptr.ExposureTimeAbs = value
                 self.ptr.ExposureTimeRaw = value
             else:
-                if 'top' in self.pos:
-                    # top camera gets a bit more light, 85% exposure is enough
-                    value = int(value * 0.85)
-
                 self.ptr.ExposureTime = value
         # And keep a local value to avoid querying the camera every time we read it
         self._exposure = value
