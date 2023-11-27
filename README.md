@@ -1,9 +1,13 @@
 # Installation
 
+### Windows and Linux
 #### Miniconda (recommended):
 * Clone this repository `git clone https://github.com/FlorentLM/mokap`
 * Create environment `conda env create --file=environment.yml`
 * That's it, you should be able to run it
+
+###### Linux-specific optional dependencies
+  * (Optional) Install [uhubctl](https://github.com/mvp/uhubctl) and follow the [post-install instructions](https://github.com/mvp/uhubctl#linux-usb-permissions).
 
 # Usage
 
@@ -21,6 +25,14 @@
 
 ---
 
+    /bin/sh: 1: uhubctl: not found
+
+**Fix**: Install [uhubctl](https://github.com/mvp/uhubctl)
+
+_Note_: This dependency is optional
+
+---
+
     Failed to open device xxxxx for XML file download. Error: 'The device cannot be operated on an USB 2.0 port. The device requires an USB 3.0 compatible port.'
 
 **Fix**: Unplug and plug the camera(s) again
@@ -29,7 +41,7 @@
 
     Warning: Cannot change group of xxxx to 'video'.
 
-**Fix**:  Add the local user to the *video* group: `sudo usermod -a -G video $LOGNAME`
+**Fix**:  Add the local user to the *video* group: `sudo usermod -a -G video $USER`
 
 ---
 

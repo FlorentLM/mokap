@@ -50,13 +50,13 @@ def setup_ulimit():
         print(f'[INFO] Current file descriptors limit seems fine (n={current_limit})')
 
 
-def enable_usb():
-    out = os.popen('uhubctl -l 4-2 -a 1')
+def enable_usb(hub_number):
+    out = os.popen(f'uhubctl -l {hub_number} -a 1')
     ret = out.read()
 
 
-def disable_usb():
-    out = os.popen('uhubctl -l 4-2 -a 0')
+def disable_usb(hub_number):
+    out = os.popen(f'uhubctl -l {hub_number} -a 0')
     ret = out.read()
 
 

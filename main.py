@@ -3,7 +3,7 @@
 from mokap.interface import GUI
 from mokap import hardware as hw
 
-hw.enable_usb()
+hw.enable_usb('4-2')
 
 mgr = hw.Manager()
 

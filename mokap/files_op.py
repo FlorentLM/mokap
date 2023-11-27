@@ -8,12 +8,12 @@ import shutil
 import shlex
 
 ##
-#
-# videos_folder = Path('/mnt/data/Videos')
-# data_folder = Path('/mnt/data/RawFrames')
 
-videos_folder = Path('F:\\Videos')
-data_folder = Path('F:\\RawFrames')
+videos_folder = Path('/mnt/data/Videos')
+data_folder = Path('/mnt/data/RawFrames')
+
+# videos_folder = Path('F:\\Videos')
+# data_folder = Path('F:\\RawFrames')
 
 ##
 
