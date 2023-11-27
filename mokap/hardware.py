@@ -708,7 +708,7 @@ class Manager:
         saving_started = False
         while self._acquiring.is_set():
 
-            time.sleep(random.uniform(min_wait, max_wait))
+            # time.sleep(random.uniform(min_wait, max_wait))
 
             data = framestore.get_all(qidx=cam_idx)
             nb = len(data)
