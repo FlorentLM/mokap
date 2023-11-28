@@ -288,19 +288,8 @@ class VideoWindow:
             self.capture_fps_var.set(f"Acquisition: Off")
         self.display_fps_var.set(f"Display: {self._fps:.2f} fps")
 
-    def display(self, image):
-
-        image = image.resize((self.video_dims[1], self.video_dims[0]))
-        imagetk = ImageTk.PhotoImage(image=image)
-
-        try:
-            self.imagecontainer.configure(image=imagetk)
-            self.imageobject = imagetk
-        except Exception:
-            # If new image is garbage collected too early, do nothing - this prevents the image from flashing
-            pass
-
     def _update_video(self):
+        imgdata = Image.fromarray(np.random.randint(0, 255, self.video_dims, dtype='<u1'))
 
         if self.parent.mgr.acquiring:
             if self.parent.current_buffers is not None:
@@ -313,7 +302,15 @@ class VideoWindow:
         else:
             imgdata = Image.fromarray(np.random.randint(0, 255, self.video_dims, dtype='<u1'))
 
-        self.display(imgdata)
+        image = imgdata.resize((self.video_dims[1], self.video_dims[0]))
+        imagetk = ImageTk.PhotoImage(image=image)
+
+        try:
+            self.imagecontainer.configure(image=imagetk)
+            self.imageobject = imagetk
+        except Exception:
+            # If new image is garbage collected too early, do nothing - this prevents the image from flashing
+            pass
 
     def update(self):
 
@@ -323,8 +320,7 @@ class VideoWindow:
             now = datetime.now()
             dt = (now - self._clock).total_seconds()
 
-            if dt >= 1:
-                self._fps = self._counter / dt
+            self._fps = self._counter / dt
 
             self._counter += 1
 
@@ -550,7 +546,6 @@ class GUI:
                                          state='disabled')
         self.button_recpause.pack(ipadx=ipadx, ipady=ipady, padx=padx, pady=pady * 2, fill=tk.X, expand=True)
 
-        #
         # reference_layout_frame = tk.Frame(left_half, height=50)
         # reference_layout_frame.pack(ipadx=ipadx, ipady=ipady, padx=padx, pady=pady, fill=tk.X)
         #
