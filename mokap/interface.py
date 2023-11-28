@@ -186,7 +186,7 @@ class VideoWindow:
         VideoWindow.videowindows_ids.append(self.idx)
 
         self._source_shape = (self.parent.mgr.cameras[self.idx].height, self.parent.mgr.cameras[self.idx].width)
-        self._cam_name = self.parent.mgr.cameras[self.idx].pos
+        self._cam_name = self.parent.mgr.cameras[self.idx].name
         
         match self._cam_name:
             case 'north-west' | 'virtual_2':
@@ -332,7 +332,7 @@ class VideoWindow:
 
         if self.parent.mgr.acquiring:
             if self.parent.current_buffers is not None:
-                # if 'top' in self._pos and self.parent.show_diff:
+                # if 'top' in self.name and self.parent.show_diff:
                 #     frame = np.frombuffer(self.parent.absdif, dtype=np.uint8).reshape(self._source_shape)
                 # else:
                 frame = np.frombuffer(self.parent.current_buffers[self.idx], dtype=np.uint8).reshape(self._source_shape)

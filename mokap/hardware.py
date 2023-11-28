@@ -157,7 +157,7 @@ class Camera:
         self._dptr = None
 
         self._serial = ''
-        self._pos = 'unknown'
+        self._name = 'unknown'
 
         self._width = config['GENERAL'].getint('sensor_w')
         self._height = config['GENERAL'].getint('sensor_h')
@@ -174,9 +174,9 @@ class Camera:
 
     def __repr__(self):
         if self._connected:
-            return f"{self.pos.title()} camera (S/N {self.serial})"
+            return f"{self.name.title()} camera (S/N {self.serial})"
         else:
-            return f"{self.pos.title()} camera not connected"
+            return f"{self.name.title()} camera not connected"
 
     def connect(self, cam_ptr=None) -> NoReturn:
 
@@ -198,25 +198,25 @@ class Camera:
         known_cams.remove('GENERAL')
 
         if '0815-0' in self.serial:
-            self._pos = f"virtual_{Camera.virtual_cams}"
+            self._name = f"virtual_{Camera.virtual_cams}"
             Camera.virtual_cams += 1
         else:
             try:
                 self._idx = [config[k]['serial'] for k in known_cams].index(self._serial)
-                self._pos = config[known_cams[self._idx]].get('position', 'unknown')
+                self._name = config[known_cams[self._idx]].get('name', 'unknown')
             except ValueError:
-                self._pos = f"unkown_{Camera.unknown_cams}"
+                self._name = f"unkown_{Camera.unknown_cams}"
                 Camera.unknown_cams += 1
                 self._idx = - Camera.unknown_cams
 
-        print(f"Camera [S/N {self.serial}]: id={self._idx}, position={self._pos}")
+        print(f"Camera [S/N {self.serial}]: id={self._idx}, name={self._name}")
 
         self.ptr.UserSetSelector.SetValue("Default")
         self.ptr.UserSetLoad.Execute()
         self.ptr.AcquisitionMode.Value = 'Continuous'
         self.ptr.ExposureMode = 'Timed'
 
-        if 'virtual' not in self.pos:
+        if 'virtual' not in self.name:
 
             self.ptr.ExposureTimeMode.SetValue('Standard')
             self.ptr.ExposureAuto = 'Off'
@@ -251,7 +251,7 @@ class Camera:
             self._dptr = None
             self._connected = False
             self._serial = ''
-            self._pos = 'unknown'
+            self._name = 'unknown'
             self._width = config['GENERAL'].getint('sensor_w')
             self._height = config['GENERAL'].getint('sensor_h')
 
@@ -260,14 +260,14 @@ class Camera:
             self.ptr.StartGrabbing(py.GrabStrategy_LatestImageOnly)
             self._is_grabbing = True
         else:
-            print(f"{self.pos.title()} camera is not connected.")
+            print(f"{self.name.title()} camera is not connected.")
 
     def stop_grabbing(self) -> NoReturn:
         if self._connected:
             self.ptr.StopGrabbing()
             self._is_grabbing = False
         else:
-            print(f"{self.pos.title()} camera is not connected.")
+            print(f"{self.name.title()} camera is not connected.")
 
     @property
     def ptr(self) -> py.InstantCamera:
@@ -286,12 +286,8 @@ class Camera:
         return self._serial
 
     @property
-    def pos(self) -> str:
-        return self._pos
-
-    @property
-    def position(self) -> str:
-        return self._pos
+    def name(self) -> str:
+        return self._name
 
     @property
     def triggered(self) -> bool:
@@ -309,7 +305,7 @@ class Camera:
     def binning(self, value: int) -> NoReturn:
         assert value in [1, 2, 3, 4]
         if self._connected:
-            if 'virtual' not in self.pos:
+            if 'virtual' not in self.name:
                 self.ptr.BinningVertical.SetValue(value)
                 self.ptr.BinningHorizontal.SetValue(value)
                 self.ptr.BinningVerticalMode.SetValue('Average')
@@ -331,7 +327,7 @@ class Camera:
     @exposure.setter
     def exposure(self, value: int) -> NoReturn:
         if self._connected:
-            if 'virtual' in self.pos:
+            if 'virtual' in self.name:
                 self.ptr.ExposureTimeAbs = value
                 self.ptr.ExposureTimeRaw = value
             else:
@@ -347,11 +343,11 @@ class Camera:
     def framerate(self, value: float) -> NoReturn:
         if self._connected:
             if self.triggered:
-                print(f'[WARN] Trying to set framerate on a hardware-triggered camera ([{self._pos}])')
+                print(f'[WARN] Trying to set framerate on a hardware-triggered camera ([{self._name}])')
                 self.ptr.AcquisitionFrameRateEnable.SetValue(False)
                 self._framerate = self.ptr.ResultingFrameRate.GetValue()
             else:
-                if 'virtual' in self.pos:
+                if 'virtual' in self.name:
                     self.ptr.AcquisitionFrameRateAbs = 220
                     f = np.round(self.ptr.ResultingFrameRate.GetValue() - 0.5 * 10 ** (-2),
                                  2)  # custom floor with decimals

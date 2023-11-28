@@ -136,7 +136,7 @@ class Manager:
                          binning=self._binning)
             cam.connect(cptr)
             self._cameras_list.append(cam)
-            self._cameras_dict[cam.pos] = cam
+            self._cameras_dict[cam.name] = cam
             print(f"Attached {cam}.")
 
         self._cameras_list.sort(key=lambda x: (x.idx))
@@ -226,7 +226,7 @@ class Manager:
                              'framerate': cam.framerate,
                              'exposure': cam.exposure,
                              'triggered': cam.triggered,
-                             'pos': cam.pos}
+                             'name': cam.name}
 
         self._grabbed_frames_idx = RawArray('I', self._nb_cams)
         self._saved_frms_idx = RawArray('I', self._nb_cams)
