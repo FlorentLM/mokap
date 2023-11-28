@@ -311,7 +311,7 @@ class VideoWindow:
                 imgdata = Image.fromarray(frame)
 
         else:
-            imgdata = Image.fromarray(np.random.randint(0, 255, self.video_dims // 2, dtype='<u1'))
+            imgdata = Image.fromarray(np.random.randint(0, 255, self.video_dims, dtype='<u1'))
 
         self.display(imgdata)
 
