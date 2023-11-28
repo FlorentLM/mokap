@@ -6,7 +6,6 @@ from PIL import Image, ImageTk
 import numpy as np
 from datetime import datetime
 from threading import Thread, Event
-# import sv_ttk
 from matplotlib import style as mplstyle
 mplstyle.use('ggplot')
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -17,7 +16,6 @@ import screeninfo
 import colorsys
 
 THEME = 'light'
-
 
 def lightness_hex(hex_str: str, lightness: float):
     """ Brightens or darkens a colour in hex """
@@ -481,7 +479,7 @@ class GUI:
             t.start()
             self.windows_threads.append(t)
 
-        self._absdif = bytearray(b'\0' * self.mgr.cameras['top'].height * self.mgr.cameras['top'].width)
+        # self._absdif = bytearray(b'\0' * self.mgr.cameras['top'].height * self.mgr.cameras['top'].width)
 
         # Deduce control window size and position
         w = self.max_videowindows_dims[1]
@@ -492,8 +490,6 @@ class GUI:
 
         # Create control window
         self._create_controls()
-
-        # sv_ttk.set_theme(THEME.lower())
 
         self.update()               # Called once to init
         self.root.mainloop()

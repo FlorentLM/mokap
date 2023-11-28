@@ -1,11 +1,12 @@
 #!/usr/bin/env python
 
 from mokap.interface import GUI
-from mokap import hardware as hw
+from mokap.core import Manager
+from mokap.hardware import enable_usb
 
-hw.enable_usb('4-2')
+enable_usb('4-2')
 
-mgr = hw.Manager()
+mgr = Manager()
 
 # Set exposure for all cameras in µs
 # (maximum exposure time for maximum framerate is 4318 µs)
@@ -20,9 +21,6 @@ mgr.framerate = 80
 mgr.binning = 2
 
 mgr.connect()
-
-# Reduce top camera exposure
-# mgr.cameras['top'].exposure = 3000
 
 if __name__ == '__main__':
     if mgr.nb_cameras == 0:
