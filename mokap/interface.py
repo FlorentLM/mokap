@@ -243,13 +243,14 @@ class VideoWindow:
         self.imagecontainer.imgtk = self.imageobject
         self.imagecontainer.configure(image=self.imageobject)
 
-        # Create info frame
-        infoframe = tk.Frame(self.window, height=self.INFO_PANEL_MIN_H)
-        infoframe.pack(fill=tk.BOTH, expand=True)
-
-        title = tk.Label(infoframe, fg=self.color_2, bg=self.color, anchor=tk.N, justify='center',
+        title = tk.Label(self.window, fg=self.color_2, bg=self.color, anchor=tk.N, justify='center',
                          font=parent.bold, textvariable=self.title_var)
         title.pack(fill=tk.BOTH)
+
+
+        # Create info frame
+        infoframe = tk.Frame(self.window, height=self.INFO_PANEL_MIN_H, width=w)
+        infoframe.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         resolution_label = tk.Label(infoframe, fg="black", anchor=tk.W, justify='left',
                                     font=parent.regular, textvariable=self.resolution_var)
@@ -267,6 +268,32 @@ class VideoWindow:
                                      font=parent.regular, textvariable=self.display_fps_var)
         display_fps_label.pack(fill=tk.BOTH)
 
+        controls_layout_frame = tk.Frame(self.window, height=self.INFO_PANEL_MIN_H, width=w)
+        controls_layout_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        framerate_frame = tk.Frame(controls_layout_frame)
+        framerate_frame.pack(side=tk.TOP, fill=tk.X, expand=True)
+        framerate_slider_label = tk.Label(framerate_frame, fg="black", anchor=tk.SE, justify='right',
+                                     font=parent.regular, text='Framerate (fps):')
+        framerate_slider_label.pack(side=tk.LEFT, fill=tk.Y, expand=False)
+        self.framerate_slider = tk.Scale(framerate_frame, from_=1, to=220, orient=tk.HORIZONTAL,
+                                    width=9, sliderlength=9)
+        self.framerate_slider.set(self.parent.mgr.cameras[self.idx].framerate)
+        self.framerate_slider.bind("<ButtonRelease-1>", self.update_framerate)
+        self.framerate_slider.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        exposure_frame = tk.Frame(controls_layout_frame)
+        exposure_frame.pack(side=tk.TOP, fill=tk.X, expand=True)
+        exposure_slider_label = tk.Label(exposure_frame, fg="black", anchor=tk.SE, justify='right',
+                                          font=parent.regular, text='Exposure (µs)  :')
+
+        exposure_slider_label.pack(side=tk.LEFT, fill=tk.Y, expand=False)
+        self.exposure_slider = tk.Scale(exposure_frame, from_=4300, to=25000,
+                                   orient=tk.HORIZONTAL, width=9, sliderlength=9)
+        self.exposure_slider.set(self.parent.mgr.cameras[self.idx].exposure)
+        self.exposure_slider.bind("<ButtonRelease-1>", self.update_exposure)
+        self.exposure_slider.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
         # Init state
         self._counter = 0
         self._clock = datetime.now()
@@ -278,15 +305,26 @@ class VideoWindow:
         self.title_var.set(f'{self._cam_name.title()} camera')
         self.window.title(self.title_var.get())
         self.resolution_var.set(
-            f"Resolution: {self.parent.mgr.cameras[self.idx].height}×{self.parent.mgr.cameras[self.idx].width} px")
-        self.exposure_var.set(f"Exposure: {self.parent.mgr.cameras[self.idx].exposure} µs")
+            f"Resolution : {self.parent.mgr.cameras[self.idx].height}×{self.parent.mgr.cameras[self.idx].width} px")
+        self.exposure_var.set(f"Exposure   : {self.parent.mgr.cameras[self.idx].exposure} µs")
+
+    def update_framerate(self, event):
+        new_fps = self.framerate_slider.get()
+        self.parent.mgr.cameras[self.idx].framerate = new_fps
+        self.framerate_slider.set(self.parent.mgr.cameras[self.idx].framerate)
+
+    def update_exposure(self, event):
+        new_exp = self.exposure_slider.get()
+        self.parent.mgr.cameras[self.idx].exposure = new_exp
+        self.framerate_slider.set(self.parent.mgr.cameras[self.idx].framerate)
+        self.exposure_var.set(f"Exposure   : {self.parent.mgr.cameras[self.idx].exposure} µs")
 
     def _update_fps_vars(self):
         if self.parent.mgr.acquiring:
             self.capture_fps_var.set(f"Acquisition: {self.parent.capture_fps[self.idx]:.2f} fps")
         else:
             self.capture_fps_var.set(f"Acquisition: Off")
-        self.display_fps_var.set(f"Display: {self._fps:.2f} fps")
+        self.display_fps_var.set(f"Display    : {self._fps:.2f} fps")
 
     def _update_video(self):
         imgdata = Image.fromarray(np.random.randint(0, 255, self.video_dims, dtype='<u1'))

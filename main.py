@@ -11,13 +11,13 @@ mgr = hw.Manager()
 # (maximum exposure time for maximum framerate is 4318 µs)
 # mgr.exposure = 5555
 mgr.exposure = 10000
-# mgr.exposure = 4318
+# mgr.exposure = 4300
 
 # Set framerate in images per second
 mgr.framerate = 80
 
 # Enable binning
-mgr.binning = 1
+mgr.binning = 2
 
 mgr.connect()
 

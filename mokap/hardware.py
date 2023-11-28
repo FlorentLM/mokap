@@ -441,25 +441,35 @@ class Camera:
         self._exposure = value
 
     @property
-    def framerate(self) -> int:
+    def framerate(self) -> float:
         return self._framerate
 
     @framerate.setter
-    def framerate(self, value: int) -> NoReturn:
+    def framerate(self, value: float) -> NoReturn:
         if self._connected:
-            if 'virtual' in self.pos:
-                self.ptr.AcquisitionFrameRateAbs = value
-                # And keep a local value to avoid querying the camera every time we read it
-                self._framerate = value
+            if self.triggered:
+                print(f'[WARN] Trying to set framerate on a hardware-triggered camera ([{self._weak_id}])')
+                self.ptr.AcquisitionFrameRateEnable.SetValue(False)
+                self._framerate = self.ptr.ResultingFrameRate.GetValue()
             else:
-                if self.triggered:
-                    self.ptr.AcquisitionFrameRateEnable.SetValue(False)
-                    self._framerate = self.ptr.ResultingFramerate.GetValue()
+                if 'virtual' in self.pos:
+                    self.ptr.AcquisitionFrameRateAbs = 220
+                    f = np.round(self.ptr.ResultingFrameRate.GetValue() - 0.5 * 10 ** (-2),
+                                 2)  # custom floor with decimals
+                    new_framerate = min(value, f)
+
+                    self.ptr.AcquisitionFrameRateAbs = new_framerate
                 else:
                     self.ptr.AcquisitionFrameRateEnable.SetValue(True)
-                    self.ptr.AcquisitionFrameRate = value
-                    # And keep a local value to avoid querying the camera every time we read it
-                    self._framerate = value
+                    self.ptr.AcquisitionFrameRate = 220
+
+                    f = np.round(self.ptr.ResultingFrameRate.GetValue() - 0.5 * 10 ** (-2),
+                                 2)  # custom floor with decimals
+                    new_framerate = min(value, f)
+
+                    self.ptr.AcquisitionFrameRate = new_framerate
+
+                self._framerate = new_framerate
 
     @property
     def width(self) -> int:
