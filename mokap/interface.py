@@ -227,6 +227,13 @@ class VideoWindow:
         self.window.wm_aspect(w, h, w, h)
         self.window.protocol("WM_DELETE_WINDOW", self.parent.quit)
 
+        # Init state
+        self._counter = 0
+        self._clock = datetime.now()
+        self._fps = 0
+        self.visible = Event()
+        self.visible.set()
+
         # Variable texts
         self.title_var = tk.StringVar()
         self.resolution_var = tk.StringVar()
@@ -294,13 +301,6 @@ class VideoWindow:
         self.exposure_slider.bind("<ButtonRelease-1>", self.update_exposure)
         self.exposure_slider.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Init state
-        self._counter = 0
-        self._clock = datetime.now()
-        self._fps = 0
-        self.visible = Event()
-        self.visible.set()
-
         # Set static vars
         self.title_var.set(f'{self._cam_name.title()} camera')
         self.window.title(self.title_var.get())
@@ -312,6 +312,9 @@ class VideoWindow:
         new_fps = self.framerate_slider.get()
         self.parent.mgr.cameras[self.idx].framerate = new_fps
         self.framerate_slider.set(self.parent.mgr.cameras[self.idx].framerate)
+
+        self.parent._capture_clock = datetime.now()
+        self.parent._start_indices[:] = self.parent._now_indices
 
     def update_exposure(self, event):
         new_exp = self.exposure_slider.get()
@@ -357,7 +360,6 @@ class VideoWindow:
             # Update display fps counter
             now = datetime.now()
             dt = (now - self._clock).total_seconds()
-
             self._fps = self._counter / dt
 
             self._counter += 1
@@ -438,9 +440,16 @@ class GUI:
         # Init default things
         self.mgr = mgr
         self.editing_disabled = True
+
         self._capture_fps = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
         self._capture_clock = datetime.now()
+        self._now_indices = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
+        self._start_indices = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
+
         self._counter = 0
+
+        self._prev_indices = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
+        self._new_indices = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
 
         self.recording_var = tk.StringVar()
         self.userentry_var = tk.StringVar()
@@ -865,7 +874,8 @@ class GUI:
             now = datetime.now()
             capture_dt = (now - self._capture_clock).total_seconds()
 
-            self._capture_fps = self.mgr.indices / capture_dt
+            self._now_indices[:] = self.mgr.indices
+            self._capture_fps = (self._now_indices - self._start_indices) / capture_dt
 
             self._current_buffers = self.mgr.get_current_framebuffer()
 
