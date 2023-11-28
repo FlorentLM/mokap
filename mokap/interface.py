@@ -238,7 +238,10 @@ class VideoWindow:
         self.imagecontainer = tk.Label(self.window, fg='#FF3C21', bg="black",
                                        textvariable=parent.recording_var, font=parent.bold,
                                        compound='center')
+        self.imageobject = ImageTk.PhotoImage(image=Image.fromarray(np.zeros(self.video_dims, dtype='<u1')))
         self.imagecontainer.pack(fill=tk.BOTH, expand=True)
+        self.imagecontainer.imgtk = self.imageobject
+        self.imagecontainer.configure(image=self.imageobject)
 
         # Create info frame
         infoframe = tk.Frame(self.window, height=self.INFO_PANEL_MIN_H)
@@ -271,16 +274,31 @@ class VideoWindow:
         self.visible = Event()
         self.visible.set()
 
-    def _update_vars(self):
+        # Set static vars
         self.title_var.set(f'{self._cam_name.title()} camera')
         self.window.title(self.title_var.get())
-        self.resolution_var.set(f"Resolution: {self.parent.mgr.cameras[self.idx].height}×{self.parent.mgr.cameras[self.idx].width} px")
+        self.resolution_var.set(
+            f"Resolution: {self.parent.mgr.cameras[self.idx].height}×{self.parent.mgr.cameras[self.idx].width} px")
         self.exposure_var.set(f"Exposure: {self.parent.mgr.cameras[self.idx].exposure} µs")
+
+    def _update_fps_vars(self):
         if self.parent.mgr.acquiring:
             self.capture_fps_var.set(f"Acquisition: {self.parent.capture_fps[self.idx]:.2f} fps")
         else:
             self.capture_fps_var.set(f"Acquisition: Off")
         self.display_fps_var.set(f"Display: {self._fps:.2f} fps")
+
+    def display(self, image):
+
+        image = image.resize((self.video_dims[1], self.video_dims[0]))
+        imagetk = ImageTk.PhotoImage(image=image)
+
+        try:
+            self.imagecontainer.configure(image=imagetk)
+            self.imageobject = imagetk
+        except Exception:
+            # If new image is garbage collected too early, do nothing - this prevents the image from flashing
+            pass
 
     def _update_video(self):
 
@@ -290,20 +308,12 @@ class VideoWindow:
                 #     frame = np.frombuffer(self.parent.absdif, dtype=np.uint8).reshape(self._source_shape)
                 # else:
                 frame = np.frombuffer(self.parent.current_buffers[self.idx], dtype=np.uint8).reshape(self._source_shape)
-
                 imgdata = Image.fromarray(frame)
-                img = imgdata.resize((self.video_dims[1], self.video_dims[0]))
-            else:
-                img = None
 
         else:
-            img = Image.fromarray(np.random.randint(0, 255, self.video_dims, dtype='<u1'))
-            # img = Image.fromarray(np.zeros(shape=self.video_dims, dtype='<u1'))
+            imgdata = Image.fromarray(np.random.randint(0, 255, self.video_dims // 2, dtype='<u1'))
 
-        if img is not None:
-            imgtk = ImageTk.PhotoImage(image=img)
-            self.imagecontainer.imgtk = imgtk
-            self.imagecontainer.configure(image=imgtk)
+        self.display(imgdata)
 
     def update(self):
 
@@ -313,13 +323,13 @@ class VideoWindow:
             now = datetime.now()
             dt = (now - self._clock).total_seconds()
 
-            if dt >= 0.5:
+            if dt >= 1:
                 self._fps = self._counter / dt
 
             self._counter += 1
 
             self._update_video()
-            self._update_vars()
+            self._update_fps_vars()
 
             self.visible.wait()
 
