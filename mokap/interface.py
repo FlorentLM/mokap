@@ -1,5 +1,4 @@
 import sys
-import time
 import tkinter as tk
 import tkinter.font as font
 from PIL import Image, ImageTk
@@ -17,29 +16,20 @@ import colorsys
 
 THEME = 'light'
 
-def lightness_hex(hex_str: str, lightness: float):
-    """ Brightens or darkens a colour in hex """
-    hash = False
-    short = False
 
-    if hex_str.startswith('#'):
-        hash = True
-        hex_str = hex_str.lstrip('#')
-
+def hex_to_hls(hex_str: str):
+    hex_str = hex_str.lstrip('#')
     if len(hex_str) == 3:
-        short = True
         hex_str = ''.join([c + c for c in hex_str])
-    h, l, s = colorsys.rgb_to_hls(*tuple(int(hex_str[i:i + 2], 16) for i in (0, 2, 4)))
+    return colorsys.rgb_to_hls(*tuple(int(hex_str[i:i + 2], 16) for i in (0, 2, 4)))
 
-    new_l = np.clip(255 * lightness, 0, 255.0)
 
-    r, g, b = colorsys.hls_to_rgb(h, new_l, s)
-
-    new_hex = f'{"#" if hash else ""}{int(r):02x}{int(g):02x}{int(b):02x}'
-    if short:
-        return new_hex[::2]
+def hls_to_hex(h, l, s):
+    r, g, b = colorsys.hls_to_rgb(h, l, s)
+    new_hex = f'#{int(r):02x}{int(g):02x}{int(b):02x}'
     return new_hex
 
+##
 
 class GraphWidget:
     def __init__(self, canvas, master):
@@ -187,43 +177,17 @@ class VideoWindow:
 
         self._source_shape = (self.parent.mgr.cameras[self.idx].height, self.parent.mgr.cameras[self.idx].width)
         self._cam_name = self.parent.mgr.cameras[self.idx].name
-        self._cam_color = self.parent.mgr.cameras[self.idx].color
+        self._bg_color = self.parent.mgr.cameras[self.idx].color
 
-        # TODO - determine the secondary color dynamically
-        match self._cam_name:
-            case 'north-west' | 'virtual_2':
-                x = 0
-                y = 0
-                self._color = self._cam_color
-                self._color_2 = '#ffffff'
-            case 'south-west' | 'virtual_4':
-                x = 0
-                y = parent.max_videowindows_dims[0] * 2
-                self._color = self._cam_color
-                self._color_2 = '#000000'
-            case 'north-east' | 'virtual_1':
-                x = parent.screen_dims[1] - parent.max_videowindows_dims[1]
-                y = 0
-                self._color = self._cam_color
-                self._color_2 = '#000000'
-            case 'south-east' | 'virtual_3':
-                x = parent.screen_dims[1] - parent.max_videowindows_dims[1]
-                y = parent.max_videowindows_dims[0] * 2
-                self._color = self._cam_color
-                self._color_2 = '#ffffff'
-            case 'top' | 'virtual_0':
-                x = parent.screen_dims[1] // 2 - parent.max_videowindows_dims[1] // 2
-                y = 0
-                self._color = self._cam_color
-                self._color_2 = '#ffffff'
-            case _:
-                x = parent.screen_dims[1] // 2 - parent.max_videowindows_dims[1] // 2
-                y = parent.screen_dims[0] // 2 - parent.max_videowindows_dims[0] // 2 - GUI.WTITLEBAR_H // 2
-                self._color = self._cam_color
-                self._color_2 = '#ffffff'
+        hls = hex_to_hls(self._bg_color)
+        print(f'color: {self._cam_name}', hls[1])
+        if hls[1] < 150:
+            self._fg_color = '#ffffff'
+        else:
+            self._fg_color = '#000000'
 
         h, w = parent.max_videowindows_dims
-        self.window.geometry(f"{w}x{h}+{x}+{y}")
+        self.window.geometry(f"{w}x{h}")
         self.window.wm_aspect(w, h, w, h)
         self.window.protocol("WM_DELETE_WINDOW", self.parent.quit)
 
@@ -383,11 +347,11 @@ class VideoWindow:
 
     @property
     def color(self):
-        return self._color
+        return self._bg_color
 
     @property
     def color_2(self):
-        return self._color_2
+        return self._fg_color
 
     @property
     def count(self):
@@ -447,9 +411,6 @@ class GUI:
         self._start_indices = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
 
         self._counter = 0
-
-        self._prev_indices = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
-        self._new_indices = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
 
         self.recording_var = tk.StringVar()
         self.userentry_var = tk.StringVar()

@@ -11,11 +11,11 @@ mgr = Manager()
 # Set exposure for all cameras in µs
 # (maximum exposure time for maximum framerate is 4318 µs)
 # mgr.exposure = 5555
-mgr.exposure = 10000
-# mgr.exposure = 4300
+# mgr.exposure = 10000
+mgr.exposure = 4300
 
 # Set framerate in images per second
-mgr.framerate = 80
+mgr.framerate = 205
 
 # Enable binning
 mgr.binning = 2
