@@ -15,7 +15,7 @@ mgr = Manager()
 mgr.exposure = 4300
 
 # Set framerate in images per second
-mgr.framerate = 205
+mgr.framerate = 220
 
 # Enable binning
 mgr.binning = 2

@@ -68,7 +68,7 @@ class Manager:
         self._acquiring = Event()
         self._recording = Event()
 
-        self._barrier = None
+        # self._barrier = None
 
         self._file_access_lock = Lock()
         self._zarr_length = 36000
@@ -291,7 +291,7 @@ class Manager:
 
         while self._acquiring.is_set():
 
-            self._barrier.wait()    # TODO - check if this is only needed when no hardware trigger
+            # self._barrier.wait()    # TODO - check if this is only needed when no hardware trigger
 
             with cam.ptr.RetrieveResult(100, py.TimeoutHandling_Return) as res:
                 if res and res.GrabSucceeded():
@@ -354,8 +354,8 @@ class Manager:
 
         self._acquiring.set()
 
-        self._barrier = Barrier(self._nb_cams, timeout=5)
-        self._executor = ThreadPoolExecutor(max_workers=40)
+        # self._barrier = Barrier(self._nb_cams, timeout=5)
+        self._executor = ThreadPoolExecutor(max_workers=10)
 
         for i, cam in enumerate(self._cameras_list):
             self._executor.submit(self._grab_frames, i, self._framestore)
@@ -380,7 +380,7 @@ class Manager:
         self._cleanup()
 
         self._executor = None
-        self._barrier = None
+        # self._barrier = None
 
         print(f'[INFO] Grabbing stopped.')
 

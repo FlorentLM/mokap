@@ -180,7 +180,7 @@ class VideoWindow:
         self._bg_color = self.parent.mgr.cameras[self.idx].color
 
         hls = hex_to_hls(self._bg_color)
-        print(f'color: {self._cam_name}', hls[1])
+
         if hls[1] < 150:
             self._fg_color = '#ffffff'
         else:
@@ -843,4 +843,4 @@ class GUI:
         # if self.graph_shown.is_set():
         #     self.graph.update()
 
-        self.root.after(1, self.update)
+        self.root.after(100, self.update)
