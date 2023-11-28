@@ -187,37 +187,39 @@ class VideoWindow:
 
         self._source_shape = (self.parent.mgr.cameras[self.idx].height, self.parent.mgr.cameras[self.idx].width)
         self._cam_name = self.parent.mgr.cameras[self.idx].name
-        
+        self._cam_color = self.parent.mgr.cameras[self.idx].color
+
+        # TODO - determine the secondary color dynamically
         match self._cam_name:
             case 'north-west' | 'virtual_2':
                 x = 0
                 y = 0
-                self._color = '#15ab79'
+                self._color = self._cam_color
                 self._color_2 = '#ffffff'
             case 'south-west' | 'virtual_4':
                 x = 0
                 y = parent.max_videowindows_dims[0] * 2
-                self._color = '#ffffff'
+                self._color = self._cam_color
                 self._color_2 = '#000000'
             case 'north-east' | 'virtual_1':
                 x = parent.screen_dims[1] - parent.max_videowindows_dims[1]
                 y = 0
-                self._color = '#fff139'
+                self._color = self._cam_color
                 self._color_2 = '#000000'
             case 'south-east' | 'virtual_3':
                 x = parent.screen_dims[1] - parent.max_videowindows_dims[1]
                 y = parent.max_videowindows_dims[0] * 2
-                self._color = '#435fc4'
+                self._color = self._cam_color
                 self._color_2 = '#ffffff'
             case 'top' | 'virtual_0':
                 x = parent.screen_dims[1] // 2 - parent.max_videowindows_dims[1] // 2
                 y = 0
-                self._color = '#e03228'
+                self._color = self._cam_color
                 self._color_2 = '#ffffff'
             case _:
                 x = parent.screen_dims[1] // 2 - parent.max_videowindows_dims[1] // 2
                 y = parent.screen_dims[0] // 2 - parent.max_videowindows_dims[0] // 2 - GUI.WTITLEBAR_H // 2
-                self._color = '#F0A108'
+                self._color = self._cam_color
                 self._color_2 = '#ffffff'
 
         h, w = parent.max_videowindows_dims

@@ -200,16 +200,19 @@ class Camera:
         if '0815-0' in self.serial:
             self._name = f"virtual_{Camera.virtual_cams}"
             Camera.virtual_cams += 1
+            self._color = '#f3a0f2'
         else:
             try:
                 self._idx = [config[k]['serial'] for k in known_cams].index(self._serial)
                 self._name = config[known_cams[self._idx]].get('name', 'unknown')
+                self._color = '#' + config[known_cams[self._idx]].get('color', '#f0a108').lstrip('#')
             except ValueError:
                 self._name = f"unkown_{Camera.unknown_cams}"
                 Camera.unknown_cams += 1
                 self._idx = - Camera.unknown_cams
+                self._color = '#f0a108'
 
-        print(f"Camera [S/N {self.serial}]: id={self._idx}, name={self._name}")
+        print(f"Camera [S/N {self.serial}]: id={self._idx}, name={self._name}, col={self._color}")
 
         self.ptr.UserSetSelector.SetValue("Default")
         self.ptr.UserSetLoad.Execute()
@@ -288,6 +291,10 @@ class Camera:
     @property
     def name(self) -> str:
         return self._name
+
+    @property
+    def color(self) -> str:
+        return self._color
 
     @property
     def triggered(self) -> bool:
