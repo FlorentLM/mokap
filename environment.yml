@@ -9,8 +9,6 @@ dependencies:
   - zarr=2.13.3
   - python-dotenv=0.21.0
   - paramiko=2.8.1
-  - scipy=1.11.3
-  - matplotlib=3.7.2
   - blosc=1.21.3
   - pip:
       - pypylon==2.3.0
