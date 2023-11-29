@@ -5,12 +5,12 @@ from PIL import Image, ImageTk
 import numpy as np
 from datetime import datetime
 from threading import Thread, Event
-from matplotlib import style as mplstyle
-mplstyle.use('ggplot')
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from matplotlib.figure import Figure
-import matplotlib.pyplot as plt
-from matplotlib.ticker import MaxNLocator
+# from matplotlib import style as mplstyle
+# mplstyle.use('ggplot')
+# from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+# from matplotlib.figure import Figure
+# import matplotlib.pyplot as plt
+# from matplotlib.ticker import MaxNLocator
 import screeninfo
 import colorsys
 
