@@ -315,8 +315,8 @@ class Camera:
             if 'virtual' not in self.name:
                 self.ptr.BinningVertical.SetValue(value)
                 self.ptr.BinningHorizontal.SetValue(value)
-                self.ptr.BinningVerticalMode.SetValue('Average')
-                self.ptr.BinningHorizontalMode.SetValue('Average')
+                self.ptr.BinningVerticalMode.SetValue('Sum')
+                self.ptr.BinningHorizontalMode.SetValue('Sum')
 
             # Actual frame size
             self._width = config['GENERAL'].getint('sensor_w') // value
