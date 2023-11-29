@@ -115,7 +115,7 @@ class Manager:
 
         real_cams, virtual_cams = get_devices()
         devices = real_cams + virtual_cams
-        print(f"Found {len(devices)} cameras connected ({len(real_cams)} physical, {len(virtual_cams)} virtual).")
+        print(f"Found {len(devices)} camera{'s' if self._nb_cams > 1 else ''} connected ({len(real_cams)} physical, {len(virtual_cams)} virtual).")
 
         return devices
 
@@ -192,6 +192,8 @@ class Manager:
 
         self._cameras_list = []
         self.ICarray = None
+        print(f"[INFO] Disconnected {self._nb_cams} camera{'s' if self._nb_cams > 1 else ''}.")
+        self._nb_cams = 0
 
     def _init_storage(self) -> NoReturn:
 
@@ -361,7 +363,7 @@ class Manager:
             self._executor.submit(self._grab_frames, i, self._framestore)
             self._executor.submit(self._writer, i, self._framestore)
 
-        print(f'\n[INFO] Grabbing started with {self._nb_cams} cameras...')
+        print(f"[INFO] Grabbing started with {self._nb_cams} camera{'s' if self._nb_cams > 1 else ''}...")
 
     def off(self) -> NoReturn:
 

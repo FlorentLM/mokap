@@ -287,7 +287,7 @@ class VideoWindow:
         self.framerate_slider.set(self.parent.mgr.cameras[self.idx].framerate)
 
         self.parent._capture_clock = datetime.now()
-        self.parent._start_indices[:] = self.parent._now_indices
+        self.parent._start_indices[:] = self.parent.mgr.indices
 
     def update_exposure(self, event=None):
         new_exp = self.exposure_slider.get()
