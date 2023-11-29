@@ -196,14 +196,6 @@ class VideoWindow:
         self._counter = 0
         self._clock = datetime.now()
         self._fps = 0
-        self._loader = itertools.cycle(list(itertools.repeat('⣾', 20))
-                                       + list(itertools.repeat('⣽', 20))
-                                       + list(itertools.repeat('⣻', 20))
-                                       + list(itertools.repeat('⢿', 20))
-                                       + list(itertools.repeat('⡿', 20))
-                                       + list(itertools.repeat('⣟', 20))
-                                       + list(itertools.repeat('⣯', 20))
-                                       + list(itertools.repeat('⣷', 20)))
 
         self.visible = Event()
         self.visible.set()
@@ -324,7 +316,7 @@ class VideoWindow:
             cap_fps = self.parent.capture_fps[self.idx]
 
             if cap_fps > 1000 or cap_fps <= 0:
-                self.capture_fps_var.set(f"Acquisition: {next(self._loader)} fps")
+                self.capture_fps_var.set(f"Acquisition: ... fps")
             else:
                 self.capture_fps_var.set(f"Acquisition: {cap_fps:.2f} fps")
         else:
@@ -801,7 +793,7 @@ class GUI:
             self.mgr.on()
 
             self._capture_clock = datetime.now()
-            self._start_indices[:] = self._now_indices
+            self._start_indices[:] = self.mgr.indices
 
             self.button_start.config(state="disabled")
             self.button_stop.config(state="normal")
