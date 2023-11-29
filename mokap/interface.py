@@ -1,7 +1,7 @@
 import sys
 import tkinter as tk
 import tkinter.font as font
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageOps
 import numpy as np
 from datetime import datetime
 from threading import Thread, Event
@@ -15,6 +15,9 @@ import screeninfo
 import colorsys
 
 THEME = 'light'
+
+from scipy import ndimage, datasets
+import matplotlib.pyplot as plt
 
 
 def hex_to_hls(hex_str: str):
@@ -31,113 +34,113 @@ def hls_to_hex(h, l, s):
 
 ##
 
-class GraphWidget:
-    def __init__(self, canvas, master):
-
-        self.fig = Figure(figsize=(12, 8), dpi=100)
-        if 'light' in THEME.lower():
-            self.fig.patch.set_facecolor('#fafafa')
-        elif 'dark' in THEME.lower():
-            self.fig.patch.set_facecolor('#000000')
-        self.axes = self.fig.subplots(1, 3)
-        self.canvas = FigureCanvasTkAgg(self.fig, master=canvas)
-        self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=1)
-        plt.tight_layout()
-        self.master = master
-
-        self.tail_len = 50
-
-        self.reset()
-
-    def reset(self):
-
-        self.x = np.arange(self.tail_len)
-
-        self.disp_fps = np.zeros(self.tail_len)
-        self.capt_fps = np.zeros(self.tail_len)
-        self.abs_dif_values = np.zeros(self.tail_len)
-
-        self.line0, = self.axes[0].plot(self.x, self.disp_fps, color='#4cdccf', alpha=0.75, lw=2)
-        self.axes[0].set_xlabel('Display FPS', fontsize=9)
-        self.axes[0].yaxis.set_major_locator(MaxNLocator(integer=True))
-        self.axes[0].yaxis.set_ticklabels([])
-        self.axes[0].xaxis.set_ticklabels([])
-        self.axes[0].xaxis.set_ticks_position('none')
-        self.axes[0].yaxis.set_ticks_position('none')
-
-        self.line1, = self.axes[1].plot(self.x, self.capt_fps, color='#f3a0f2', alpha=0.75, lw=2)
-        self.axes[1].set_xlabel('Capture FPS', fontsize=9)
-        self.axes[1].yaxis.set_major_locator(MaxNLocator(integer=True))
-        self.axes[1].yaxis.set_ticklabels([])
-        self.axes[1].xaxis.set_ticklabels([])
-        self.axes[1].xaxis.set_ticks_position('none')
-        self.axes[1].yaxis.set_ticks_position('none')
-
-        self.line2, = self.axes[2].plot(self.x, self.abs_dif_values, color='#f5b14c', alpha=0.75, lw=2)
-        self.axes[2].set_xlabel('Ant detection', fontsize=9)
-        self.axes[2].yaxis.set_major_locator(MaxNLocator(integer=True))
-        self.axes[2].yaxis.set_ticklabels([])
-        self.axes[2].xaxis.set_ticklabels([])
-        self.axes[2].xaxis.set_ticks_position('none')
-        self.axes[2].yaxis.set_ticks_position('none')
-
-        self._count = 0
-
-    def update(self):
-
-        if self._count % 5 == 0:
-            if self._count < self.tail_len:
-                self.x[self._count] = self.master.count
-
-                self.disp_fps[:] = np.mean([w.display_fps for w in self.master.video_windows])
-                self.capt_fps[:] = np.mean(self.master.capture_fps)
-                self.abs_dif_values[:] = np.mean(self.master.absdif)
-
-            else:
-                self.x = np.roll(self.x, -1)
-                self.x[-1] = self.master.count
-
-                self.disp_fps = np.roll(self.disp_fps, -1)
-                self.capt_fps = np.roll(self.capt_fps, -1)
-                self.abs_dif_values = np.roll(self.abs_dif_values, -1)
-
-                self.disp_fps[-1] = self.master.video_windows[0].display_fps
-                self.capt_fps[-1] = np.mean(self.master.capture_fps)
-                self.abs_dif_values[-1] = np.mean(self.master.absdif)
-
-            xmin, xmax = self.x.min(), self.x.max()
-
-            self.line0.set_ydata(self.disp_fps)
-            self.line0.set_xdata(self.x)
-            self.axes[0].set(xlim=(xmin, xmax))
-            ymax = self.disp_fps.max() * 2
-            self.axes[0].set(ylim=(0, ymax if ymax > 0 else 1))
-            [txt.remove() for txt in self.axes[0].texts]
-            self.axes[0].text(xmax - 100, self.disp_fps[-1] + 10, f"{self.disp_fps[-1]:.2f}", color='#4cdccf', alpha=0.75)
-
-            if self.master.mgr.acquiring:
-                self.line1.set_ydata(self.capt_fps)
-                self.line1.set_xdata(self.x)
-                self.axes[1].set(xlim=(xmin, xmax))
-                ymax = self.capt_fps.max() * 2
-                self.axes[1].set(ylim=(0, ymax if ymax > 0 else 1))
-                [txt.remove() for txt in self.axes[1].texts]
-                self.axes[1].text(xmax - 100, self.capt_fps[-1] + 10, f"{self.capt_fps[-1]:.2f}", color='#f3a0f2', alpha=0.75)
-
-            if self.master._autodetection_enabled.is_set():
-                self.line2.set_ydata(self.abs_dif_values)
-                self.axes[2].set(xlim=(xmin, xmax))
-                self.line2.set_xdata(self.x)
-                ymax = self.abs_dif_values.max() * 2
-                self.axes[2].set(ylim=(0, ymax if ymax > 0 else 1))
-                [txt.remove() for txt in self.axes[2].texts]
-                self.axes[2].text(xmax - 100, self.abs_dif_values[-1] + 1, f"{self.abs_dif_values[-1]:.2f}", color='#f5b14c',
-                                  alpha=0.75)
-
-            self.canvas.draw()
-            self.canvas.flush_events()
-
-        self._count += 1
+# class GraphWidget:
+#     def __init__(self, canvas, master):
+#
+#         self.fig = Figure(figsize=(12, 8), dpi=100)
+#         if 'light' in THEME.lower():
+#             self.fig.patch.set_facecolor('#fafafa')
+#         elif 'dark' in THEME.lower():
+#             self.fig.patch.set_facecolor('#000000')
+#         self.axes = self.fig.subplots(1, 3)
+#         self.canvas = FigureCanvasTkAgg(self.fig, master=canvas)
+#         self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=1)
+#         plt.tight_layout()
+#         self.master = master
+#
+#         self.tail_len = 50
+#
+#         self.reset()
+#
+#     def reset(self):
+#
+#         self.x = np.arange(self.tail_len)
+#
+#         self.disp_fps = np.zeros(self.tail_len)
+#         self.capt_fps = np.zeros(self.tail_len)
+#         self.abs_dif_values = np.zeros(self.tail_len)
+#
+#         self.line0, = self.axes[0].plot(self.x, self.disp_fps, color='#4cdccf', alpha=0.75, lw=2)
+#         self.axes[0].set_xlabel('Display FPS', fontsize=9)
+#         self.axes[0].yaxis.set_major_locator(MaxNLocator(integer=True))
+#         self.axes[0].yaxis.set_ticklabels([])
+#         self.axes[0].xaxis.set_ticklabels([])
+#         self.axes[0].xaxis.set_ticks_position('none')
+#         self.axes[0].yaxis.set_ticks_position('none')
+#
+#         self.line1, = self.axes[1].plot(self.x, self.capt_fps, color='#f3a0f2', alpha=0.75, lw=2)
+#         self.axes[1].set_xlabel('Capture FPS', fontsize=9)
+#         self.axes[1].yaxis.set_major_locator(MaxNLocator(integer=True))
+#         self.axes[1].yaxis.set_ticklabels([])
+#         self.axes[1].xaxis.set_ticklabels([])
+#         self.axes[1].xaxis.set_ticks_position('none')
+#         self.axes[1].yaxis.set_ticks_position('none')
+#
+#         self.line2, = self.axes[2].plot(self.x, self.abs_dif_values, color='#f5b14c', alpha=0.75, lw=2)
+#         self.axes[2].set_xlabel('Ant detection', fontsize=9)
+#         self.axes[2].yaxis.set_major_locator(MaxNLocator(integer=True))
+#         self.axes[2].yaxis.set_ticklabels([])
+#         self.axes[2].xaxis.set_ticklabels([])
+#         self.axes[2].xaxis.set_ticks_position('none')
+#         self.axes[2].yaxis.set_ticks_position('none')
+#
+#         self._count = 0
+#
+#     def update(self):
+#
+#         if self._count % 5 == 0:
+#             if self._count < self.tail_len:
+#                 self.x[self._count] = self.master.count
+#
+#                 self.disp_fps[:] = np.mean([w.display_fps for w in self.master.video_windows])
+#                 self.capt_fps[:] = np.mean(self.master.capture_fps)
+#                 self.abs_dif_values[:] = np.mean(self.master.absdif)
+#
+#             else:
+#                 self.x = np.roll(self.x, -1)
+#                 self.x[-1] = self.master.count
+#
+#                 self.disp_fps = np.roll(self.disp_fps, -1)
+#                 self.capt_fps = np.roll(self.capt_fps, -1)
+#                 self.abs_dif_values = np.roll(self.abs_dif_values, -1)
+#
+#                 self.disp_fps[-1] = self.master.video_windows[0].display_fps
+#                 self.capt_fps[-1] = np.mean(self.master.capture_fps)
+#                 self.abs_dif_values[-1] = np.mean(self.master.absdif)
+#
+#             xmin, xmax = self.x.min(), self.x.max()
+#
+#             self.line0.set_ydata(self.disp_fps)
+#             self.line0.set_xdata(self.x)
+#             self.axes[0].set(xlim=(xmin, xmax))
+#             ymax = self.disp_fps.max() * 2
+#             self.axes[0].set(ylim=(0, ymax if ymax > 0 else 1))
+#             [txt.remove() for txt in self.axes[0].texts]
+#             self.axes[0].text(xmax - 100, self.disp_fps[-1] + 10, f"{self.disp_fps[-1]:.2f}", color='#4cdccf', alpha=0.75)
+#
+#             if self.master.mgr.acquiring:
+#                 self.line1.set_ydata(self.capt_fps)
+#                 self.line1.set_xdata(self.x)
+#                 self.axes[1].set(xlim=(xmin, xmax))
+#                 ymax = self.capt_fps.max() * 2
+#                 self.axes[1].set(ylim=(0, ymax if ymax > 0 else 1))
+#                 [txt.remove() for txt in self.axes[1].texts]
+#                 self.axes[1].text(xmax - 100, self.capt_fps[-1] + 10, f"{self.capt_fps[-1]:.2f}", color='#f3a0f2', alpha=0.75)
+#
+#             if self.master._autodetection_enabled.is_set():
+#                 self.line2.set_ydata(self.abs_dif_values)
+#                 self.axes[2].set(xlim=(xmin, xmax))
+#                 self.line2.set_xdata(self.x)
+#                 ymax = self.abs_dif_values.max() * 2
+#                 self.axes[2].set(ylim=(0, ymax if ymax > 0 else 1))
+#                 [txt.remove() for txt in self.axes[2].texts]
+#                 self.axes[2].text(xmax - 100, self.abs_dif_values[-1] + 1, f"{self.abs_dif_values[-1]:.2f}", color='#f5b14c',
+#                                   alpha=0.75)
+#
+#             self.canvas.draw()
+#             self.canvas.flush_events()
+#
+#         self._count += 1
 
 def compute_windows_size(source_dims, screen_dims):
 
@@ -198,6 +201,8 @@ class VideoWindow:
 
         self.visible = Event()
         self.visible.set()
+
+        self._kernel = np.ones((3, 3), dtype=np.uint8)
 
         # Variable texts
         self.title_var = tk.StringVar()
@@ -324,7 +329,7 @@ class VideoWindow:
         self.display_fps_var.set(f"Display    : {self._fps:.2f} fps")
 
     def _update_video(self):
-        imgdata = Image.fromarray(np.random.randint(0, 255, self.video_dims, dtype='<u1'))
+        frame = np.random.randint(0, 255, self.video_dims, dtype='<u1')
 
         if self.parent.mgr.acquiring:
             if self.parent.current_buffers is not None:
@@ -332,12 +337,17 @@ class VideoWindow:
                 #     frame = np.frombuffer(self.parent.absdif, dtype=np.uint8).reshape(self._source_shape)
                 # else:
                 frame = np.frombuffer(self.parent.current_buffers[self.idx], dtype=np.uint8).reshape(self._source_shape)
-                imgdata = Image.fromarray(frame)
-
         else:
-            imgdata = Image.fromarray(np.random.randint(0, 255, self.video_dims, dtype='<u1'))
+            frame = np.random.randint(0, 255, self.video_dims, dtype='<u1')
+
+        # overlay = ndimage.gaussian_laplace(frame, sigma=1)
+        # overlay = ndimage.minimum_filter(overlay, footprint=self._kernel)
+
+        imgdata = Image.fromarray(frame)
 
         image = imgdata.resize((self.video_dims[1], self.video_dims[0]))
+        # image_col = Image.merge('RGB', (image, image, image))
+
         imagetk = ImageTk.PhotoImage(image=image)
 
         try:
