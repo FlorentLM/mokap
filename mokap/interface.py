@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 import screeninfo
 import colorsys
+import itertools
 
 THEME = 'light'
 
@@ -164,7 +165,7 @@ class VideoWindow:
 
     videowindows_ids = []
 
-    INFO_PANEL_MIN_H = 150   # in pixels
+    INFO_PANEL_MIN_H = 180   # in pixels
 
     def __init__(self, parent):
 
@@ -195,6 +196,15 @@ class VideoWindow:
         self._counter = 0
         self._clock = datetime.now()
         self._fps = 0
+        self._loader = itertools.cycle(list(itertools.repeat('⣾', 20))
+                                       + list(itertools.repeat('⣽', 20))
+                                       + list(itertools.repeat('⣻', 20))
+                                       + list(itertools.repeat('⢿', 20))
+                                       + list(itertools.repeat('⡿', 20))
+                                       + list(itertools.repeat('⣟', 20))
+                                       + list(itertools.repeat('⣯', 20))
+                                       + list(itertools.repeat('⣷', 20)))
+
         self.visible = Event()
         self.visible.set()
 
@@ -218,10 +228,9 @@ class VideoWindow:
                          font=parent.bold, textvariable=self.title_var)
         title.pack(fill=tk.BOTH)
 
-
         # Create info frame
         infoframe = tk.Frame(self.window, height=self.INFO_PANEL_MIN_H, width=w)
-        infoframe.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        infoframe.pack(padx=8, pady=8, side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         resolution_label = tk.Label(infoframe, fg="black", anchor=tk.W, justify='left',
                                     font=parent.regular, textvariable=self.resolution_var)
@@ -240,7 +249,7 @@ class VideoWindow:
         display_fps_label.pack(fill=tk.BOTH)
 
         controls_layout_frame = tk.Frame(self.window, height=self.INFO_PANEL_MIN_H, width=w)
-        controls_layout_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        controls_layout_frame.pack(padx=8, pady=8, side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         framerate_frame = tk.Frame(controls_layout_frame)
         framerate_frame.pack(side=tk.TOP, fill=tk.X, expand=True)
@@ -252,6 +261,10 @@ class VideoWindow:
         self.framerate_slider.set(self.parent.mgr.cameras[self.idx].framerate)
         self.framerate_slider.bind("<ButtonRelease-1>", self.update_framerate)
         self.framerate_slider.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        apply_fps_all_button = tk.Button(framerate_frame, text="Apply to all", font=self.parent.regular,
+                                              command=self._update_fps_all_cams)
+        apply_fps_all_button.pack(padx=2, fill=tk.BOTH, side=tk.LEFT)
 
         exposure_frame = tk.Frame(controls_layout_frame)
         exposure_frame.pack(side=tk.TOP, fill=tk.X, expand=True)
@@ -265,6 +278,10 @@ class VideoWindow:
         self.exposure_slider.bind("<ButtonRelease-1>", self.update_exposure)
         self.exposure_slider.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
+        apply_exp_all_button = tk.Button(exposure_frame, text="Apply to all", font=self.parent.regular,
+                                         command=self._update_exp_all_cams)
+        apply_exp_all_button.pack(padx=2, fill=tk.BOTH, side=tk.LEFT)
+
         # Set static vars
         self.title_var.set(f'{self._cam_name.title()} camera')
         self.window.title(self.title_var.get())
@@ -272,7 +289,7 @@ class VideoWindow:
             f"Resolution : {self.parent.mgr.cameras[self.idx].height}×{self.parent.mgr.cameras[self.idx].width} px")
         self.exposure_var.set(f"Exposure   : {self.parent.mgr.cameras[self.idx].exposure} µs")
 
-    def update_framerate(self, event):
+    def update_framerate(self, event=None):
         new_fps = self.framerate_slider.get()
         self.parent.mgr.cameras[self.idx].framerate = new_fps
         self.framerate_slider.set(self.parent.mgr.cameras[self.idx].framerate)
@@ -280,17 +297,39 @@ class VideoWindow:
         self.parent._capture_clock = datetime.now()
         self.parent._start_indices[:] = self.parent._now_indices
 
-    def update_exposure(self, event):
+    def update_exposure(self, event=None):
         new_exp = self.exposure_slider.get()
         self.parent.mgr.cameras[self.idx].exposure = new_exp
         self.framerate_slider.set(self.parent.mgr.cameras[self.idx].framerate)
         self.exposure_var.set(f"Exposure   : {self.parent.mgr.cameras[self.idx].exposure} µs")
+        self.update_framerate(event)
+
+    def _update_fps_all_cams(self):
+        for window in self.parent.video_windows:
+            if window is not self:
+                new_fps = self.framerate_slider.get()
+                window.framerate_slider.set(new_fps)
+                window.update_framerate()
+
+    def _update_exp_all_cams(self):
+        for window in self.parent.video_windows:
+            if window is not self:
+                new_exp = self.exposure_slider.get()
+                window.exposure_slider.set(new_exp)
+                window.update_exposure()
 
     def _update_fps_vars(self):
+
         if self.parent.mgr.acquiring:
-            self.capture_fps_var.set(f"Acquisition: {self.parent.capture_fps[self.idx]:.2f} fps")
+            cap_fps = self.parent.capture_fps[self.idx]
+
+            if cap_fps > 1000 or cap_fps <= 0:
+                self.capture_fps_var.set(f"Acquisition: {next(self._loader)} fps")
+            else:
+                self.capture_fps_var.set(f"Acquisition: {cap_fps:.2f} fps")
         else:
             self.capture_fps_var.set(f"Acquisition: Off")
+
         self.display_fps_var.set(f"Display    : {self._fps:.2f} fps")
 
     def _update_video(self):
@@ -762,6 +801,7 @@ class GUI:
             self.mgr.on()
 
             self._capture_clock = datetime.now()
+            self._start_indices[:] = self._now_indices
 
             self.button_start.config(state="disabled")
             self.button_stop.config(state="normal")
