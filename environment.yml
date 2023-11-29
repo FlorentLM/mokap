@@ -12,6 +12,5 @@ dependencies:
   - matplotlib=3.7.2
   - blosc=1.21.3
   - pip:
-      - opencv-contrib-python==4.8.1.78
       - pypylon==2.3.0
       - screeninfo==0.8.1

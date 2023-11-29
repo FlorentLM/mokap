@@ -13,7 +13,6 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 import screeninfo
 import colorsys
-import itertools
 
 THEME = 'light'
 
