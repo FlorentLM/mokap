@@ -202,7 +202,13 @@ class VideoWindow:
         self.visible = Event()
         self.visible.set()
 
-        self._kernel = np.ones((3, 3), dtype=np.uint8)
+        self._display_focus = Event()
+        self._display_focus.clear()
+
+        self._kernel = np.array([
+                                [-1, 0, -1],
+                                [0, 1, 0],
+                                [-1, 0, -1]], dtype=np.uint8)
 
         # Variable texts
         self.title_var = tk.StringVar()
@@ -285,6 +291,10 @@ class VideoWindow:
             f"Resolution : {self.parent.mgr.cameras[self.idx].height}×{self.parent.mgr.cameras[self.idx].width} px")
         self.exposure_var.set(f"Exposure   : {self.parent.mgr.cameras[self.idx].exposure} µs")
 
+        show_focus_button = tk.Button(controls_layout_frame, text="Show focus", font=self.parent.regular,
+                                        command=self._toggle_focus_display)
+        show_focus_button.pack(padx=2, fill=tk.BOTH, side=tk.LEFT)
+
     def update_framerate(self, event=None):
         new_fps = self.framerate_slider.get()
         self.parent.mgr.cameras[self.idx].framerate = new_fps
@@ -314,6 +324,12 @@ class VideoWindow:
                 window.exposure_slider.set(new_exp)
                 window.update_exposure()
 
+    def _toggle_focus_display(self):
+        if self._display_focus.is_set():
+            self._display_focus.clear()
+        else:
+            self._display_focus.set()
+
     def _update_fps_vars(self):
 
         if self.parent.mgr.acquiring:
@@ -340,13 +356,20 @@ class VideoWindow:
         else:
             frame = np.random.randint(0, 255, self.video_dims, dtype='<u1')
 
-        # overlay = ndimage.gaussian_laplace(frame, sigma=1)
-        # overlay = ndimage.minimum_filter(overlay, footprint=self._kernel)
+        if self._display_focus.is_set():
+            overlay = ndimage.gaussian_laplace(frame, sigma=1).astype(np.int32)
+            # overlay = ndimage.minimum_filter(overlay, footprint=self._kernel).astype(np.int32)
+            overlay = ndimage.gaussian_filter(overlay, 5).astype(np.int32)
+            lim = 90
+            overlay[overlay < lim] = 0
+            overlay[overlay >= lim] = 255
+
+            fo = np.clip(frame.astype(np.int32) + overlay, 0, 255).astype(np.uint8)
+            frame = np.stack([fo, frame, frame]).T.swapaxes(0, 1)
 
         imgdata = Image.fromarray(frame)
 
         image = imgdata.resize((self.video_dims[1], self.video_dims[0]))
-        # image_col = Image.merge('RGB', (image, image, image))
 
         imagetk = ImageTk.PhotoImage(image=image)
 
