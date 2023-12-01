@@ -154,8 +154,8 @@ def videos_from_zarr(filepath, cams=None, format=None, force=False):
         for s in range(sessions):
             start, end = root['times'][s]
             delta += end - start
-
-        total_time_s = delta / int(np.timedelta64(1, 's'))
+        print(np.timedelta64(1, 's'))
+        total_time_s = delta / np.timedelta64(1, 's')
 
         fps_calc = nb_frames/total_time_s
 

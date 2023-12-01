@@ -1,7 +1,7 @@
 import random
 from threading import Lock, RLock, Event, Barrier
 from concurrent.futures import ThreadPoolExecutor
-from multiprocessing import RawArray
+from multiprocessing import RawArray, Process, Queue
 from typing import NoReturn, Any, Union
 from pathlib import Path
 import time
@@ -14,34 +14,6 @@ import zarr
 from numcodecs import Blosc, Delta
 from mokap.hardware import SSHTrigger, Camera, setup_ulimit, get_devices
 
-##
-
-class FrameStore:
-    """ Simple custom deque for multi-cameras frame buffers """
-    def __init__(self, queues=5):
-        self._nb_queues = queues
-        self._queues = [deque()] * self._nb_queues
-        self._lock = RLock()
-
-    def put(self, item: Any, qidx: int):
-        with self._lock:
-            self._queues[qidx].append(item)
-
-    def get(self, qidx: int) -> list:
-        with self._lock:
-            try:
-                item = self._queues[qidx].popleft()
-            except IndexError:
-                item = None
-        return [item]
-
-    def get_all(self, qidx: int) -> deque:
-        with self._lock:
-            items, self._queues[qidx] = self._queues[qidx], deque()
-        return items
-
-    def __repr__(self):
-        return f"FrameStore({[len(i) for i in self._queues]})"
 
 ##
 
@@ -74,9 +46,10 @@ class Manager:
         self._zarr_length = 36000
         self._z_frames = None
 
-        self._framestore = FrameStore()
+        self._framestores = []
 
         self._frames_buffers = []
+
         self._nb_cams = 0
         self._cameras_list = []
         self._cameras_dict = {}
@@ -143,8 +116,10 @@ class Manager:
 
         # Once again for the buffers, this time using the sorted list
         self._frames_buffers = []
+        self._framestores = []
         for i, cam in enumerate(self._cameras_list):
             self._frames_buffers.append(bytearray(b'\0' * cam.height * cam.width))
+            self._framestores.append(deque())
 
         self._nb_cams = len(self._cameras_list)
 
@@ -255,7 +230,7 @@ class Manager:
             self._z_frames.resize(new_shape)
         print(f'[INFO] Storage extended to {new_length}.')
 
-    def _writer(self, cam_idx: int, framestore: FrameStore) -> NoReturn:
+    def _writer(self, cam_idx: int) -> NoReturn:
 
         fps = self._cameras_list[cam_idx].framerate
 
@@ -267,7 +242,8 @@ class Manager:
 
             time.sleep(random.uniform(min_wait, max_wait))
 
-            data = framestore.get_all(qidx=cam_idx)
+            data, self._framestores[cam_idx] = self._framestores[cam_idx], deque()
+
             nb = len(data)
 
             if nb > 0:
@@ -284,7 +260,7 @@ class Manager:
                 if saving_started and not self._recording.is_set():
                     self._finished_saving[cam_idx].set()
 
-    def _grab_frames(self, cam_idx: int, framestore: FrameStore) -> NoReturn:
+    def _grab_frames(self, cam_idx: int) -> NoReturn:
 
         cam = self._cameras_list[cam_idx]
         cam.start_grabbing()
@@ -307,7 +283,7 @@ class Manager:
                     if self._recording.is_set():
 
                         if frame_idx > grabbed_frames:
-                            framestore.put(framedata, qidx=cam_idx)
+                            self._framestores[cam_idx].append(framedata)
                             grabbed_frames += 1
 
     def _reset_name(self):
@@ -357,11 +333,11 @@ class Manager:
         self._acquiring.set()
 
         # self._barrier = Barrier(self._nb_cams, timeout=5)
-        self._executor = ThreadPoolExecutor(max_workers=10)
+        self._executor = ThreadPoolExecutor(max_workers=20)
 
         for i, cam in enumerate(self._cameras_list):
-            self._executor.submit(self._grab_frames, i, self._framestore)
-            self._executor.submit(self._writer, i, self._framestore)
+            self._executor.submit(self._grab_frames, i)
+            self._executor.submit(self._writer, i)
 
         print(f"[INFO] Grabbing started with {self._nb_cams} camera{'s' if self._nb_cams > 1 else ''}...")
 
@@ -428,7 +404,7 @@ class Manager:
     def cameras(self) -> list[Camera]:
         return self._cameras_list
 
-    def get_current_framebuffer(self, i=None) -> Union[bytearray, list[bytearray]]:
+    def get_current_framebuffer(self, i: int = None) -> Union[bytearray, list[bytearray]]:
         if i is None:
             return self._frames_buffers
         else:

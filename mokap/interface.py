@@ -206,9 +206,9 @@ class VideoWindow:
         self._display_focus.clear()
 
         self._kernel = np.array([
-                                [-1, 0, -1],
+                                [0, 0, 0],
                                 [0, 1, 0],
-                                [-1, 0, -1]], dtype=np.uint8)
+                                [0, 0, 0]], dtype=np.uint8)
 
         # Variable texts
         self.title_var = tk.StringVar()
