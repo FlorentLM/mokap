@@ -260,7 +260,7 @@ class Camera:
 
     def start_grabbing(self) -> NoReturn:
         if self._connected:
-            self.ptr.StartGrabbing(py.GrabStrategy_LatestImageOnly)
+            self.ptr.StartGrabbing(py.GrabStrategy_LatestImages)
             self._is_grabbing = True
         else:
             print(f"{self.name.title()} camera is not connected.")
@@ -363,13 +363,14 @@ class Camera:
                     self.ptr.AcquisitionFrameRateAbs = new_framerate
                 else:
                     self.ptr.AcquisitionFrameRateEnable.SetValue(True)
-                    self.ptr.AcquisitionFrameRate = 220
+                    self.ptr.AcquisitionFrameRate = 220.0
 
                     f = np.round(self.ptr.ResultingFrameRate.GetValue() - 0.5 * 10 ** (-2),
                                  2)  # custom floor with decimals
                     new_framerate = min(value, f)
 
                     self.ptr.AcquisitionFrameRate = new_framerate
+                    self.ptr.AcquisitionFrameRateEnable.SetValue(True)
 
                 self._framerate = new_framerate
 
