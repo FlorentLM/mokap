@@ -1,8 +1,8 @@
 import random
-from threading import Lock, RLock, Event, Barrier
+from threading import Lock, Event
 from concurrent.futures import ThreadPoolExecutor
-from multiprocessing import RawArray, Process, Queue
-from typing import NoReturn, Any, Union
+from multiprocessing import RawArray
+from typing import NoReturn, Union
 from pathlib import Path
 import time
 from datetime import datetime
@@ -13,9 +13,38 @@ from collections import deque
 import zarr
 from numcodecs import Blosc, Delta
 from mokap.hardware import SSHTrigger, Camera, setup_ulimit, get_devices
-
+from scipy import ndimage
+import cv2
 
 ##
+
+class MotionDetector:
+
+    def __init__(self, learning_rate=-10):
+
+        self._learning_rate = learning_rate
+
+        self._fgbg = cv2.createBackgroundSubtractorMOG2()
+
+        self._kernel = np.array([[0, 1, 0],
+                                 [1, 1, 1],
+                                 [0, 1, 0]],
+                                np.uint8)
+
+    def process(self, frame):
+        motion_mask = self._fgbg.apply(frame, self._learning_rate)
+
+        se1 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
+        se2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (1, 1))
+        detection = cv2.morphologyEx(motion_mask, cv2.MORPH_CLOSE, se1)
+        detection = cv2.morphologyEx(detection, cv2.MORPH_OPEN, se2)
+
+        # filtered = ndimage.minimum_filter(composite, footprint=self._kernel)
+        filtered = ndimage.gaussian_filter(detection, 1)
+        _, filtered = cv2.threshold(filtered, 50, 255, cv2.THRESH_BINARY)
+
+        return filtered
+
 
 class Manager:
 
