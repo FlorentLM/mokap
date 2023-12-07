@@ -18,9 +18,15 @@ import cv2
 
 ##
 
+from multiprocessing import Process, Queue
+from multiprocessing.shared_memory import SharedMemory
+
+
+##
+
 class MotionDetector:
 
-    def __init__(self, learning_rate=-10):
+    def __init__(self, learning_rate=-10, cam_id=0):
 
         self._learning_rate = learning_rate
 
@@ -30,6 +36,12 @@ class MotionDetector:
                                  [1, 1, 1],
                                  [0, 1, 0]],
                                 np.uint8)
+
+        self.q = Queue()
+        self.producer = Process(target=self.produce_frames, args=(self.q, cam_id))
+        self.producer.start()
+
+        self.consume_frames(self.q)
 
     def process(self, frame):
         motion_mask = self._fgbg.apply(frame, self._learning_rate)
@@ -44,6 +56,40 @@ class MotionDetector:
         _, filtered = cv2.threshold(filtered, 50, 255, cv2.THRESH_BINARY)
 
         return filtered
+
+    def produce_frames(self, q, cam_id):
+        # get the first frame to calculate size of buffer
+        cap = cv2.VideoCapture(cam_id)
+        success, frame = cap.read()
+        shm = SharedMemory(create=True, size=frame.nbytes)
+        framebuffer = np.ndarray(frame.shape, frame.dtype,
+                                 buffer=shm.buf)  # could also maybe use array.array instead of numpy, but I'm familiar with numpy
+        framebuffer[:] = frame  # in case you need to send the first frame to the main process
+        q.put(shm)  # send the buffer back to main
+        q.put(frame.shape)  # send the array details
+        q.put(frame.dtype)
+        try:
+            while True:
+                cap.read(framebuffer)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            shm.close()  # call this in all processes where the shm exists
+            shm.unlink()  # call from only one process
+
+    def consume_frames(self, q):
+        shm = q.get()  # get the shared buffer
+        shape = q.get()
+        dtype = q.get()
+        framebuffer = np.ndarray(shape, dtype, buffer=shm.buf)  # reconstruct the array
+        try:
+            while True:
+                cv2.imshow("window title", framebuffer)
+                cv2.waitKey(100)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            shm.close()
 
 
 class Manager:
