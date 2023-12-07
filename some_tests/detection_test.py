@@ -10,8 +10,8 @@ use_webcam = True
 
 if use_webcam:
     available_cameras = get_webcam_devices()
-    cam = available_cameras[0]
-    cap = cv2.VideoCapture(cam, cv2.CAP_DSHOW, (cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY))
+    cam = available_cameras[2]
+    cap = cv2.VideoCapture(cam, 0, (cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY))
 else:
     mgr = Manager()
     mgr.connect()

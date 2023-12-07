@@ -108,7 +108,7 @@ def get_webcam_devices():
 
     for dev in devices:
 
-        cap = cv2.VideoCapture(dev, cv2.CAP_DSHOW, (cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY))
+        cap = cv2.VideoCapture(dev, 0, (cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY))
 
         if cap.isOpened():
             ret, frame = cap.read()
