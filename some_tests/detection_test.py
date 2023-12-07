@@ -1,38 +1,6 @@
 from mokap.core import Manager, MotionDetector
-from sys import platform
-import subprocess
+from mokap.hardware import get_webcam_devices
 import cv2
-
-def get_webcam_devices():
-
-    if platform == "linux" or platform == "linux2":
-        result = subprocess.run(["ls", "/dev/"],
-                                 stdout=subprocess.PIPE,
-                                 text=True)
-        devices = [int(v.replace('video', '')) for v in result.stdout.split() if 'video' in v]
-    elif platform == "darwin":
-        print('macOS: TODO')
-    elif platform == "win32":
-        print('macOS: TODO')
-    else:
-        raise OSError('Unsupported OS')
-
-    working_ports = []
-
-    prev_log_level = cv2.setLogLevel(0)
-
-    for dev in devices:
-
-        cap = cv2.VideoCapture(dev)
-
-        if cap.isOpened():
-            ret, frame = cap.read()
-            if ret:
-                working_ports.append(dev)
-
-    cv2.setLogLevel(prev_log_level)
-    return working_ports
-
 
 ##
 
@@ -42,7 +10,8 @@ use_webcam = True
 
 if use_webcam:
     available_cameras = get_webcam_devices()
-    cap = cv2.VideoCapture(available_cameras[0])
+    cam = available_cameras[0]
+    cap = cv2.VideoCapture(cam, cv2.CAP_DSHOW, (cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY))
 else:
     mgr = Manager()
     mgr.connect()
@@ -53,7 +22,6 @@ else:
 
 cv2.namedWindow('Video')
 cv2.namedWindow('Detection')
-
 
 dims = None
 while True:

@@ -3,12 +3,13 @@ import time
 import numpy as np
 import mokap.utils as utils
 import os
-import subprocess
 from dotenv import load_dotenv
 import pypylon.pylon as py
 from numcodecs import blosc
 import configparser
-
+from sys import platform
+import subprocess
+import cv2
 import warnings
 from cryptography.utils import CryptographyDeprecationWarning
 with warnings.catch_warnings():
@@ -47,7 +48,7 @@ def disable_usb(hub_number):
     ret = out.read()
 
 
-def get_devices(max_cams=None, allow_virtual=None) -> tuple[list[py.DeviceInfo], list[py.DeviceInfo]]:
+def get_basler_devices(max_cams=None, allow_virtual=None) -> tuple[list[py.DeviceInfo], list[py.DeviceInfo]]:
 
     if max_cams is None:
         if 'GENERAL' in config.sections():
@@ -82,6 +83,40 @@ def get_devices(max_cams=None, allow_virtual=None) -> tuple[list[py.DeviceInfo],
 
     return [r for r in real_devices], [v for v in virtual_devices]
 
+
+def get_webcam_devices():
+
+    if platform == "linux" or platform == "linux2":
+        result = subprocess.run(["ls", "/dev/"],
+                                 stdout=subprocess.PIPE,
+                                 text=True)
+        devices = [int(v.replace('video', '')) for v in result.stdout.split() if 'video' in v]
+    elif platform == "darwin":
+        raise OSError('macOS is not yet supported, sorry!')
+    elif platform == "win32":
+        result = subprocess.run(['pnputil', '/enum-devices', '/class', 'Camera', '/connected'],
+                                stdout=subprocess.PIPE,
+                                text=True)
+        devices_ids = [v.replace('Instance ID:', '').strip() for v in result.stdout.splitlines() if 'Instance ID:' in v]
+        devices = list(range(len(devices_ids)))
+    else:
+        raise OSError('Unsupported OS')
+
+    working_ports = []
+
+    prev_log_level = cv2.setLogLevel(0)
+
+    for dev in devices:
+
+        cap = cv2.VideoCapture(dev, cv2.CAP_DSHOW, (cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY))
+
+        if cap.isOpened():
+            ret, frame = cap.read()
+            if ret:
+                working_ports.append(dev)
+
+    cv2.setLogLevel(prev_log_level)
+    return working_ports
 
 def ping(ip: str) -> NoReturn:
     r = subprocess.Popen(["ping", "-c", "1", ip], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -181,7 +216,7 @@ class Camera:
     def connect(self, cam_ptr=None) -> NoReturn:
 
         if cam_ptr is None:
-            real_cams, virtual_cams = get_devices()
+            real_cams, virtual_cams = get_basler_devices()
             devices = real_cams + virtual_cams
             self._ptr = py.InstantCamera(py.TlFactory.GetInstance().CreateDevice(devices[self._idx]))
         else:

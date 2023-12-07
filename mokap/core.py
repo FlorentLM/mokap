@@ -12,7 +12,7 @@ import mokap.files_op as files_op
 from collections import deque
 import zarr
 from numcodecs import Blosc, Delta
-from mokap.hardware import SSHTrigger, Camera, setup_ulimit, get_devices
+from mokap.hardware import SSHTrigger, Camera, setup_ulimit, get_basler_devices
 from scipy import ndimage
 import cv2
 
@@ -115,7 +115,7 @@ class Manager:
 
     def list_devices(self):
 
-        real_cams, virtual_cams = get_devices()
+        real_cams, virtual_cams = get_basler_devices()
         devices = real_cams + virtual_cams
         print(f"Found {len(devices)} camera{'s' if self._nb_cams > 1 else ''} connected ({len(real_cams)} physical, {len(virtual_cams)} virtual).")
 
