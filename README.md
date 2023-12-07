@@ -1,10 +1,11 @@
 # Installation
 
 ### Windows and Linux
-#### Miniconda (recommended):
+
+#### Miniconda:
+* If you don't have Miniconda installed, see [here](https://docs.conda.io/projects/miniconda/en/latest/)
 * Clone this repository `git clone https://github.com/FlorentLM/mokap`
 * Create environment `conda env create --file=environment.yml`
-* That's it, you should be able to run it
 
 ###### Linux-specific optional dependencies
   * (Optional) Install [uhubctl](https://github.com/mvp/uhubctl) and follow the [post-install instructions](https://github.com/mvp/uhubctl#linux-usb-permissions).
