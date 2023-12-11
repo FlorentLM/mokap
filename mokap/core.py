@@ -1,7 +1,7 @@
 import random
-from threading import Lock, Event
+import threading
+import multiprocessing
 from concurrent.futures import ThreadPoolExecutor
-from multiprocessing import RawArray
 from typing import NoReturn, Union
 from pathlib import Path
 import time
@@ -15,6 +15,8 @@ from numcodecs import Blosc, Delta
 from mokap.hardware import SSHTrigger, Camera, setup_ulimit, get_basler_devices
 from scipy import ndimage
 import cv2
+import warnings
+warnings.filterwarnings("error")
 
 ##
 
@@ -26,7 +28,7 @@ from multiprocessing.shared_memory import SharedMemory
 
 class MotionDetector:
 
-    def __init__(self, learning_rate=-10, cam_id=0):
+    def __init__(self, learning_rate=-10, cam_id=0, thresh=10):
 
         self._learning_rate = learning_rate
 
@@ -36,12 +38,58 @@ class MotionDetector:
                                  [1, 1, 1],
                                  [0, 1, 0]],
                                 np.uint8)
+        self._running = multiprocessing.Event()
+        self._movement = multiprocessing.Event()
 
-        self.q = Queue()
-        self.producer = Process(target=self.produce_frames, args=(self.q, cam_id))
-        self.producer.start()
+        self._worker = Process(target=self._worker_func, args=(cam_id, thresh))
 
-        self.consume_frames(self.q)
+    def start(self):
+        self._running.set()
+        self._worker.start()
+        time.sleep(0.1)
+        print('Started movement detection...')
+
+    def stop(self):
+        self._running.clear()
+        time.sleep(0.1)
+        print('Stopped movement detection.')
+
+    def _worker_func(self, cam_id, thresh):
+        cap = cv2.VideoCapture(cam_id)
+
+        while not cap.isOpened():
+            print("Camera is not open... Try again?")
+            return
+
+        success, first_frame = cap.read()
+        if not success:
+            print("Camera is not ready... Try again?")
+            return
+
+        shape = first_frame.shape
+        shm = SharedMemory(create=True, size=first_frame.nbytes)
+        framebuffer = np.ndarray(first_frame.shape, first_frame.dtype, buffer=shm.buf)
+        framebuffer[:] = first_frame
+
+        cv2.namedWindow('Preview', cv2.WINDOW_NORMAL)
+        while self._running.is_set():
+            cap.read(framebuffer)
+
+            detection = self.process(framebuffer)
+            if detection.sum() / (shape[0] * shape[1]) >= thresh:
+                self._movement.set()
+                text = 'Movement'
+            else:
+                self._movement.clear()
+                text = ''
+
+            framebuffer = cv2.putText(framebuffer, text, (30, 30), fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                                      fontScale=1, color=(0, 0, 255), thickness=3)
+            cv2.imshow('Preview', framebuffer)
+            cv2.waitKey(1)
+
+        shm.close()
+        shm.unlink()
 
     def process(self, frame):
         motion_mask = self._fgbg.apply(frame, self._learning_rate)
@@ -56,40 +104,6 @@ class MotionDetector:
         _, filtered = cv2.threshold(filtered, 50, 255, cv2.THRESH_BINARY)
 
         return filtered
-
-    def produce_frames(self, q, cam_id):
-        # get the first frame to calculate size of buffer
-        cap = cv2.VideoCapture(cam_id)
-        success, frame = cap.read()
-        shm = SharedMemory(create=True, size=frame.nbytes)
-        framebuffer = np.ndarray(frame.shape, frame.dtype,
-                                 buffer=shm.buf)  # could also maybe use array.array instead of numpy, but I'm familiar with numpy
-        framebuffer[:] = frame  # in case you need to send the first frame to the main process
-        q.put(shm)  # send the buffer back to main
-        q.put(frame.shape)  # send the array details
-        q.put(frame.dtype)
-        try:
-            while True:
-                cap.read(framebuffer)
-        except KeyboardInterrupt:
-            pass
-        finally:
-            shm.close()  # call this in all processes where the shm exists
-            shm.unlink()  # call from only one process
-
-    def consume_frames(self, q):
-        shm = q.get()  # get the shared buffer
-        shape = q.get()
-        dtype = q.get()
-        framebuffer = np.ndarray(shape, dtype, buffer=shm.buf)  # reconstruct the array
-        try:
-            while True:
-                cv2.imshow("window title", framebuffer)
-                cv2.waitKey(100)
-        except KeyboardInterrupt:
-            pass
-        finally:
-            shm.close()
 
 
 class Manager:
@@ -112,12 +126,12 @@ class Manager:
 
         self._executor = None
 
-        self._acquiring = Event()
-        self._recording = Event()
+        self._acquiring = threading.Event()
+        self._recording = threading.Event()
 
         # self._barrier = None
 
-        self._file_access_lock = Lock()
+        self._file_access_lock = threading.Lock()
         self._zarr_length = 36000
         self._z_frames = None
 
@@ -198,10 +212,10 @@ class Manager:
 
         self._nb_cams = len(self._cameras_list)
 
-        self._grabbed_frames_idx = RawArray('I', self._nb_cams)
-        self._saved_frms_idx = RawArray('I', self._nb_cams)
+        self._grabbed_frames_idx = multiprocessing.RawArray('I', self._nb_cams)
+        self._saved_frms_idx = multiprocessing.RawArray('I', self._nb_cams)
 
-        self._finished_saving = [Event()] * self._nb_cams
+        self._finished_saving = [threading.Event()] * self._nb_cams
 
     @property
     def framerate(self) -> int:
@@ -280,8 +294,8 @@ class Manager:
                              'triggered': cam.triggered,
                              'name': cam.name}
 
-        self._grabbed_frames_idx = RawArray('I', self._nb_cams)
-        self._saved_frms_idx = RawArray('I', self._nb_cams)
+        self._grabbed_frames_idx = multiprocessing.RawArray('I', self._nb_cams)
+        self._saved_frms_idx = multiprocessing.RawArray('I', self._nb_cams)
 
     def _trim_storage(self, mode='min') -> NoReturn:
 
@@ -375,7 +389,7 @@ class Manager:
         self._start_times = []
         self._stop_times = []
 
-        self._saved_frms_idx = RawArray('I', self._nb_cams)
+        self._saved_frms_idx = multiprocessing.RawArray('I', self._nb_cams)
 
     def record(self) -> NoReturn:
         self._recording.set()
@@ -464,7 +478,7 @@ class Manager:
         return self._recording.is_set()
 
     @property
-    def indices_buf(self) -> RawArray:
+    def indices_buf(self) -> multiprocessing.RawArray:
         if self._grabbed_frames_idx is None:
             print('Please connect at least 1 camera first.')
         return self._grabbed_frames_idx
