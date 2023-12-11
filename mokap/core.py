@@ -15,20 +15,14 @@ from numcodecs import Blosc, Delta
 from mokap.hardware import SSHTrigger, Camera, setup_ulimit, get_basler_devices
 from scipy import ndimage
 import cv2
-import warnings
-warnings.filterwarnings("error")
-
-##
-
-from multiprocessing import Process, Queue
-from multiprocessing.shared_memory import SharedMemory
+from multiprocessing import Process
 
 
 ##
 
 class MotionDetector:
 
-    def __init__(self, learning_rate=-10, cam_id=0, thresh=10):
+    def __init__(self, learning_rate=-10, cam_id=0, thresh=10, preview=False):
 
         self._learning_rate = learning_rate
 
@@ -41,7 +35,7 @@ class MotionDetector:
         self._running = multiprocessing.Event()
         self._movement = multiprocessing.Event()
 
-        self._worker = Process(target=self._worker_func, args=(cam_id, thresh))
+        self._worker = Process(target=self._worker_func, args=(cam_id, thresh, preview))
 
     def start(self):
         self._running.set()
@@ -54,12 +48,15 @@ class MotionDetector:
         time.sleep(0.1)
         print('Stopped movement detection.')
 
-    def _worker_func(self, cam_id, thresh):
+    def _worker_func(self, cam_id, thresh, preview):
         cap = cv2.VideoCapture(cam_id)
 
         while not cap.isOpened():
             print("Camera is not open... Try again?")
             return
+
+        focus = 254
+        cap.set(cv2.CAP_PROP_FOCUS, focus)
 
         success, first_frame = cap.read()
         if not success:
@@ -67,15 +64,13 @@ class MotionDetector:
             return
 
         shape = first_frame.shape
-        shm = SharedMemory(create=True, size=first_frame.nbytes)
-        framebuffer = np.ndarray(first_frame.shape, first_frame.dtype, buffer=shm.buf)
-        framebuffer[:] = first_frame
 
-        cv2.namedWindow('Preview', cv2.WINDOW_NORMAL)
+        if preview:
+            cv2.namedWindow('Preview', cv2.WINDOW_NORMAL)
         while self._running.is_set():
-            cap.read(framebuffer)
+            ret, frame = cap.read()
 
-            detection = self.process(framebuffer)
+            detection = self.process(frame)
             if detection.sum() / (shape[0] * shape[1]) >= thresh:
                 self._movement.set()
                 text = 'Movement'
@@ -83,13 +78,17 @@ class MotionDetector:
                 self._movement.clear()
                 text = ''
 
-            framebuffer = cv2.putText(framebuffer, text, (30, 30), fontFace=cv2.FONT_HERSHEY_SIMPLEX,
-                                      fontScale=1, color=(0, 0, 255), thickness=3)
-            cv2.imshow('Preview', framebuffer)
-            cv2.waitKey(1)
+            if preview:
+                frame = cv2.putText(frame, text, (30, 30),
+                                    fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                                    fontScale=1,
+                                    color=(0, 0, 255),
+                                    thickness=3)
 
-        shm.close()
-        shm.unlink()
+                cv2.imshow('Preview', frame)
+                cv2.waitKey(1)
+            else:
+                time.sleep(0.01)
 
     def process(self, frame):
         motion_mask = self._fgbg.apply(frame, self._learning_rate)
