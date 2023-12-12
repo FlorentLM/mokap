@@ -55,9 +55,6 @@ class MotionDetector:
             print("Camera is not open... Try again?")
             return
 
-        focus = 254
-        cap.set(cv2.CAP_PROP_FOCUS, focus)
-
         success, first_frame = cap.read()
         if not success:
             print("Camera is not ready... Try again?")
