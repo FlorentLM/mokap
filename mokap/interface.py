@@ -1,7 +1,7 @@
 import sys
 import tkinter as tk
 import tkinter.font as font
-from PIL import Image, ImageTk, ImageOps
+from PIL import Image, ImageTk, ImageOps, ImageDraw, ImageFont
 import numpy as np
 from datetime import datetime
 from threading import Thread, Event
@@ -211,6 +211,8 @@ class VideoWindow:
                                 [0, 1, 0],
                                 [0, 0, 0]], dtype=np.uint8)
 
+        self._imgfnt = ImageFont.truetype("Pillow/Tests/fonts/FreeMonoBold.ttf", 30)
+
         # Variable texts
         self.title_var = tk.StringVar()
         self.resolution_var = tk.StringVar()
@@ -220,13 +222,12 @@ class VideoWindow:
         self.display_brightness_var = tk.StringVar()
 
         # Create the video image frame
-        self.imagecontainer = tk.Label(self.window, fg='#FF3C21', bg="black",
-                                       textvariable=parent.recording_var, font=parent.bold,
-                                       compound='center')
-        self.imageobject = ImageTk.PhotoImage(image=Image.fromarray(np.zeros(self.video_dims, dtype='<u1')))
-        self.imagecontainer.pack(fill=tk.BOTH, expand=True)
-        self.imagecontainer.imgtk = self.imageobject
-        self.imagecontainer.configure(image=self.imageobject)
+        imagetk = ImageTk.PhotoImage(image=Image.fromarray(np.zeros(self.video_dims, dtype='<u1')))
+
+        self.video_canvas = tk.Label(self.window, bg="black", compound='center')
+        self.video_canvas.pack(fill=tk.BOTH, expand=True)
+        self.video_canvas.imgtk = imagetk
+        self.video_canvas.configure(image=imagetk)
 
         title = tk.Label(self.window, fg=self.color_2, bg=self.color, anchor=tk.N, justify='center',
                          font=parent.bold, textvariable=self.title_var)
@@ -347,10 +348,10 @@ class VideoWindow:
                 self.capture_fps_var.set(f"Acquisition: {cap_fps:.2f} fps")
 
             self.display_brightness_var.set(
-                f"Brightness : {self._mean_brightness_var:.2f} | {self._median_brightness_var:.2f}")
+                f"Brightness : {self._brightness_var:.2f}%")
         else:
             self.capture_fps_var.set(f"Acquisition: Off")
-            self.display_brightness_var.set(f"Brightness : Off")
+            self.display_brightness_var.set(f"Brightness : ∅")
 
         self.display_fps_var.set(f"Display    : {self._fps:.2f} fps")
 
@@ -375,23 +376,26 @@ class VideoWindow:
             overlay[overlay >= lim] = 255
 
             fo = np.clip(frame.astype(np.int32) + overlay, 0, 255).astype(np.uint8)
-            frame = np.stack([fo, frame, frame]).T.swapaxes(0, 1)
+            frame = np.stack([fo, fo, frame]).T.swapaxes(0, 1)
 
-        w2, h2 = frame.shape[1] // 2, frame.shape[0] // 2
+        self._brightness_var = np.round(frame.mean() / 255 * 100, decimals=2)
 
-        frame[h2, :] = 255
-        frame[:, w2] = 255
+        y, x = self.video_dims
+        x2, y2 = x // 2, y // 2
 
-        self._mean_brightness_var = frame.mean() / 255 * 100
-        self._median_brightness_var = np.median(frame) / 255 * 100
+        img_pillow = Image.fromarray(frame).convert('RGB')
+        img_pillow = img_pillow.resize((x, y))
 
-        imgdata = Image.fromarray(frame)
-        image = imgdata.resize((self.video_dims[1], self.video_dims[0]))
+        d = ImageDraw.Draw(img_pillow)
+        d.line((0, y2, x, y2), fill='white')
+        d.line((x2, 0, x2, y), fill='white')
 
-        imagetk = ImageTk.PhotoImage(image=image)
+        d.text((x2 - 100, y - 40), self.parent.recording_var.get(), font=self._imgfnt, fill='red')
+
+        imgtk = ImageTk.PhotoImage(image=img_pillow)
         try:
-            self.imagecontainer.configure(image=imagetk)
-            self.imageobject = imagetk
+            self.video_canvas.configure(image=imgtk)
+            self.imagetk = imgtk
         except Exception:
             # If new image is garbage collected too early, do nothing - this prevents the image from flashing
             pass
@@ -763,8 +767,8 @@ class GUI:
         if not self.mgr.recording:
             self.mgr.record()
 
-            self.recording_var.set('● Recording')
-            self.button_recpause.config(text="Pause (Space)")
+            self.recording_var.set('[Recording]')
+            self.button_recpause.config(text="■ Stop (Space)")
 
     def gui_pause(self):
         if self.mgr.recording:
