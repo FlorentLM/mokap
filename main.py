@@ -1,6 +1,4 @@
 #!/usr/bin/env python
-import random
-
 from mokap.interface import GUI
 from mokap.core import Manager
 from mokap.hardware import enable_usb
@@ -27,5 +25,3 @@ if __name__ == '__main__':
     if mgr.nb_cameras == 0:
         exit()
     GUI(mgr)
-
-##
