@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import random
 
 from mokap.interface import GUI
 from mokap.core import Manager
@@ -27,3 +28,4 @@ if __name__ == '__main__':
         exit()
     GUI(mgr)
 
+##

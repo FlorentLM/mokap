@@ -198,6 +198,7 @@ class VideoWindow:
         self._counter = 0
         self._clock = datetime.now()
         self._fps = 0
+        self._brightness_var = 0
 
         self.visible = Event()
         self.visible.set()
@@ -216,6 +217,7 @@ class VideoWindow:
         self.exposure_var = tk.StringVar()
         self.capture_fps_var = tk.StringVar()
         self.display_fps_var = tk.StringVar()
+        self.display_brightness_var = tk.StringVar()
 
         # Create the video image frame
         self.imagecontainer = tk.Label(self.window, fg='#FF3C21', bg="black",
@@ -249,6 +251,10 @@ class VideoWindow:
         display_fps_label = tk.Label(infoframe, fg="black", anchor=tk.W, justify='left',
                                      font=parent.regular, textvariable=self.display_fps_var)
         display_fps_label.pack(fill=tk.BOTH)
+
+        display_brightness_label = tk.Label(infoframe, fg="black", anchor=tk.W, justify='left',
+                                     font=parent.regular, textvariable=self.display_brightness_var)
+        display_brightness_label.pack(fill=tk.BOTH)
 
         controls_layout_frame = tk.Frame(self.window, height=self.INFO_PANEL_MIN_H, width=w)
         controls_layout_frame.pack(padx=8, pady=8, side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -339,8 +345,12 @@ class VideoWindow:
                 self.capture_fps_var.set(f"Acquisition: ... fps")
             else:
                 self.capture_fps_var.set(f"Acquisition: {cap_fps:.2f} fps")
+
+            self.display_brightness_var.set(
+                f"Brightness : {self._mean_brightness_var:.2f} | {self._median_brightness_var:.2f}")
         else:
             self.capture_fps_var.set(f"Acquisition: Off")
+            self.display_brightness_var.set(f"Brightness : Off")
 
         self.display_fps_var.set(f"Display    : {self._fps:.2f} fps")
 
@@ -367,12 +377,18 @@ class VideoWindow:
             fo = np.clip(frame.astype(np.int32) + overlay, 0, 255).astype(np.uint8)
             frame = np.stack([fo, frame, frame]).T.swapaxes(0, 1)
 
-        imgdata = Image.fromarray(frame)
+        w2, h2 = frame.shape[1] // 2, frame.shape[0] // 2
 
+        frame[h2, :] = 255
+        frame[:, w2] = 255
+
+        self._mean_brightness_var = frame.mean() / 255 * 100
+        self._median_brightness_var = np.median(frame) / 255 * 100
+
+        imgdata = Image.fromarray(frame)
         image = imgdata.resize((self.video_dims[1], self.video_dims[0]))
 
         imagetk = ImageTk.PhotoImage(image=image)
-
         try:
             self.imagecontainer.configure(image=imagetk)
             self.imageobject = imagetk
