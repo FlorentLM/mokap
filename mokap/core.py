@@ -22,7 +22,7 @@ from multiprocessing import Process
 
 class MotionDetector:
 
-    def __init__(self, learning_rate=-10, cam_id=0, thresh=10, preview=False):
+    def __init__(self, cam_id=0, learning_rate=-100, thresh=5, lag=0, preview=False):
 
         self._learning_rate = learning_rate
 
@@ -35,7 +35,7 @@ class MotionDetector:
         self._running = multiprocessing.Event()
         self._movement = multiprocessing.Event()
 
-        self._worker = Process(target=self._worker_func, args=(cam_id, thresh, preview))
+        self._worker = Process(target=self._worker_func, args=(cam_id, thresh, lag, preview))
 
     def start(self):
         self._running.set()
@@ -48,9 +48,10 @@ class MotionDetector:
         time.sleep(0.1)
         print('Stopped movement detection.')
 
-    def _worker_func(self, cam_id, thresh, preview):
+    def _worker_func(self, cam_id, thresh, lag, preview):
         cap = cv2.VideoCapture(cam_id)
 
+        cap.set(cv2.CAP_PROP_FOCUS, 0)
         while not cap.isOpened():
             print("Camera is not open... Try again?")
             return
@@ -62,27 +63,43 @@ class MotionDetector:
 
         shape = first_frame.shape
 
+        tick = time.time()
+
+        initialised = False
         if preview:
-            cv2.namedWindow('Preview', cv2.WINDOW_NORMAL)
+            cv2.namedWindow(f'Preview (Cam {cam_id})', cv2.WINDOW_NORMAL)
         while self._running.is_set():
             ret, frame = cap.read()
 
             detection = self.process(frame)
-            if detection.sum() / (shape[0] * shape[1]) >= thresh:
-                self._movement.set()
-                text = 'Movement'
-            else:
+            value = detection.sum() / (shape[0] * shape[1]) * 10
+
+            tock = time.time()
+
+            if not initialised:
                 self._movement.clear()
-                text = ''
+                text = 'Initialising...'
+                tick = time.time()
+                if value < thresh:
+                    initialised = True
+            else:
+                if value >= thresh and initialised:
+                    self._movement.set()
+                    tick = time.time()
+                    text = f'{value:.2f} - Movement detected!'
+                else:
+                    if tock - tick > lag:
+                        self._movement.clear()
+                        text = f'{value:.2f}'
 
             if preview:
-                frame = cv2.putText(frame, text, (30, 30),
+                detection = cv2.putText(detection, text, (30, 30),
                                     fontFace=cv2.FONT_HERSHEY_SIMPLEX,
                                     fontScale=1,
-                                    color=(0, 0, 255),
+                                    color=(255, 0, 255),
                                     thickness=3)
 
-                cv2.imshow('Preview', frame)
+                cv2.imshow(f'Preview (Cam {cam_id})', detection)
                 cv2.waitKey(1)
             else:
                 time.sleep(0.01)

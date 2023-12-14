@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 from mokap.interface import GUI
 from mokap.core import Manager
-from mokap.hardware import enable_usb
+from mokap.hardware import enable_usb, disable_usb
 
 enable_usb('4-2')
+# disable_usb('4-2')
 
 mgr = Manager()
 

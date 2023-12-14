@@ -1,24 +1,13 @@
 import sys
 import tkinter as tk
 import tkinter.font as font
-from PIL import Image, ImageTk, ImageOps, ImageDraw, ImageFont
+from PIL import Image, ImageTk, ImageDraw, ImageFont
 import numpy as np
 from datetime import datetime
 from threading import Thread, Event
-# from matplotlib import style as mplstyle
-# mplstyle.use('ggplot')
-# from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-# from matplotlib.figure import Figure
-# import matplotlib.pyplot as plt
-# from matplotlib.ticker import MaxNLocator
 import screeninfo
 import colorsys
-
-THEME = 'light'
-
-from scipy import ndimage, datasets
-import matplotlib.pyplot as plt
-
+from scipy import ndimage
 
 def hex_to_hls(hex_str: str):
     hex_str = hex_str.lstrip('#')
@@ -32,120 +21,14 @@ def hls_to_hex(h, l, s):
     new_hex = f'#{int(r):02x}{int(g):02x}{int(b):02x}'
     return new_hex
 
+
 ##
 
-# class GraphWidget:
-#     def __init__(self, canvas, master):
-#
-#         self.fig = Figure(figsize=(12, 8), dpi=100)
-#         if 'light' in THEME.lower():
-#             self.fig.patch.set_facecolor('#fafafa')
-#         elif 'dark' in THEME.lower():
-#             self.fig.patch.set_facecolor('#000000')
-#         self.axes = self.fig.subplots(1, 3)
-#         self.canvas = FigureCanvasTkAgg(self.fig, master=canvas)
-#         self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=1)
-#         plt.tight_layout()
-#         self.master = master
-#
-#         self.tail_len = 50
-#
-#         self.reset()
-#
-#     def reset(self):
-#
-#         self.x = np.arange(self.tail_len)
-#
-#         self.disp_fps = np.zeros(self.tail_len)
-#         self.capt_fps = np.zeros(self.tail_len)
-#         self.abs_dif_values = np.zeros(self.tail_len)
-#
-#         self.line0, = self.axes[0].plot(self.x, self.disp_fps, color='#4cdccf', alpha=0.75, lw=2)
-#         self.axes[0].set_xlabel('Display FPS', fontsize=9)
-#         self.axes[0].yaxis.set_major_locator(MaxNLocator(integer=True))
-#         self.axes[0].yaxis.set_ticklabels([])
-#         self.axes[0].xaxis.set_ticklabels([])
-#         self.axes[0].xaxis.set_ticks_position('none')
-#         self.axes[0].yaxis.set_ticks_position('none')
-#
-#         self.line1, = self.axes[1].plot(self.x, self.capt_fps, color='#f3a0f2', alpha=0.75, lw=2)
-#         self.axes[1].set_xlabel('Capture FPS', fontsize=9)
-#         self.axes[1].yaxis.set_major_locator(MaxNLocator(integer=True))
-#         self.axes[1].yaxis.set_ticklabels([])
-#         self.axes[1].xaxis.set_ticklabels([])
-#         self.axes[1].xaxis.set_ticks_position('none')
-#         self.axes[1].yaxis.set_ticks_position('none')
-#
-#         self.line2, = self.axes[2].plot(self.x, self.abs_dif_values, color='#f5b14c', alpha=0.75, lw=2)
-#         self.axes[2].set_xlabel('Ant detection', fontsize=9)
-#         self.axes[2].yaxis.set_major_locator(MaxNLocator(integer=True))
-#         self.axes[2].yaxis.set_ticklabels([])
-#         self.axes[2].xaxis.set_ticklabels([])
-#         self.axes[2].xaxis.set_ticks_position('none')
-#         self.axes[2].yaxis.set_ticks_position('none')
-#
-#         self._count = 0
-#
-#     def update(self):
-#
-#         if self._count % 5 == 0:
-#             if self._count < self.tail_len:
-#                 self.x[self._count] = self.master.count
-#
-#                 self.disp_fps[:] = np.mean([w.display_fps for w in self.master.video_windows])
-#                 self.capt_fps[:] = np.mean(self.master.capture_fps)
-#                 self.abs_dif_values[:] = np.mean(self.master.absdif)
-#
-#             else:
-#                 self.x = np.roll(self.x, -1)
-#                 self.x[-1] = self.master.count
-#
-#                 self.disp_fps = np.roll(self.disp_fps, -1)
-#                 self.capt_fps = np.roll(self.capt_fps, -1)
-#                 self.abs_dif_values = np.roll(self.abs_dif_values, -1)
-#
-#                 self.disp_fps[-1] = self.master.video_windows[0].display_fps
-#                 self.capt_fps[-1] = np.mean(self.master.capture_fps)
-#                 self.abs_dif_values[-1] = np.mean(self.master.absdif)
-#
-#             xmin, xmax = self.x.min(), self.x.max()
-#
-#             self.line0.set_ydata(self.disp_fps)
-#             self.line0.set_xdata(self.x)
-#             self.axes[0].set(xlim=(xmin, xmax))
-#             ymax = self.disp_fps.max() * 2
-#             self.axes[0].set(ylim=(0, ymax if ymax > 0 else 1))
-#             [txt.remove() for txt in self.axes[0].texts]
-#             self.axes[0].text(xmax - 100, self.disp_fps[-1] + 10, f"{self.disp_fps[-1]:.2f}", color='#4cdccf', alpha=0.75)
-#
-#             if self.master.mgr.acquiring:
-#                 self.line1.set_ydata(self.capt_fps)
-#                 self.line1.set_xdata(self.x)
-#                 self.axes[1].set(xlim=(xmin, xmax))
-#                 ymax = self.capt_fps.max() * 2
-#                 self.axes[1].set(ylim=(0, ymax if ymax > 0 else 1))
-#                 [txt.remove() for txt in self.axes[1].texts]
-#                 self.axes[1].text(xmax - 100, self.capt_fps[-1] + 10, f"{self.capt_fps[-1]:.2f}", color='#f3a0f2', alpha=0.75)
-#
-#             if self.master._autodetection_enabled.is_set():
-#                 self.line2.set_ydata(self.abs_dif_values)
-#                 self.axes[2].set(xlim=(xmin, xmax))
-#                 self.line2.set_xdata(self.x)
-#                 ymax = self.abs_dif_values.max() * 2
-#                 self.axes[2].set(ylim=(0, ymax if ymax > 0 else 1))
-#                 [txt.remove() for txt in self.axes[2].texts]
-#                 self.axes[2].text(xmax - 100, self.abs_dif_values[-1] + 1, f"{self.abs_dif_values[-1]:.2f}", color='#f5b14c',
-#                                   alpha=0.75)
-#
-#             self.canvas.draw()
-#             self.canvas.flush_events()
-#
-#         self._count += 1
 
 def compute_windows_size(source_dims, screen_dims):
 
-    screenh, screenw = screen_dims
-    sourceh, sourcew = source_dims.max(axis=1)
+    screenh, screenw = screen_dims[:2]
+    sourceh, sourcew = source_dims[:2].max(axis=1)
 
     # For 2x3 screen grid
     max_window_w = screenw // 3 - GUI.WBORDERS_W
@@ -302,6 +185,13 @@ class VideoWindow:
                                         command=self._toggle_focus_display)
         show_focus_button.pack(padx=2, fill=tk.BOTH, side=tk.LEFT)
 
+    @property
+    def whxy(self):
+        dims = self.window.geometry()
+        wh, x, y = dims.split('+')
+        w, h = wh.split('x')
+        return [int(s) for s in [w, h, x, y]]
+
     def update_framerate(self, event=None):
         new_fps = self.framerate_slider.get()
         self.parent.mgr.cameras[self.idx].framerate = new_fps
@@ -360,16 +250,12 @@ class VideoWindow:
 
         if self.parent.mgr.acquiring:
             if self.parent.current_buffers is not None:
-                # if 'top' in self.name and self.parent.show_diff:
-                #     frame = np.frombuffer(self.parent.absdif, dtype=np.uint8).reshape(self._source_shape)
-                # else:
                 frame = np.frombuffer(self.parent.current_buffers[self.idx], dtype=np.uint8).reshape(self._source_shape)
         else:
             frame = np.random.randint(0, 255, self.video_dims, dtype='<u1')
 
         if self._display_focus.is_set():
             overlay = ndimage.gaussian_laplace(frame, sigma=1).astype(np.int32)
-            # overlay = ndimage.minimum_filter(overlay, footprint=self._kernel).astype(np.int32)
             overlay = ndimage.gaussian_filter(overlay, 5).astype(np.int32)
             lim = 90
             overlay[overlay < lim] = 0
@@ -472,6 +358,10 @@ class GUI:
 
     def __init__(self, mgr):
 
+        # Detect monitors and pick the default one
+        self._monitors = screeninfo.get_monitors()
+        self.set_monitor()
+
         # Set up root window
         self.root = tk.Tk()
         self.root.wait_visibility(self.root)
@@ -482,7 +372,6 @@ class GUI:
         # Set up fonts
         self.bold = font.Font(weight='bold', size=10)
         self.regular = font.Font(size=9)
-        # print(list(font.families()).sort())
 
         # Init default things
         self.mgr = mgr
@@ -508,11 +397,6 @@ class GUI:
 
         self._reference = None
         self._current_buffers = None
-        self._autodetection_thread = None
-        # self._graph_thread = None
-        # self.graph_shown = Event()
-        self._autodetection_enabled = Event()
-        self._show_diff = Event()
 
         # Create video windows
         self.video_windows = []
@@ -525,13 +409,11 @@ class GUI:
             t.start()
             self.windows_threads.append(t)
 
-        # self._absdif = bytearray(b'\0' * self.mgr.cameras['top'].height * self.mgr.cameras['top'].width)
-
         # Deduce control window size and position
         w = self.max_videowindows_dims[1]
         h = int(self.max_videowindows_dims[0] // 2.1)
-        x = self.screen_dims[1] // 2 - w // 2
-        y = self.max_videowindows_dims[0] * 2
+        x = (self.screen_dims[1] // 2 - w // 2) + self.screen_dims[2]
+        y = (self.max_videowindows_dims[0] * 2) + self.screen_dims[3]   # TODO - improve positioning
         self.root.geometry(f"{w}x{h}+{x}+{y}")
 
         # Create control window
@@ -566,12 +448,23 @@ class GUI:
 
     @property
     def screen_dims(self):
-        monitors = screeninfo.get_monitors()
-        if len(monitors) > 1:
-            primary = next(m for m in monitors if m.is_primary)
+        monitor = self._selected_monitor
+        return np.array([monitor.height, monitor.width, monitor.x, monitor.y], dtype=np.uint32)
+
+    def set_monitor(self, idx=None):
+        if len(self._monitors) > 1 and idx is None:
+            self._selected_monitor = next(m for m in self._monitors if m.is_primary)
+        elif len(self._monitors) > 1 and idx is not None:
+            self._selected_monitor = self._monitors[idx]
         else:
-            primary = monitors[0]
-        return np.array([primary.height, primary.width])
+            self._selected_monitor = self._monitors[0]
+
+    @property
+    def whxy(self):
+        dims = self.root.geometry()
+        wh, x, y = dims.split('+')
+        w, h = wh.split('x')
+        return [int(s) for s in [w, h, x, y]]
 
     def nothing(self):
         pass
@@ -635,61 +528,10 @@ class GUI:
                                          state='disabled')
         self.button_recpause.pack(ipadx=ipadx, ipady=ipady, padx=padx, pady=pady * 2, fill=tk.X, expand=True)
 
-        # reference_layout_frame = tk.Frame(left_half, height=50)
-        # reference_layout_frame.pack(ipadx=ipadx, ipady=ipady, padx=padx, pady=pady, fill=tk.X)
-        #
-        # reference_buttons_frame = tk.Frame(reference_layout_frame)
-        # reference_buttons_frame.pack(fill=tk.X)
-        #
-        # self.button_acqref = tk.Button(reference_buttons_frame, text="Acquire ref.", anchor=tk.CENTER,
-        #                                font=self.regular,
-        #                                command=self.gui_acquire_ref,
-        #                                state='disabled')
-        # self.button_acqref.pack(ipadx=ipadx, ipady=ipady, padx=padx, fill=tk.X, side=tk.LEFT, expand=True)
-        #
-        # self.button_clearref = tk.Button(reference_buttons_frame, text="Clear ref.", anchor=tk.CENTER, font=self.regular,
-        #                                command=self.gui_clear_ref,
-        #                                state='disabled')
-        # self.button_clearref.pack(ipadx=ipadx, ipady=ipady, padx=padx, fill=tk.X, side=tk.LEFT, expand=True)
-        #
-        # self.button_show_diff = tk.Button(reference_buttons_frame, text="Show diff.", anchor=tk.CENTER,
-        #                                font=self.regular,
-        #                                command=self.gui_toggle_show_diff,
-        #                                state='disabled')
-        #
-        # self.button_show_diff.pack(ipadx=ipadx, ipady=ipady, padx=padx, fill=tk.X, side=tk.LEFT, expand=True)
-
-        # reference_slider_frame = tk.Frame(reference_layout_frame)
-        # reference_slider_frame.pack(fill=tk.X)
-        #
-        # self.reference_slider = tk.Scale(reference_slider_frame, from_=0, to=255, orient='horizontal')
-        # self.reference_slider.pack(fill=tk.X, expand=True)
-        #
-        # self.reference_allow_var = tk.BooleanVar()
-        #
-        # self.reference_slider_toggle = tk.Checkbutton(reference_buttons_frame, onvalue=1, offvalue=0, text="Allow recording", anchor=tk.CENTER,
-        #                                font=self.regular, variable=self.reference_allow_var)
-        # self.reference_slider_toggle.pack(ipadx=ipadx, ipady=ipady, padx=padx, fill=tk.X, side=tk.LEFT, expand=True)
-
-        #
-
-        # self.button_graph = tk.Button(left_half, text="Graph", anchor=tk.CENTER, font=self.regular,
-        #                              command=self.gui_toggle_graph)
-        # self.button_graph.pack(ipadx=ipadx, ipady=ipady, padx=padx, pady=pady, anchor=tk.SW)
-
         self.button_exit = tk.Button(left_half, text="Exit (Esc)", anchor=tk.CENTER, font=self.bold,
                                      bg='#EE4457', fg='White',
                                      command=self.quit)
         self.button_exit.pack(ipadx=ipadx, ipady=ipady, padx=padx, pady=pady, anchor=tk.SE)
-
-        #
-
-        # self.right_half = tk.Frame(self.root)
-        #
-        # graph_frame = tk.Frame(self.right_half, height=60)
-        # graph_frame.pack(ipadx=ipadx, ipady=ipady, padx=padx, pady=pady, fill=tk.X)
-        #
-        # self.graph = GraphWidget(canvas=graph_frame, master=self)
 
         # RIGHT HALF
 
@@ -716,6 +558,44 @@ class GUI:
             vis_checkbox.pack(ipadx=ipadx, ipady=ipady, padx=padx, pady=pady, fill=tk.X, expand=True)
             self._vis_checkboxes.append(vis_var)
 
+        monitors_label = tk.Label(right_half, text='Active monitor:', anchor=tk.W)
+        monitors_label.pack()
+
+        self.monitors_buttons = tk.Canvas(right_half, width=120, height=60)
+        self.update_monitors_buttons()
+        for i, m in enumerate(self._monitors):
+            self.monitors_buttons.tag_bind(f'screen_{i}', '<Button-1>', lambda _, val=i: self.screen_update(val))
+        self.monitors_buttons.pack(ipadx=ipadx, ipady=ipady, padx=padx, pady=pady)
+
+    def update_monitors_buttons(self):
+        self.monitors_buttons.delete("all")
+
+        for i, m in enumerate(self._monitors):
+            w, h, x, y = m.width // 80, m.height // 80, m.x // 80, m.y // 80
+            if m.name == self._selected_monitor.name:
+                a = '#515151'
+            else:
+                a = '#c0c0c0'
+            self.monitors_buttons.create_rectangle(x + 2, y + 2, x + 2 + w, y + 2 + h, fill=a, outline='', tag=f'screen_{i}')
+
+    def screen_update(self, val):
+        old_monitor_x, old_monitor_y = self._selected_monitor.x, self._selected_monitor.y
+
+        self.set_monitor(val)
+        self.update_monitors_buttons()
+
+        w, h, x, y = self.whxy
+        new_x = x + self._selected_monitor.x - old_monitor_x
+        new_y = y + self._selected_monitor.y - old_monitor_y
+
+        self.root.geometry(f'{w}x{h}+{new_x}+{new_y}')
+        for window in self.video_windows:
+            w, h, x, y = window.whxy
+            new_x = x + self._selected_monitor.x - old_monitor_x
+            new_y = y + self._selected_monitor.y - old_monitor_y
+
+            window.window.geometry(f'{w}x{h}+{new_x}+{new_y}')
+
     def _handle_keypress(self, event):
         match event.keycode:
             case 9:     # Esc
@@ -724,27 +604,6 @@ class GUI:
                 self.gui_toggle_recording()
             case _:
                 pass
-
-    # def gui_toggle_graph(self):
-    #
-    #     if self.graph_shown.is_set():
-    #         self.right_half.pack_forget()
-    #         self.graph_shown.clear()
-    #         self.graph.reset()
-    #         # self._graph_thread = None
-    #     else:
-    #         self.graph_shown.set()
-    #         # self._graph_thread = Thread(target=self.graph.update, daemon=False)
-    #         # self._graph_thread.start()
-    #         self.right_half.pack(fill=tk.BOTH, side=tk.LEFT, expand=True)
-
-    # @property
-    # def show_diff(self):
-    #     return self._show_diff.is_set()
-
-    @property
-    def absdif(self):
-        return self._absdif
 
     def gui_set_name(self):
         self.mgr.savepath = self.userentry_var.get()
@@ -784,58 +643,6 @@ class GUI:
             else:
                 self.gui_pause()
 
-    # def gui_acquire_ref(self):
-
-        # self.mgr.acquire_reference()
-        #
-        # while self.mgr.reference is None:
-        #     time.sleep(0.1)
-        # assert self.mgr.reference is not None
-
-        # self._reference = np.copy(self.mgr.reference)
-
-        # self._autodetection_enabled.set()
-        # self._autodetection_thread = Thread(target=self._ant_detection, daemon=False)
-        # self._autodetection_thread.start()
-
-        # self.button_acqref.config(state="disabled")
-        # self.button_clearref.config(state="normal")
-        # self.button_show_diff.config(state="normal")
-        # self.button_recpause.config(state="disabled")
-
-    # def gui_clear_ref(self):
-
-        # self._autodetection_enabled.clear()
-        # self._autodetection_thread = None
-        #
-        # self.mgr.clear_reference()
-        # self._reference = None
-        #
-        # self._absdif[:] = b'\0' * len(self._absdif)
-        #
-        # self.gui_hide_diff()
-
-        # self.button_acqref.config(state="normal")
-        # self.button_clearref.config(state="disabled")
-        # self.button_show_diff.config(state="disabled")
-        # self.button_recpause.config(state="normal")
-
-    # def gui_show_diff(self):
-    #     if not self._show_diff.is_set():
-    #         self.button_show_diff.config(text='Hide diff.')
-    #         self._show_diff.set()
-    #
-    # def gui_hide_diff(self):
-    #     if self._show_diff.is_set():
-    #         self.button_show_diff.config(text='Show diff.')
-    #         self._show_diff.clear()
-
-    # def gui_toggle_show_diff(self):
-    #     if self._show_diff.is_set():
-    #         self.gui_hide_diff()
-    #     else:
-    #         self.gui_show_diff()
-
     def gui_acquire(self):
 
         if self.mgr.savepath is None:
@@ -849,14 +656,9 @@ class GUI:
 
             self.button_start.config(state="disabled")
             self.button_stop.config(state="normal")
-            # self.button_acqref.config(state="normal")
             self.button_recpause.config(state="normal")
 
     def gui_snow(self):
-
-        self._autodetection_enabled.clear()
-        self._autodetection_thread = None
-        # self.gui_hide_diff()
 
         if self.mgr.acquiring:
 
@@ -867,9 +669,7 @@ class GUI:
 
             self.button_start.config(state="normal")
             self.button_stop.config(state="disabled")
-            # self.button_acqref.config(state="disabled")
-            # self.button_clearref.config(state="disabled")
-            # self.button_show_diff.config(state="disabled")
+
             self.button_recpause.config(state="disabled")
 
             self.userentry_var.set('')
@@ -888,29 +688,6 @@ class GUI:
         self.root.destroy()
         sys.exit()
 
-    # def _ant_detection(self):
-    #
-    #     while self._autodetection_enabled.is_set():
-    #
-    #         # thresh = self.reference_slider.get()
-    #
-    #         frame = np.frombuffer(self.current_buffers[0], dtype=np.uint8).reshape(self._reference.shape)
-    #
-    #         if frame is not None and self._reference is not None:
-    #             normalized = (frame / frame.max()) * 255
-    #             absdif = np.abs(normalized - self._reference).astype('<u1')
-    #             # gauss = scipy.ndimage.gaussian_filter(absdif, 0.25)
-    #             # thresh = np.clip(np.round(absdif).astype('<u1'), thrmin, thrmax)
-    #
-    #             spread = np.max(absdif) - np.min(absdif)
-    #
-    #             if spread >= 100:   # TODO - make sure this value is good
-    #                 self.gui_recording()
-    #             else:
-    #                 self.gui_pause()
-    #
-    #             self._absdif[:] = absdif.data.tobytes()
-
     def update(self):
 
         if self.mgr.acquiring:
@@ -923,8 +700,5 @@ class GUI:
             self._current_buffers = self.mgr.get_current_framebuffer()
 
         self._counter += 1
-
-        # if self.graph_shown.is_set():
-        #     self.graph.update()
 
         self.root.after(100, self.update)
