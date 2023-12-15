@@ -143,8 +143,6 @@ class Manager:
         self._acquiring = threading.Event()
         self._recording = threading.Event()
 
-        # self._barrier = None
-
         self._file_access_lock = threading.Lock()
         self._zarr_length = 36000
         self._z_frames = None
@@ -378,8 +376,6 @@ class Manager:
         grabbed_frames = 0
 
         while self._acquiring.is_set():
-
-            # self._barrier.wait()    # TODO - check if this is only needed when no hardware trigger
 
             with cam.ptr.RetrieveResult(100, py.TimeoutHandling_Return) as res:
                 if res and res.GrabSucceeded():
