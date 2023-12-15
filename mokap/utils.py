@@ -1,7 +1,7 @@
 import subprocess
 from typing import NoReturn
 import numpy as np
-
+from scipy import ndimage
 
 def randframe(w=1440, h=1080):
     return np.random.randint(0, 255, (w, h), dtype='<u1')
@@ -19,6 +19,28 @@ def to_freq(interval: float, count: float) -> (float, float):
     duration = interval * count
     frequency = 1/interval
     return frequency, duration
+
+def focus_zone(img):
+    # LoG
+    fz = ndimage.gaussian_laplace(img, sigma=2).astype(np.uint8)
+    fz = ndimage.gaussian_filter(fz, 5).astype(np.uint8)
+
+    # Zero-crossing approximation
+    # fz = fz / fz.max() * 255
+    return fz.astype(np.uint8)
+
+def compute_focus_plan(img, axis):
+    indices = np.arange(img.shape[axis])
+
+    summed = img.sum(axis=axis).astype(float)
+    summed[summed == 0] = np.nan
+
+    terms = [img, img]
+    terms[axis] = indices
+
+    plan = np.dot(*terms) / summed
+
+    return plan
 
 
 def USB_on() -> NoReturn:
