@@ -117,6 +117,9 @@ def videos_from_zarr(filepath, cams=None, format=None, force=False):
 
     filepath = Path(filepath)
 
+    if (filepath / 'recording').exists() and not force:
+        return
+
     if (filepath / 'converted').exists() and not force:
         return
 

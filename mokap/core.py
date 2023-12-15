@@ -12,7 +12,8 @@ import mokap.files_op as files_op
 from collections import deque
 import zarr
 from numcodecs import Blosc, Delta
-from mokap.hardware import SSHTrigger, Camera, setup_ulimit, get_basler_devices
+from mokap.hardware import SSHTrigger, Camera, setup_ulimit, get_basler_devices, config
+from mokap.utils import ensure_list
 from scipy import ndimage
 import cv2
 from multiprocessing import Process
@@ -194,11 +195,18 @@ class Manager:
 
         return devices
 
-    def connect(self):
-        devices = self.list_devices()
+    def connect(self, specific_cams=None):
+
+        if specific_cams is not None:
+            specific_cams = ensure_list(specific_cams)
+            connected_cams = self.list_devices()
+            devices = [d for d in connected_cams if d.GetSerialNumber() in specific_cams]
+            ignored = len(connected_cams) - len(devices)
+            print(f"/!\ Ignoring {ignored} camera{'s' if ignored > 1 else ''}.")
+        else:
+            devices = self.list_devices()
 
         nb_cams = len(devices)
-
         self.ICarray = py.InstantCameraArray(nb_cams)
 
         # Create the cameras and put them in auto-sorting CamList
@@ -394,19 +402,24 @@ class Manager:
         self._acquisition_name = ''
         self._savepath = None
 
-    def _cleanup(self) -> NoReturn:
+    def _soft_reset(self) -> NoReturn:
         if self._z_frames is not None:
             self._trim_storage()
+
+        (self._savepath / 'recording').unlink(missing_ok=True)
+
         self._reset_name()
 
         self._start_times = []
         self._stop_times = []
 
         self._saved_frms_idx = multiprocessing.RawArray('I', self._nb_cams)
+        self._executor = None
 
     def record(self) -> NoReturn:
         self._recording.set()
 
+        (self._savepath / 'recording').touch()
         self._z_times[-1, 0] = np.datetime64(datetime.now())
 
         print('Recording started...')
@@ -434,7 +447,6 @@ class Manager:
 
         self._acquiring.set()
 
-        # self._barrier = Barrier(self._nb_cams, timeout=5)
         self._executor = ThreadPoolExecutor(max_workers=20)
 
         for i, cam in enumerate(self._cameras_list):
@@ -445,9 +457,7 @@ class Manager:
 
     def off(self) -> NoReturn:
 
-        if self._recording.is_set():
-            self._recording.clear()
-
+        self.pause()
         self._acquiring.clear()
 
         self.ICarray.StopGrabbing()
@@ -457,11 +467,7 @@ class Manager:
         if self._triggered:
             self.trigger.off()
 
-        self._cleanup()
-
-        self._executor = None
-        # self._barrier = None
-
+        self._soft_reset()
         print(f'[INFO] Grabbing stopped.')
 
     @property
@@ -470,8 +476,9 @@ class Manager:
 
     @savepath.setter
     def savepath(self, value='') -> NoReturn:
-        # Cleanup if a previous folder was created and not used
-        self._cleanup()
+
+        self.pause()
+        self._soft_reset()
 
         self._savepath = files_op.mk_folder(name=value)
         self._acquisition_name = self._savepath.stem
