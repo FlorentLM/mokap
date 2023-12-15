@@ -254,17 +254,17 @@ class VideoWindow:
         else:
             frame = np.random.randint(0, 255, self.video_dims, dtype='<u1')
 
+        self._brightness_var = np.round(frame.mean() / 255 * 100, decimals=2)
+
         if self._display_focus.is_set():
             overlay = ndimage.gaussian_laplace(frame, sigma=1).astype(np.int32)
             overlay = ndimage.gaussian_filter(overlay, 5).astype(np.int32)
             lim = 90
             overlay[overlay < lim] = 0
-            overlay[overlay >= lim] = 255
+            overlay[overlay >= lim] = 100
 
             fo = np.clip(frame.astype(np.int32) + overlay, 0, 255).astype(np.uint8)
             frame = np.stack([fo, fo, frame]).T.swapaxes(0, 1)
-
-        self._brightness_var = np.round(frame.mean() / 255 * 100, decimals=2)
 
         y, x = self.video_dims
         x2, y2 = x // 2, y // 2
