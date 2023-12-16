@@ -27,6 +27,8 @@ class MotionDetector:
         self._silent = silent
         self._learning_rate = learning_rate
 
+        self._id = cam_id
+
         self._fgbg = cv2.createBackgroundSubtractorMOG2()
 
         self._kernel = np.array([[0, 1, 0],
@@ -36,9 +38,12 @@ class MotionDetector:
         self._running = multiprocessing.Event()
         self._movement = multiprocessing.Event()
 
-        self._worker = Process(target=self._worker_func, args=(cam_id, thresh, lag, framerate, preview))
+        log_path = Path(files_op.data_folder / f'detection_cam_{self._id}_{time.strftime("%y%m%d-%H%M%S", time.localtime())}.log')
+
+        self._worker = Process(target=self._worker_func, args=(cam_id, thresh, lag, framerate, preview, log_path))
 
     def start(self):
+
         self._running.set()
         self._worker.start()
         time.sleep(0.1)
@@ -51,7 +56,10 @@ class MotionDetector:
         if not self._silent:
             print('[INFO] Stopped movement detection.')
 
-    def _worker_func(self, cam_id, thresh, lag, framerate, preview):
+    def _worker_func(self, cam_id, thresh, lag, framerate, preview, log_path):
+
+        log_path.touch()
+
         cap = cv2.VideoCapture(cam_id)
 
         if not cap.isOpened():
@@ -70,22 +78,29 @@ class MotionDetector:
         tick = time.time()
 
         loop_duration = 1.0 / float(framerate)
+        log_every_n_seconds = 60
 
         initialised = False
+        last_log_time = time.time()
+        values_list = []
+
         if preview:
             cv2.namedWindow(f'Preview (Cam {cam_id})', cv2.WINDOW_NORMAL)
 
         while self._running.is_set():
+            now = time.time()
 
-            time_elapsed = time.time() - tick
+            time_since_last_loop = now - tick
+            time_since_last_log = now - last_log_time
 
             ret, frame = cap.read()
 
-            if time_elapsed > loop_duration:
+            if time_since_last_loop >= loop_duration:
                 tick = time.time()
 
                 detection = self.process(frame)
                 value = detection.sum() / (shape[0] * shape[1]) * 10
+                values_list.append(value)
 
                 if not initialised:
                     self._movement.clear()
@@ -117,6 +132,15 @@ class MotionDetector:
                     cv2.imshow(f'Preview (Cam {cam_id})', detection)
                     cv2.waitKey(1)
 
+            if time_since_last_log >= log_every_n_seconds:
+                log_value = round(sum(values_list) / len(values_list), 3)
+                to_log = f'{time.strftime("%d/%m/%y %H:%M:%S -", time.localtime())} {log_value}\n'
+
+                with open(log_path, "a") as log_file:
+                    log_file.write(to_log)
+
+                values_list = []
+                last_log_time = time.time()
 
     def process(self, frame):
         motion_mask = self._fgbg.apply(frame, self._learning_rate)

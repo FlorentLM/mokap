@@ -9,10 +9,11 @@ from datetime import datetime
 threshold = 5       # Movement detection threshold
 preview = True      # Whether to display the movement detection preview
 lag = 20            # How long the recording should be trigggered for after a movement is detected
+framerate = 30      # How many times per second motion detection should be performed
 
-md1 = MotionDetector(cam_id=0, thresh=threshold, lag=lag, preview=preview)
-md2 = MotionDetector(cam_id=2, thresh=threshold, lag=lag, preview=preview)
-md3 = MotionDetector(cam_id=4, thresh=threshold, lag=lag, preview=preview)
+md1 = MotionDetector(cam_id=0, thresh=threshold, lag=lag, framerate=framerate, preview=preview)
+md2 = MotionDetector(cam_id=2, thresh=threshold, lag=lag, framerate=framerate, preview=preview)
+md3 = MotionDetector(cam_id=4, thresh=threshold, lag=lag, framerate=framerate, preview=preview)
 
 md1.start()
 md2.start()
