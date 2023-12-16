@@ -23,7 +23,7 @@ from multiprocessing import Process
 
 class MotionDetector:
 
-    def __init__(self, cam_id=0, learning_rate=-100, thresh=5, lag=0, preview=False, silent=True):
+    def __init__(self, cam_id=0, learning_rate=-100, thresh=5, lag=0, preview=False, framerate=30, silent=True):
         self._silent = silent
         self._learning_rate = learning_rate
 
@@ -36,7 +36,7 @@ class MotionDetector:
         self._running = multiprocessing.Event()
         self._movement = multiprocessing.Event()
 
-        self._worker = Process(target=self._worker_func, args=(cam_id, thresh, lag, preview))
+        self._worker = Process(target=self._worker_func, args=(cam_id, thresh, lag, framerate, preview))
 
     def start(self):
         self._running.set()
@@ -51,7 +51,7 @@ class MotionDetector:
         if not self._silent:
             print('[INFO] Stopped movement detection.')
 
-    def _worker_func(self, cam_id, thresh, lag, preview):
+    def _worker_func(self, cam_id, thresh, lag, framerate, preview):
         cap = cv2.VideoCapture(cam_id)
 
         if not cap.isOpened():
@@ -63,7 +63,6 @@ class MotionDetector:
             print("[ERROR] Camera is not ready... Try again?")
             return
 
-        framerate = 30
         cap.set(cv2.CAP_PROP_FPS, framerate)
         shape = first_frame.shape
 
