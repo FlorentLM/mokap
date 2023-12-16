@@ -54,8 +54,7 @@ class MotionDetector:
     def _worker_func(self, cam_id, thresh, lag, preview):
         cap = cv2.VideoCapture(cam_id)
 
-        cap.set(cv2.CAP_PROP_FOCUS, 0)
-        while not cap.isOpened():
+        if not cap.isOpened():
             print("[ERROR] Camera is not open... Try again?")
             return
 
@@ -64,48 +63,61 @@ class MotionDetector:
             print("[ERROR] Camera is not ready... Try again?")
             return
 
+        framerate = 30
+        cap.set(cv2.CAP_PROP_FPS, framerate)
         shape = first_frame.shape
 
+        detection_start = time.time()
         tick = time.time()
+
+        loop_duration = 1.0 / float(framerate)
 
         initialised = False
         if preview:
             cv2.namedWindow(f'Preview (Cam {cam_id})', cv2.WINDOW_NORMAL)
+
         while self._running.is_set():
+
+            time_elapsed = time.time() - tick
+
             ret, frame = cap.read()
 
-            detection = self.process(frame)
-            value = detection.sum() / (shape[0] * shape[1]) * 10
-
-            tock = time.time()
-
-            if not initialised:
-                self._movement.clear()
-                text = 'Initialising...'
+            if time_elapsed > loop_duration:
                 tick = time.time()
-                if value < thresh:
-                    initialised = True
-            else:
-                if value >= thresh and initialised:
-                    self._movement.set()
-                    tick = time.time()
-                    text = f'{value:.2f} - Movement detected!'
-                else:
-                    if tock - tick > lag:
-                        self._movement.clear()
+
+                detection = self.process(frame)
+                value = detection.sum() / (shape[0] * shape[1]) * 10
+
+                if not initialised:
+                    self._movement.clear()
+                    text = 'Initialising...'
+
+                    if value < thresh:
+                        initialised = True
                         text = f'{value:.2f}'
+                else:
+                    text = f'{value:.2f}'
 
-            if preview:
-                detection = cv2.putText(detection, text, (30, 30),
-                                    fontFace=cv2.FONT_HERSHEY_SIMPLEX,
-                                    fontScale=1,
-                                    color=(255, 0, 255),
-                                    thickness=3)
+                    if value >= thresh:
+                        self._movement.set()
+                        detection_start = time.time()
+                    else:
+                        if tick - detection_start >= lag:
+                            self._movement.clear()
 
-                cv2.imshow(f'Preview (Cam {cam_id})', detection)
-                cv2.waitKey(1)
-            else:
-                time.sleep(0.01)
+                if preview:
+                    if self._movement.is_set():
+                        text += ' - [ACTIVE]'
+
+                    detection = cv2.putText(detection, text, (30, 30),
+                                        fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                                        fontScale=1,
+                                        color=(255, 0, 255),
+                                        thickness=3)
+
+                    cv2.imshow(f'Preview (Cam {cam_id})', detection)
+                    cv2.waitKey(1)
+
 
     def process(self, frame):
         motion_mask = self._fgbg.apply(frame, self._learning_rate)
