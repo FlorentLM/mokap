@@ -15,6 +15,7 @@ data_folder = Path('/mnt/data/RawFrames')
 # videos_folder = Path('F:\\Videos')
 # data_folder = Path('F:\\RawFrames')
 
+
 ##
 
 COMPRESSED = {'codec': 'libx265',
@@ -55,6 +56,7 @@ def exists_check(path):
         path = path.parent / new_name
         i += 1
     return path
+
 
 def mk_folder(name=''):
 
@@ -162,19 +164,23 @@ def videos_from_zarr(filepath, cams=None, format=None, force=False):
 
         fps_calc = nb_frames/total_time_s
 
-        print(f"\nFramerate:\n"
-              f"---------\n"
-              f"Theoretical:\n  {fps_raw:.2f} fps\n"
-              f"Actual (mean):\n  {fps_calc:.2f} fps\n"
-              f"--> Error = {(1-(fps_calc/fps_raw))*100:.2f}%")
+        stats = f"\nFramerate:\n"\
+              f"---------\n"\
+              f"Theoretical:\n  {fps_raw:.2f} fps\n"\
+              f"Actual (mean):\n  {fps_calc:.2f} fps\n"\
+              f"--> Error = {(1-(fps_calc/fps_raw))*100:.2f}%"
+
+        print(stats)
 
         outfolder = videos_folder / filepath.stem
         if not outfolder.exists():
             outfolder.mkdir(parents=True, exist_ok=False)
 
-        outname = f'{outfolder.stem}_cam{c}.{conv_settings["ftype"]}'
+        outname = f'{outfolder.stem}_cam{c}.'
+        with open(outfolder / (outname + 'txt'), 'w') as st:
+            st.write(stats)
 
-        savepath = outfolder / outname
+        savepath = outfolder / (outname + conv_settings["ftype"])
 
         process = sp.Popen(shlex.split(
             f'ffmpeg -y -s {w}x{h} -pix_fmt gray -f rawvideo -r {fps_calc:.2f} -i pipe: -c:v {conv_settings["codec"]} {conv_settings["params"]} -pix_fmt gray -an {savepath.as_posix()}'),
@@ -189,7 +195,8 @@ def videos_from_zarr(filepath, cams=None, format=None, force=False):
 
         (filepath / 'converted').touch()
 
-        print('Done.')
+        print(f'Done creating {outname + conv_settings["ftype"]}.')
+
 
 def convert_videos(path, filter='*', output_format=None, delete_source=False):
 
@@ -234,30 +241,30 @@ def convert_videos(path, filter='*', output_format=None, delete_source=False):
 
     print(f'Done converting {path.name} {ftype}.')
 
-
-def update_names(path, filter='*'):
-
-    path = Path(path)
-
-    if path.is_file():
-        source_names = [path]
-        ftype = 'file'
-    else:
-        source_names = list(path.glob(filter))
-        ftype = 'folder contents'
-
-    any_renamed = False
-    for f in source_names:
-
-        if bool(re.search('vid_cam[0-9+]_sess[0-9+]', f.stem)):
-
-            new_name = f"{f.parent.stem}_{f.stem.split('_')[1]}{f.suffix}"
-            savepath = exists_check(f.parent / new_name)
-
-            f.rename(savepath)
-            any_renamed = True
-
-    if any_renamed:
-        print(f'Done renaming {path.name} {ftype}.')
-    else:
-        print(f'Nothing needed to be renamed.')
+#
+# def update_names(path, filter='*'):
+#
+#     path = Path(path)
+#
+#     if path.is_file():
+#         source_names = [path]
+#         ftype = 'file'
+#     else:
+#         source_names = list(path.glob(filter))
+#         ftype = 'folder contents'
+#
+#     any_renamed = False
+#     for f in source_names:
+#
+#         if bool(re.search('vid_cam[0-9+]_sess[0-9+]', f.stem)):
+#
+#             new_name = f"{f.parent.stem}_{f.stem.split('_')[1]}{f.suffix}"
+#             savepath = exists_check(f.parent / new_name)
+#
+#             f.rename(savepath)
+#             any_renamed = True
+#
+#     if any_renamed:
+#         print(f'Done renaming {path.name} {ftype}.')
+#     else:
+#         print(f'Nothing needed to be renamed.')
