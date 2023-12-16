@@ -106,7 +106,7 @@ class MotionDetector:
                     self._movement.clear()
                     text = 'Initialising...'
 
-                    if value < thresh:
+                    if value < thresh and tick - detection_start >= 5:
                         initialised = True
                         text = f'{value:.2f}'
                 else:
