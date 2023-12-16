@@ -6,4 +6,5 @@ from mokap.files_op import *
 
 if __name__ == '__main__':
     for folder in data_folder.iterdir():
-        backup_videos(folder)
+        print(f'Generating video for {folder}...')
+        videos_from_zarr(folder)
