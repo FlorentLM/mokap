@@ -23,8 +23,8 @@ from multiprocessing import Process
 
 class MotionDetector:
 
-    def __init__(self, cam_id=0, learning_rate=-100, thresh=5, lag=0, preview=False):
-
+    def __init__(self, cam_id=0, learning_rate=-100, thresh=5, lag=0, preview=False, silent=True):
+        self._silent = silent
         self._learning_rate = learning_rate
 
         self._fgbg = cv2.createBackgroundSubtractorMOG2()
@@ -42,24 +42,26 @@ class MotionDetector:
         self._running.set()
         self._worker.start()
         time.sleep(0.1)
-        print('Started movement detection...')
+        if not self._silent:
+            print('[INFO] Started movement detection...')
 
     def stop(self):
         self._running.clear()
         time.sleep(0.1)
-        print('Stopped movement detection.')
+        if not self._silent:
+            print('[INFO] Stopped movement detection.')
 
     def _worker_func(self, cam_id, thresh, lag, preview):
         cap = cv2.VideoCapture(cam_id)
 
         cap.set(cv2.CAP_PROP_FOCUS, 0)
         while not cap.isOpened():
-            print("Camera is not open... Try again?")
+            print("[ERROR] Camera is not open... Try again?")
             return
 
         success, first_frame = cap.read()
         if not success:
-            print("Camera is not ready... Try again?")
+            print("[ERROR] Camera is not ready... Try again?")
             return
 
         shape = first_frame.shape
@@ -119,6 +121,9 @@ class MotionDetector:
 
         return filtered
 
+    @property
+    def moves(self):
+        return self._movement.is_set()
 
 class Manager:
 
@@ -126,9 +131,12 @@ class Manager:
                  framerate=220,
                  exposure=4318,
                  triggered=False,
-                 binning=1):
+                 binning=1,
+                 silent=True):
 
-        setup_ulimit()
+        setup_ulimit(silent=silent)
+
+        self._silent = silent
 
         self._binning = binning
         self._exposure = exposure
@@ -173,15 +181,17 @@ class Manager:
             if external_trigger.connected:
                 self.trigger = external_trigger
                 self._triggered = True
-                print('Trigger mode enabled.')
+                if not self._silent:
+                    print('[INFO] Trigger mode enabled.')
             else:
-                print("Connection problem with the trigger. Trigger mode can't be enabled.")
+                print("[ERROR] Connection problem with the trigger. Trigger mode can't be enabled.")
                 self.trigger = None
                 self._triggered = False
         elif self._triggered and value is False:
             self.trigger = None
             self._triggered = False
-            print('Trigger mode disabled.')
+            if not self._silent:
+                print('[INFO] Trigger mode disabled.')
 
         # TODO - Refresh cameras on trigger mode change
 
@@ -189,7 +199,8 @@ class Manager:
 
         real_cams, virtual_cams = get_basler_devices()
         devices = real_cams + virtual_cams
-        print(f"Found {len(devices)} camera{'s' if self._nb_cams > 1 else ''} connected ({len(real_cams)} physical, {len(virtual_cams)} virtual).")
+        if not self._silent:
+            print(f"[INFO] Found {len(devices)} camera{'s' if self._nb_cams > 1 else ''} connected ({len(real_cams)} physical, {len(virtual_cams)} virtual).")
 
         return devices
 
@@ -200,7 +211,8 @@ class Manager:
             connected_cams = self.list_devices()
             devices = [d for d in connected_cams if d.GetSerialNumber() in specific_cams]
             ignored = len(connected_cams) - len(devices)
-            print(f"/!\ Ignoring {ignored} camera{'s' if ignored > 1 else ''}.")
+            if not self._silent:
+                print(f"[WARN] Ignoring {ignored} camera{'s' if ignored > 1 else ''}.")
         else:
             devices = self.list_devices()
 
@@ -218,7 +230,8 @@ class Manager:
             cam.connect(cptr)
             self._cameras_list.append(cam)
             self._cameras_dict[cam.name] = cam
-            print(f"Attached {cam}.")
+            if not self._silent:
+                print(f"[INFO] Attached {cam}.")
 
         self._cameras_list.sort(key=lambda x: (x.idx))
 
@@ -275,7 +288,8 @@ class Manager:
 
         self._cameras_list = []
         self.ICarray = None
-        print(f"[INFO] Disconnected {self._nb_cams} camera{'s' if self._nb_cams > 1 else ''}.")
+        if not self._silent:
+            print(f"[INFO] Disconnected {self._nb_cams} camera{'s' if self._nb_cams > 1 else ''}.")
         self._nb_cams = 0
 
     def _init_storage(self) -> NoReturn:
@@ -326,7 +340,8 @@ class Manager:
             new_shape = (sh[0], frame_limit, sh[2], sh[3])
             self._z_frames.resize(new_shape)
 
-        print(f'[INFO] Storage trimmed to {frame_limit}.')
+        if not self._silent:
+            print(f'[INFO] Storage trimmed to {frame_limit}.')
 
     def _extend_storage(self) -> NoReturn:
 
@@ -336,7 +351,8 @@ class Manager:
             self._zarr_length = new_length
             new_shape = (sh[0], self._zarr_length, sh[2], sh[3])
             self._z_frames.resize(new_shape)
-        print(f'[INFO] Storage extended to {new_length}.')
+        if not self._silent:
+            print(f'[INFO] Storage extended to {new_length}.')
 
     def _writer(self, cam_idx: int) -> NoReturn:
 
@@ -362,7 +378,8 @@ class Manager:
                 self._saved_frms_idx[cam_idx] += nb
 
                 if self._saved_frms_idx[cam_idx] >= self._zarr_length * 0.9:
-                    print('[INFO] Storage 90% full: extending...')
+                    if not self._silent:
+                        print('[INFO] Storage 90% full. Extending...')
                     self._extend_storage()
 
                 if saving_started and not self._recording.is_set():
@@ -402,7 +419,8 @@ class Manager:
         if self._z_frames is not None:
             self._trim_storage()
 
-        (self._savepath / 'recording').unlink(missing_ok=True)
+        if self._savepath is not None:
+            (self._savepath / 'recording').unlink(missing_ok=True)
 
         self._reset_name()
 
@@ -413,58 +431,68 @@ class Manager:
         self._executor = None
 
     def record(self) -> NoReturn:
-        self._recording.set()
 
-        (self._savepath / 'recording').touch()
-        self._z_times[-1, 0] = np.datetime64(datetime.now())
+        if not self._recording.is_set():
+            self._recording.set()
 
-        print('Recording started...')
+            (self._savepath / 'recording').touch()
+            self._z_times[-1, 0] = np.datetime64(datetime.now())
+
+            if not self._silent:
+                print('[INFO] Recording started...')
 
     def pause(self) -> NoReturn:
-        self._recording.clear()
+        if self._recording.is_set():
+            self._recording.clear()
 
-        self._z_times[-1, 1] = np.datetime64(datetime.now())
-        self._z_times.append(np.zeros((1, 2), dtype='M8[ns]'))
+            self._z_times[-1, 1] = np.datetime64(datetime.now())
+            self._z_times.append(np.zeros((1, 2), dtype='M8[ns]'))
 
-        print('Finishing saving...')
-        [e.wait() for e in self._finished_saving]
+            if not self._silent:
+                print('[INFO] Finishing saving...')
+            [e.wait() for e in self._finished_saving]
 
-        print('Done.')
+            if not self._silent:
+                print('[INFO] Done saving.')
 
     def on(self) -> NoReturn:
 
-        if self._triggered:
-            # Start trigger thread on the RPi
-            self.trigger.start(self._framerate, 250000)
-            time.sleep(0.5)
+        if not self._acquiring.is_set():
+            if self._triggered:
+                # Start trigger thread on the RPi
+                self.trigger.start(self._framerate, 250000)
+                time.sleep(0.5)
 
-        if self._savepath is None:
-            self.savepath = ''
+            if self._savepath is None:
+                self.savepath = ''
 
-        self._acquiring.set()
+            self._acquiring.set()
 
-        self._executor = ThreadPoolExecutor(max_workers=20)
+            self._executor = ThreadPoolExecutor(max_workers=20)
 
-        for i, cam in enumerate(self._cameras_list):
-            self._executor.submit(self._grab_frames, i)
-            self._executor.submit(self._writer, i)
+            for i, cam in enumerate(self._cameras_list):
+                self._executor.submit(self._grab_frames, i)
+                self._executor.submit(self._writer, i)
 
-        print(f"[INFO] Grabbing started with {self._nb_cams} camera{'s' if self._nb_cams > 1 else ''}...")
+            if not self._silent:
+                print(f"[INFO] Grabbing started with {self._nb_cams} camera{'s' if self._nb_cams > 1 else ''}...")
 
     def off(self) -> NoReturn:
 
-        self.pause()
-        self._acquiring.clear()
+        if self._acquiring.is_set():
+            self.pause()
+            self._acquiring.clear()
 
-        self.ICarray.StopGrabbing()
-        for cam in self._cameras_list:
-            cam.stop_grabbing()
+            self.ICarray.StopGrabbing()
+            for cam in self._cameras_list:
+                cam.stop_grabbing()
 
-        if self._triggered:
-            self.trigger.off()
+            if self._triggered:
+                self.trigger.off()
 
-        self._soft_reset()
-        print(f'[INFO] Grabbing stopped.')
+            self._soft_reset()
+            if not self._silent:
+                print(f'[INFO] Grabbing stopped.')
 
     @property
     def savepath(self) -> Path:
@@ -496,13 +524,13 @@ class Manager:
     @property
     def indices_buf(self) -> multiprocessing.RawArray:
         if self._grabbed_frames_idx is None:
-            print('Please connect at least 1 camera first.')
+            print('[ERROR] Please connect at least 1 camera first.')
         return self._grabbed_frames_idx
 
     @property
     def indices(self) -> np.array:
         if self._grabbed_frames_idx is None:
-            print('Please connect at least 1 camera first.')
+            print('[ERROR] Please connect at least 1 camera first.')
         return np.frombuffer(self._grabbed_frames_idx, dtype=np.uintc)
 
     @property

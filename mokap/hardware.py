@@ -24,7 +24,7 @@ config.read('config.conf')
 
 ##
 
-def setup_ulimit():
+def setup_ulimit(silent=True):
     out = os.popen('ulimit -H -n')
     hard_limit = int(out.read().strip('\n'))
 
@@ -32,10 +32,12 @@ def setup_ulimit():
     current_limit = int(out.read().strip('\n'))
 
     if current_limit < 2048:
-        print(f'[WARN] Current file descriptors limit is too small (n={current_limit}), increasing it to maximum value (n={hard_limit})')
+        if not silent:
+            print(f'[WARN] Current file descriptors limit is too small (n={current_limit}), increasing it to maximum value (n={hard_limit})')
         os.popen(f'ulimit -n {hard_limit}')
     else:
-        print(f'[INFO] Current file descriptors limit seems fine (n={current_limit})')
+        if not silent:
+            print(f'[INFO] Current file descriptors limit seems fine (n={current_limit})')
 
 
 def enable_usb(hub_number):
@@ -247,8 +249,6 @@ class Camera:
                 self._idx = - Camera.unknown_cams
                 self._color = '#f0a108'
 
-        print(f"Camera [S/N {self.serial}]: id={self._idx}, name={self._name}, col={self._color}")
-
         self.ptr.UserSetSelector.SetValue("Default")
         self.ptr.UserSetLoad.Execute()
         self.ptr.AcquisitionMode.Value = 'Continuous'
@@ -278,6 +278,8 @@ class Camera:
         self.binning = self._binning
         self.framerate = self._framerate
         self.exposure = self._exposure
+
+        print(f"Camera [S/N {self.serial}] (id={self._idx}, name={self._name}, col={self._color} initialised).")
 
     def disconnect(self) -> NoReturn:
         if self._connected:
