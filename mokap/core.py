@@ -1,8 +1,8 @@
 import random
-import threading
-import multiprocessing
+from threading import Event, Lock
+from multiprocessing import RawArray
 from concurrent.futures import ThreadPoolExecutor
-from typing import NoReturn, Union
+from typing import NoReturn, Union, List, Dict
 from pathlib import Path
 import time
 from datetime import datetime
@@ -17,7 +17,9 @@ from mokap.utils import ensure_list
 from scipy import ndimage
 import cv2
 from multiprocessing import Process
-
+import imageio
+import math
+import json
 
 ##
 
@@ -35,8 +37,8 @@ class MotionDetector:
                                  [1, 1, 1],
                                  [0, 1, 0]],
                                 np.uint8)
-        self._running = multiprocessing.Event()
-        self._movement = multiprocessing.Event()
+        self._running = Event()
+        self._movement = Event()
 
         log_path = Path(files_op.data_folder / f'detection_cam_{self._id}_{time.strftime("%y%m%d-%H%M%S", time.localtime())}.log')
 
@@ -71,7 +73,6 @@ class MotionDetector:
             print("[ERROR] Camera is not ready... Try again?")
             return
 
-        cap.set(cv2.CAP_PROP_FPS, framerate)
         shape = first_frame.shape
 
         detection_start = time.time()
@@ -123,7 +124,7 @@ class MotionDetector:
                     if self._movement.is_set():
                         text += ' - [ACTIVE]'
 
-                    detection = cv2.putText(detection, text, (30, 30),
+                    detection = cv2.putText(frame, text, (30, 30),
                                         fontFace=cv2.FONT_HERSHEY_SIMPLEX,
                                         fontScale=1,
                                         color=(255, 0, 255),
@@ -183,10 +184,10 @@ class Manager:
 
         self._executor = None
 
-        self._acquiring = threading.Event()
-        self._recording = threading.Event()
+        self._acquiring = Event()
+        self._recording = Event()
 
-        self._file_access_lock = threading.Lock()
+        self._file_access_lock = Lock()
         self._zarr_length = 36000
         self._z_frames = None
 
@@ -279,10 +280,10 @@ class Manager:
 
         self._nb_cams = len(self._cameras_list)
 
-        self._grabbed_frames_idx = multiprocessing.RawArray('I', self._nb_cams)
-        self._saved_frms_idx = multiprocessing.RawArray('I', self._nb_cams)
+        self._grabbed_frames_idx = RawArray('I', self._nb_cams)
+        self._saved_frms_idx = RawArray('I', self._nb_cams)
 
-        self._finished_saving = [threading.Event()] * self._nb_cams
+        self._finished_saving = [Event()] * self._nb_cams
 
     @property
     def framerate(self) -> int:
@@ -362,8 +363,8 @@ class Manager:
                              'triggered': cam.triggered,
                              'name': cam.name}
 
-        self._grabbed_frames_idx = multiprocessing.RawArray('I', self._nb_cams)
-        self._saved_frms_idx = multiprocessing.RawArray('I', self._nb_cams)
+        self._grabbed_frames_idx = RawArray('I', self._nb_cams)
+        self._saved_frms_idx = RawArray('I', self._nb_cams)
 
     def _trim_storage(self, mode='min') -> NoReturn:
 
@@ -462,7 +463,7 @@ class Manager:
         self._start_times = []
         self._stop_times = []
 
-        self._saved_frms_idx = multiprocessing.RawArray('I', self._nb_cams)
+        self._saved_frms_idx = RawArray('I', self._nb_cams)
         self._executor = None
 
     def record(self) -> NoReturn:
@@ -557,7 +558,7 @@ class Manager:
         return self._recording.is_set()
 
     @property
-    def indices_buf(self) -> multiprocessing.RawArray:
+    def indices_buf(self) -> RawArray:
         if self._grabbed_frames_idx is None:
             print('[ERROR] Please connect at least 1 camera first.')
         return self._grabbed_frames_idx
@@ -584,3 +585,418 @@ class Manager:
         else:
             c = self._cameras_list[i]
         return np.frombuffer(self._frames_buffers[i], dtype=np.uint8).reshape(c.height, c.width)
+
+
+
+class Manager2:
+
+    def __init__(self,
+                 framerate=220,
+                 exposure=4318,
+                 triggered=False,
+                 binning=1,
+                 silent=True):
+
+        setup_ulimit(silent=silent)
+
+        self._silent: bool = silent
+
+        self._binning: int = binning
+        self._exposure: int = exposure
+        self._framerate: int = framerate
+        self._triggered: bool = triggered
+
+        self._savepath: Union[Path, None] = None
+        self._acquisition_name: str = ''
+
+        self._executor: Union[ThreadPoolExecutor, None] = None
+
+        self._acquiring: Event = Event()
+        self._recording: Event = Event()
+
+        self._frames_queue: deque = deque()
+        self._frames_buffers: List[bytearray] = []
+
+        self._nb_cams: int = 0
+        self._cameras_list: List[Camera] = []
+        self._cameras_dict = {}
+        self._attributes = {}
+
+        self._video_writers: List[imageio.plugins.ffmpeg.FfmpegFormat.Writer] = []
+
+        self.trigger: Union[SSHTrigger, None] = None
+        self.ICarray: Union[py.InstantCameraArray, None] = None
+
+        self._grabbed_frames_idx: RawArray = None
+        self._saved_frms_idx: RawArray = None
+        self._finished_saving: List[Event] = []
+
+    @property
+    def triggered(self) -> bool:
+        return self._triggered
+
+    @triggered.setter
+    def triggered(self, value: bool):
+        if not self._triggered and value is True:
+            external_trigger = SSHTrigger()
+            if external_trigger.connected:
+                self.trigger = external_trigger
+                self._triggered = True
+                if not self._silent:
+                    print('[INFO] Trigger mode enabled.')
+            else:
+                print("[ERROR] Connection problem with the trigger. Trigger mode can't be enabled.")
+                self.trigger = None
+                self._triggered = False
+        elif self._triggered and value is False:
+            self.trigger = None
+            self._triggered = False
+            if not self._silent:
+                print('[INFO] Trigger mode disabled.')
+
+        # TODO - Refresh cameras on trigger mode change
+
+    def list_devices(self):
+        real_cams, virtual_cams = get_basler_devices()
+        devices = real_cams + virtual_cams
+        if not self._silent:
+            print(f"[INFO] Found {len(devices)} camera{'s' if self._nb_cams > 1 else ''} connected ({len(real_cams)} physical, {len(virtual_cams)} virtual).")
+
+        return devices
+
+    def connect(self, specific_cams=None):
+
+        if specific_cams is not None:
+            specific_cams = ensure_list(specific_cams)
+            connected_cams = self.list_devices()
+            devices = [d for d in connected_cams if d.GetSerialNumber() in specific_cams]
+            ignored = len(connected_cams) - len(devices)
+            if not self._silent:
+                print(f"[WARN] Ignoring {ignored} camera{'s' if ignored > 1 else ''}.")
+        else:
+            devices = self.list_devices()
+
+        nb_cams = len(devices)
+        self.ICarray = py.InstantCameraArray(nb_cams)
+
+        # Create the cameras and put them in auto-sorting CamList
+        for i in range(nb_cams):
+            dptr, cptr = devices[i], self.ICarray[i]
+            cptr.Attach(py.TlFactory.GetInstance().CreateDevice(dptr))
+            cam = Camera(framerate=self._framerate,
+                         exposure=self._exposure,
+                         triggered=self._triggered,
+                         binning=self._binning)
+            cam.connect(cptr)
+            self._cameras_list.append(cam)
+            self._cameras_dict[cam.name] = cam
+            if not self._silent:
+                print(f"[INFO] Attached {cam}.")
+
+        self._cameras_list.sort(key=lambda x: (x.idx))
+
+        # Once again for the buffers, this time using the sorted list
+        self._frames_buffers = []
+        self._frames_queue = []
+        for i, cam in enumerate(self._cameras_list):
+            self._frames_buffers.append(bytearray(b'\0' * cam.height * cam.width))
+            self._frames_queue.append(deque())
+
+        self._nb_cams = len(self._cameras_list)
+
+        self._grabbed_frames_idx = RawArray('I', self._nb_cams)
+        self._saved_frms_idx = RawArray('I', self._nb_cams)
+
+        self._finished_saving = [Event()] * self._nb_cams
+
+    @property
+    def framerate(self) -> int:
+        return self._framerate
+
+    @framerate.setter
+    def framerate(self, value: int) -> NoReturn:
+        self._framerate = value
+        for i, cam in enumerate(self._cameras_list):
+            cam.framerate = value
+            self._attributes[f"cam{i}"]['framerate'] = value
+
+    @property
+    def exposure(self) -> int:
+        return self._exposure
+
+    @exposure.setter
+    def exposure(self, value: int) -> NoReturn:
+        self._exposure = value
+        for i, cam in enumerate(self._cameras_list):
+            cam.exposure = value
+            self._attributes[f"cam{i}"]['exposure'] = value
+
+    @property
+    def binning(self) -> int:
+        return self._binning
+
+    @binning.setter
+    def binning(self, value: int) -> NoReturn:
+        self._binning = value
+        for i, cam in enumerate(self._cameras_list):
+            cam.binning = value
+            # And update the bytearray to the new size
+            self._frames_buffers[i] = bytearray(b'\0' * cam.height * cam.width)
+            self._attributes[f"cam{i}"]['binning'] = value
+
+    def disconnect(self) -> NoReturn:
+        self.ICarray.Close()
+        for cam in self._cameras_list:
+            cam.disconnect()
+
+        self._cameras_list = []
+        self.ICarray = None
+        if not self._silent:
+            print(f"[INFO] Disconnected {self._nb_cams} camera{'s' if self._nb_cams > 1 else ''}.")
+        self._nb_cams = 0
+
+    def _reload_attributes(self) -> None:
+        with open(self._savepath / f'{self._acquisition_name}.json', 'r') as f:
+            return json.load(f)
+
+    def _write_attributes(self, attributes: Union[Dict, None] = None) -> None:
+
+        if attributes is None:
+            attributes = {}
+            for cam in self._cameras_list:
+                attributes[f"cam{cam.idx}"] = {'binning': cam.binning,
+                                               'width': cam.width,
+                                               'height': cam.height,
+                                               'framerate': cam.framerate,
+                                               'exposure': cam.exposure,
+                                               'triggered': cam.triggered,
+                                               'name': cam.name}
+
+                attributes['times'] = {'start_times': [],
+                                         'end_times': []}
+
+        with open(self._savepath / f'{self._acquisition_name}.json', 'w') as f:
+            f.write(json.dumps(attributes))
+
+    def _init_storage(self) -> NoReturn:
+
+        self._video_writers = []
+        for i, cam in enumerate(self._cameras_list):
+            writer = imageio.get_writer(
+                f'{self.savepath}/{self._acquisition_name}_cam{i}.mp4',      # mkv players often support H.264
+                fps=cam.framerate,
+                codec='libx264',
+                quality=None,                           # disables variable compression
+                pixelformat='gray',
+                ffmpeg_params=[
+                    '-preset',                          # set to faster, veryfast, superfast, ultrafast
+                    'veryfast',                         # for higher speed but worse compression
+                    '-crf',                             # quality; set to 0 for lossless, but keep in mind
+                    '1'                                 # that the camera probably adds static anyway
+                ], macro_block_size=math.gcd(cam.height, cam.width, 16))
+
+            self._video_writers.append(writer)
+
+        self._write_attributes()
+
+        self._grabbed_frames_idx = RawArray('I', self._nb_cams)
+        self._saved_frms_idx = RawArray('I', self._nb_cams)
+
+    def _writer_orig(self, cam_idx: int) -> NoReturn:
+
+        fps = self._cameras_list[cam_idx].framerate
+
+        min_wait = 1/(fps * 0.1)
+        max_wait = 1/(fps * 0.5)
+
+        writer = self._video_writers[cam_idx]
+
+        saving_started = False
+
+        while self._acquiring.is_set():
+
+            time.sleep(random.uniform(min_wait, max_wait))
+
+            data, self._frames_queue[cam_idx] = self._frames_queue[cam_idx], deque()
+
+            if len(data) > 0:
+                if not saving_started:
+                    saving_started = True
+
+                for frame in data:
+                    writer.append_data(frame)
+                    self._saved_frms_idx[cam_idx] += 1
+
+                if saving_started and not self._recording.is_set():
+                    self._finished_saving[cam_idx].set()
+        # writer.close()
+
+    def _grab_frames(self, cam_idx: int) -> NoReturn:
+
+        cam = self._cameras_list[cam_idx]
+        cam.start_grabbing()
+
+        grabbed_frames = 0
+
+        while self._acquiring.is_set():
+
+            with cam.ptr.RetrieveResult(100, py.TimeoutHandling_Return) as res:
+                if res and res.GrabSucceeded():
+                    frame_idx = res.ImageNumber
+                    framedata = res.GetArray()
+                    res.Release()
+
+                    self._frames_buffers[cam_idx][:] = framedata.data.tobytes()
+                    self._grabbed_frames_idx[cam_idx] = frame_idx
+
+                    if self._recording.is_set():
+
+                        if frame_idx > grabbed_frames:
+                            self._frames_queue[cam_idx].append(framedata)
+                            grabbed_frames += 1
+
+    def _reset_name(self):
+        if self._savepath is not None:
+            files_op.rm_if_empty(self._savepath)
+        self._acquisition_name = ''
+        self._savepath = None
+
+    def _soft_reset(self) -> NoReturn:
+
+        if self._savepath is not None:
+            (self._savepath / 'recording').unlink(missing_ok=True)
+
+        self._reset_name()
+
+        self._start_times = []
+        self._stop_times = []
+
+        self._video_writers = []
+
+        self._saved_frms_idx = RawArray('I', self._nb_cams)
+        self._executor = None
+
+    def record(self) -> NoReturn:
+
+        if not self._recording.is_set():
+            self._recording.set()
+
+            (self._savepath / 'recording').touch()
+
+            attributes = self._reload_attributes()
+            attributes['times']['start_times'].append(int(datetime.now().strftime('%s')))
+            self._write_attributes(attributes)
+
+            if not self._silent:
+                print('[INFO] Recording started...')
+
+    def pause(self) -> NoReturn:
+        if self._recording.is_set():
+            self._recording.clear()
+
+            attributes = self._reload_attributes()
+            attributes['times']['end_times'].append(int(datetime.now().strftime('%s')))
+            self._write_attributes(attributes)
+
+            if not self._silent:
+                print('[INFO] Finishing saving...')
+            [e.wait() for e in self._finished_saving]
+
+            if not self._silent:
+                print('[INFO] Done saving.')
+
+    def on(self) -> NoReturn:
+
+        if not self._acquiring.is_set():
+            if self._triggered:
+                # Start trigger thread on the RPi
+                self.trigger.start(self._framerate, 250000)
+                time.sleep(0.5)
+
+            if self._savepath is None:
+                self.savepath = ''
+
+            self._acquiring.set()
+
+            self._executor = ThreadPoolExecutor(max_workers=20)
+
+            for i, cam in enumerate(self._cameras_list):
+                self._executor.submit(self._grab_frames, i)
+                self._executor.submit(self._writer, i)
+
+            if not self._silent:
+                print(f"[INFO] Grabbing started with {self._nb_cams} camera{'s' if self._nb_cams > 1 else ''}...")
+
+    def off(self) -> NoReturn:
+
+        if self._acquiring.is_set():
+            self.pause()
+            self._acquiring.clear()
+
+            self.ICarray.StopGrabbing()
+            for cam in self._cameras_list:
+                cam.stop_grabbing()
+
+            if self._triggered:
+                self.trigger.off()
+
+            self._soft_reset()
+            if not self._silent:
+                print(f'[INFO] Grabbing stopped.')
+
+    @property
+    def savepath(self) -> Path:
+        return self._savepath
+
+    @savepath.setter
+    def savepath(self, value='') -> NoReturn:
+
+        self.pause()
+        self._soft_reset()
+
+        self._savepath = files_op.mk_folder(name=value)
+        self._acquisition_name = self._savepath.stem
+
+        self._init_storage()
+
+    @property
+    def nb_cameras(self) -> int:
+        return self._nb_cams
+
+    @property
+    def acquiring(self) -> bool:
+        return self._acquiring.is_set()
+
+    @property
+    def recording(self) -> bool:
+        return self._recording.is_set()
+
+    @property
+    def indices_buf(self) -> RawArray:
+        if self._grabbed_frames_idx is None:
+            print('[ERROR] Please connect at least 1 camera first.')
+        return self._grabbed_frames_idx
+
+    @property
+    def indices(self) -> np.array:
+        if self._grabbed_frames_idx is None:
+            print('[ERROR] Please connect at least 1 camera first.')
+        return np.frombuffer(self._grabbed_frames_idx, dtype=np.uintc)
+
+    @property
+    def cameras(self) -> list[Camera]:
+        return self._cameras_list
+
+    def get_current_framebuffer(self, i: int = None) -> Union[bytearray, list[bytearray]]:
+        if i is None:
+            return self._frames_buffers
+        else:
+            return self._frames_buffers[i]
+
+    def get_current_framearray(self, i: Union[str, int]) -> np.array:
+        if type(i) is str:
+            c = self._cameras_dict[i]
+        else:
+            c = self._cameras_list[i]
+        return np.frombuffer(self._frames_buffers[i], dtype=np.uint8).reshape(c.height, c.width)
+

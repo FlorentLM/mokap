@@ -12,6 +12,9 @@ import shlex
 videos_folder = Path('/mnt/data/Videos')
 data_folder = Path('/mnt/data/RawFrames')
 
+# videos_folder = Path('/mnt/storage/ForelegsExpVideos')
+# data_folder = Path('/mnt/storage/ForelegsExp')
+
 # videos_folder = Path('F:\\Videos')
 # data_folder = Path('F:\\RawFrames')
 
@@ -118,6 +121,7 @@ def natural_sort_key(s):
 def videos_from_zarr(filepath, cams=None, format=None, force=False):
 
     filepath = Path(filepath)
+    print(filepath)
 
     if (filepath / 'recording').exists() and not force:
         return
