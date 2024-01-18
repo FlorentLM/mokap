@@ -15,7 +15,7 @@ mgr = Manager2()
 mgr.exposure = 4000
 
 # Enable binning
-mgr.binning = 2
+mgr.binning = 1
 
 mgr.connect()
 

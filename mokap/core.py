@@ -302,6 +302,7 @@ class Manager2:
 
         self._grabbed_frames_counter = RawArray('L', self._nb_cams)
         self._displayed_frames_counter = RawArray('L', self._nb_cams)
+        self._saved_frames_counter = RawArray('L', self._nb_cams)
         self._finished_saving = [Event()] * self._nb_cams
 
     @property
@@ -371,8 +372,8 @@ class Manager2:
 
                 for frame in data:
                     img = Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1)
-                    self._saved_frms_idx[cam_idx] += 1
-                    img.save(folder / f"{str(self._saved_frms_idx[cam_idx]).zfill(9)}.bmp")
+                    self._saved_frames_counter[cam_idx] += 1
+                    img.save(folder / f"{str(self._saved_frames_counter[cam_idx]).zfill(9)}.bmp")
 
                 if saving_started and not self._recording.is_set():
                     self._finished_saving[cam_idx].set()
@@ -417,7 +418,8 @@ class Manager2:
         self._start_times = []
         self._stop_times = []
 
-        self._saved_frms_idx = RawArray('I', self._nb_cams)
+        self._displayed_frames_counter = RawArray('L', self._nb_cams)
+        self._saved_frames_counter = RawArray('L', self._nb_cams)
         self._executor = None
 
     def record(self) -> NoReturn:
