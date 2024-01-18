@@ -394,13 +394,12 @@ class Manager2:
     def _grab_frames(self, cam_idx: int) -> NoReturn:
 
         cam = self._cameras_list[cam_idx]
-        handler = self._frames_handlers_list[cam_idx]
 
-        cam.ptr.RegisterImageEventHandler(handler, py.RegistrationMode_ReplaceAll, py.Cleanup_None)
+        cam.ptr.RegisterImageEventHandler(self._frames_handlers_list[cam_idx], py.RegistrationMode_ReplaceAll, py.Cleanup_None)
         cam.start_grabbing()
 
         while self._acquiring.is_set():
-            res = cam.ptr.RetrieveResult(100, py.TimeoutHandling_Return)
+            cam.ptr.RetrieveResult(100, py.TimeoutHandling_Return)
 
     def _reset_name(self):
         if self._savepath is not None:
@@ -418,6 +417,7 @@ class Manager2:
         self._start_times = []
         self._stop_times = []
 
+        self._grabbed_frames_counter = RawArray('L', self._nb_cams)
         self._displayed_frames_counter = RawArray('L', self._nb_cams)
         self._saved_frames_counter = RawArray('L', self._nb_cams)
         self._executor = None
