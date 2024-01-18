@@ -22,6 +22,7 @@ config = configparser.ConfigParser()
 config.read('config.conf')
 
 
+
 ##
 
 def setup_ulimit(silent=True):
@@ -297,7 +298,7 @@ class Camera:
 
     def start_grabbing(self) -> NoReturn:
         if self._connected:
-            self.ptr.StartGrabbing(py.GrabStrategy_LatestImages)
+            self.ptr.StartGrabbing(py.GrabStrategy_OneByOne, py.GrabLoop_ProvidedByInstantCamera)
             self._is_grabbing = True
         else:
             print(f"{self.name.title()} camera is not connected.")
@@ -400,14 +401,13 @@ class Camera:
                     self.ptr.AcquisitionFrameRateAbs = new_framerate
                 else:
                     self.ptr.AcquisitionFrameRateEnable.SetValue(True)
-                    self.ptr.AcquisitionFrameRate = 220.0
+                    self.ptr.AcquisitionFrameRate.SetValue(220.0)
 
-                    f = np.round(self.ptr.ResultingFrameRate.GetValue() - 0.5 * 10 ** (-2),
-                                 2)  # custom floor with decimals
+                    f = np.round(self.ptr.ResultingFrameRate.GetValue() - 0.5 * 10 ** (-2),2)  # custom floor with decimals
                     new_framerate = min(value, f)
 
-                    self.ptr.AcquisitionFrameRate = new_framerate
                     self.ptr.AcquisitionFrameRateEnable.SetValue(True)
+                    self.ptr.AcquisitionFrameRate.SetValue(new_framerate)
 
                 self._framerate = new_framerate
 

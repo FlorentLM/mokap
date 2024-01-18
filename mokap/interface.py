@@ -250,7 +250,9 @@ class VideoWindow:
 
         if self.parent.mgr.acquiring:
             if self.parent.current_buffers is not None:
-                frame = np.frombuffer(self.parent.current_buffers[self.idx], dtype=np.uint8).reshape(self._source_shape)
+                buf = self.parent.current_buffers[self.idx]
+                if buf is not None:
+                    frame = np.frombuffer(buf, dtype=np.uint8).reshape(self._source_shape)
         else:
             frame = np.random.randint(0, 255, self.video_dims, dtype='<u1')
 
