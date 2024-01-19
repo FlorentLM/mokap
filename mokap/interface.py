@@ -8,6 +8,7 @@ from threading import Thread, Event
 import screeninfo
 import colorsys
 from scipy import ndimage
+import platform
 
 
 def hex_to_hls(hex_str: str):
@@ -93,7 +94,14 @@ class VideoWindow:
             [0, 1, 0],
             [0, 0, 0]], dtype=np.uint8)
 
-        self._imgfnt = ImageFont.truetype("Pillow/Tests/fonts/FreeMonoBold.ttf", 30)
+        if 'Linux' in platform.system():
+            self._imgfnt = ImageFont.truetype("Pillow/Tests/fonts/FreeMonoBold.ttf", 30)
+        elif 'Windows' in platform.system():
+            self._imgfnt = ImageFont.truetype("arial.ttf", 30)
+        elif 'Darwin'  in platform.system():
+            self._imgfnt = ImageFont.truetype("Keyboard.ttf", 30)
+        else:
+            self._imgfnt = ImageFont.load_default()
 
         # Variable texts
         self.title_var = tk.StringVar()

@@ -42,13 +42,15 @@ def setup_ulimit(silent=True):
 
 
 def enable_usb(hub_number):
-    out = os.popen(f'uhubctl -l {hub_number} -a 1')
-    ret = out.read()
+    if 'Linux' in platform.system():
+        out = os.popen(f'uhubctl -l {hub_number} -a 1')
+        ret = out.read()
 
 
 def disable_usb(hub_number):
-    out = os.popen(f'uhubctl -l {hub_number} -a 0')
-    ret = out.read()
+    if 'Linux' in platform.system():
+        out = os.popen(f'uhubctl -l {hub_number} -a 0')
+        ret = out.read()
 
 
 def get_basler_devices(max_cams=None, allow_virtual=None) -> tuple[list[py.DeviceInfo], list[py.DeviceInfo]]:

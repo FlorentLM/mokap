@@ -14,7 +14,7 @@ from scipy import ndimage
 import cv2
 from multiprocessing import Process
 from PIL import Image
-
+import platform
 
 ##
 
@@ -188,7 +188,8 @@ class Manager2:
                  binning=1,
                  silent=True):
 
-        setup_ulimit(silent=silent)
+        if 'Linux' in platform.system():
+            setup_ulimit(silent=silent)
 
         self._display_framerate = 60
         self._silent: bool = silent
