@@ -435,12 +435,12 @@ class Manager2:
         if self._recording.is_set():
             self._recording.clear()
 
-        if not self._silent:
-            print('[INFO] Finishing saving...')
-        [e.wait() for e in self._finished_saving]
+            if not self._silent:
+                print('[INFO] Finishing saving...')
+            [e.wait() for e in self._finished_saving]
 
-        if not self._silent:
-            print('[INFO] Done saving.')
+            if not self._silent:
+                print('[INFO] Done saving.')
 
     def on(self) -> None:
 
