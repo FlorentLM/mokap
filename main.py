@@ -3,7 +3,7 @@ from mokap.interface import GUI
 from mokap.core import Manager2
 from mokap.hardware import enable_usb, disable_usb
 
-enable_usb('4-2')
+# enable_usb('4-2')
 # disable_usb('4-2')
 
 mgr = Manager2()

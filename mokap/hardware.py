@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 import pypylon.pylon as py
 from numcodecs import blosc
 import configparser
-from sys import platform
+import platform
 import subprocess
 import cv2
 import warnings
