@@ -1,5 +1,5 @@
 import subprocess
-from typing import NoReturn, List, Optional, Set, Tuple, Union
+from typing import List, Optional, Set, Tuple, Union
 import numpy as np
 from scipy import ndimage
 
@@ -43,11 +43,11 @@ def compute_focus_plan(img, axis):
     return plan
 
 
-def USB_on() -> NoReturn:
+def USB_on() -> None:
     subprocess.Popen(["uhubctl", "-l", "4-2", "-a", "1"], stdout=subprocess.PIPE)
 
 
-def USB_off() -> NoReturn:
+def USB_off() -> None:
     subprocess.Popen(["uhubctl", "-l", "4-2", "-a", "0"], stdout=subprocess.PIPE)
 
 

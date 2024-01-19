@@ -1,27 +1,20 @@
-import random
-from threading import Event, Lock
+from threading import Event
 from multiprocessing import RawArray
 from concurrent.futures import ThreadPoolExecutor
-from typing import NoReturn, Union, List, Dict
+from typing import NoReturn, Union, List
 from pathlib import Path
 import time
-from datetime import datetime
 import numpy as np
 import pypylon.pylon as py
 import mokap.files_op as files_op
 from collections import deque
-import zarr
-from numcodecs import Blosc, Delta
 from mokap.hardware import SSHTrigger, Camera, setup_ulimit, get_basler_devices, config
 from mokap.utils import ensure_list
 from scipy import ndimage
 import cv2
 from multiprocessing import Process
-import imageio
-import math
-import json
 from PIL import Image
-import copy
+
 
 ##
 
@@ -42,7 +35,8 @@ class MotionDetector:
         self._running = Event()
         self._movement = Event()
 
-        log_path = Path(files_op.data_folder / f'detection_cam_{self._id}_{time.strftime("%y%m%d-%H%M%S", time.localtime())}.log')
+        log_path = Path(
+            files_op.data_folder / f'detection_cam_{self._id}_{time.strftime("%y%m%d-%H%M%S", time.localtime())}.log')
 
         self._worker = Process(target=self._worker_func, args=(cam_id, thresh, lag, framerate, preview, log_path))
 
@@ -127,10 +121,10 @@ class MotionDetector:
                         text += ' - [ACTIVE]'
 
                     detection = cv2.putText(frame, text, (30, 30),
-                                        fontFace=cv2.FONT_HERSHEY_SIMPLEX,
-                                        fontScale=1,
-                                        color=(255, 0, 255),
-                                        thickness=3)
+                                            fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                                            fontScale=1,
+                                            color=(255, 0, 255),
+                                            thickness=3)
 
                     cv2.imshow(f'Preview (Cam {cam_id})', detection)
                     cv2.waitKey(1)
@@ -153,7 +147,6 @@ class MotionDetector:
         detection = cv2.morphologyEx(motion_mask, cv2.MORPH_CLOSE, se1)
         detection = cv2.morphologyEx(detection, cv2.MORPH_OPEN, se2)
 
-        # filtered = ndimage.minimum_filter(composite, footprint=self._kernel)
         filtered = ndimage.gaussian_filter(detection, 1)
         _, filtered = cv2.threshold(filtered, 50, 255, cv2.THRESH_BINARY)
 
@@ -197,6 +190,7 @@ class Manager2:
 
         setup_ulimit(silent=silent)
 
+        self._display_framerate = 60
         self._silent: bool = silent
 
         self._binning: int = binning
@@ -216,6 +210,7 @@ class Manager2:
         self._lastframe_buffers_list: List[RawArray] = []
         self._grabbed_frames_counter: Union[RawArray, None] = None
         self._displayed_frames_counter: Union[RawArray, None] = None
+        self._saved_frames_counter: Union[RawArray, None] = None
 
         self._nb_cams: int = 0
         self._cameras_list: List[Camera] = []
@@ -256,7 +251,8 @@ class Manager2:
         real_cams, virtual_cams = get_basler_devices()
         devices = real_cams + virtual_cams
         if not self._silent:
-            print(f"[INFO] Found {len(devices)} camera{'s' if self._nb_cams > 1 else ''} connected ({len(real_cams)} physical, {len(virtual_cams)} virtual).")
+            print(f"[INFO] Found {len(devices)} camera{'s' if self._nb_cams > 1 else ''} connected "
+                  f"({len(real_cams)} physical, {len(virtual_cams)} virtual).")
 
         return devices
 
@@ -289,7 +285,7 @@ class Manager2:
             if not self._silent:
                 print(f"[INFO] Attached {cam}.")
 
-        self._cameras_list.sort(key=lambda x: (x.idx))
+        self._cameras_list.sort(key=lambda x: x.idx)
 
         # Once again for the buffers, this time using the sorted list
         self._frames_handlers_list = []
@@ -310,7 +306,7 @@ class Manager2:
         return self._framerate
 
     @framerate.setter
-    def framerate(self, value: int) -> NoReturn:
+    def framerate(self, value: int) -> None:
         self._framerate = value
         for i, cam in enumerate(self._cameras_list):
             cam.framerate = value
@@ -320,7 +316,7 @@ class Manager2:
         return self._exposure
 
     @exposure.setter
-    def exposure(self, value: int) -> NoReturn:
+    def exposure(self, value: int) -> None:
         self._exposure = value
         for i, cam in enumerate(self._cameras_list):
             cam.exposure = value
@@ -330,14 +326,14 @@ class Manager2:
         return self._binning
 
     @binning.setter
-    def binning(self, value: int) -> NoReturn:
+    def binning(self, value: int) -> None:
         self._binning = value
         for i, cam in enumerate(self._cameras_list):
             cam.binning = value
             # And update the buffer to the new size
             self._lastframe_buffers_list[i] = RawArray('B', cam.height * cam.width)
 
-    def disconnect(self) -> NoReturn:
+    def disconnect(self) -> None:
         self.ICarray.Close()
         for cam in self._cameras_list:
             cam.disconnect()
@@ -348,7 +344,7 @@ class Manager2:
             print(f"[INFO] Disconnected {self._nb_cams} camera{'s' if self._nb_cams > 1 else ''}.")
         self._nb_cams = 0
 
-    def _init_storage(self) -> NoReturn:
+    def _init_storage(self) -> None:
         pass
 
     def _writer_frames(self, cam_idx: int) -> NoReturn:
@@ -359,12 +355,14 @@ class Manager2:
         folder = self.savepath / f"cam{cam_idx}"
         folder.mkdir(parents=True, exist_ok=True)
 
+        handler = self._frames_handlers_list[cam_idx]
+
         saving_started = False
 
         while self._acquiring.is_set():
 
             # Swap frames buffers
-            data, self._frames_handlers_list[cam_idx].frames = self._frames_handlers_list[cam_idx].frames, deque()
+            data, handler.frames = handler.frames, deque()
 
             if len(data) > 0:
                 if not saving_started:
@@ -378,15 +376,14 @@ class Manager2:
                 if saving_started and not self._recording.is_set():
                     self._finished_saving[cam_idx].set()
             else:
-                time.sleep(0.1)
-                continue
+                time.sleep((1 / self.framerate) * 0.9)
 
     def _update_display_buffers(self, cam_idx: int) -> NoReturn:
 
         handler = self._frames_handlers_list[cam_idx]
 
         while self._acquiring.is_set():
-            time.sleep(1/60)
+            time.sleep((1 / self._display_framerate) * 0.9)
             self._lastframe_buffers_list[cam_idx] = handler.latest
             self._displayed_frames_counter[cam_idx] += 1
             self._grabbed_frames_counter[cam_idx] = handler.indice
@@ -395,19 +392,21 @@ class Manager2:
 
         cam = self._cameras_list[cam_idx]
 
-        cam.ptr.RegisterImageEventHandler(self._frames_handlers_list[cam_idx], py.RegistrationMode_ReplaceAll, py.Cleanup_None)
+        cam.ptr.RegisterImageEventHandler(self._frames_handlers_list[cam_idx],
+                                          py.RegistrationMode_ReplaceAll,
+                                          py.Cleanup_None)
         cam.start_grabbing()
 
         while self._acquiring.is_set():
             cam.ptr.RetrieveResult(100, py.TimeoutHandling_Return)
 
-    def _reset_name(self):
+    def _reset_name(self) -> None:
         if self._savepath is not None:
             files_op.rm_if_empty(self._savepath)
         self._acquisition_name = ''
         self._savepath = None
 
-    def _soft_reset(self) -> NoReturn:
+    def _soft_reset(self) -> None:
 
         if self._savepath is not None:
             (self._savepath / 'recording').unlink(missing_ok=True)
@@ -422,7 +421,7 @@ class Manager2:
         self._saved_frames_counter = RawArray('L', self._nb_cams)
         self._executor = None
 
-    def record(self) -> NoReturn:
+    def record(self) -> None:
 
         if not self._recording.is_set():
             self._recording.set()
@@ -432,18 +431,18 @@ class Manager2:
             if not self._silent:
                 print('[INFO] Recording started...')
 
-    def pause(self) -> NoReturn:
+    def pause(self) -> None:
         if self._recording.is_set():
             self._recording.clear()
 
-            if not self._silent:
-                print('[INFO] Finishing saving...')
-            [e.wait() for e in self._finished_saving]
+        if not self._silent:
+            print('[INFO] Finishing saving...')
+        [e.wait() for e in self._finished_saving]
 
-            if not self._silent:
-                print('[INFO] Done saving.')
+        if not self._silent:
+            print('[INFO] Done saving.')
 
-    def on(self) -> NoReturn:
+    def on(self) -> None:
 
         if not self._acquiring.is_set():
             if self._triggered:
@@ -466,7 +465,7 @@ class Manager2:
             if not self._silent:
                 print(f"[INFO] Grabbing started with {self._nb_cams} camera{'s' if self._nb_cams > 1 else ''}...")
 
-    def off(self) -> NoReturn:
+    def off(self) -> None:
 
         if self._acquiring.is_set():
             self.pause()
@@ -477,7 +476,7 @@ class Manager2:
                 cam.stop_grabbing()
 
             if self._triggered:
-                self.trigger.off()
+                self.trigger.stop()
 
             self._soft_reset()
             if not self._silent:
@@ -488,7 +487,7 @@ class Manager2:
         return self._savepath
 
     @savepath.setter
-    def savepath(self, value='') -> NoReturn:
+    def savepath(self, value='') -> None:
 
         self.pause()
         self._soft_reset()
@@ -529,10 +528,8 @@ class Manager2:
     def get_current_framebuffer(self, i: int = None) -> Union[bytearray, list[bytearray]]:
         if i is None:
             return self._lastframe_buffers_list
-            # return self._frames_handlers_list
         else:
             return self._lastframe_buffers_list[i]
-            # return self._frames_handlers_list[i].latest
 
     def get_current_framearray(self, i: Union[str, int]) -> np.array:
         if type(i) is str:
@@ -540,5 +537,3 @@ class Manager2:
         else:
             c = self._cameras_list[i]
         return np.frombuffer(self._lastframe_buffers_list[i], dtype=np.uint8).reshape(c.height, c.width)
-        # return np.frombuffer(self._frames_handlers_list[i].latest, dtype=np.uint8).reshape(c.height, c.width)
-

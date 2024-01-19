@@ -3,7 +3,6 @@ import subprocess as sp
 import zarr
 from pathlib import Path
 from datetime import datetime
-import numpy as np
 import shutil
 import shlex
 
@@ -22,18 +21,19 @@ data_folder = Path('/mnt/data/RawFrames')
 ##
 
 COMPRESSED = {'codec': 'libx265',
-                'params': '-crf 1 -preset veryfast',
-                'ftype': 'mp4'}
+              'params': '-crf 1 -preset veryfast',
+              'ftype': 'mp4'}
 
 LOSSLESS_1 = {'codec': 'ffv1',
-                'params': '-level 3',
-                'ftype': 'avi'}
+              'params': '-level 3',
+              'ftype': 'avi'}
 
 LOSSLESS_2 = {'codec': 'libx265',
-                'params': '-x265-params lossless=1 -preset veryfast',
-                'ftype': 'mp4'}
+              'params': '-x265-params lossless=1 -preset veryfast',
+              'ftype': 'mp4'}
 
 DEFAULT_FMT = COMPRESSED
+
 
 ##
 
@@ -62,7 +62,6 @@ def exists_check(path):
 
 
 def mk_folder(name=''):
-
     if name == '':
         name = datetime.now().strftime('%y%m%d-%H%M')
 
@@ -95,7 +94,7 @@ def rm_if_empty(path):
             # if only one thing, and this file is a .zarr, check if it is empty
             if second_child is None and first_child.suffix == '.zarr':
                 generator_2 = (first_child / 'frames').glob('*')
-                first_child_2 = next(generator_2)   # This should be the .zarray hidden file
+                first_child_2 = next(generator_2)  # This should be the .zarray hidden file
                 try:
                     second_child_2 = next(generator)
                     # if more than the .zarray, stop
@@ -119,7 +118,6 @@ def natural_sort_key(s):
 
 
 def videos_from_zarr(filepath, cams=None, format=None, force=False):
-
     filepath = Path(filepath)
     print(filepath)
 
@@ -163,16 +161,16 @@ def videos_from_zarr(filepath, cams=None, format=None, force=False):
         for s in range(sessions):
             start, end = root['times'][s]
             delta += end - start
-        print(np.timedelta64(1, 's'))
-        total_time_s = delta / np.timedelta64(1, 's')
 
-        fps_calc = nb_frames/total_time_s
+        total_time_s = delta  # / np.timedelta64(1, 's')
 
-        stats = f"\nFramerate:\n"\
-              f"---------\n"\
-              f"Theoretical:\n  {fps_raw:.2f} fps\n"\
-              f"Actual (mean):\n  {fps_calc:.2f} fps\n"\
-              f"--> Error = {(1-(fps_calc/fps_raw))*100:.2f}%"
+        fps_calc = nb_frames / total_time_s
+
+        stats = f"\nFramerate:\n" \
+                f"---------\n" \
+                f"Theoretical:\n  {fps_raw:.2f} fps\n" \
+                f"Actual (mean):\n  {fps_calc:.2f} fps\n" \
+                f"--> Error = {(1 - (fps_calc / fps_raw)) * 100:.2f}%"
 
         print(stats)
 
@@ -187,7 +185,11 @@ def videos_from_zarr(filepath, cams=None, format=None, force=False):
         savepath = outfolder / (outname + conv_settings["ftype"])
 
         process = sp.Popen(shlex.split(
-            f'ffmpeg -y -s {w}x{h} -pix_fmt gray -f rawvideo -r {fps_calc:.2f} -i pipe: -c:v {conv_settings["codec"]} {conv_settings["params"]} -pix_fmt gray -an {savepath.as_posix()}'),
+            f'ffmpeg -y -s {w}x{h}'
+            f'-pix_fmt gray -f rawvideo'
+            f'-r {fps_calc:.2f} -i pipe:'
+            f'-c:v {conv_settings["codec"]} {conv_settings["params"]}'
+            f'-pix_fmt gray -an {savepath.as_posix()}'),
             stdin=sp.PIPE)
 
         for i in range(nb_frames):
@@ -202,15 +204,14 @@ def videos_from_zarr(filepath, cams=None, format=None, force=False):
         print(f'Done creating {outname + conv_settings["ftype"]}.')
 
 
-def convert_videos(path, filter='*', output_format=None, delete_source=False):
-
+def convert_videos(path, name_filter='*', output_format=None, delete_source=False):
     path = Path(path)
 
     if path.is_file():
         to_convert = [path]
         ftype = 'file'
     else:
-        to_convert = list(path.glob(filter))
+        to_convert = list(path.glob(name_filter))
         ftype = 'folder contents'
 
     if output_format is not None:
@@ -234,7 +235,11 @@ def convert_videos(path, filter='*', output_format=None, delete_source=False):
         if output_name == f.name:
             f = f.rename(f.parent / f'{f.stem}_orig{f.suffix}')
 
-        process = sp.Popen(shlex.split(f'ffmpeg -i {f.as_posix()} -c:v {conv_settings["codec"]} {conv_settings["params"]} -pix_fmt gray -an {savepath.as_posix()}'))
+        process = sp.Popen(shlex.split(
+            f'ffmpeg -i {f.as_posix()}'
+            f'-c:v {conv_settings["codec"]} {conv_settings["params"]}'
+            f'-pix_fmt gray'
+            f'-an {savepath.as_posix()}'))
 
         process.wait()
         process.terminate()
@@ -245,7 +250,7 @@ def convert_videos(path, filter='*', output_format=None, delete_source=False):
 
     print(f'Done converting {path.name} {ftype}.')
 
-#
+
 # def update_names(path, filter='*'):
 #
 #     path = Path(path)

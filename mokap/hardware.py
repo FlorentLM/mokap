@@ -1,4 +1,3 @@
-from typing import NoReturn, Any, Union
 import time
 import numpy as np
 import mokap.utils as utils
@@ -12,6 +11,7 @@ import subprocess
 import cv2
 import warnings
 from cryptography.utils import CryptographyDeprecationWarning
+
 with warnings.catch_warnings():
     warnings.filterwarnings('ignore', category=CryptographyDeprecationWarning)
     import paramiko
@@ -20,7 +20,6 @@ blosc.use_threads = False
 
 config = configparser.ConfigParser()
 config.read('config.conf')
-
 
 
 ##
@@ -34,7 +33,8 @@ def setup_ulimit(silent=True):
 
     if current_limit < 2048:
         if not silent:
-            print(f'[WARN] Current file descriptors limit is too small (n={current_limit}), increasing it to maximum value (n={hard_limit})')
+            print(f'[WARN] Current file descriptors limit is too small (n={current_limit}), '
+                  f'increasing it to maximum value (n={hard_limit})')
         os.popen(f'ulimit -n {hard_limit}')
     else:
         if not silent:
@@ -52,7 +52,6 @@ def disable_usb(hub_number):
 
 
 def get_basler_devices(max_cams=None, allow_virtual=None) -> tuple[list[py.DeviceInfo], list[py.DeviceInfo]]:
-
     if max_cams is None:
         if 'GENERAL' in config.sections():
             max_cams = config['GENERAL'].getint('max_cams', 99)
@@ -88,11 +87,10 @@ def get_basler_devices(max_cams=None, allow_virtual=None) -> tuple[list[py.Devic
 
 
 def get_webcam_devices():
-
     if platform == "linux" or platform == "linux2":
         result = subprocess.run(["ls", "/dev/"],
-                                 stdout=subprocess.PIPE,
-                                 text=True)
+                                stdout=subprocess.PIPE,
+                                text=True)
         devices = [int(v.replace('video', '')) for v in result.stdout.split() if 'video' in v]
     elif platform == "darwin":
         raise OSError('macOS is not yet supported, sorry!')
@@ -121,15 +119,18 @@ def get_webcam_devices():
     cv2.setLogLevel(prev_log_level)
     return working_ports
 
-def ping(ip: str) -> NoReturn:
+
+def ping(ip: str) -> None:
     r = subprocess.Popen(["ping", "-c", "1", ip], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if r.returncode == 1:
         raise ConnectionError(f'{ip} is unreachable :(\nCheck Wireguard status!')
+
 
 ##
 
 class SSHTrigger:
     """ Class to communicate with the hardware Trigger via SSH """
+
     def __init__(self):
         self._connected = False
 
@@ -157,7 +158,7 @@ class SSHTrigger:
     def connected(self) -> bool:
         return self._connected
 
-    def start(self, frequency: float, duration: float, highs_pct=50) -> NoReturn:
+    def start(self, frequency: float, duration: float, highs_pct=50) -> None:
         """ Starts the trigger loop on the RPi """
         interval, count = utils.to_ticks(frequency, duration + 1)
 
@@ -170,7 +171,7 @@ class SSHTrigger:
         self.client.exec_command(f'~/CameraArray/trigger.sh {cycles} {high} {low}')
         print(f"\n[INFO] Trigger started for {duration} seconds at {frequency} Hz")
 
-    def stop(self) -> NoReturn:
+    def stop(self) -> None:
         self.client.exec_command(f'sudo killall pigpiod')
         time.sleep(0.25)
         self.client.exec_command(f'~/CameraArray/zero.sh')
@@ -181,7 +182,6 @@ class SSHTrigger:
 ##
 
 class Camera:
-
     virtual_cams = 0
     unknown_cams = 0
 
@@ -191,6 +191,7 @@ class Camera:
                  triggered=True,
                  binning=1):
 
+        self._color = None
         self._ptr = None
         self._dptr = None
 
@@ -216,7 +217,7 @@ class Camera:
         else:
             return f"{self.name.title()} camera not connected"
 
-    def connect(self, cam_ptr=None) -> NoReturn:
+    def connect(self, cam_ptr=None) -> None:
 
         if cam_ptr is None:
             real_cams, virtual_cams = get_basler_devices()
@@ -282,7 +283,7 @@ class Camera:
 
         print(f"Camera [S/N {self.serial}] (id={self._idx}, name={self._name}, col={self._color} initialised).")
 
-    def disconnect(self) -> NoReturn:
+    def disconnect(self) -> None:
         if self._connected:
             if self._is_grabbing:
                 self.stop_grabbing()
@@ -296,14 +297,14 @@ class Camera:
             self._width = config['GENERAL'].getint('sensor_w')
             self._height = config['GENERAL'].getint('sensor_h')
 
-    def start_grabbing(self) -> NoReturn:
+    def start_grabbing(self) -> None:
         if self._connected:
             self.ptr.StartGrabbing(py.GrabStrategy_OneByOne, py.GrabLoop_ProvidedByInstantCamera)
             self._is_grabbing = True
         else:
             print(f"{self.name.title()} camera is not connected.")
 
-    def stop_grabbing(self) -> NoReturn:
+    def stop_grabbing(self) -> None:
         if self._connected:
             self.ptr.StopGrabbing()
             self._is_grabbing = False
@@ -347,7 +348,7 @@ class Camera:
         return self._binning
 
     @binning.setter
-    def binning(self, value: int) -> NoReturn:
+    def binning(self, value: int) -> None:
         assert value in [1, 2, 3, 4]
         if self._connected:
             if 'virtual' not in self.name:
@@ -370,7 +371,7 @@ class Camera:
         self._binning = value
 
     @exposure.setter
-    def exposure(self, value: int) -> NoReturn:
+    def exposure(self, value: int) -> None:
         if self._connected:
             if 'virtual' in self.name:
                 self.ptr.ExposureTimeAbs = value
@@ -385,7 +386,7 @@ class Camera:
         return self._framerate
 
     @framerate.setter
-    def framerate(self, value: float) -> NoReturn:
+    def framerate(self, value: float) -> None:
         if self._connected:
             if self.triggered:
                 print(f'[WARN] Trying to set framerate on a hardware-triggered camera ([{self._name}])')
@@ -403,7 +404,8 @@ class Camera:
                     self.ptr.AcquisitionFrameRateEnable.SetValue(True)
                     self.ptr.AcquisitionFrameRate.SetValue(220.0)
 
-                    f = np.round(self.ptr.ResultingFrameRate.GetValue() - 0.5 * 10 ** (-2),2)  # custom floor with decimals
+                    # custom floor with decimals
+                    f = np.round(self.ptr.ResultingFrameRate.GetValue() - 0.5 * 10 ** (-2), 2)
                     new_framerate = min(value, f)
 
                     self.ptr.AcquisitionFrameRateEnable.SetValue(True)

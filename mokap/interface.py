@@ -9,6 +9,7 @@ import screeninfo
 import colorsys
 from scipy import ndimage
 
+
 def hex_to_hls(hex_str: str):
     hex_str = hex_str.lstrip('#')
     if len(hex_str) == 3:
@@ -26,7 +27,6 @@ def hls_to_hex(h, l, s):
 
 
 def compute_windows_size(source_dims, screen_dims):
-
     screenh, screenw = screen_dims[:2]
     sourceh, sourcew = source_dims[:2].max(axis=1)
 
@@ -47,10 +47,9 @@ def compute_windows_size(source_dims, screen_dims):
 
 
 class VideoWindow:
-
     videowindows_ids = []
 
-    INFO_PANEL_MIN_H = 180   # in pixels
+    INFO_PANEL_MIN_H = 180  # in pixels
 
     def __init__(self, parent):
 
@@ -90,9 +89,9 @@ class VideoWindow:
         self._display_focus.clear()
 
         self._kernel = np.array([
-                                [0, 0, 0],
-                                [0, 1, 0],
-                                [0, 0, 0]], dtype=np.uint8)
+            [0, 0, 0],
+            [0, 1, 0],
+            [0, 0, 0]], dtype=np.uint8)
 
         self._imgfnt = ImageFont.truetype("Pillow/Tests/fonts/FreeMonoBold.ttf", 30)
 
@@ -137,7 +136,7 @@ class VideoWindow:
         display_fps_label.pack(fill=tk.BOTH)
 
         display_brightness_label = tk.Label(infoframe, fg="black", anchor=tk.W, justify='left',
-                                     font=parent.regular, textvariable=self.display_brightness_var)
+                                            font=parent.regular, textvariable=self.display_brightness_var)
         display_brightness_label.pack(fill=tk.BOTH)
 
         controls_layout_frame = tk.Frame(self.window, height=self.INFO_PANEL_MIN_H, width=w)
@@ -146,26 +145,26 @@ class VideoWindow:
         framerate_frame = tk.Frame(controls_layout_frame)
         framerate_frame.pack(side=tk.TOP, fill=tk.X, expand=True)
         framerate_slider_label = tk.Label(framerate_frame, fg="black", anchor=tk.SE, justify='right',
-                                     font=parent.regular, text='Framerate (fps):')
+                                          font=parent.regular, text='Framerate (fps):')
         framerate_slider_label.pack(side=tk.LEFT, fill=tk.Y, expand=False)
         self.framerate_slider = tk.Scale(framerate_frame, from_=1, to=220, orient=tk.HORIZONTAL,
-                                    width=9, sliderlength=9)
+                                         width=9, sliderlength=9)
         self.framerate_slider.set(self.parent.mgr.cameras[self.idx].framerate)
         self.framerate_slider.bind("<ButtonRelease-1>", self.update_framerate)
         self.framerate_slider.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         apply_fps_all_button = tk.Button(framerate_frame, text="Apply to all", font=self.parent.regular,
-                                              command=self._update_fps_all_cams)
+                                         command=self._update_fps_all_cams)
         apply_fps_all_button.pack(padx=2, fill=tk.BOTH, side=tk.LEFT)
 
         exposure_frame = tk.Frame(controls_layout_frame)
         exposure_frame.pack(side=tk.TOP, fill=tk.X, expand=True)
         exposure_slider_label = tk.Label(exposure_frame, fg="black", anchor=tk.SE, justify='right',
-                                          font=parent.regular, text='Exposure (µs)  :')
+                                         font=parent.regular, text='Exposure (µs)  :')
 
         exposure_slider_label.pack(side=tk.LEFT, fill=tk.Y, expand=False)
         self.exposure_slider = tk.Scale(exposure_frame, from_=4300, to=25000,
-                                   orient=tk.HORIZONTAL, width=9, sliderlength=9)
+                                        orient=tk.HORIZONTAL, width=9, sliderlength=9)
         self.exposure_slider.set(self.parent.mgr.cameras[self.idx].exposure)
         self.exposure_slider.bind("<ButtonRelease-1>", self.update_exposure)
         self.exposure_slider.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -182,7 +181,7 @@ class VideoWindow:
         self.exposure_var.set(f"Exposure   : {self.parent.mgr.cameras[self.idx].exposure} µs")
 
         show_focus_button = tk.Button(controls_layout_frame, text="Show focus", font=self.parent.regular,
-                                        command=self._toggle_focus_display)
+                                      command=self._toggle_focus_display)
         show_focus_button.pack(padx=2, fill=tk.BOTH, side=tk.LEFT)
 
     @property
@@ -198,7 +197,7 @@ class VideoWindow:
         self.framerate_slider.set(self.parent.mgr.cameras[self.idx].framerate)
 
         self.parent._capture_clock = datetime.now()
-        self.parent._start_indices[:] = self.parent.mgr.indices
+        self.parent.start_indices[:] = self.parent.mgr.indices
 
     def update_exposure(self, event=None):
         new_exp = self.exposure_slider.get()
@@ -284,14 +283,14 @@ class VideoWindow:
         try:
             self.video_canvas.configure(image=imgtk)
             self.imagetk = imgtk
-        except Exception:
+        except Exception as e:
+            print(e)
             # If new image is garbage collected too early, do nothing - this prevents the image from flashing
             pass
 
     def update(self):
 
         while True:
-
             # Update display fps counter
             now = datetime.now()
             dt = (now - self._clock).total_seconds()
@@ -346,14 +345,13 @@ class VideoWindow:
 
 
 class GUI:
-
     # Values below are in pixels
     PADDING = 0
 
     # These depend on the OS and the user's theme...
-    WBORDER_TH = 4      # [KDE System Settings > Appearance > Window Decorations > Window border size]
-    WTITLEBAR_H = 31    # [KDE System Settings > Appearance > Window Decorations]
-    TASKBAR_H = 44      # [KDE Plasma 'Task Manager' widget > Panel height]
+    WBORDER_TH = 4  # [KDE System Settings > Appearance > Window Decorations > Window border size]
+    WTITLEBAR_H = 31  # [KDE System Settings > Appearance > Window Decorations]
+    TASKBAR_H = 44  # [KDE Plasma 'Task Manager' widget > Panel height]
 
     WBORDERS_W = WBORDER_TH * 2
     WBORDERS_H = WTITLEBAR_H + WBORDER_TH * 2
@@ -361,6 +359,7 @@ class GUI:
     def __init__(self, mgr):
 
         # Detect monitors and pick the default one
+        self._selected_monitor = None
         self._monitors = screeninfo.get_monitors()
         self.set_monitor()
 
@@ -382,7 +381,8 @@ class GUI:
         self._capture_fps = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
         self._capture_clock = datetime.now()
         self._now_indices = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
-        self._start_indices = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
+
+        self.start_indices = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
 
         self._counter = 0
 
@@ -415,13 +415,13 @@ class GUI:
         w = self.max_videowindows_dims[1]
         h = int(self.max_videowindows_dims[0] // 2.1)
         x = (self.screen_dims[1] // 2 - w // 2) + self.screen_dims[2]
-        y = (self.max_videowindows_dims[0] * 2) + self.screen_dims[3]   # TODO - improve positioning
+        y = (self.max_videowindows_dims[0] * 2) + self.screen_dims[3]  # TODO - improve positioning
         self.root.geometry(f"{w}x{h}+{x}+{y}")
 
         # Create control window
         self._create_controls()
 
-        self.update()               # Called once to init
+        self.update()  # Called once to init
         self.root.mainloop()
 
     @property
@@ -513,7 +513,7 @@ class GUI:
         pathname_label.pack(ipadx=ipadx, fill=tk.X)
 
         self.pathname_textbox = tk.Entry(pathname_frame, bg='white', fg='black', textvariable=self.userentry_var,
-                                    font=self.regular, state='disabled')
+                                         font=self.regular, state='disabled')
         self.pathname_textbox.pack(padx=padx, fill=tk.BOTH, side=tk.LEFT, expand=True)
 
         self.pathname_button = tk.Button(pathname_frame,
@@ -578,7 +578,8 @@ class GUI:
                 a = '#515151'
             else:
                 a = '#c0c0c0'
-            self.monitors_buttons.create_rectangle(x + 2, y + 2, x + 2 + w, y + 2 + h, fill=a, outline='', tag=f'screen_{i}')
+            self.monitors_buttons.create_rectangle(x + 2, y + 2, x + 2 + w, y + 2 + h, fill=a, outline='',
+                                                   tag=f'screen_{i}')
 
     def screen_update(self, val):
         old_monitor_x, old_monitor_y = self._selected_monitor.x, self._selected_monitor.y
@@ -600,9 +601,9 @@ class GUI:
 
     def _handle_keypress(self, event):
         match event.keycode:
-            case 9:     # Esc
+            case 9:  # Esc
                 self.quit()
-            case 65:    # Space
+            case 65:  # Space
                 self.gui_toggle_recording()
             case _:
                 pass
@@ -654,7 +655,7 @@ class GUI:
             self.mgr.on()
 
             self._capture_clock = datetime.now()
-            self._start_indices[:] = self.mgr.indices
+            self.start_indices[:] = self.mgr.indices
 
             self.button_start.config(state="disabled")
             self.button_stop.config(state="normal")
@@ -663,7 +664,6 @@ class GUI:
     def gui_snow(self):
 
         if self.mgr.acquiring:
-
             self.gui_pause()
             self.mgr.off()
 
@@ -697,7 +697,7 @@ class GUI:
             capture_dt = (now - self._capture_clock).total_seconds()
 
             self._now_indices[:] = self.mgr.indices
-            self._capture_fps = (self._now_indices - self._start_indices) / capture_dt
+            self._capture_fps = (self._now_indices - self.start_indices) / capture_dt
 
             self._current_buffers = self.mgr.get_current_framebuffer()
 
