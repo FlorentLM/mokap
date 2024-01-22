@@ -313,7 +313,7 @@ class Camera:
 
     def start_grabbing(self) -> None:
         if self._connected:
-            self.ptr.StartGrabbing(py.GrabStrategy_OneByOne, py.GrabLoop_ProvidedByInstantCamera)
+            self.ptr.StartGrabbing(py.GrabStrategy_OneByOne, py.GrabLoop_ProvidedByUser)
             self._is_grabbing = True
         else:
             print(f"{self.name.title()} camera is not connected.")
