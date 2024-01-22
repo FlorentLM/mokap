@@ -35,7 +35,7 @@ def setup_ulimit(wanted_value=8192, silent=True):
     if ret == 'unlimited':
         hard_limit = np.inf
     else:
-        hard_limit = int()
+        hard_limit = int(ret)
 
     out = os.popen('ulimit -n')
     current_limit = int(out.read().strip('\n'))
@@ -43,7 +43,7 @@ def setup_ulimit(wanted_value=8192, silent=True):
     if current_limit < wanted_value:
         if not silent:
             print(f'[WARN] Current file descriptors limit is too small (n={current_limit}), '
-                  f'increasing it to maximum value (n={wanted_value})')
+                  f'increasing it to {wanted_value} (max={hard_limit}).')
         os.popen(f'ulimit -n {wanted_value}')
     else:
         if not silent:

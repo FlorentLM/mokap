@@ -95,11 +95,20 @@ class VideoWindow:
             [0, 0, 0]], dtype=np.uint8)
 
         if 'Linux' in platform.system():
-            self._imgfnt = ImageFont.truetype("Pillow/Tests/fonts/FreeMonoBold.ttf", 30)
+            try:
+                self._imgfnt = ImageFont.truetype("DejaVuSans-Bold.ttf", 30)
+            except OSError:
+                self._imgfnt = ImageFont.load_default()
         elif 'Windows' in platform.system():
-            self._imgfnt = ImageFont.truetype("arial.ttf", 30)
-        elif 'Darwin'  in platform.system():
-            self._imgfnt = ImageFont.truetype("Keyboard.ttf", 30)
+            try:
+                self._imgfnt = ImageFont.truetype("arial-bold.ttf", 30)
+            except OSError:
+                self._imgfnt = ImageFont.load_default()
+        elif 'Darwin' in platform.system():
+            try:
+                self._imgfnt = ImageFont.truetype("KeyboardBold.ttf", 30)
+            except OSError:
+                self._imgfnt = ImageFont.load_default()
         else:
             self._imgfnt = ImageFont.load_default()
 
