@@ -1,5 +1,25 @@
 # Installation
 
+## Basler Pylon SDK
+
+* Download the installer package for your system: https://www2.baslerweb.com/en/downloads/software-downloads/
+
+###### Linux-specific post-install
+* You need to increase the limit on file descriptors and USB memory.
+    Basler provides a script to do so automatically, but it may not completely work on all distros.
+
+    Run `sudo chmod +x /opt/pylon/share/pylon/setup-usb.sh` and `sudo /opt/pylon/share/pylon/setup-usb.sh` (assuming you installed the Pylon SDK to the default `/opt/pylon` directory)
+
+* **Note:** Basler's default increase on USB memory is 1000 Mib. This is, in our case, **not enough** for more than 3 USB cameras. 
+  You can increase it even further by modifying the `/sys/module/usbcore/parameters/usbfs_memory_mb` file.
+  A values of `2048` is enough for our 5 cameras.
+* **Note:** On Arch-based systems, Basler's script is not sufficient. You need to manually add the line `DefaultLimitNOFILE=8192` to `/etc/systemd/user.conf`
+* On systems that do not use GRUB, if you want to the USB memory setting to be persistent, Basler's script won't work. You need to change your bootloader options manually.
+    
+    For instance, EndeavourOS uses systemd-boot: edit `/efi/loader/entries/YOURDISTRO.conf` (replace `YOURDISTRO` by the name of the entry for your system, typically the machine-id in the case of EndeavourOS) and add `usbcore.usbfs_memory_mb=2048` to the `options` line.
+
+## Mokap
+
 ### Windows and Linux
 
 #### Miniconda:
@@ -8,7 +28,7 @@
 * Create environment `conda env create --file=environment.yml`
 
 ###### Linux-specific optional dependencies
-  * (Optional) Install [uhubctl](https://github.com/mvp/uhubctl) and follow the [post-install instructions](https://github.com/mvp/uhubctl#linux-usb-permissions).
+  * (Optional) Install [uhubctl](https://github.com/mvp/uhubctl) and follow their [post-install instructions](https://github.com/mvp/uhubctl#linux-usb-permissions).
 
 # Usage
 
@@ -52,7 +72,7 @@ or
     
     Too many open files. Reached open files limit
 
-**Fix**:  Increase the number of file descriptors: `ulimit -n $(ulimit -H -n)`
+**Fix**:  Increase the number of file `nofile` file descriptors: `ulimit -n 8192` (or more)
 
 _Note_: mokap normally does this automatically
 

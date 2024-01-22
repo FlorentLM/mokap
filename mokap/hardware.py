@@ -24,18 +24,27 @@ config.read('config.conf')
 
 ##
 
-def setup_ulimit(silent=True):
-    out = os.popen('ulimit -H -n')
-    hard_limit = int(out.read().strip('\n'))
+def setup_ulimit(wanted_value=8192, silent=True):
+    """
+    Sets up the maximum number of open file descriptors for nofile processes.
+    It is required to run multiple (i.e. more than 4) Basler cameras at a time.
+    """
+    out = os.popen('ulimit')
+    ret = out.read().strip('\n')
+
+    if ret == 'unlimited':
+        hard_limit = np.inf
+    else:
+        hard_limit = int()
 
     out = os.popen('ulimit -n')
     current_limit = int(out.read().strip('\n'))
 
-    if current_limit < 2048:
+    if current_limit < wanted_value:
         if not silent:
             print(f'[WARN] Current file descriptors limit is too small (n={current_limit}), '
-                  f'increasing it to maximum value (n={hard_limit})')
-        os.popen(f'ulimit -n {hard_limit}')
+                  f'increasing it to maximum value (n={wanted_value})')
+        os.popen(f'ulimit -n {wanted_value}')
     else:
         if not silent:
             print(f'[INFO] Current file descriptors limit seems fine (n={current_limit})')
