@@ -267,6 +267,9 @@ class Camera:
         self.ptr.AcquisitionMode.Value = 'Continuous'
         self.ptr.ExposureMode = 'Timed'
 
+        self.ptr.DeviceLinkThroughputLimitMode.SetValue('On')
+        self.ptr.DeviceLinkThroughputLimit.SetValue(342000000)
+
         if 'virtual' not in self.name:
 
             self.ptr.ExposureTimeMode.SetValue('Standard')

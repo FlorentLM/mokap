@@ -20,7 +20,7 @@ mgr.binning = 1
 mgr.connect()
 
 # Set framerate in images per second
-mgr.framerate = 220
+mgr.framerate = 50
 
 if __name__ == '__main__':
     if mgr.nb_cameras == 0:
