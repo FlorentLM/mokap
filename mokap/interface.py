@@ -24,24 +24,13 @@ def hls_to_hex(h, l, s):
     return new_hex
 
 
-def whxy(what):
-    if isinstance(what, screeninfo.common.Monitor):
-        print(f'Monitor geometry: width={int(what.width)}, height={int(what.height)}, x={int(what.x)}, y={int(what.y)}')
-        return int(what.width), int(what.height), int(what.x), int(what.y)
-    elif isinstance(what, tk.Toplevel) or isinstance(what, tk.Tk):
-        dims, x, y = what.geometry().split('+')
-        w, h = dims.split('x')
-        print(f'{isinstance(what, tk.Toplevel)} geometry: width={int(w)}, height={int(h)}, x={int(x)}, y={int(y)}')
-        return int(w), int(h), int(x), int(y)
-
-
 def compute_windows_size(source_dims, screen_dims):
     screenh, screenw = screen_dims[:2]
     sourceh, sourcew = source_dims[:2].max(axis=1)
 
     # For 2x3 screen grid
-    max_window_w = screenw // 3 - GUI.WBORDERS_W
-    max_window_h = (screenh - GUI.TASKBAR_H) // 2 - GUI.WBORDERS_H - VideoWindow.INFO_PANEL_MIN_H
+    max_window_w = screenw // 3
+    max_window_h = screenh // 2 - VideoWindow.INFO_PANEL_MIN_H
 
     # Scale it up or down, so it fits half the screen height
     if sourceh / max_window_h >= sourcew / max_window_w:
@@ -68,7 +57,7 @@ class VideoWindow:
         self.idx = len(VideoWindow.videowindows_ids)
         VideoWindow.videowindows_ids.append(self.idx)
 
-        self._source_shape = (self.parent.mgr.cameras[self.idx].height, self.parent.mgr.cameras[self.idx].width)
+        self._source_shape = (self.parent.mgr.cameras[self.idx].width, self.parent.mgr.cameras[self.idx].height)
         self._cam_name = self.parent.mgr.cameras[self.idx].name
         self._bg_color = self.parent.mgr.cameras[self.idx].color
 
@@ -79,7 +68,9 @@ class VideoWindow:
         else:
             self._fg_color = '#000000'
 
-        # self.window.wm_aspect(w, h, w, h)
+        h, w = parent.max_videowindows_dims
+        self.window.geometry(f"{w}x{h}")
+        self.window.wm_aspect(w, h, w, h)
         self.window.protocol("WM_DELETE_WINDOW", self.toggle_visibility)
 
         # Init state
@@ -138,7 +129,7 @@ class VideoWindow:
         title.pack(fill=tk.BOTH)
 
         # Create info frame
-        infoframe = tk.Frame(self.window, height=self.INFO_PANEL_MIN_H)
+        infoframe = tk.Frame(self.window, height=self.INFO_PANEL_MIN_H, width=w)
         infoframe.pack(padx=8, pady=8, side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         resolution_label = tk.Label(infoframe, fg="black", anchor=tk.W, justify='left',
@@ -161,7 +152,7 @@ class VideoWindow:
                                             font=parent.regular, textvariable=self.display_brightness_var)
         display_brightness_label.pack(fill=tk.BOTH)
 
-        controls_layout_frame = tk.Frame(self.window, height=self.INFO_PANEL_MIN_H)
+        controls_layout_frame = tk.Frame(self.window, height=self.INFO_PANEL_MIN_H, width=w)
         controls_layout_frame.pack(padx=8, pady=8, side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         framerate_frame = tk.Frame(controls_layout_frame)
@@ -205,6 +196,13 @@ class VideoWindow:
         show_focus_button = tk.Button(controls_layout_frame, text="Show focus", font=self.parent.regular,
                                       command=self._toggle_focus_display)
         show_focus_button.pack(padx=2, fill=tk.BOTH, side=tk.LEFT)
+
+    @property
+    def whxy(self):
+        dims = self.window.geometry()
+        wh, x, y = dims.split('+')
+        w, h = wh.split('x')
+        return [int(s) for s in [w, h, x, y]]
 
     def update_framerate(self, event=None):
         new_fps = self.framerate_slider.get()
@@ -363,7 +361,6 @@ class VideoWindow:
 class GUI:
     # Values below are in pixels
     PADDING = 0
-
     CONTROLS_WIDTH = 600
     CONTROLS_HEIGHT = 250
 
@@ -376,7 +373,6 @@ class GUI:
 
         # Set up root window
         self.root = tk.Tk()
-
         self.root.wait_visibility(self.root)
         self.root.title("Controls")
         self.root.protocol("WM_DELETE_WINDOW", self.quit)
@@ -406,8 +402,8 @@ class GUI:
         self.userentry_var.set('')
         self.applied_name_var.set('')
 
-        # # Compute optimal video windows sizes
-        # self._max_videowindows_dims = compute_windows_size(self.source_dims, self.screen_dims)
+        # Compute optimal video windows sizes
+        self._max_videowindows_dims = compute_windows_size(self.source_dims, self.screen_dims)
 
         self._reference = None
         self._current_buffers = None
@@ -447,9 +443,18 @@ class GUI:
     def max_videowindows_dims(self):
         return self._max_videowindows_dims
 
+    # @property
+    # def controlwindow_dims(self):
+    #     return np.array([self.root.winfo_height(), self.root.winfo_width()])
+
     @property
     def source_dims(self):
         return np.array([(cam.height, cam.width) for cam in self.mgr.cameras], dtype=np.uint32).T
+
+    @property
+    def screen_dims(self):
+        monitor = self._selected_monitor
+        return np.array([monitor.height, monitor.width, monitor.x, monitor.y], dtype=np.uint32)
 
     def set_monitor(self, idx=None):
         if len(self._monitors) > 1 and idx is None:
@@ -458,6 +463,13 @@ class GUI:
             self._selected_monitor = self._monitors[idx]
         else:
             self._selected_monitor = self._monitors[0]
+
+    @property
+    def whxy(self):
+        dims = self.root.geometry()
+        wh, x, y = dims.split('+')
+        w, h = wh.split('x')
+        return [int(s) for s in [w, h, x, y]]
 
     def nothing(self):
         pass
@@ -587,10 +599,11 @@ class GUI:
         for i, m in enumerate(self._monitors):
             w, h, x, y = m.width // 40, m.height // 40, m.x // 40, m.y // 40
             if m.name == self._selected_monitor.name:
-                a = '#515151'
+                col = '#515151'
             else:
-                a = '#c0c0c0'
-            self.monitors_buttons.create_rectangle(x + 2, y + 2, x + 2 + w, y + 2 + h, fill=a, outline='',
+                col = '#c0c0c0'
+            self.monitors_buttons.create_rectangle(x + 2, y + 2, x + 2 + w, y + 2 + h,
+                                                   fill=col, outline='',
                                                    tag=f'screen_{i}')
 
     def screen_update(self, val):
@@ -599,13 +612,13 @@ class GUI:
         self.set_monitor(val)
         self.update_monitors_buttons()
 
-        w, h, x, y = whxy(self)
+        w, h, x, y = self.whxy
         new_x = x + self._selected_monitor.x - old_monitor_x
         new_y = y + self._selected_monitor.y - old_monitor_y
 
         self.root.geometry(f'{w}x{h}+{new_x}+{new_y}')
         for window in self.video_windows:
-            w, h, x, y = whxy(window)
+            w, h, x, y = window.whxy
             new_x = x + self._selected_monitor.x - old_monitor_x
             new_y = y + self._selected_monitor.y - old_monitor_y
 
