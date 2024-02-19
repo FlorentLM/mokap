@@ -186,6 +186,21 @@ class VideoWindow:
                                          command=self._update_exp_all_cams)
         apply_exp_all_button.pack(padx=2, fill=tk.BOTH, side=tk.LEFT)
 
+        gain_frame = tk.Frame(controls_layout_frame)
+        gain_frame.pack(side=tk.TOP, fill=tk.X, expand=True)
+        gain_slider_label = tk.Label(gain_frame, fg="black", anchor=tk.SE, justify='right',
+                                          font=parent.regular, text='Gain           :')
+        gain_slider_label.pack(side=tk.LEFT, fill=tk.Y, expand=False)
+        self.gain_slider = tk.Scale(gain_frame, from_=0.0, to=24.0, digits=3, resolution=0.01, orient=tk.HORIZONTAL,
+                                         width=9, sliderlength=9)
+        self.gain_slider.set(self.parent.mgr.cameras[self.idx].gain)
+        self.gain_slider.bind("<ButtonRelease-1>", self.update_gain)
+        self.gain_slider.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        apply_gain_all_button = tk.Button(gain_frame, text="Apply to all", font=self.parent.regular,
+                                         command=self._update_gain_all_cams)
+        apply_gain_all_button.pack(padx=2, fill=tk.BOTH, side=tk.LEFT)
+
         # Set static vars
         self.title_var.set(f'{self._cam_name.title()} camera')
         self.window.title(self.title_var.get())
@@ -219,6 +234,10 @@ class VideoWindow:
         self.exposure_var.set(f"Exposure   : {self.parent.mgr.cameras[self.idx].exposure} µs")
         self.update_framerate(event)
 
+    def update_gain(self, event=None):
+        new_gain = self.gain_slider.get()
+        self.parent.mgr.cameras[self.idx].gain = new_gain
+
     def _update_fps_all_cams(self):
         for window in self.parent.video_windows:
             if window is not self:
@@ -232,6 +251,13 @@ class VideoWindow:
                 new_exp = self.exposure_slider.get()
                 window.exposure_slider.set(new_exp)
                 window.update_exposure()
+
+    def _update_gain_all_cams(self):
+        for window in self.parent.video_windows:
+            if window is not self:
+                new_gain = self.gain_slider.get()
+                window.gain_slider.set(new_gain)
+                window.update_gain()
 
     def _toggle_focus_display(self):
         if self._display_focus.is_set():
@@ -442,10 +468,6 @@ class GUI:
     @property
     def max_videowindows_dims(self):
         return self._max_videowindows_dims
-
-    # @property
-    # def controlwindow_dims(self):
-    #     return np.array([self.root.winfo_height(), self.root.winfo_width()])
 
     @property
     def source_dims(self):

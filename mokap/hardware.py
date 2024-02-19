@@ -214,6 +214,7 @@ class Camera:
 
         self._framerate = framerate
         self._exposure = exposure
+        self._gain = 1.0
         self._triggered = triggered
         self._binning = binning
 
@@ -295,6 +296,9 @@ class Camera:
         self.framerate = self._framerate
         self.exposure = self._exposure
 
+        self.ptr.GainAuto.SetValue('Off')
+        self.gain = self.gain
+
         print(f"Camera [S/N {self.serial}] (id={self._idx}, name={self._name}, col={self._color} initialised).")
 
     def disconnect(self) -> None:
@@ -358,6 +362,10 @@ class Camera:
         return self._exposure
 
     @property
+    def gain(self) -> float:
+        return self._gain
+
+    @property
     def binning(self) -> int:
         return self._binning
 
@@ -395,6 +403,13 @@ class Camera:
         # And keep a local value to avoid querying the camera every time we read it
         self._exposure = value
 
+    @gain.setter
+    def gain(self, value: float) -> None:
+        if self._connected:
+            self.ptr.Gain = value
+        # And keep a local value to avoid querying the camera every time we read it
+        self._gain = value
+
     @property
     def framerate(self) -> float:
         return self._framerate
@@ -414,10 +429,10 @@ class Camera:
                                  2)  # custom floor with decimals
                     new_framerate = min(value, f)
 
-                    self.ptr.AcquisitionFrameRate = new_framerate
+                    self.ptr.AcquisitionFrameRateAbs = new_framerate
                 else:
                     self.ptr.AcquisitionFrameRateEnable.SetValue(True)
-                    self.ptr.AcquisitionFrameRateAbs.SetValue(220.0)
+                    self.ptr.AcquisitionFrameRate.SetValue(220.0)
 
                     # custom floor with decimals
                     f = np.round(self.ptr.ResultingFrameRate.GetValue() - 0.5 * 10 ** (-2), 2)

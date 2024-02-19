@@ -186,6 +186,7 @@ class Manager:
                  exposure=4318,
                  triggered=False,
                  binning=1,
+                 gain=1,
                  silent=True):
 
         if 'Linux' in platform.system():
@@ -197,6 +198,7 @@ class Manager:
         self._binning: int = binning
         self._exposure: int = exposure
         self._framerate: int = framerate
+        self._gain: float = gain
         self._triggered: bool = triggered
 
         self._savepath: Union[Path, None] = None
@@ -321,6 +323,16 @@ class Manager:
         self._exposure = value
         for i, cam in enumerate(self._cameras_list):
             cam.exposure = value
+
+    @property
+    def gain(self) -> float:
+        return self._gain
+
+    @gain.setter
+    def gain(self, value: float) -> None:
+        self._gain = value
+        for i, cam in enumerate(self._cameras_list):
+            cam.gain = value
 
     @property
     def binning(self) -> int:
