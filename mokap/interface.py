@@ -9,7 +9,7 @@ import screeninfo
 import colorsys
 from scipy import ndimage
 import platform
-
+from pathlib import Path
 
 def hex_to_hls(hex_str: str):
     hex_str = hex_str.lstrip('#')
@@ -24,7 +24,15 @@ def hls_to_hex(h, l, s):
     return new_hex
 
 
-##
+def whxy(what):
+    if isinstance(what, screeninfo.common.Monitor):
+        print(f'Monitor geometry: width={int(what.width)}, height={int(what.height)}, x={int(what.x)}, y={int(what.y)}')
+        return int(what.width), int(what.height), int(what.x), int(what.y)
+    elif isinstance(what, tk.Toplevel) or isinstance(what, tk.Tk):
+        dims, x, y = what.geometry().split('+')
+        w, h = dims.split('x')
+        print(f'{isinstance(what, tk.Toplevel)} geometry: width={int(w)}, height={int(h)}, x={int(x)}, y={int(y)}')
+        return int(w), int(h), int(x), int(y)
 
 
 def compute_windows_size(source_dims, screen_dims):
@@ -55,7 +63,6 @@ class VideoWindow:
     def __init__(self, parent):
 
         self.window = tk.Toplevel()
-
         self.parent = parent
 
         self.idx = len(VideoWindow.videowindows_ids)
@@ -72,10 +79,8 @@ class VideoWindow:
         else:
             self._fg_color = '#000000'
 
-        h, w = parent.max_videowindows_dims
-        self.window.geometry(f"{w}x{h}")
-        self.window.wm_aspect(w, h, w, h)
-        self.window.protocol("WM_DELETE_WINDOW", self.parent.quit)
+        # self.window.wm_aspect(w, h, w, h)
+        self.window.protocol("WM_DELETE_WINDOW", self.toggle_visibility)
 
         # Init state
         self._counter = 0
@@ -133,7 +138,7 @@ class VideoWindow:
         title.pack(fill=tk.BOTH)
 
         # Create info frame
-        infoframe = tk.Frame(self.window, height=self.INFO_PANEL_MIN_H, width=w)
+        infoframe = tk.Frame(self.window, height=self.INFO_PANEL_MIN_H)
         infoframe.pack(padx=8, pady=8, side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         resolution_label = tk.Label(infoframe, fg="black", anchor=tk.W, justify='left',
@@ -156,7 +161,7 @@ class VideoWindow:
                                             font=parent.regular, textvariable=self.display_brightness_var)
         display_brightness_label.pack(fill=tk.BOTH)
 
-        controls_layout_frame = tk.Frame(self.window, height=self.INFO_PANEL_MIN_H, width=w)
+        controls_layout_frame = tk.Frame(self.window, height=self.INFO_PANEL_MIN_H)
         controls_layout_frame.pack(padx=8, pady=8, side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         framerate_frame = tk.Frame(controls_layout_frame)
@@ -200,13 +205,6 @@ class VideoWindow:
         show_focus_button = tk.Button(controls_layout_frame, text="Show focus", font=self.parent.regular,
                                       command=self._toggle_focus_display)
         show_focus_button.pack(padx=2, fill=tk.BOTH, side=tk.LEFT)
-
-    @property
-    def whxy(self):
-        dims = self.window.geometry()
-        wh, x, y = dims.split('+')
-        w, h = wh.split('x')
-        return [int(s) for s in [w, h, x, y]]
 
     def update_framerate(self, event=None):
         new_fps = self.framerate_slider.get()
@@ -323,9 +321,11 @@ class VideoWindow:
     def toggle_visibility(self):
         if self.visible.is_set():
             self.visible.clear()
+            self.parent._vis_checkboxes[self.idx].set(0)
             self.window.withdraw()
         else:
             self.visible.set()
+            self.parent._vis_checkboxes[self.idx].set(1)
             self.window.deiconify()
 
     @property
@@ -360,18 +360,12 @@ class VideoWindow:
     def current_dims(self):
         return np.array([self.window.winfo_height(), self.window.winfo_width()])
 
-
 class GUI:
     # Values below are in pixels
     PADDING = 0
 
-    # These depend on the OS and the user's theme...
-    WBORDER_TH = 4  # [KDE System Settings > Appearance > Window Decorations > Window border size]
-    WTITLEBAR_H = 31  # [KDE System Settings > Appearance > Window Decorations]
-    TASKBAR_H = 44  # [KDE Plasma 'Task Manager' widget > Panel height]
-
-    WBORDERS_W = WBORDER_TH * 2
-    WBORDERS_H = WTITLEBAR_H + WBORDER_TH * 2
+    CONTROLS_WIDTH = 600
+    CONTROLS_HEIGHT = 250
 
     def __init__(self, mgr):
 
@@ -382,6 +376,7 @@ class GUI:
 
         # Set up root window
         self.root = tk.Tk()
+
         self.root.wait_visibility(self.root)
         self.root.title("Controls")
         self.root.protocol("WM_DELETE_WINDOW", self.quit)
@@ -411,8 +406,8 @@ class GUI:
         self.userentry_var.set('')
         self.applied_name_var.set('')
 
-        # Compute optimal video windows sizes
-        self._max_videowindows_dims = compute_windows_size(self.source_dims, self.screen_dims)
+        # # Compute optimal video windows sizes
+        # self._max_videowindows_dims = compute_windows_size(self.source_dims, self.screen_dims)
 
         self._reference = None
         self._current_buffers = None
@@ -428,12 +423,7 @@ class GUI:
             t.start()
             self.windows_threads.append(t)
 
-        # Deduce control window size and position
-        w = self.max_videowindows_dims[1]
-        h = int(self.max_videowindows_dims[0] // 2.1)
-        x = (self.screen_dims[1] // 2 - w // 2) + self.screen_dims[2]
-        y = (self.max_videowindows_dims[0] * 2) + self.screen_dims[3]  # TODO - improve positioning
-        self.root.geometry(f"{w}x{h}+{x}+{y}")
+        self.root.geometry(f"{self.CONTROLS_WIDTH}x{self.CONTROLS_HEIGHT}")
 
         # Create control window
         self._create_controls()
@@ -458,17 +448,8 @@ class GUI:
         return self._max_videowindows_dims
 
     @property
-    def controlwindow_dims(self):
-        return np.array([self.root.winfo_height(), self.root.winfo_width()])
-
-    @property
     def source_dims(self):
-        return np.array([(cam.height, cam.width) for cam in self.mgr.cameras]).T
-
-    @property
-    def screen_dims(self):
-        monitor = self._selected_monitor
-        return np.array([monitor.height, monitor.width, monitor.x, monitor.y], dtype=np.uint32)
+        return np.array([(cam.height, cam.width) for cam in self.mgr.cameras], dtype=np.uint32).T
 
     def set_monitor(self, idx=None):
         if len(self._monitors) > 1 and idx is None:
@@ -478,87 +459,98 @@ class GUI:
         else:
             self._selected_monitor = self._monitors[0]
 
-    @property
-    def whxy(self):
-        dims = self.root.geometry()
-        wh, x, y = dims.split('+')
-        w, h = wh.split('x')
-        return [int(s) for s in [w, h, x, y]]
-
     def nothing(self):
         pass
 
     def _create_controls(self):
 
-        ipadx = 2
-        ipady = 2
-        padx = 2
-        pady = 2
+        toolbar = tk.Frame(self.root, background="#E8E8E8", height=40)
+        # statusbar = tk.Frame(self.root, background="#e3e3e3", height=20)
+        maincontent = tk.PanedWindow(self.root)
 
-        left_half = tk.Frame(self.root)
-        left_half.pack(fill=tk.BOTH, side=tk.LEFT, expand=True)
+        toolbar.pack(side="top", fill="x")
+        # statusbar.pack(side="bottom", fill="x")
+        maincontent.pack(padx=3, pady=3, side="top", fill="both", expand=True)
 
-        right_half = tk.Frame(self.root)
-        right_half.pack(fill=tk.BOTH, side=tk.LEFT, expand=True)
+        # TOOLBAR
+        self.button_exit = tk.Button(toolbar, text="Exit (Esc)", anchor=tk.CENTER, font=self.bold,
+                                     bg='#fd5754', fg='white',
+                                     command=self.quit)
+        self.button_exit.pack(side="left", fill="y", expand=False)
+
+        left_pane = tk.LabelFrame(maincontent, text="Acquisition")
+        right_pane = tk.LabelFrame(maincontent, text="Display")
+
+        maincontent.add(left_pane)
+        maincontent.add(right_pane)
+        maincontent.paneconfig(left_pane, width=400)
+        maincontent.paneconfig(right_pane, width=200)
 
         # LEFT HALF
 
-        acquisition_label = tk.Label(left_half, text='Acquisition:', anchor=tk.W)
-        acquisition_label.pack(ipadx=ipadx, ipady=ipady, padx=padx, pady=pady, fill=tk.X)
-
-        startstop_frame = tk.Frame(left_half, height=50)
-        startstop_frame.pack(ipadx=ipadx, ipady=ipady, padx=padx, pady=pady, fill=tk.X)
+        startstop_frame = tk.Frame(left_pane)
+        startstop_frame.pack(padx=5, pady=5, side="top", fill="x", expand=True)
 
         self.button_start = tk.Button(startstop_frame, text="Start", anchor=tk.CENTER,
                                       font=self.regular,
                                       command=self.gui_acquire,
-                                      state='normal')
-        self.button_start.pack(ipadx=ipadx, ipady=ipady, padx=padx, fill=tk.BOTH, side=tk.LEFT, expand=True)
+                                      state='normal',
+                                      height=2)
+        self.button_start.pack(padx=5, pady=5, side="left", fill="both", expand=True)
 
         self.button_stop = tk.Button(startstop_frame, text="Stop", anchor=tk.CENTER,
                                      font=self.regular,
                                      command=self.gui_snow,
-                                     state='disabled')
-        self.button_stop.pack(ipadx=ipadx, ipady=ipady, padx=padx, fill=tk.BOTH, side=tk.LEFT, expand=True)
+                                     state='disabled',
+                                     height=2)
+        self.button_stop.pack(padx=5, pady=5, side="left", fill="both", expand=True)
 
         #
 
-        pathname_frame = tk.Frame(left_half, height=60)
-        pathname_frame.pack(ipadx=ipadx, ipady=ipady, padx=padx, pady=pady, fill=tk.X)
+        name_frame = tk.Frame(left_pane)
+        name_frame.pack(side="top", fill="x", expand=True)
 
-        pathname_label = tk.Label(pathname_frame, text='Name: ', anchor=tk.W)
-        pathname_label.pack(ipadx=ipadx, fill=tk.X)
+        editable_name_frame = tk.Frame(name_frame)
+        editable_name_frame.pack(side="top", fill="x", expand=True)
 
-        self.pathname_textbox = tk.Entry(pathname_frame, bg='white', fg='black', textvariable=self.userentry_var,
+        pathname_label = tk.Label(editable_name_frame, text='Name: ', anchor=tk.W)
+        pathname_label.pack(side="left", fill="y", expand=False)
+
+        self.pathname_textbox = tk.Entry(editable_name_frame, bg='white', fg='black', textvariable=self.userentry_var,
                                          font=self.regular, state='disabled')
-        self.pathname_textbox.pack(padx=padx, fill=tk.BOTH, side=tk.LEFT, expand=True)
+        self.pathname_textbox.pack(side="left", fill="both", expand=True)
 
-        self.pathname_button = tk.Button(pathname_frame,
+        self.pathname_button = tk.Button(editable_name_frame,
                                          text="Edit", font=self.regular, command=self.gui_toggle_set_name)
-        self.pathname_button.pack(ipadx=ipadx, ipady=ipady, padx=padx, fill=tk.BOTH, side=tk.LEFT)
+        self.pathname_button.pack(side="right", fill="both", expand=False)
 
-        current_name = tk.Label(left_half, textvariable=self.applied_name_var, anchor=tk.W)
-        current_name.pack(ipadx=ipadx, fill=tk.BOTH, expand=True)
+        info_name_frame = tk.Frame(name_frame)
+        info_name_frame.pack(side="top", fill="x", expand=True)
+
+        save_label = tk.Label(info_name_frame, text='Saves to:', anchor=tk.W)
+        save_label.pack(side="left", fill="y", expand=False)
+
+        current_name = tk.Label(info_name_frame, textvariable=self.applied_name_var, anchor=tk.W)
+        current_name.pack(side="left", fill="both", expand=True)
 
         #
 
-        self.button_recpause = tk.Button(left_half, text="● Record (Space)", anchor=tk.CENTER, font=self.bold,
+        self.button_recpause = tk.Button(left_pane, text="● Record (Space)", anchor=tk.CENTER, font=self.bold,
                                          command=self.gui_toggle_recording,
-                                         state='disabled')
-        self.button_recpause.pack(ipadx=ipadx, ipady=ipady, padx=padx, pady=pady * 2, fill=tk.X, expand=True)
-
-        self.button_exit = tk.Button(left_half, text="Exit (Esc)", anchor=tk.CENTER, font=self.bold,
-                                     bg='#EE4457', fg='White',
-                                     command=self.quit)
-        self.button_exit.pack(ipadx=ipadx, ipady=ipady, padx=padx, pady=pady, anchor=tk.SE)
+                                         state='disabled',
+                                         height=2)
+        self.button_recpause.pack(padx=10, pady=10, side="top", fill="x", expand=True)
 
         # RIGHT HALF
 
-        visibility_label = tk.Label(right_half, text='Show previews:', anchor=tk.W)
-        visibility_label.pack()
+        windows_visibility_frame = tk.Frame(right_pane)
+        windows_visibility_frame.pack(side="top", fill="x", expand=True)
 
-        windows_list_frame = tk.Frame(right_half)
-        windows_list_frame.pack()
+        visibility_label = tk.Label(windows_visibility_frame, text='Show previews:', anchor=tk.W)
+        visibility_label.pack(side="top", fill="x", expand=False)
+
+        windows_list_frame = tk.Frame(windows_visibility_frame)
+        windows_list_frame.pack(side="top", fill="both", expand=True)
 
         self._vis_checkboxes = []
         for window in self.video_windows:
@@ -573,24 +565,27 @@ class GUI:
                                           variable=vis_var,
                                           command=window.toggle_visibility,
                                           state='normal')
-            vis_var.set(1)
-            vis_checkbox.pack(ipadx=ipadx, ipady=ipady, padx=padx, pady=pady, fill=tk.X, expand=True)
+            vis_var.set(int(window.visible.is_set()))
+            vis_checkbox.pack(side="top", fill="x", expand=True)
             self._vis_checkboxes.append(vis_var)
 
-        monitors_label = tk.Label(right_half, text='Active monitor:', anchor=tk.W)
-        monitors_label.pack()
+        monitors_frame = tk.Frame(right_pane)
+        monitors_frame.pack(side="top", fill="both", expand=True)
 
-        self.monitors_buttons = tk.Canvas(right_half, width=120, height=60)
+        monitors_label = tk.Label(monitors_frame, text='Active monitor:', anchor=tk.W)
+        monitors_label.pack(side="top", fill="x", expand=False)
+
+        self.monitors_buttons = tk.Canvas(monitors_frame)
         self.update_monitors_buttons()
         for i, m in enumerate(self._monitors):
             self.monitors_buttons.tag_bind(f'screen_{i}', '<Button-1>', lambda _, val=i: self.screen_update(val))
-        self.monitors_buttons.pack(ipadx=ipadx, ipady=ipady, padx=padx, pady=pady)
+        self.monitors_buttons.pack(side="top", fill="both", expand=True)
 
     def update_monitors_buttons(self):
         self.monitors_buttons.delete("all")
 
         for i, m in enumerate(self._monitors):
-            w, h, x, y = m.width // 80, m.height // 80, m.x // 80, m.y // 80
+            w, h, x, y = m.width // 40, m.height // 40, m.x // 40, m.y // 40
             if m.name == self._selected_monitor.name:
                 a = '#515151'
             else:
@@ -604,13 +599,13 @@ class GUI:
         self.set_monitor(val)
         self.update_monitors_buttons()
 
-        w, h, x, y = self.whxy
+        w, h, x, y = whxy(self)
         new_x = x + self._selected_monitor.x - old_monitor_x
         new_y = y + self._selected_monitor.y - old_monitor_y
 
         self.root.geometry(f'{w}x{h}+{new_x}+{new_y}')
         for window in self.video_windows:
-            w, h, x, y = window.whxy
+            w, h, x, y = whxy(window)
             new_x = x + self._selected_monitor.x - old_monitor_x
             new_y = y + self._selected_monitor.y - old_monitor_y
 
@@ -627,7 +622,7 @@ class GUI:
 
     def gui_set_name(self):
         self.mgr.savepath = self.userentry_var.get()
-        self.applied_name_var.set(f'(will save to ./{self.mgr.savepath})')
+        self.applied_name_var.set(f'{Path(self.mgr.savepath).resolve()}')
 
     def gui_toggle_set_name(self):
         if self.editing_disabled:
