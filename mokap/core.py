@@ -179,7 +179,7 @@ class FrameHandler(py.ImageEventHandler):
             self.latest = buf
 
 
-class Manager2:
+class Manager:
 
     def __init__(self,
                  framerate=220,

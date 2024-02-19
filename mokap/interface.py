@@ -257,7 +257,7 @@ class VideoWindow:
                 f"Brightness : {self._brightness_var:.2f}%")
         else:
             self.capture_fps_var.set(f"Acquisition: Off")
-            self.display_brightness_var.set(f"Brightness : ∅")
+            self.display_brightness_var.set(f"Brightness : -")
 
         self.display_fps_var.set(f"Display    : {self._fps:.2f} fps")
 

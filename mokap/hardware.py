@@ -408,15 +408,16 @@ class Camera:
                 self._framerate = self.ptr.ResultingFrameRate.GetValue()
             else:
                 if 'virtual' in self.name:
+
                     self.ptr.AcquisitionFrameRateAbs = 220
-                    f = np.round(self.ptr.ResultingFrameRate.GetValue() - 0.5 * 10 ** (-2),
+                    f = np.round(self.ptr.ResultingFrameRateAbs.GetValue() - 0.5 * 10 ** (-2),
                                  2)  # custom floor with decimals
                     new_framerate = min(value, f)
 
-                    self.ptr.AcquisitionFrameRateAbs = new_framerate
+                    self.ptr.AcquisitionFrameRate = new_framerate
                 else:
                     self.ptr.AcquisitionFrameRateEnable.SetValue(True)
-                    self.ptr.AcquisitionFrameRate.SetValue(220.0)
+                    self.ptr.AcquisitionFrameRateAbs.SetValue(220.0)
 
                     # custom floor with decimals
                     f = np.round(self.ptr.ResultingFrameRate.GetValue() - 0.5 * 10 ** (-2), 2)
