@@ -57,7 +57,7 @@ class VideoWindow:
         self.idx = len(VideoWindow.videowindows_ids)
         VideoWindow.videowindows_ids.append(self.idx)
 
-        self._source_shape = (self.parent.mgr.cameras[self.idx].width, self.parent.mgr.cameras[self.idx].height)
+        self._source_shape = (self.parent.mgr.cameras[self.idx].height, self.parent.mgr.cameras[self.idx].width)
         self._cam_name = self.parent.mgr.cameras[self.idx].name
         self._bg_color = self.parent.mgr.cameras[self.idx].color
 
