@@ -454,7 +454,10 @@ class GUI:
             t.start()
             self.windows_threads.append(t)
 
-        self.root.geometry(f"{self.CONTROLS_WIDTH}x{self.CONTROLS_HEIGHT}")
+        x = self._selected_monitor.x + self._selected_monitor.width // 2 - self.CONTROLS_HEIGHT // 2
+        y = self._selected_monitor.y + self._selected_monitor.height // 2 - self.CONTROLS_WIDTH // 2
+
+        self.root.geometry(f"{self.CONTROLS_WIDTH}x{self.CONTROLS_HEIGHT}+{x}+{y}")
 
         # Create control window
         self._create_controls()

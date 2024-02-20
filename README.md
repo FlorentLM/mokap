@@ -12,7 +12,7 @@
 
 * **Note:** Basler's default increase on USB memory is 1000 Mib. This is, in our case, **not enough** for more than 3 USB cameras. 
   You can increase it even further by modifying the `/sys/module/usbcore/parameters/usbfs_memory_mb` file.
-  A values of `2048` is enough for our 5 cameras.
+  A value of `2048` is enough for our 5 cameras.
 * **Note:** On Arch-based systems, Basler's script is not sufficient. You need to manually add the line `DefaultLimitNOFILE=8192` to `/etc/systemd/user.conf`
 * On systems that do not use GRUB, if you want to the USB memory setting to be persistent, Basler's script won't work. You need to change your bootloader options manually.
     

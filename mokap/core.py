@@ -387,8 +387,8 @@ class Manager:
 
                 for frame in data:
                     img = Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1)
-                    self._saved_frames_counter[cam_idx] += 1
                     img.save(folder / f"{str(self._saved_frames_counter[cam_idx]).zfill(9)}.bmp")
+                    self._saved_frames_counter[cam_idx] += 1
 
                 if saving_started and not self._recording.is_set():
                     self._finished_saving[cam_idx].set()
@@ -409,13 +409,22 @@ class Manager:
 
         cam = self._cameras_list[cam_idx]
 
+        cam.ptr.RegisterConfiguration(py.SoftwareTriggerConfiguration(),
+                                      py.RegistrationMode_ReplaceAll,
+                                      py.Cleanup_Delete)
+
         cam.ptr.RegisterImageEventHandler(self._frames_handlers_list[cam_idx],
-                                          py.RegistrationMode_ReplaceAll,
-                                          py.Cleanup_None)
+                                          py.RegistrationMode_Append,
+                                          py.Cleanup_Delete)
         cam.start_grabbing()
 
-        while self._acquiring.is_set():
-            cam.ptr.RetrieveResult(100, py.TimeoutHandling_Return)
+        # while self._acquiring.is_set():
+        #     # cam.ptr.RetrieveResult(100, py.TimeoutHandling_Return)
+        #     time.sleep(1)
+        #     if cam.ptr.WaitForFrameTriggerReady(200, py.TimeoutHandling_ThrowException):
+        #         cam.ptr.ExecuteSoftwareTrigger()
+        #         cam.ptr.RetrieveResult(0, py.TimeoutHandling_Return)
+
 
     def _reset_name(self) -> None:
         if self._savepath is not None:
