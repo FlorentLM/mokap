@@ -13,9 +13,9 @@ data_folder = Path('/mnt/data/RawFrames')
 
 # videos_folder = Path('/mnt/storage/ForelegsExpVideos')
 # data_folder = Path('/mnt/storage/ForelegsExp')
-
-# videos_folder = Path('F:\\Videos')
-# data_folder = Path('F:\\RawFrames')
+#
+# videos_folder = Path('D:\\Videos')
+# data_folder = Path('D:\\RawFrames')
 
 
 ##

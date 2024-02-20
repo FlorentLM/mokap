@@ -397,7 +397,7 @@ class GUI:
     # Values below are in pixels
     PADDING = 0
     CONTROLS_WIDTH = 600
-    CONTROLS_HEIGHT = 250
+    CONTROLS_HEIGHT = 350
 
     def __init__(self, mgr):
 
@@ -460,6 +460,8 @@ class GUI:
         self._create_controls()
 
         self.update()  # Called once to init
+
+        self.root.attributes("-topmost", True)
         self.root.mainloop()
 
     @property
@@ -765,7 +767,7 @@ class GUI:
             capture_dt = (now - self._capture_clock).total_seconds()
 
             self._now_indices[:] = self.mgr.indices
-            self._capture_fps = (self._now_indices - self.start_indices) / capture_dt
+            self._capture_fps = (self._now_indices - self.start_indices) / capture_dt + 0.00001
 
             self._current_buffers = self.mgr.get_current_framebuffer()
 
