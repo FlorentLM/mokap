@@ -627,7 +627,7 @@ class GUI:
         self.monitors_buttons.pack(side="top", fill="x", expand=False)
 
         self.autotile_button = tk.Button(monitors_frame,
-                                         text="Auto-tile windows", font=self.regular, command=self.nothing)
+                                         text="Auto-tile windows", font=self.regular, command=self.autotile_windows)
         self.autotile_button.pack(side="top", fill="both", expand=False)
 
     def update_monitors_buttons(self):
@@ -679,6 +679,17 @@ class GUI:
             else:
                 window_to_move.window.geometry(f'{w}x{h}+{new_x}+{new_y}')
 
+    def autotile_windows(self):
+        new_x = self._selected_monitor.x
+        new_y = self._selected_monitor.y
+
+        for window_to_move in self.video_windows:
+            w, h, x, y = whxy(window_to_move)
+            window_to_move.window.geometry(f'{w}x{h}+{new_x}+{new_y}')
+            new_x += w
+            if new_x >= self._selected_monitor.x + self._selected_monitor.width:
+                new_x = self._selected_monitor.x
+                new_y += h
 
     def _handle_keypress(self, event):
         match event.keycode:
