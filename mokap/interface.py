@@ -620,7 +620,7 @@ class GUI:
 
         #
 
-        self.button_recpause = tk.Button(left_pane, text="● Record (Space)", anchor=tk.CENTER, font=self.bold,
+        self.button_recpause = tk.Button(left_pane, text="Record (Space)", anchor=tk.CENTER, font=self.bold,
                                          command=self.gui_toggle_recording,
                                          state='disabled',
                                          height=2)
@@ -764,15 +764,15 @@ class GUI:
         if not self.mgr.recording:
             self.mgr.record()
 
-            self.recording_var.set('[Recording]')
-            self.button_recpause.config(text="■ Stop (Space)")
+            self.recording_var.set('[ Recording... ]')
+            self.button_recpause.config(text="Stop (Space)")
 
     def gui_pause(self):
         if self.mgr.recording:
             self.mgr.pause()
 
             self.recording_var.set('')
-            self.button_recpause.config(text="● Record (Space)")
+            self.button_recpause.config(text="Record (Space)")
 
     def gui_toggle_recording(self):
         if self.mgr.acquiring:
