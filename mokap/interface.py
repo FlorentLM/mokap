@@ -501,6 +501,7 @@ class GUI:
             self._selected_monitor = self._monitors[0]
 
     def nothing(self):
+        print('Nothing')
         pass
 
     def _create_controls(self):
@@ -616,11 +617,18 @@ class GUI:
         monitors_label = tk.Label(monitors_frame, text='Active monitor:', anchor=tk.W)
         monitors_label.pack(side="top", fill="x", expand=False)
 
-        self.monitors_buttons = tk.Canvas(monitors_frame)
+        m_canvas_y_size = max([m.y + m.height for m in self._monitors]) // 40 + 2 * 10
+
+        self.monitors_buttons = tk.Canvas(monitors_frame, height=m_canvas_y_size)
         self.update_monitors_buttons()
+
         for i, m in enumerate(self._monitors):
             self.monitors_buttons.tag_bind(f'screen_{i}', '<Button-1>', lambda _, val=i: self.screen_update(val))
-        self.monitors_buttons.pack(side="left", fill="both", expand=True)
+        self.monitors_buttons.pack(side="top", fill="x", expand=False)
+
+        self.autotile_button = tk.Button(monitors_frame,
+                                         text="Auto-tile windows", font=self.regular, command=self.nothing)
+        self.autotile_button.pack(side="top", fill="both", expand=False)
 
     def update_monitors_buttons(self):
         self.monitors_buttons.delete("all")
