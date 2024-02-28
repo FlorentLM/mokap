@@ -102,6 +102,9 @@ class VideoWindow:
         self._display_focus = Event()
         self._display_focus.clear()
 
+        self._display_mag = Event()
+        self._display_mag.set()
+
         self._kernel = np.array([
             [0, 0, 0],
             [0, 1, 0],
@@ -224,9 +227,13 @@ class VideoWindow:
             f"Resolution  : {self.parent.mgr.cameras[self.idx].height}×{self.parent.mgr.cameras[self.idx].width} px")
         self.exposure_var.set(f"Exposure     : {self.parent.mgr.cameras[self.idx].exposure} µs")
 
-        show_focus_button = tk.Button(controls_layout_frame, text="Show focus", font=self.parent.regular,
+        self.show_focus_button = tk.Button(controls_layout_frame, text="Show focus", font=self.parent.regular,
                                       command=self._toggle_focus_display)
-        show_focus_button.pack(padx=2, fill=tk.BOTH, side=tk.LEFT)
+        self.show_focus_button.pack(padx=2, fill=tk.BOTH, side=tk.LEFT)
+
+        self.show_mag_button = tk.Button(controls_layout_frame, text="Hide magnification", font=self.parent.regular,
+                                           command=self._toggle_mag_display)
+        self.show_mag_button.pack(padx=2, fill=tk.BOTH, side=tk.LEFT)
 
     def update_framerate(self, event=None):
         new_fps = self.framerate_slider.get()
@@ -271,8 +278,18 @@ class VideoWindow:
     def _toggle_focus_display(self):
         if self._display_focus.is_set():
             self._display_focus.clear()
+            self.show_focus_button.configure(text='Show focus')
         else:
             self._display_focus.set()
+            self.show_focus_button.configure(text='Hide focus')
+
+    def _toggle_mag_display(self):
+        if self._display_mag.is_set():
+            self._display_mag.clear()
+            self.show_mag_button.configure(text='Show magnification')
+        else:
+            self._display_mag.set()
+            self.show_mag_button.configure(text='Hide magnification')
 
     def _update_fps_vars(self):
 
@@ -313,19 +330,45 @@ class VideoWindow:
             overlay[overlay >= lim] = 100
 
             fo = np.clip(frame.astype(np.int32) + overlay, 0, 255).astype(np.uint8)
-            frame = np.stack([fo, fo, frame]).T.swapaxes(0, 1)
+            frame = np.stack([frame, fo, frame]).T.swapaxes(0, 1)
 
-        y, x = self.video_dims
-        x2, y2 = x // 2, y // 2
+        y_displ, x_displ = self.video_dims
+        x2_displ, y2_displ = x_displ // 2, y_displ // 2
 
-        img_pillow = Image.fromarray(frame).convert('RGB')
-        img_pillow = img_pillow.resize((x, y))
+        img_pillow = Image.fromarray(frame).convert('RGBA')
+        img_pillow = img_pillow.resize((x_displ, y_displ))
 
         d = ImageDraw.Draw(img_pillow)
-        d.line((0, y2, x, y2), fill='white')
-        d.line((x2, 0, x2, y), fill='white')
+        d.line((0, y2_displ, x_displ, y2_displ), fill=(255, 255, 255, 200), width=1)
+        d.line((x2_displ, 0, x2_displ, y_displ), fill=(255, 255, 255, 200), width=1)
 
-        d.text((x2 - 100, y - 40), self.parent.recording_var.get(), font=self._imgfnt, fill='red')
+        d.text((x2_displ - 100, y_displ - 40), self.parent.recording_var.get(), font=self._imgfnt, fill='red')
+
+        if self._display_mag.is_set():
+            y_source, x_source = self._source_shape
+            x2_source, y2_source = x_source // 2, y_source // 2
+
+            mini_size_ratio = 12
+            mini_size = x2_source // mini_size_ratio, y2_source // mini_size_ratio
+
+            mini_x0 = x2_source - mini_size[0]
+            mini_y0 = y2_source - mini_size[1]
+            mini_x1 = x2_source + mini_size[0]
+            mini_y1 = y2_source + mini_size[1]
+            mini = Image.fromarray(frame[mini_y0:mini_y1, mini_x0:mini_x1]).convert('RGBA')
+
+
+            d.rectangle([(x2_displ - x2_displ // mini_size_ratio, y2_displ - y2_displ // mini_size_ratio),
+                             (x2_displ + x2_displ // mini_size_ratio, y2_displ + y2_displ // mini_size_ratio)],
+                             outline=(255, 255, 20, 200), width=1)
+
+            mag = 4
+            d.rectangle([(x_displ - (mini_size[0] * mag + 11), y_displ - (mini_size[1] * mag + 11)),
+                         (x_displ - 10, y_displ - 10)],
+                        outline=(255, 255, 20, 200), width=1)
+
+            mini = mini.resize((mini_size[0] * mag, mini_size[1] * mag))
+            img_pillow.paste(mini, (x_displ - (mini_size[0] * mag + 10), y_displ - (mini_size[1] * mag + 10)))
 
         imgtk = ImageTk.PhotoImage(image=img_pillow)
         try:
