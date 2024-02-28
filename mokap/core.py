@@ -190,6 +190,7 @@ class Manager:
                  exposure=4318,
                  triggered=False,
                  binning=1,
+                 binning_mode='sum',
                  gain=1,
                  silent=True):
 
@@ -200,6 +201,7 @@ class Manager:
         self._silent: bool = silent
 
         self._binning: int = binning
+        self._binning_mode: str = binning_mode
         self._exposure: int = exposure
         self._framerate: int = framerate
         self._gain: float = gain
@@ -342,6 +344,10 @@ class Manager:
     def binning(self) -> int:
         return self._binning
 
+    @property
+    def binning_mode(self) -> str:
+        return self._binning_mode
+
     @binning.setter
     def binning(self, value: int) -> None:
         self._binning = value
@@ -349,6 +355,17 @@ class Manager:
             cam.binning = value
             # And update the buffer to the new size
             self._lastframe_buffers_list[i] = RawArray('B', cam.height * cam.width)
+
+    @binning_mode.setter
+    def binning_mode(self, value: str) -> None:
+        if value.lower() in ['s', 'sum', 'add', 'addition', 'summation']:
+            self._binning_mode = 'sum'
+        elif value.lower() in ['a', 'm', 'avg', 'average', 'mean']:
+            self._binning_mode = 'avg'
+        else:
+            self._binning_mode = 'sum'
+        for i, cam in enumerate(self._cameras_list):
+            cam.binning_mode = value
 
     def disconnect(self) -> None:
         self.ICarray.Close()

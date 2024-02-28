@@ -200,7 +200,8 @@ class Camera:
                  framerate=60,
                  exposure=5000,
                  triggered=True,
-                 binning=1):
+                 binning=1,
+                 binning_mode='sum'):
 
         self._color = None
         self._ptr = None
@@ -217,6 +218,7 @@ class Camera:
         self._gain = 1.0
         self._triggered = triggered
         self._binning = binning
+        self._binning_mode = binning_mode
 
         self._idx = None
 
@@ -293,6 +295,7 @@ class Camera:
                 self.ptr.AcquisitionFrameRateEnable.SetValue(True)
 
         self.binning = self._binning
+        self.binning_mode = self._binning_mode
         self.framerate = self._framerate
         self.exposure = self._exposure
 
@@ -370,6 +373,10 @@ class Camera:
     def binning(self) -> int:
         return self._binning
 
+    @property
+    def binning_mode(self) -> str:
+        return self._binning_mode
+
     @binning.setter
     def binning(self, value: int) -> None:
         assert value in [1, 2, 3, 4]
@@ -377,8 +384,6 @@ class Camera:
             if 'virtual' not in self.name:
                 self.ptr.BinningVertical.SetValue(value)
                 self.ptr.BinningHorizontal.SetValue(value)
-                self.ptr.BinningVerticalMode.SetValue('Sum')
-                self.ptr.BinningHorizontalMode.SetValue('Sum')
 
             # Actual frame size
             self._width = config['GENERAL'].getint('sensor_w') // value
@@ -392,6 +397,23 @@ class Camera:
 
         # And keep a local value to avoid querying the camera every time we read it
         self._binning = value
+
+    @binning_mode.setter
+    def binning_mode(self, value: str) -> None:
+        if value.lower() in ['s', 'sum', 'add', 'addition', 'summation']:
+            value = 'Sum'
+        elif value.lower() in ['a', 'm', 'avg', 'average', 'mean']:
+            value = 'Average'
+        else:
+            value = 'Sum'
+
+        if self._connected:
+            if 'virtual' not in self.name:
+                self.ptr.BinningVerticalMode.SetValue(value)
+                self.ptr.BinningHorizontalMode.SetValue(value)
+
+        # And keep a local value to avoid querying the camera every time we read it
+        self._binning_mode = value
 
     @exposure.setter
     def exposure(self, value: int) -> None:
