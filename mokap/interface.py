@@ -175,7 +175,15 @@ class VideoWindow:
                                             font=parent.regular, textvariable=self.display_brightness_var)
         display_brightness_label.pack(fill=tk.BOTH)
 
-        controls_layout_frame = tk.LabelFrame(self.window, text="Camera control", height=self.INFO_PANEL_MIN_H, width=w)
+        self.show_focus_button = tk.Button(infoframe, text="Show focus", font=self.parent.regular,
+                                      command=self._toggle_focus_display)
+        self.show_focus_button.pack(padx=2, fill=tk.BOTH, side=tk.LEFT)
+
+        self.show_mag_button = tk.Button(infoframe, text="Hide magnification", font=self.parent.regular,
+                                           command=self._toggle_mag_display)
+        self.show_mag_button.pack(padx=2, fill=tk.BOTH, side=tk.LEFT)
+
+        controls_layout_frame = tk.LabelFrame(self.window, text="Camera tuning", height=self.INFO_PANEL_MIN_H, width=w)
         controls_layout_frame.pack(padx=8, pady=8, side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         framerate_frame = tk.Frame(controls_layout_frame)
@@ -183,8 +191,8 @@ class VideoWindow:
         framerate_slider_label = tk.Label(framerate_frame, fg="black", anchor=tk.SE, justify='right',
                                           font=parent.regular, text='Framerate (fps) :')
         framerate_slider_label.pack(side='left', fill=tk.Y, expand=True)
-        self.framerate_slider = tk.Scale(framerate_frame, from_=1, to=220, orient=tk.HORIZONTAL,
-                                         width=7, sliderlength=8)
+        self.framerate_slider = tk.Scale(framerate_frame, from_=1, to=220, resolution=1, orient=tk.HORIZONTAL,
+                                         width=8, sliderlength=16)
         self.framerate_slider.set(self.parent.mgr.cameras[self.idx].framerate)
         self.framerate_slider.bind("<ButtonRelease-1>", self.update_framerate)
         self.framerate_slider.pack(side='left', fill=tk.Y, expand=True)
@@ -198,8 +206,8 @@ class VideoWindow:
         exposure_slider_label = tk.Label(exposure_frame, fg="black", anchor=tk.SE, justify='right',
                                          font=parent.regular, text='Exposure (µs) :')
         exposure_slider_label.pack(side='left', fill=tk.Y, expand=True)
-        self.exposure_slider = tk.Scale(exposure_frame, from_=4300, to=25000,
-                                        orient=tk.HORIZONTAL, width=7, sliderlength=8)
+        self.exposure_slider = tk.Scale(exposure_frame, from_=4300, to=25000, resolution=5,
+                                        orient=tk.HORIZONTAL, width=8, sliderlength=16)
         self.exposure_slider.set(self.parent.mgr.cameras[self.idx].exposure)
         self.exposure_slider.bind("<ButtonRelease-1>", self.update_exposure)
         self.exposure_slider.pack(side='left', fill=tk.Y, expand=True)
@@ -213,8 +221,8 @@ class VideoWindow:
         gain_slider_label = tk.Label(gain_frame, fg="black", anchor=tk.SE, justify='right',
                                           font=parent.regular, text='Gain :')
         gain_slider_label.pack(side='left', fill=tk.Y, expand=True)
-        self.gain_slider = tk.Scale(gain_frame, from_=0.0, to=24.0, digits=3, resolution=0.01, orient=tk.HORIZONTAL,
-                                         width=7, sliderlength=8)
+        self.gain_slider = tk.Scale(gain_frame, from_=0.0, to=24.0, digits=3, resolution=0.5, orient=tk.HORIZONTAL,
+                                         width=8, sliderlength=16)
         self.gain_slider.set(self.parent.mgr.cameras[self.idx].gain)
         self.gain_slider.bind("<ButtonRelease-1>", self.update_gain)
         self.gain_slider.pack(side='left', fill=tk.Y, expand=True)
@@ -223,20 +231,27 @@ class VideoWindow:
                                          command=self._update_gain_all_cams)
         apply_gain_all_button.pack(padx=2, fill='x', side=tk.LEFT)
 
+        gamma_frame = tk.Frame(controls_layout_frame)
+        gamma_frame.pack(side=tk.TOP, fill=tk.X, expand=True)
+        gamma_slider_label = tk.Label(gamma_frame, fg="black", anchor=tk.SE, justify='right',
+                                     font=parent.regular, text='Gamma :')
+        gamma_slider_label.pack(side='left', fill=tk.Y, expand=True)
+        self.gamma_slider = tk.Scale(gamma_frame, from_=0.0, to=4.0, digits=3, resolution=0.05, orient=tk.HORIZONTAL,
+                                    width=8, sliderlength=16)
+        self.gamma_slider.set(self.parent.mgr.cameras[self.idx].gamma)
+        self.gamma_slider.bind("<ButtonRelease-1>", self.update_gamma)
+        self.gamma_slider.pack(side='left', fill=tk.Y, expand=True)
+
+        apply_gamma_all_button = tk.Button(gamma_frame, text="Apply to all", font=self.parent.regular,
+                                          command=self._update_gamma_all_cams)
+        apply_gamma_all_button.pack(padx=2, fill='x', side=tk.LEFT)
+
         # Set static vars
         self.title_var.set(f'{self._cam_name.title()} camera')
         self.window.title(self.title_var.get())
         self.resolution_var.set(
             f"Resolution  : {self.parent.mgr.cameras[self.idx].height}×{self.parent.mgr.cameras[self.idx].width} px")
         self.exposure_var.set(f"Exposure     : {self.parent.mgr.cameras[self.idx].exposure} µs")
-
-        self.show_focus_button = tk.Button(controls_layout_frame, text="Show focus", font=self.parent.regular,
-                                      command=self._toggle_focus_display)
-        self.show_focus_button.pack(padx=2, fill=tk.BOTH, side=tk.LEFT)
-
-        self.show_mag_button = tk.Button(controls_layout_frame, text="Hide magnification", font=self.parent.regular,
-                                           command=self._toggle_mag_display)
-        self.show_mag_button.pack(padx=2, fill=tk.BOTH, side=tk.LEFT)
 
     def update_framerate(self, event=None):
         new_fps = self.framerate_slider.get()
@@ -256,6 +271,10 @@ class VideoWindow:
     def update_gain(self, event=None):
         new_gain = self.gain_slider.get()
         self.parent.mgr.cameras[self.idx].gain = new_gain
+
+    def update_gamma(self, event=None):
+        new_gamma = self.gamma_slider.get()
+        self.parent.mgr.cameras[self.idx].gamma = new_gamma
 
     def _update_fps_all_cams(self):
         for window in self.parent.video_windows:
@@ -277,6 +296,13 @@ class VideoWindow:
                 new_gain = self.gain_slider.get()
                 window.gain_slider.set(new_gain)
                 window.update_gain()
+
+    def _update_gamma_all_cams(self):
+        for window in self.parent.video_windows:
+            if window is not self:
+                new_gamma = self.gamma_slider.get()
+                window.gamma_slider.set(new_gamma)
+                window.update_gamma()
 
     def _toggle_focus_display(self):
         if self._display_focus.is_set():

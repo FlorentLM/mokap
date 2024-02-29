@@ -21,6 +21,8 @@ mgr.binning_mode = 'avg'
 
 mgr.connect()
 
+mgr.gain = 24
+
 # Set framerate in images per second
 # mgr.framerate = 120
 mgr.framerate = 220
