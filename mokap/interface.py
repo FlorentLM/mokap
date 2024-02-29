@@ -10,6 +10,9 @@ import colorsys
 from scipy import ndimage
 import platform
 from pathlib import Path
+import os
+import subprocess
+from mokap import utils
 
 def hex_to_hls(hex_str: str):
     hex_str = hex_str.lstrip('#')
@@ -439,8 +442,8 @@ class VideoWindow:
 class GUI:
     # Values below are in pixels
     PADDING = 0
-    CONTROLS_WIDTH = 600
-    CONTROLS_HEIGHT = 350
+    CONTROLS_WIDTH = 550
+    CONTROLS_HEIGHT = 300
 
     def __init__(self, mgr):
 
@@ -456,6 +459,11 @@ class GUI:
         self.root.protocol("WM_DELETE_WINDOW", self.quit)
         self.root.bind('<KeyPress>', self._handle_keypress)
 
+        self.icon_capture_on = tk.PhotoImage(file='./mokap/icons/capture_on.png')
+        self.icon_capture_off = tk.PhotoImage(file='./mokap/icons/capture_off_bw.png')
+        self.icon_rec_on = tk.PhotoImage(file='./mokap/icons/rec.png')
+        self.icon_rec_off = tk.PhotoImage(file='./mokap/icons/rec_bw.png')
+
         # Set up fonts
         self.bold = font.Font(weight='bold', size=10)
         self.regular = font.Font(size=9)
@@ -464,24 +472,27 @@ class GUI:
         self.mgr = mgr
         self.editing_disabled = True
 
-        self._capture_fps = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
         self._capture_clock = datetime.now()
+        self._capture_fps = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
         self._now_indices = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
-
         self.start_indices = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
+        self._saved_frames = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
 
         self._counter = 0
 
         self.recording_var = tk.StringVar()
         self.userentry_var = tk.StringVar()
         self.applied_name_var = tk.StringVar()
+        self.frames_saved_var = tk.StringVar()
 
         self.recording_var.set('')
         self.userentry_var.set('')
         self.applied_name_var.set('')
+        self.frames_saved_var.set('')
 
         # Compute optimal video windows sizes
         self._max_videowindows_dims = compute_windows_size(self.source_dims, self.screen_dims)
+        self._frame_sizes_bytes = np.prod(self.source_dims, axis=0)
 
         self._reference = None
         self._current_buffers = None
@@ -543,6 +554,14 @@ class GUI:
         else:
             self._selected_monitor = self._monitors[0]
 
+    def open_save_folder(self):
+        path = Path(self.applied_name_var.get()).resolve()
+        if path != Path(os.getcwd()).resolve():
+            try:
+                os.startfile(path)
+            except AttributeError:
+                subprocess.Popen(['xdg-open', path])
+
     def nothing(self):
         print('Nothing')
         pass
@@ -568,29 +587,10 @@ class GUI:
 
         maincontent.add(left_pane)
         maincontent.add(right_pane)
-        maincontent.paneconfig(left_pane, width=400)
+        maincontent.paneconfig(left_pane, width=300)
         maincontent.paneconfig(right_pane, width=200)
 
         # LEFT HALF
-
-        startstop_frame = tk.Frame(left_pane)
-        startstop_frame.pack(padx=5, pady=5, side="top", fill="x", expand=True)
-
-        self.button_start = tk.Button(startstop_frame, text="Start", anchor=tk.CENTER,
-                                      font=self.regular,
-                                      command=self.gui_acquire,
-                                      state='normal',
-                                      height=2)
-        self.button_start.pack(padx=5, pady=5, side="left", fill="both", expand=True)
-
-        self.button_stop = tk.Button(startstop_frame, text="Stop", anchor=tk.CENTER,
-                                     font=self.regular,
-                                     command=self.gui_snow,
-                                     state='disabled',
-                                     height=2)
-        self.button_stop.pack(padx=5, pady=5, side="left", fill="both", expand=True)
-
-        #
 
         name_frame = tk.Frame(left_pane)
         name_frame.pack(side="top", fill="x", expand=True)
@@ -612,19 +612,35 @@ class GUI:
         info_name_frame = tk.Frame(name_frame)
         info_name_frame.pack(side="top", fill="x", expand=True)
 
-        save_label = tk.Label(info_name_frame, text='Saves to:', anchor=tk.W)
-        save_label.pack(side="left", fill="y", expand=False)
+        save_dir_label = tk.Label(info_name_frame, text='Saves to:', anchor=tk.W)
+        save_dir_label.pack(side="top", fill="both", expand=False)
 
-        current_name = tk.Label(info_name_frame, textvariable=self.applied_name_var, anchor=tk.W)
-        current_name.pack(side="left", fill="both", expand=True)
+        save_dir_current = tk.Label(info_name_frame, textvariable=self.applied_name_var, anchor=tk.W)
+        save_dir_current.pack(side="left", fill="y", expand=True)
+
+        # gothere_button = tk.Button(info_name_frame, text="Go", font=self.regular, command=self.open_save_folder)
+        gothere_button = tk.Button(info_name_frame, text="Go", font=self.regular, command=self.nothing)
+        gothere_button.pack(side="right", fill="y", expand=False)
 
         #
 
-        self.button_recpause = tk.Button(left_pane, text="Record (Space)", anchor=tk.CENTER, font=self.bold,
+        self.button_acquisition = tk.Button(left_pane,
+                                            image=self.icon_capture_off,
+                                            compound='left', text="Acquisition off", anchor=tk.CENTER, font=self.regular,
+                                            command=self.gui_toggle_acquisition,
+                                            state='normal')
+        self.button_acquisition.pack(padx=5, pady=5, side="top", fill="both", expand=True)
+
+        self.button_recpause = tk.Button(left_pane,
+                                         image=self.icon_rec_off,
+                                         compound='left',
+                                         text="Not recording\n\n(Space to toggle)", anchor=tk.CENTER, font=self.bold,
                                          command=self.gui_toggle_recording,
-                                         state='disabled',
-                                         height=2)
-        self.button_recpause.pack(padx=10, pady=10, side="top", fill="x", expand=True)
+                                         state='disabled')
+        self.button_recpause.pack(padx=5, pady=5, side="top", fill="both", expand=True)
+
+        frames_saved_label = tk.Label(left_pane, textvariable=self.frames_saved_var, anchor=tk.E)
+        frames_saved_label.pack(side="bottom", fill="x", expand=True)
 
         # RIGHT HALF
 
@@ -760,19 +776,18 @@ class GUI:
             self.editing_disabled = True
 
     def gui_recording(self):
-
         if not self.mgr.recording:
             self.mgr.record()
 
             self.recording_var.set('[ Recording... ]')
-            self.button_recpause.config(text="Stop (Space)")
+            self.button_recpause.config(text="Recording...\n\n(Space to toggle)", image=self.icon_rec_on)
 
     def gui_pause(self):
         if self.mgr.recording:
             self.mgr.pause()
 
             self.recording_var.set('')
-            self.button_recpause.config(text="Record (Space)")
+            self.button_recpause.config(text="Not recording\n\n(Space to toggle)", image=self.icon_rec_off)
 
     def gui_toggle_recording(self):
         if self.mgr.acquiring:
@@ -781,7 +796,7 @@ class GUI:
             else:
                 self.gui_pause()
 
-    def gui_acquire(self):
+    def gui_toggle_acquisition(self):
 
         if self.mgr.savepath is None:
             self.gui_set_name()
@@ -792,25 +807,19 @@ class GUI:
             self._capture_clock = datetime.now()
             self.start_indices[:] = self.mgr.indices
 
-            self.button_start.config(state="disabled")
-            self.button_stop.config(state="normal")
+            self.button_acquisition.config(text="Acquiring", image=self.icon_capture_on)
             self.button_recpause.config(state="normal")
-
-    def gui_snow(self):
-
-        if self.mgr.acquiring:
+        else:
             self.gui_pause()
             self.mgr.off()
 
             self._capture_fps = np.zeros(self.mgr.nb_cameras, dtype=np.uintc)
 
-            self.button_start.config(state="normal")
-            self.button_stop.config(state="disabled")
-
-            self.button_recpause.config(state="disabled")
-
             self.userentry_var.set('')
             self.applied_name_var.set('')
+
+            self.button_acquisition.config(text="Acquisition off", image=self.icon_capture_off)
+            self.button_recpause.config(state="disabled")
 
     def quit(self):
         for vw in self.video_windows:
@@ -832,10 +841,13 @@ class GUI:
             capture_dt = (now - self._capture_clock).total_seconds()
 
             self._now_indices[:] = self.mgr.indices
-            self._capture_fps = (self._now_indices - self.start_indices) / capture_dt + 0.00001
+            self._capture_fps[:] = (self._now_indices - self.start_indices) / capture_dt + 0.00001
 
             self._current_buffers = self.mgr.get_current_framebuffer()
 
+            self._saved_frames = self.mgr.saved
+            self.frames_saved_var.set(f'Saved {sum(self._saved_frames)} frames total ({utils.pretty_size(sum(self._frame_sizes_bytes * self._saved_frames))})')
+
         self._counter += 1
 
-        self.root.after(100, self.update)
+        self.root.after(50, self.update)
