@@ -220,7 +220,7 @@ class Camera:
         self._binning = binning
         self._binning_mode = binning_mode
 
-        self._idx = None
+        self._idx = -1
 
         self._connected = False
         self._is_grabbing = False
