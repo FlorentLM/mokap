@@ -89,5 +89,4 @@ def pretty_size(value: int, verbose=False, decimal=True) -> str:
     s, e, _b = (1, None, 'b') if verbose else (None, 1, '')
     unit = f"{prefix[:e]}{_b+_i[:bool(len(prefix[:e]))]}{suffix[s:e]}"
 
-    print(f"s: {(s)}, e: {e}, _b: {_b}, _i: {_i}, len(prefix[:e]): {len(prefix[:e])}, verbose: {verbose}, decimal: {decimal}")
     return f"{int(amount)} {unit}" if amount.is_integer() else f"{amount:.2f} {unit}"
