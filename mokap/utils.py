@@ -68,7 +68,7 @@ def ensure_list(s: Optional[Union[str, List[str], Tuple[str], Set[str]]]) -> Lis
     return s if isinstance(s, list) else list(s) if isinstance(s, (tuple, set)) else [] if s is None else [s]
 
 
-def pretty_size(value: int, verbose=False, decimal=True) -> str:
+def pretty_size(value: int, verbose=False, decimal=False) -> str:
     """ Get sizes in strings in human-readable format """
 
     prefixes_dec = ['Yotta', 'Zetta', 'Exa', 'Peta', 'Tera', 'Giga', 'Mega', 'kilo', '']
