@@ -216,6 +216,7 @@ class Camera:
         self._framerate = framerate
         self._exposure = exposure
         self._gain = 1.0
+        self._gamma = 1.0
         self._triggered = triggered
         self._binning = binning
         self._binning_mode = binning_mode
@@ -300,7 +301,8 @@ class Camera:
         self.exposure = self._exposure
 
         self.ptr.GainAuto.SetValue('Off')
-        self.gain = self.gain
+        self.gain = self._gain
+        self.gamma = self._gamma
 
         print(f"Camera [S/N {self.serial}] (id={self._idx}, name={self._name}, col={self._color} initialised).")
 
@@ -342,7 +344,7 @@ class Camera:
         return self._dptr
 
     @property
-    def idx(self) -> str:
+    def idx(self) -> int:
         return self._idx
 
     @property
@@ -368,6 +370,10 @@ class Camera:
     @property
     def gain(self) -> float:
         return self._gain
+
+    @property
+    def gamma(self) -> float:
+        return self._gamma
 
     @property
     def binning(self) -> int:
@@ -429,9 +435,16 @@ class Camera:
     @gain.setter
     def gain(self, value: float) -> None:
         if self._connected:
-            self.ptr.Gain = value
+            self.ptr.Gain.SetValue(value)
         # And keep a local value to avoid querying the camera every time we read it
         self._gain = value
+
+    @gamma.setter
+    def gamma(self, value: float) -> None:
+        if self._connected:
+            self.ptr.Gamma.SetValue(value)
+        # And keep a local value to avoid querying the camera every time we read it
+        self._gamma = value
 
     @property
     def framerate(self) -> float:
