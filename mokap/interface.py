@@ -92,7 +92,6 @@ class VideoWindow:
         self._counter = 0
         self._clock = datetime.now()
         self._fps = 0
-        self._brightness_var = 0
 
         # Set thread-safe events
         self.visible = Event()
@@ -152,11 +151,13 @@ class VideoWindow:
         # Where the full frame data will be stored
         self._frame_buffer = np.zeros(self._source_shape, dtype='<u1')
 
+        # Resize window and apply the image
+        self.auto_size()
         self._refresh_videofeed(Image.fromarray(self._frame_buffer))
 
         ## Magnification parameters
         magn_portion = 12
-        self.magn_zoom = 4
+        self.magn_zoom = 2
 
         self.magn_size = self.source_shape[0] // magn_portion, self.source_shape[1] // magn_portion
         magn_half_size = self.magn_size[0] // 2, self.magn_size[1] // 2
@@ -297,7 +298,6 @@ class VideoWindow:
             b.pack(padx=2, side='right', fill='y')
 
     def _refresh_videofeed(self, image):
-
         imagetk = ImageTk.PhotoImage(image=image)
         try:
             self._videofeed.configure(image=imagetk)
@@ -336,12 +336,24 @@ class VideoWindow:
         if h <= 1 or w <= 1:
             return self.source_shape
         return self.window.winfo_height() - self.INFO_PANEL_FIXED_H, self.window.winfo_width()
-    
-    def move_to(self, pos):
-        w, h, x, y = whxy(self)
-        w_scr, h_scr, x_scr, y_scr = whxy(self.parent.selected_monitor)
 
-        os_taskbar_size = 30
+    def auto_size(self, apply=True):
+        if self.parent.selected_monitor.height < self.parent.selected_monitor.width:
+            h = self.parent.selected_monitor.height // 2
+            w = int(self.aspect_ratio * (h - self.INFO_PANEL_FIXED_H))
+        else:
+            w = self.parent.selected_monitor.width // 2
+            h = int(w / self.aspect_ratio) + self.INFO_PANEL_FIXED_H
+
+        if apply:
+            self.window.geometry(f'{w}x{h}')
+        return w, h
+
+    def move_to(self, pos):
+
+        w_scr, h_scr, x_scr, y_scr = whxy(self.parent.selected_monitor)
+        w, h = self.auto_size(apply=False)
+
         if pos == 'nw':
             self.window.geometry(f"{w}x{h}+{x_scr}+{y_scr}")
         elif pos == 'n':
@@ -357,11 +369,11 @@ class VideoWindow:
             self.window.geometry(f"{w}x{h}+{x_scr + w_scr - w}+{y_scr + h_scr//2 - h//2}")
 
         elif pos == 'sw':
-            self.window.geometry(f"{w}x{h}+{x_scr}+{y_scr + h_scr - h - os_taskbar_size}")
+            self.window.geometry(f"{w}x{h}+{x_scr}+{y_scr + h_scr - h}")
         elif pos == 's':
-            self.window.geometry(f"{w}x{h}+{x_scr + w_scr//2 - w//2}+{y_scr + h_scr - h - os_taskbar_size}")
+            self.window.geometry(f"{w}x{h}+{x_scr + w_scr//2 - w//2}+{y_scr + h_scr - h}")
         elif pos == 'se':
-            self.window.geometry(f"{w}x{h}+{x_scr + w_scr - w}+{y_scr + h_scr - h - os_taskbar_size}")
+            self.window.geometry(f"{w}x{h}+{x_scr + w_scr - w}+{y_scr + h_scr - h}")
 
     # === TODO - merge these functions below ===
     def update_framerate(self, event=None):
@@ -470,7 +482,8 @@ class VideoWindow:
             else:
                 self.txtvar_capture_fps.set("-")
 
-            self.txtvar_brightness.set(f"{self._brightness_var:.2f}%")
+            brightness = np.round(self._frame_buffer.mean() / 255 * 100, decimals=2)
+            self.txtvar_brightness.set(f"{brightness:.2f}%")
         else:
             self.txtvar_capture_fps.set("Off")
             self.txtvar_brightness.set("-")
@@ -484,8 +497,6 @@ class VideoWindow:
             buf = self.parent.current_buffers[self.idx]
             if buf is not None:
                 self._frame_buffer[:] = np.frombuffer(buf, dtype=np.uint8).reshape(self._source_shape)
-
-        self._brightness_var = np.round(self._frame_buffer.mean() / 255 * 100, decimals=2)
 
     def _update_video(self):
 
@@ -503,7 +514,7 @@ class VideoWindow:
         x_east, y_east = w, h//2
         x_west, y_west = 0, h//2
 
-        img_pillow = Image.fromarray(self._frame_buffer).convert('RGB')
+        img_pillow = Image.fromarray(self._frame_buffer, mode='L').convert('RGBA')
         img_pillow = img_pillow.resize((w, h))
 
         d = ImageDraw.Draw(img_pillow)
@@ -516,21 +527,6 @@ class VideoWindow:
 
         if self._warning.is_set():
             d.text((x_north, y_centre/2), self.txtvar_warning.get(), anchor="ms", font=self._imgfnt, fill='orange')
-
-        if self._show_focus.is_set():
-            lapl = ndimage.gaussian_laplace(img_pillow, sigma=1)
-            blur = ndimage.gaussian_filter(lapl, 5)
-
-            # threshold
-            lim = 90
-            blur[blur < lim] = 0
-            blur[blur >= lim] = 100
-
-            matrix = (98/255, 0, 0, 0,
-                      0, 203/255, 0, 0,
-                      0, 0, 90/255, 0)
-            overlay = Image.fromarray(blur).convert('RGB', matrix=matrix)
-            img_pillow.paste(overlay)
 
         if self._magnification.is_set():
 
@@ -556,6 +552,24 @@ class VideoWindow:
             d.point([magn_pos[0] + magn_img.width // 2, magn_pos[1] + magn_img.height // 2],
                     fill=(255, 237, 48))
 
+        if self._show_focus.is_set():
+            lapl = ndimage.gaussian_laplace(np.array(img_pillow)[:, :, 0].astype(np.uint8), sigma=1)
+            blur = ndimage.gaussian_filter(lapl, 5)
+
+            # threshold
+            lim = 90
+            blur[blur < lim] = 0
+            blur[blur >= lim] = 255
+
+            ones = np.ones_like(blur)
+            r = Image.fromarray(ones * 98, mode='L')
+            g = Image.fromarray(ones * 203, mode='L')
+            b = Image.fromarray(ones * 90, mode='L')
+            a = Image.fromarray(blur * 127, mode='L')
+
+            overlay = Image.merge('RGBA', (r, g, b, a))
+            img_pillow = Image.alpha_composite(img_pillow, overlay)
+
         self._refresh_videofeed(img_pillow)
 
     def update(self):
@@ -569,6 +583,7 @@ class VideoWindow:
 
             self._refresh_framebuffer()
             self._update_video()
+
             self._update_txtvars()
 
             self.visible.wait()
@@ -639,7 +654,6 @@ class GUI:
         self.txtvar_frames_saved.set('')
 
         # Compute optimal video windows sizes
-        self._max_videowindows_dims = compute_windows_size(self.source_dims, self.screen_dims)
         self._frame_sizes_bytes = np.prod(self.source_dims, axis=0)
 
         self._reference = None
@@ -680,10 +694,6 @@ class GUI:
     @property
     def count(self):
         return self._counter
-
-    @property
-    def max_videowindows_dims(self):
-        return self._max_videowindows_dims
 
     @property
     def source_dims(self):
@@ -766,8 +776,7 @@ class GUI:
         save_dir_current = tk.Label(info_name_frame, textvariable=self.txtvar_applied_name, anchor=tk.W)
         save_dir_current.pack(side="left", fill="y", expand=True)
 
-        # gothere_button = tk.Button(info_name_frame, text="Go", font=self.regular, command=self.open_save_folder)
-        gothere_button = tk.Button(info_name_frame, text="Go", font=self.regular, command=self.nothing)
+        gothere_button = tk.Button(info_name_frame, text="Go", font=self.regular, command=self.open_save_folder)
         gothere_button.pack(side="right", fill="y", expand=False)
 
         #
@@ -997,4 +1006,4 @@ class GUI:
             self.txtvar_frames_saved.set(f'Saved {sum(self._saved_frames)} frames total ({utils.pretty_size(sum(self._frame_sizes_bytes * self._saved_frames))})')
 
         self._counter += 1
-        self.root.after(100, self.update)
+        self.root.after(16, self.update)
