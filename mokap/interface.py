@@ -13,6 +13,7 @@ from pathlib import Path
 import os
 import subprocess
 from mokap import utils
+from functools import partial
 
 def hex_to_hls(hex_str: str):
     hex_str = hex_str.lstrip('#')
@@ -131,212 +132,286 @@ class VideoWindow:
         else:
             self._imgfnt = ImageFont.load_default()
 
-        # Variable texts
-        self.title_var = tk.StringVar()
-        self.resolution_var = tk.StringVar()
-        self.exposure_var = tk.StringVar()
-        self.capture_fps_var = tk.StringVar()
-        self.display_fps_var = tk.StringVar()
-        self.display_brightness_var = tk.StringVar()
+        # Initialise text vars
+        self.txtvar_camera_name = tk.StringVar()
 
-        # Create the video image frame
+        self.txtvar_resolution = tk.StringVar()
+        self.txtvar_exposure = tk.StringVar()
+        self.txtvar_capture_fps = tk.StringVar()
+        self.txtvar_brightness = tk.StringVar()
+        self.txtvar_display_fps = tk.StringVar()
+
+        ## Main video frame
         imagetk = ImageTk.PhotoImage(image=Image.fromarray(np.zeros(self.video_dims, dtype='<u1')))
 
         self.video_canvas = tk.Label(self.window, bg="black", compound='center')
-        self.video_canvas.pack(fill=tk.BOTH, expand=True)
+        self.video_canvas.pack(fill='both', expand=True)
         self.video_canvas.imgtk = imagetk
         self.video_canvas.configure(image=imagetk)
 
-        title = tk.Label(self.window, fg=self.color_2, bg=self.color, anchor=tk.N, justify='center',
-                         font=parent.bold, textvariable=self.title_var)
-        title.pack(fill=tk.BOTH)
+        ## Camera name bar
+        self.txtvar_camera_name.set(f'{self._cam_name.title()} camera')
 
-        # Create info frame
-        infoframe = tk.LabelFrame(self.window, text="Information", height=self.INFO_PANEL_MIN_H, width=w)
-        infoframe.pack(padx=8, pady=8, side=tk.LEFT, fill=tk.BOTH, expand=True)
+        name_bar = tk.Label(self.window, textvariable=self.txtvar_camera_name,
+                            anchor='n', justify='center',
+                            fg=self.color_2, bg=self.color, font=parent.bold)
+        name_bar.pack(fill='both')
 
-        resolution_label = tk.Label(infoframe, fg="black", anchor=tk.W, justify='left',
-                                    font=parent.regular, textvariable=self.resolution_var)
-        resolution_label.pack(fill=tk.BOTH)
+        # Also set the window title while we're at it
+        self.window.title(self.txtvar_camera_name.get())
 
-        exposure_label = tk.Label(infoframe, fg="black", anchor=tk.W, justify='left',
-                                  font=parent.regular, textvariable=self.exposure_var)
-        exposure_label.pack(fill=tk.BOTH)
+        ## Bottom panel
 
-        capture_fps_label = tk.Label(infoframe, fg="black", anchor=tk.W, justify='left',
-                                     font=parent.regular, textvariable=self.capture_fps_var)
-        capture_fps_label.pack(fill=tk.BOTH)
+        # Set initial values
+        h, w = self.parent.mgr.cameras[self.idx].height, self.parent.mgr.cameras[self.idx].width
+        self.txtvar_resolution.set(f"{h}×{w} px")
+        self.txtvar_exposure.set(f"{self.parent.mgr.cameras[self.idx].exposure} µs")
 
-        display_fps_label = tk.Label(infoframe, fg="black", anchor=tk.W, justify='left',
-                                     font=parent.regular, textvariable=self.display_fps_var)
-        display_fps_label.pack(fill=tk.BOTH)
+        ## Information block
+        f_information = tk.LabelFrame(self.window, text="Information",
+                                      height=self.INFO_PANEL_MIN_H)
+        f_information.pack(padx=5, pady=5, side='left', fill='both', expand=True)
 
-        display_brightness_label = tk.Label(infoframe, fg="black", anchor=tk.W, justify='left',
-                                            font=parent.regular, textvariable=self.display_brightness_var)
-        display_brightness_label.pack(fill=tk.BOTH)
+        for label, var in zip(['Resolution', 'Capture', 'Exposure', 'Brightness', 'Display'],
+                              [self.txtvar_resolution,
+                               self.txtvar_capture_fps,
+                               self.txtvar_exposure,
+                               self.txtvar_brightness,
+                               self.txtvar_display_fps]):
 
-        self.show_focus_button = tk.Button(infoframe, text="Show focus", font=self.parent.regular,
-                                      command=self._toggle_focus_display)
-        self.show_focus_button.pack(padx=2, fill=tk.BOTH, side=tk.LEFT)
+            f = tk.Frame(f_information)
+            f.pack(side='top', fill='x', expand=True)
 
-        self.show_mag_button = tk.Button(infoframe, text="Hide magnification", font=self.parent.regular,
-                                           command=self._toggle_mag_display)
-        self.show_mag_button.pack(padx=2, fill=tk.BOTH, side=tk.LEFT)
+            l = tk.Label(f, text=f"{label} :",
+                         anchor='e', justify='right', width=13,
+                         font=parent.regular)
+            l.pack(side='left', fill='y')
 
-        controls_layout_frame = tk.LabelFrame(self.window, text="Camera tuning", height=self.INFO_PANEL_MIN_H, width=w)
-        controls_layout_frame.pack(padx=8, pady=8, side=tk.LEFT, fill=tk.BOTH, expand=True)
+            v = tk.Label(f, textvariable=var,
+                         anchor='w', justify='left',
+                         font=parent.regular)
+            v.pack(side='left', fill='y')
 
-        framerate_frame = tk.Frame(controls_layout_frame)
-        framerate_frame.pack(side=tk.TOP, fill=tk.X, expand=True)
-        framerate_slider_label = tk.Label(framerate_frame, fg="black", anchor=tk.SE, justify='right',
-                                          font=parent.regular, text='Framerate (fps) :')
-        framerate_slider_label.pack(side='left', fill=tk.Y, expand=True)
-        self.framerate_slider = tk.Scale(framerate_frame, from_=1, to=220, resolution=1, orient=tk.HORIZONTAL,
-                                         width=8, sliderlength=16)
-        self.framerate_slider.set(self.parent.mgr.cameras[self.idx].framerate)
-        self.framerate_slider.bind("<ButtonRelease-1>", self.update_framerate)
-        self.framerate_slider.pack(side='left', fill=tk.Y, expand=True)
+        ## View controls block
+        view_info_frame = tk.LabelFrame(self.window, text="View",
+                                        height=self.INFO_PANEL_MIN_H, width=100)
+        view_info_frame.pack(padx=5, pady=5, side='left', fill='y', expand=True)
 
-        apply_fps_all_button = tk.Button(framerate_frame, text="Apply to all", font=self.parent.regular,
-                                         command=self._update_fps_all_cams)
-        apply_fps_all_button.pack(padx=2, fill='x', side=tk.LEFT)
+        f_windowsnap = tk.Frame(view_info_frame)
+        f_windowsnap.pack(side='top', fill='y')
 
-        exposure_frame = tk.Frame(controls_layout_frame)
-        exposure_frame.pack(side=tk.TOP, fill=tk.X, expand=True)
-        exposure_slider_label = tk.Label(exposure_frame, fg="black", anchor=tk.SE, justify='right',
-                                         font=parent.regular, text='Exposure (µs) :')
-        exposure_slider_label.pack(side='left', fill=tk.Y, expand=True)
-        self.exposure_slider = tk.Scale(exposure_frame, from_=4300, to=25000, resolution=5,
-                                        orient=tk.HORIZONTAL, width=8, sliderlength=16)
-        self.exposure_slider.set(self.parent.mgr.cameras[self.idx].exposure)
-        self.exposure_slider.bind("<ButtonRelease-1>", self.update_exposure)
-        self.exposure_slider.pack(side='left', fill=tk.Y, expand=True)
+        l_windowsnap = tk.Label(f_windowsnap, text=f"Snap window to:", bg='red',
+                     anchor='e', justify='right',
+                     font=parent.regular)
+        l_windowsnap.pack(side='left', fill='y')
 
-        apply_exp_all_button = tk.Button(exposure_frame, text="Apply to all", font=self.parent.regular,
-                                         command=self._update_exp_all_cams)
-        apply_exp_all_button.pack(padx=2, fill='x', side=tk.LEFT)
+        f_buttons_windowsnap = tk.Frame(f_windowsnap, bg='green',)
+        f_buttons_windowsnap.pack(padx=2, pady=2, side='left', fill='both', expand=True)
 
-        gain_frame = tk.Frame(controls_layout_frame)
-        gain_frame.pack(side=tk.TOP, fill=tk.X, expand=True)
-        gain_slider_label = tk.Label(gain_frame, fg="black", anchor=tk.SE, justify='right',
-                                          font=parent.regular, text='Gain :')
-        gain_slider_label.pack(side='left', fill=tk.Y, expand=True)
-        self.gain_slider = tk.Scale(gain_frame, from_=0.0, to=24.0, digits=3, resolution=0.5, orient=tk.HORIZONTAL,
-                                         width=8, sliderlength=16)
-        self.gain_slider.set(self.parent.mgr.cameras[self.idx].gain)
-        self.gain_slider.bind("<ButtonRelease-1>", self.update_gain)
-        self.gain_slider.pack(side='left', fill=tk.Y, expand=True)
+        positions = np.array([['nw', 'n', 'ne'],
+                              ['w', 'c', 'e'],
+                              ['sw', 's', 'se']])
+        self._pixel = tk.PhotoImage(width=1, height=1)
+        for r in range(3):
+            for c in range(3):
+                pos = positions[r, c]
+                b = tk.Button(f_buttons_windowsnap,
+                              image=self._pixel, compound="center", padx=0, pady=0,
+                              width=6, height=6,
+                              command=partial(self.move_to, pos))
+                b.grid(row=r, column=c)
 
-        apply_gain_all_button = tk.Button(gain_frame, text="Apply to all", font=self.parent.regular,
-                                         command=self._update_gain_all_cams)
-        apply_gain_all_button.pack(padx=2, fill='x', side=tk.LEFT)
+        f_buttons_controls = tk.Frame(view_info_frame)
+        f_buttons_controls.pack(padx=2, pady=2, side='top', fill='both', expand=True)
 
-        gamma_frame = tk.Frame(controls_layout_frame)
-        gamma_frame.pack(side=tk.TOP, fill=tk.X, expand=True)
-        gamma_slider_label = tk.Label(gamma_frame, fg="black", anchor=tk.SE, justify='right',
-                                     font=parent.regular, text='Gamma :')
-        gamma_slider_label.pack(side='left', fill=tk.Y, expand=True)
-        self.gamma_slider = tk.Scale(gamma_frame, from_=0.0, to=4.0, digits=3, resolution=0.05, orient=tk.HORIZONTAL,
-                                    width=8, sliderlength=16)
-        self.gamma_slider.set(self.parent.mgr.cameras[self.idx].gamma)
-        self.gamma_slider.bind("<ButtonRelease-1>", self.update_gamma)
-        self.gamma_slider.pack(side='left', fill=tk.Y, expand=True)
+        self.show_focus_button = tk.Button(f_buttons_controls, text="Focus",
+                                           width=10,
+                                           highlightthickness=0, highlightbackground="#62CB5A",
+                                           font=self.parent.regular,
+                                           command=self._toggle_focus_display)
+        self.show_focus_button.pack(side='left', fill='x')
 
-        apply_gamma_all_button = tk.Button(gamma_frame, text="Apply to all", font=self.parent.regular,
-                                          command=self._update_gamma_all_cams)
-        apply_gamma_all_button.pack(padx=2, fill='x', side=tk.LEFT)
+        self.show_mag_button = tk.Button(f_buttons_controls, text="Magnification",
+                                         width=10,
+                                         highlightthickness=2, highlightbackground="#FFED30",
+                                         font=self.parent.regular,
+                                         command=self._toggle_mag_display)
+        self.show_mag_button.pack(side='left', fill='x')
 
-        # Set static vars
-        self.title_var.set(f'{self._cam_name.title()} camera')
-        self.window.title(self.title_var.get())
-        self.resolution_var.set(
-            f"Resolution  : {self.parent.mgr.cameras[self.idx].height}×{self.parent.mgr.cameras[self.idx].width} px")
-        self.exposure_var.set(f"Exposure     : {self.parent.mgr.cameras[self.idx].exposure} µs")
+        ## Camera controls block
+        f_camera_controls = tk.LabelFrame(self.window, text="Control",
+                                          height=self.INFO_PANEL_MIN_H)
+        f_camera_controls.pack(padx=5, pady=5, side='left', fill='both', expand=True)
+
+        self.camera_controls_sliders = {}
+        for label, val, func, func_all, slider_params in zip(['Framerate (fps)', 'Exposure (µs)', 'Gain', 'Gamma'],
+                                              [self.parent.mgr.cameras[self.idx].framerate,
+                                               self.parent.mgr.cameras[self.idx].exposure,
+                                               self.parent.mgr.cameras[self.idx].gain,
+                                               self.parent.mgr.cameras[self.idx].gamma],
+                                              [self.update_framerate,
+                                               self.update_exposure,
+                                               self.update_gain,
+                                               self.update_gamma],
+                                              [self._update_fps_all_cams,
+                                               self._update_exp_all_cams,
+                                               self._update_gain_all_cams,
+                                               self._update_gamma_all_cams],
+                                                             [(1, 220, 1, 1),
+                                                              (4300, 25000, 5, 1),
+                                                              (0.0, 24.0, 0.5, 3),
+                                                              (0.0, 4.0, 0.05, 3),
+                                                              ]):
+            f = tk.Frame(f_camera_controls)
+            f.pack(side='top', fill='both', expand=True)
+
+            l = tk.Label(f, text=f'{label} :',
+                         anchor='se', justify='right', width=18,
+                         font=parent.regular)
+            l.pack(side='left', fill='both', expand=True)
+
+            s = tk.Scale(f,
+                         from_=slider_params[0], to=slider_params[1], resolution=slider_params[2], digits=slider_params[3],
+                         orient='horizontal', width=8, sliderlength=16)
+            s.set(val)
+            s.bind("<ButtonRelease-1>", func)
+            s.pack(side='left', fill='both', expand=True)
+
+            key = label.split('(')[0].strip().lower()   # Get the simplified label (= wihtout spaces and units)
+            self.camera_controls_sliders[key] = s
+
+            b = tk.Button(f, text="Apply all",
+                          font=self.parent.regular,
+                          command=func_all)
+            b.pack(padx=2, side='right', fill='y')
+
+    def move_to(self, pos):
+        w, h, x, y = whxy(self)
+        w_scr, h_scr, x_scr, y_scr = whxy(self.parent.selected_monitor)
+
+        os_taskbar_size = 30
+        if pos == 'nw':
+            self.window.geometry(f"{w}x{h}+{x_scr}+{y_scr}")
+        elif pos == 'n':
+            self.window.geometry(f"{w}x{h}+{x_scr + w_scr//2 - w//2}+{y_scr}")
+        elif pos == 'ne':
+            self.window.geometry(f"{w}x{h}+{x_scr + w_scr - w}+{y_scr}")
+
+        elif pos == 'w':
+            self.window.geometry(f"{w}x{h}+{x_scr}+{y_scr + h_scr//2 - h//2}")
+        elif pos == 'c':
+            self.window.geometry(f"{w}x{h}+{x_scr + w_scr//2 - w//2}+{y_scr + h_scr//2 - h//2}")
+        elif pos == 'e':
+            self.window.geometry(f"{w}x{h}+{x_scr + w_scr - w}+{y_scr + h_scr//2 - h//2}")
+
+        elif pos == 'sw':
+            self.window.geometry(f"{w}x{h}+{x_scr}+{y_scr + h_scr - h - os_taskbar_size}")
+        elif pos == 's':
+            self.window.geometry(f"{w}x{h}+{x_scr + w_scr//2 - w//2}+{y_scr + h_scr - h - os_taskbar_size}")
+        elif pos == 'se':
+            self.window.geometry(f"{w}x{h}+{x_scr + w_scr - w}+{y_scr + h_scr - h - os_taskbar_size}")
 
     def update_framerate(self, event=None):
-        new_fps = self.framerate_slider.get()
-        self.parent.mgr.cameras[self.idx].framerate = new_fps
-        self.framerate_slider.set(self.parent.mgr.cameras[self.idx].framerate)
+        slider = self.camera_controls_sliders['framerate']
+        new_val = slider.get()
+        self.parent.mgr.cameras[self.idx].framerate = new_val
 
+        # The actual maximum framerate depends on the exposure, so it might not be what the user requested
+        # Thus we need to update the slider value to the actual framerate
+        slider.set(self.parent.mgr.cameras[self.idx].framerate)
+
+        # Refresh fps counters for the UI
         self.parent._capture_clock = datetime.now()
         self.parent.start_indices[:] = self.parent.mgr.indices
 
     def update_exposure(self, event=None):
-        new_exp = self.exposure_slider.get()
-        self.parent.mgr.cameras[self.idx].exposure = new_exp
-        self.framerate_slider.set(self.parent.mgr.cameras[self.idx].framerate)
-        self.exposure_var.set(f"Exposure     : {self.parent.mgr.cameras[self.idx].exposure} µs")
+        slider = self.camera_controls_sliders['exposure']
+        new_val = slider.get()
+        self.parent.mgr.cameras[self.idx].exposure = new_val
+
+        # We also need to update the framerate slider to current resulting fps after exposure change
+        slider_framerate = self.camera_controls_sliders['framerate']
+        slider_framerate.set(self.parent.mgr.cameras[self.idx].framerate)
+
+        self.txtvar_exposure.set(f"{self.parent.mgr.cameras[self.idx].exposure} µs")
+
+        # And callback to the update framerate function because the new exposure time might cap the framerate out
         self.update_framerate(event)
 
     def update_gain(self, event=None):
-        new_gain = self.gain_slider.get()
-        self.parent.mgr.cameras[self.idx].gain = new_gain
+        slider = self.camera_controls_sliders['gain']
+        new_val = slider.get()
+        self.parent.mgr.cameras[self.idx].gain = new_val
 
     def update_gamma(self, event=None):
-        new_gamma = self.gamma_slider.get()
-        self.parent.mgr.cameras[self.idx].gamma = new_gamma
+        slider = self.camera_controls_sliders['gamma']
+        new_val = slider.get()
+        self.parent.mgr.cameras[self.idx].gamma = new_val
 
     def _update_fps_all_cams(self):
         for window in self.parent.video_windows:
             if window is not self:
-                new_fps = self.framerate_slider.get()
-                window.framerate_slider.set(new_fps)
+                slider = self.camera_controls_sliders['framerate']
+                new_val = slider.get()
+                window.camera_controls_sliders['framerate'].set(new_val)
                 window.update_framerate()
 
     def _update_exp_all_cams(self):
         for window in self.parent.video_windows:
             if window is not self:
-                new_exp = self.exposure_slider.get()
-                window.exposure_slider.set(new_exp)
+                slider = self.camera_controls_sliders['exposure']
+                new_val = slider.get()
+                window.camera_controls_sliders['exposure'].set(new_val)
                 window.update_exposure()
 
     def _update_gain_all_cams(self):
         for window in self.parent.video_windows:
             if window is not self:
-                new_gain = self.gain_slider.get()
-                window.gain_slider.set(new_gain)
+                slider = self.camera_controls_sliders['gain']
+                new_val = slider.get()
+                window.camera_controls_sliders['gain'].set(new_val)
                 window.update_gain()
 
     def _update_gamma_all_cams(self):
         for window in self.parent.video_windows:
             if window is not self:
-                new_gamma = self.gamma_slider.get()
-                window.gamma_slider.set(new_gamma)
+                slider = self.camera_controls_sliders['gamma']
+                new_val = slider.get()
+                window.camera_controls_sliders['gamma'].set(new_val)
                 window.update_gamma()
 
     def _toggle_focus_display(self):
         if self._display_focus.is_set():
             self._display_focus.clear()
-            self.show_focus_button.configure(text='Show focus')
+            self.show_focus_button.configure(highlightthickness=0)
         else:
             self._display_focus.set()
-            self.show_focus_button.configure(text='Hide focus')
+            self.show_focus_button.configure(highlightthickness=2)
 
     def _toggle_mag_display(self):
         if self._display_mag.is_set():
             self._display_mag.clear()
-            self.show_mag_button.configure(text='Show magnification')
+            self.show_mag_button.configure(highlightthickness=0)
         else:
             self._display_mag.set()
-            self.show_mag_button.configure(text='Hide magnification')
+            self.show_mag_button.configure(highlightthickness=2)
 
-    def _update_fps_vars(self):
+    def _update_txtvars(self):
 
         if self.parent.mgr.acquiring:
             cap_fps = self.parent.capture_fps[self.idx]
 
-            if cap_fps > 1000 or cap_fps <= 0:
-                self.capture_fps_var.set(f"Acquisition  : ... fps")
+            if 0 < cap_fps < 1000:  # only makes sense to display real values
+                self.txtvar_capture_fps.set(f"{cap_fps:.2f} fps")
             else:
-                self.capture_fps_var.set(f"Acquisition  : {cap_fps:.2f} fps")
+                self.txtvar_capture_fps.set("-")
 
-            self.display_brightness_var.set(
-                f"Brightness  : {self._brightness_var:.2f}%")
+            self.txtvar_brightness.set(f"{self._brightness_var:.2f}%")
         else:
-            self.capture_fps_var.set(f"Acquisition  : Off")
-            self.display_brightness_var.set(f"Brightness  : -")
+            self.txtvar_capture_fps.set("Off")
+            self.txtvar_brightness.set("-")
 
-        self.display_fps_var.set(f"Display        : {self._fps:.2f} fps")
+        self.txtvar_display_fps.set(f"{self._fps:.2f} fps")
 
     def _update_video(self):
         frame = np.random.randint(0, 255, self.video_dims, dtype='<u1')
@@ -403,8 +478,7 @@ class VideoWindow:
         try:
             self.video_canvas.configure(image=imgtk)
             self.imagetk = imgtk
-        except Exception as e:
-            print(e)
+        except Exception:
             # If new image is garbage collected too early, do nothing - this prevents the image from flashing
             pass
 
@@ -419,7 +493,7 @@ class VideoWindow:
             self._counter += 1
 
             self._update_video()
-            self._update_fps_vars()
+            self._update_txtvars()
 
             self.visible.wait()
 
@@ -474,7 +548,7 @@ class GUI:
     def __init__(self, mgr):
 
         # Detect monitors and pick the default one
-        self._selected_monitor = None
+        self.selected_monitor = None
         self._monitors = screeninfo.get_monitors()
         self.set_monitor()
 
@@ -534,8 +608,8 @@ class GUI:
             t.start()
             self.windows_threads.append(t)
 
-        x = self._selected_monitor.x + self._selected_monitor.width // 2 - self.CONTROLS_HEIGHT // 2
-        y = self._selected_monitor.y + self._selected_monitor.height // 2 - self.CONTROLS_WIDTH // 2
+        x = self.selected_monitor.x + self.selected_monitor.width // 2 - self.CONTROLS_HEIGHT // 2
+        y = self.selected_monitor.y + self.selected_monitor.height // 2 - self.CONTROLS_WIDTH // 2
 
         self.root.geometry(f"{self.CONTROLS_WIDTH}x{self.CONTROLS_HEIGHT}+{x}+{y}")
 
@@ -569,16 +643,16 @@ class GUI:
 
     @property
     def screen_dims(self):
-        monitor = self._selected_monitor
+        monitor = self.selected_monitor
         return np.array([monitor.height, monitor.width, monitor.x, monitor.y], dtype=np.uint32)
 
     def set_monitor(self, idx=None):
         if len(self._monitors) > 1 and idx is None:
-            self._selected_monitor = next(m for m in self._monitors if m.is_primary)
+            self.selected_monitor = next(m for m in self._monitors if m.is_primary)
         elif len(self._monitors) > 1 and idx is not None:
-            self._selected_monitor = self._monitors[idx]
+            self.selected_monitor = self._monitors[idx]
         else:
-            self._selected_monitor = self._monitors[0]
+            self.selected_monitor = self._monitors[0]
 
     def open_save_folder(self):
         path = Path(self.applied_name_var.get()).resolve()
@@ -652,7 +726,7 @@ class GUI:
 
         self.button_acquisition = tk.Button(left_pane,
                                             image=self.icon_capture_off,
-                                            compound='left', text="Acquisition off", anchor=tk.CENTER, font=self.regular,
+                                            compound='left', text="Acquisition off", anchor='center', font=self.regular,
                                             command=self.gui_toggle_acquisition,
                                             state='normal')
         self.button_acquisition.pack(padx=5, pady=5, side="top", fill="both", expand=True)
@@ -660,7 +734,7 @@ class GUI:
         self.button_recpause = tk.Button(left_pane,
                                          image=self.icon_rec_off,
                                          compound='left',
-                                         text="Not recording\n\n(Space to toggle)", anchor=tk.CENTER, font=self.bold,
+                                         text="Not recording\n\n(Space to toggle)", anchor='center', font=self.bold,
                                          command=self.gui_toggle_recording,
                                          state='disabled')
         self.button_recpause.pack(padx=5, pady=5, side="top", fill="both", expand=True)
@@ -720,7 +794,7 @@ class GUI:
 
         for i, m in enumerate(self._monitors):
             w, h, x, y = m.width // 40, m.height // 40, m.x // 40, m.y // 40
-            if m.name == self._selected_monitor.name:
+            if m.name == self.selected_monitor.name:
                 col = '#515151'
             else:
                 col = '#c0c0c0'
@@ -733,7 +807,7 @@ class GUI:
 
     def screen_update(self, val):
 
-        old_monitor_x, old_monitor_y = self._selected_monitor.x, self._selected_monitor.y
+        old_monitor_x, old_monitor_y = self.selected_monitor.x, self.selected_monitor.y
 
         self.set_monitor(val)
         self.update_monitors_buttons()
@@ -744,20 +818,20 @@ class GUI:
             d_x = x - old_monitor_x
             d_y = y - old_monitor_y
 
-            new_x = self._selected_monitor.x + d_x
-            new_y = self._selected_monitor.y + d_y
+            new_x = self.selected_monitor.x + d_x
+            new_y = self.selected_monitor.y + d_y
 
-            if new_x <= self._selected_monitor.x:
-                new_x = self._selected_monitor.x
+            if new_x <= self.selected_monitor.x:
+                new_x = self.selected_monitor.x
 
-            if new_y <= self._selected_monitor.y:
-                new_y = self._selected_monitor.y
+            if new_y <= self.selected_monitor.y:
+                new_y = self.selected_monitor.y
 
-            if new_x + w >= self._selected_monitor.width + self._selected_monitor.x:
-                new_x = self._selected_monitor.width + self._selected_monitor.x - w
+            if new_x + w >= self.selected_monitor.width + self.selected_monitor.x:
+                new_x = self.selected_monitor.width + self.selected_monitor.x - w
 
-            if new_y + h >= self._selected_monitor.height + self._selected_monitor.y:
-                new_y = self._selected_monitor.height + self._selected_monitor.y - h
+            if new_y + h >= self.selected_monitor.height + self.selected_monitor.y:
+                new_y = self.selected_monitor.height + self.selected_monitor.y - h
 
             if window_to_move is self:
                 self.root.geometry(f'{w}x{h}+{new_x}+{new_y}')
@@ -765,15 +839,15 @@ class GUI:
                 window_to_move.window.geometry(f'{w}x{h}+{new_x}+{new_y}')
 
     def autotile_windows(self):
-        new_x = self._selected_monitor.x
-        new_y = self._selected_monitor.y
+        new_x = self.selected_monitor.x
+        new_y = self.selected_monitor.y
 
         for window_to_move in self.video_windows:
             w, h, x, y = whxy(window_to_move)
             window_to_move.window.geometry(f'{w}x{h}+{new_x}+{new_y}')
             new_x += w
-            if new_x >= self._selected_monitor.x + self._selected_monitor.width:
-                new_x = self._selected_monitor.x
+            if new_x >= self.selected_monitor.x + self.selected_monitor.width:
+                new_x = self.selected_monitor.x
                 new_y += h
 
     def _handle_keypress(self, event):
