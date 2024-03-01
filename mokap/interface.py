@@ -157,7 +157,8 @@ class VideoWindow:
 
         ## Magnification parameters
         magn_portion = 12
-        self.magn_zoom = 2
+        self.magn_zoom = tk.DoubleVar()
+        self.magn_zoom.set(3)
 
         self.magn_size = self.source_shape[0] // magn_portion, self.source_shape[1] // magn_portion
         magn_half_size = self.magn_size[0] // 2, self.magn_size[1] // 2
@@ -232,30 +233,37 @@ class VideoWindow:
                               command=partial(self.move_to, self.positions[r, c]))
                 b.grid(row=r, column=c)
 
-        f_buttons_controls = tk.Frame(view_info_frame)
-        f_buttons_controls.pack(padx=2, pady=2, side='top', fill='both', expand=True)
+        f_buttons_controls = tk.Frame(view_info_frame, padx=5)
+        f_buttons_controls.pack(side='bottom', fill='x', expand=True)
 
         self.show_focus_button = tk.Button(f_buttons_controls, text="Focus",
                                            width=10,
+                                           bd=2,
                                            highlightthickness=0, highlightbackground="#62CB5A",
                                            font=self.parent.regular,
                                            command=self._toggle_focus_display)
-        self.show_focus_button.pack(side='left', fill='x')
+        self.show_focus_button.grid(row=0, column=0)
 
-        self.show_mag_button = tk.Button(f_buttons_controls, text="Magnification",
+        self.show_mag_button = tk.Button(f_buttons_controls, text="Magnifier",
                                          width=10,
+                                         bd=0,
                                          highlightthickness=2, highlightbackground="#FFED30",
                                          font=self.parent.regular,
                                          command=self._toggle_mag_display)
-        self.show_mag_button.pack(side='left', fill='x')
+        self.show_mag_button.grid(row=0, column=1)
+
+        self.slider_magn = tk.Scale(f_buttons_controls, variable=self.magn_zoom,
+                                    from_=1, to=10, resolution=0.1, orient='horizontal',
+                                    width=8, sliderlength=8)
+        self.slider_magn.grid(row=1, column=1)
 
         ## Camera controls block
         f_camera_controls = tk.LabelFrame(self.window, text="Control",
                                           height=self.INFO_PANEL_FIXED_H)
-        f_camera_controls.pack(padx=5, pady=5, side='left', fill='both', expand=True)
+        f_camera_controls.pack(padx=5, pady=5, side='right', fill='both', expand=True)
 
         self.camera_controls_sliders = {}
-        for label, val, func, func_all, slider_params in zip(['Framerate (fps)', 'Exposure (µs)', 'Gain', 'Gamma'],
+        for label, val, func, func_all, slider_params in zip(['Framerate', 'Exposure', 'Gain', 'Gamma'],
                                               [self.parent.mgr.cameras[self.idx].framerate,
                                                self.parent.mgr.cameras[self.idx].exposure,
                                                self.parent.mgr.cameras[self.idx].gain,
@@ -276,25 +284,28 @@ class VideoWindow:
             f = tk.Frame(f_camera_controls)
             f.pack(side='top', fill='both', expand=True)
 
-            l = tk.Label(f, text=f'{label} :',
-                         anchor='se', justify='right', width=18,
-                         font=parent.regular)
-            l.pack(side='left', fill='both', expand=True)
+            # We go right to left because it's the rightmost block
+            b = tk.Button(f, text='All',
+                          width=2,
+                          font=self.parent.regular,
+                          command=func_all)
+            b.pack(side='right', fill='y', expand=True)
 
             s = tk.Scale(f,
                          from_=slider_params[0], to=slider_params[1], resolution=slider_params[2], digits=slider_params[3],
                          orient='horizontal', width=8, sliderlength=16)
             s.set(val)
             s.bind("<ButtonRelease-1>", func)
-            s.pack(side='left', fill='both', expand=True)
+            s.pack(side='right', fill='both', expand=True)
 
             key = label.split('(')[0].strip().lower()   # Get the simplified label (= wihtout spaces and units)
             self.camera_controls_sliders[key] = s
 
-            b = tk.Button(f, text="Apply all",
-                          font=self.parent.regular,
-                          command=func_all)
-            b.pack(padx=2, side='right', fill='y')
+
+            l = tk.Label(f, text=f'{label} :',
+                         anchor='se', justify='right', width=22,
+                         font=parent.regular)
+            l.pack(side='right', fill='both', expand=True)
 
     def _refresh_videofeed(self, image):
         imagetk = ImageTk.PhotoImage(image=image)
@@ -337,8 +348,9 @@ class VideoWindow:
         return self.window.winfo_height() - self.INFO_PANEL_FIXED_H, self.window.winfo_width()
 
     def auto_size(self, apply=True):
+        arbitrary_taskbar_h = 60
         if self.parent.selected_monitor.height < self.parent.selected_monitor.width:
-            h = self.parent.selected_monitor.height // 2
+            h = self.parent.selected_monitor.height // 2 - arbitrary_taskbar_h
             w = int(self.aspect_ratio * (h - self.INFO_PANEL_FIXED_H))
         else:
             w = self.parent.selected_monitor.width // 2
@@ -363,6 +375,8 @@ class VideoWindow:
     def move_to(self, pos):
 
         w_scr, h_scr, x_scr, y_scr = whxy(self.parent.selected_monitor)
+        arbitrary_taskbar_h = 80
+
         w, h = self.auto_size(apply=False)
 
         if pos == 'nw':
@@ -380,11 +394,11 @@ class VideoWindow:
             self.window.geometry(f"{w}x{h}+{x_scr + w_scr - w}+{y_scr + h_scr//2 - h//2}")
 
         elif pos == 'sw':
-            self.window.geometry(f"{w}x{h}+{x_scr}+{y_scr + h_scr - h}")
+            self.window.geometry(f"{w}x{h}+{x_scr}+{y_scr + h_scr - h - arbitrary_taskbar_h}")
         elif pos == 's':
-            self.window.geometry(f"{w}x{h}+{x_scr + w_scr//2 - w//2}+{y_scr + h_scr - h}")
+            self.window.geometry(f"{w}x{h}+{x_scr + w_scr//2 - w//2}+{y_scr + h_scr - h - arbitrary_taskbar_h}")
         elif pos == 'se':
-            self.window.geometry(f"{w}x{h}+{x_scr + w_scr - w}+{y_scr + h_scr - h}")
+            self.window.geometry(f"{w}x{h}+{x_scr + w_scr - w}+{y_scr + h_scr - h - arbitrary_taskbar_h}")
 
     # === TODO - merge these functions below ===
     def update_framerate(self, event=None):
@@ -464,18 +478,20 @@ class VideoWindow:
     def _toggle_focus_display(self):
         if self._show_focus.is_set():
             self._show_focus.clear()
-            self.show_focus_button.configure(highlightthickness=0)
+            self.show_focus_button.configure(bd=2, highlightthickness=0)
         else:
             self._show_focus.set()
-            self.show_focus_button.configure(highlightthickness=2)
+            self.show_focus_button.configure(bd=0, highlightthickness=2)
 
     def _toggle_mag_display(self):
         if self._magnification.is_set():
             self._magnification.clear()
-            self.show_mag_button.configure(highlightthickness=0)
+            self.show_mag_button.configure(bd=2, highlightthickness=0)
+            self.slider_magn.config(state='disabled')
         else:
             self._magnification.set()
-            self.show_mag_button.configure(highlightthickness=2)
+            self.show_mag_button.configure(bd=0, highlightthickness=2)
+            self.slider_magn.config(state='active')
     # === end TODO ===
 
     def _update_txtvars(self):
@@ -500,6 +516,7 @@ class VideoWindow:
             self.txtvar_brightness.set("-")
 
         self.txtvar_display_fps.set(f"{self._fps:.2f} fps")
+
 
     def _refresh_framebuffer(self):
         self._frame_buffer.fill(0)
@@ -534,17 +551,17 @@ class VideoWindow:
         d.line((x_north, y_north, x_south, y_south), fill=(255, 255, 255), width=1)     # Vertical
 
         # Position the 'Recording' indicator
-        d.text((x_south, y_centre/2), self.parent.txtvar_recording.get(), anchor="ms", font=self._imgfnt, fill='red')
+        d.text((x_centre, (y_south - y_centre/2)), self.parent.txtvar_recording.get(), anchor="ms", font=self._imgfnt, fill='red')
 
         if self._warning.is_set():
-            d.text((x_north, y_centre/2), self.txtvar_warning.get(), anchor="ms", font=self._imgfnt, fill='orange')
+            d.text((x_centre, y_centre/2), self.txtvar_warning.get(), anchor="ms", font=self._imgfnt, fill='orange')
 
         if self._magnification.is_set():
 
             # Slice directly from the framebuffer and make a (then zoomed) image
             magn_img = Image.fromarray(self._frame_buffer[self.magn_A[0]:self.magn_B[0],
                                        self.magn_A[1]:self.magn_B[1]]).convert('RGB')
-            magn_img = magn_img.resize((magn_img.width * self.magn_zoom, magn_img.height * self.magn_zoom))
+            magn_img = magn_img.resize((int(magn_img.width * self.magn_zoom.get()), int(magn_img.height * self.magn_zoom.get())))
 
             # Position of the top left corner of magnification window in the whole videofeed
             magn_pos = w - magn_img.width - 10, h - magn_img.height - 10    # small margin of 10 px
@@ -559,9 +576,14 @@ class VideoWindow:
             # Add frame around the magnification
             d.rectangle([magn_pos, (w - 10, h - 10)], outline=(255, 237, 48), width=1)
 
-            # Add point in the centre of it
-            d.point([magn_pos[0] + magn_img.width // 2, magn_pos[1] + magn_img.height // 2],
-                    fill=(255, 237, 48))
+            # # Add point in the centre of it
+            # d.point([magn_pos[0] + magn_img.width // 2, magn_pos[1] + magn_img.height // 2],
+            #         fill=(255, 237, 48))
+
+            # Add a small + in the centre
+            c = magn_pos[0] + magn_img.width // 2, magn_pos[1] + magn_img.height // 2
+            d.line((c[0] - 5, c[1], c[0] + 5, c[1]), fill=(255, 237, 48), width=1)      # Horizontal
+            d.line((c[0], c[1] - 5, c[0], c[1] + 5), fill=(255, 237, 48), width=1)      # Vertical
 
         if self._show_focus.is_set():
             lapl = ndimage.gaussian_laplace(np.array(img_pillow)[:, :, 0].astype(np.uint8), sigma=1)
