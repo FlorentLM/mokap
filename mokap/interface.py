@@ -219,18 +219,17 @@ class VideoWindow:
         f_buttons_windowsnap = tk.Frame(f_windowsnap)
         f_buttons_windowsnap.pack(padx=2, pady=2, side='left', fill='both', expand=True)
 
-        positions = np.array([['nw', 'n', 'ne'],
-                              ['w', 'c', 'e'],
-                              ['sw', 's', 'se']])
+        self.positions = np.array([['nw', 'n', 'ne'],
+                                   ['w', 'c', 'e'],
+                                   ['sw', 's', 'se']])
 
         self._pixel = tk.PhotoImage(width=1, height=1)
         for r in range(3):
             for c in range(3):
-                pos = positions[r, c]
                 b = tk.Button(f_buttons_windowsnap,
                               image=self._pixel, compound="center", padx=0, pady=0,
                               width=6, height=6,
-                              command=partial(self.move_to, pos))
+                              command=partial(self.move_to, self.positions[r, c]))
                 b.grid(row=r, column=c)
 
         f_buttons_controls = tk.Frame(view_info_frame)
@@ -348,6 +347,18 @@ class VideoWindow:
         if apply:
             self.window.geometry(f'{w}x{h}')
         return w, h
+
+    def auto_move(self):
+        # First corners and monitor centre, and then edge centres
+        positions = np.hstack((self.positions.ravel()[::2], self.positions.ravel()[1::2]))
+        nb_positions = len(positions)
+
+        if self.idx <= nb_positions:
+            pos = positions[self.idx]
+        else:   # Start over to first position
+            pos = positions[self.idx % nb_positions]
+
+        self.move_to(pos)
 
     def move_to(self, pos):
 
@@ -896,16 +907,9 @@ class GUI:
                 window_to_move.window.geometry(f'{w}x{h}+{new_x}+{new_y}')
 
     def autotile_windows(self):
-        new_x = self.selected_monitor.x
-        new_y = self.selected_monitor.y
-
-        for window_to_move in self.video_windows:
-            w, h, x, y = whxy(window_to_move)
-            window_to_move.window.geometry(f'{w}x{h}+{new_x}+{new_y}')
-            new_x += w
-            if new_x >= self.selected_monitor.x + self.selected_monitor.width:
-                new_x = self.selected_monitor.x
-                new_y += h
+        for w in self.video_windows:
+            w.auto_size()
+            w.auto_move()
 
     def _handle_keypress(self, event):
         match event.keycode:
