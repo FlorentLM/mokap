@@ -1,5 +1,4 @@
 import sys
-import time
 import tkinter as tk
 import tkinter.font as font
 from PIL import Image, ImageTk, ImageDraw, ImageFont
@@ -15,6 +14,7 @@ import os
 import subprocess
 from mokap import utils
 from functools import partial
+
 
 def hex_to_hls(hex_str: str):
     hex_str = hex_str.lstrip('#')
