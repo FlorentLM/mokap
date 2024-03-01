@@ -554,6 +554,9 @@ class GUI:
 
         # Set up root window
         self.root = tk.Tk()
+        ico = ImageTk.PhotoImage(Image.open("./mokap/icons/capture_on.png"))
+        self.root.wm_iconphoto(True, ico)
+
         self.root.wait_visibility(self.root)
         self.root.title("Controls")
         self.root.protocol("WM_DELETE_WINDOW", self.quit)
