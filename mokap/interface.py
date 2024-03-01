@@ -200,12 +200,12 @@ class VideoWindow:
         f_windowsnap = tk.Frame(view_info_frame)
         f_windowsnap.pack(side='top', fill='y')
 
-        l_windowsnap = tk.Label(f_windowsnap, text=f"Snap window to:", bg='red',
+        l_windowsnap = tk.Label(f_windowsnap, text=f"Snap window to:",
                      anchor='e', justify='right',
                      font=parent.regular)
         l_windowsnap.pack(side='left', fill='y')
 
-        f_buttons_windowsnap = tk.Frame(f_windowsnap, bg='green',)
+        f_buttons_windowsnap = tk.Frame(f_windowsnap)
         f_buttons_windowsnap.pack(padx=2, pady=2, side='left', fill='both', expand=True)
 
         positions = np.array([['nw', 'n', 'ne'],
