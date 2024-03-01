@@ -1,4 +1,5 @@
 import sys
+import time
 import tkinter as tk
 import tkinter.font as font
 from PIL import Image, ImageTk, ImageDraw, ImageFont
@@ -51,7 +52,7 @@ def compute_windows_size(source_dims, screen_dims):
 
     # For 2x3 screen grid
     max_window_w = screenw // 3
-    max_window_h = screenh // 2 - VideoWindow.INFO_PANEL_MIN_H
+    max_window_h = screenh // 2 - VideoWindow.INFO_PANEL_FIXED_H
 
     # Scale it up or down, so it fits half the screen height
     if sourceh / max_window_h >= sourcew / max_window_w:
@@ -60,7 +61,7 @@ def compute_windows_size(source_dims, screen_dims):
         scale = max_window_w / sourcew
 
     computed_dims = np.floor(np.array([sourceh, sourcew]) * scale).astype(int)
-    computed_dims[0] += VideoWindow.INFO_PANEL_MIN_H
+    computed_dims[0] += VideoWindow.INFO_PANEL_FIXED_H
 
     return computed_dims
 
@@ -68,7 +69,7 @@ def compute_windows_size(source_dims, screen_dims):
 class VideoWindow:
     videowindows_ids = []
 
-    INFO_PANEL_MIN_H = 180  # in pixels
+    INFO_PANEL_FIXED_H = 180  # in pixels
 
     def __init__(self, parent):
 
@@ -81,17 +82,10 @@ class VideoWindow:
         self._source_shape = (self.parent.mgr.cameras[self.idx].height, self.parent.mgr.cameras[self.idx].width)
         self._cam_name = self.parent.mgr.cameras[self.idx].name
         self._bg_color = self.parent.mgr.cameras[self.idx].color
+        self._fg_color = '#ffffff' if hex_to_hls(self._bg_color)[1] < 150 else '#000000'
 
-        hls = hex_to_hls(self._bg_color)
-
-        if hls[1] < 150:
-            self._fg_color = '#ffffff'
-        else:
-            self._fg_color = '#000000'
-
-        h, w = parent.max_videowindows_dims
-        self.window.geometry(f"{w}x{h}")
-        self.window.wm_aspect(w, h, w, h)
+        h, w = self._source_shape
+        self.window.geometry(f"{w}x{h + self.INFO_PANEL_FIXED_H}")
         self.window.protocol("WM_DELETE_WINDOW", self.toggle_visibility)
 
         # Init state
@@ -100,54 +94,75 @@ class VideoWindow:
         self._fps = 0
         self._brightness_var = 0
 
+        # Set thread-safe events
         self.visible = Event()
         self.visible.set()
 
-        self._display_focus = Event()
-        self._display_focus.clear()
+        self._show_focus = Event()
+        self._show_focus.clear()
 
-        self._display_mag = Event()
-        self._display_mag.set()
+        self._magnification = Event()
+        self._magnification.set()
 
+        self._warning = Event()
+        self._warning.clear()
+
+        # Kernel to use for focus detection
         self._kernel = np.array([
             [0, 0, 0],
             [0, 1, 0],
             [0, 0, 0]], dtype=np.uint8)
 
-        if 'Linux' in platform.system():
-            try:
+        # Setup default font
+        try:
+            if 'Linux' in platform.system():
                 self._imgfnt = ImageFont.truetype("DejaVuSans-Bold.ttf", 30)
-            except OSError:
-                self._imgfnt = ImageFont.load_default()
-        elif 'Windows' in platform.system():
-            try:
+            elif 'Windows' in platform.system():
                 self._imgfnt = ImageFont.truetype("arial-bold.ttf", 30)
-            except OSError:
-                self._imgfnt = ImageFont.load_default()
-        elif 'Darwin' in platform.system():
-            try:
+            elif 'Darwin' in platform.system():
                 self._imgfnt = ImageFont.truetype("KeyboardBold.ttf", 30)
-            except OSError:
+            else:
                 self._imgfnt = ImageFont.load_default()
-        else:
-            self._imgfnt = ImageFont.load_default()
+        except OSError:
+                self._imgfnt = ImageFont.load_default()
 
         # Initialise text vars
-        self.txtvar_camera_name = tk.StringVar()
+        self.txtvar_warning = tk.StringVar()
 
+        self.txtvar_camera_name = tk.StringVar()
         self.txtvar_resolution = tk.StringVar()
         self.txtvar_exposure = tk.StringVar()
         self.txtvar_capture_fps = tk.StringVar()
         self.txtvar_brightness = tk.StringVar()
         self.txtvar_display_fps = tk.StringVar()
 
-        ## Main video frame
-        imagetk = ImageTk.PhotoImage(image=Image.fromarray(np.zeros(self.video_dims, dtype='<u1')))
+        # Set initial values
+        h, w = self.parent.mgr.cameras[self.idx].height, self.parent.mgr.cameras[self.idx].width
+        self.txtvar_resolution.set(f"{h}×{w} px")
+        self.txtvar_exposure.set(f"{self.parent.mgr.cameras[self.idx].exposure} µs")
+        self._applied_fps = self.parent.mgr.cameras[self.idx].framerate
 
-        self.video_canvas = tk.Label(self.window, bg="black", compound='center')
-        self.video_canvas.pack(fill='both', expand=True)
-        self.video_canvas.imgtk = imagetk
-        self.video_canvas.configure(image=imagetk)
+
+        ## Main video frame
+
+        # Where the video will be displayed
+        self._videofeed = tk.Label(self.window, bg="black", compound='center')
+        self._videofeed.pack(fill='both', expand=True)
+
+        # Where the full frame data will be stored
+        self._frame_buffer = np.zeros(self._source_shape, dtype='<u1')
+
+        self._refresh_videofeed(Image.fromarray(self._frame_buffer))
+
+        ## Magnification parameters
+        magn_portion = 12
+        self.magn_zoom = 4
+
+        self.magn_size = self.source_shape[0] // magn_portion, self.source_shape[1] // magn_portion
+        magn_half_size = self.magn_size[0] // 2, self.magn_size[1] // 2
+
+        self.magn_A = self.source_half_shape[0] - magn_half_size[0], self.source_half_shape[1] - magn_half_size[1]
+        self.magn_B = self.source_half_shape[0] + magn_half_size[0], self.source_half_shape[1] + magn_half_size[1]
 
         ## Camera name bar
         self.txtvar_camera_name.set(f'{self._cam_name.title()} camera')
@@ -162,14 +177,9 @@ class VideoWindow:
 
         ## Bottom panel
 
-        # Set initial values
-        h, w = self.parent.mgr.cameras[self.idx].height, self.parent.mgr.cameras[self.idx].width
-        self.txtvar_resolution.set(f"{h}×{w} px")
-        self.txtvar_exposure.set(f"{self.parent.mgr.cameras[self.idx].exposure} µs")
-
         ## Information block
         f_information = tk.LabelFrame(self.window, text="Information",
-                                      height=self.INFO_PANEL_MIN_H)
+                                      height=self.INFO_PANEL_FIXED_H)
         f_information.pack(padx=5, pady=5, side='left', fill='both', expand=True)
 
         for label, var in zip(['Resolution', 'Capture', 'Exposure', 'Brightness', 'Display'],
@@ -194,7 +204,7 @@ class VideoWindow:
 
         ## View controls block
         view_info_frame = tk.LabelFrame(self.window, text="View",
-                                        height=self.INFO_PANEL_MIN_H, width=100)
+                                        height=self.INFO_PANEL_FIXED_H, width=100)
         view_info_frame.pack(padx=5, pady=5, side='left', fill='y', expand=True)
 
         f_windowsnap = tk.Frame(view_info_frame)
@@ -211,6 +221,7 @@ class VideoWindow:
         positions = np.array([['nw', 'n', 'ne'],
                               ['w', 'c', 'e'],
                               ['sw', 's', 'se']])
+
         self._pixel = tk.PhotoImage(width=1, height=1)
         for r in range(3):
             for c in range(3):
@@ -240,7 +251,7 @@ class VideoWindow:
 
         ## Camera controls block
         f_camera_controls = tk.LabelFrame(self.window, text="Control",
-                                          height=self.INFO_PANEL_MIN_H)
+                                          height=self.INFO_PANEL_FIXED_H)
         f_camera_controls.pack(padx=5, pady=5, side='left', fill='both', expand=True)
 
         self.camera_controls_sliders = {}
@@ -285,6 +296,47 @@ class VideoWindow:
                           command=func_all)
             b.pack(padx=2, side='right', fill='y')
 
+    def _refresh_videofeed(self, image):
+
+        imagetk = ImageTk.PhotoImage(image=image)
+        try:
+            self._videofeed.configure(image=imagetk)
+            self.imagetk = imagetk
+        except Exception:
+            # If new image is garbage collected too early, do nothing - this prevents the image from flashing
+            pass
+
+    @property
+    def name(self):
+        return self._cam_name
+
+    @property
+    def color(self):
+        return self._bg_color
+
+    @property
+    def color_2(self):
+        return self._fg_color
+
+    @property
+    def source_shape(self):
+        return self._source_shape
+
+    @property
+    def source_half_shape(self):
+        return self._source_shape[0] // 2, self._source_shape[1] // 2
+
+    @property
+    def aspect_ratio(self):
+        return self._source_shape[1] / self._source_shape[0]
+
+    @property
+    def videofeed_shape(self):
+        h, w = self.window.winfo_height() - self.INFO_PANEL_FIXED_H, self.window.winfo_width()
+        if h <= 1 or w <= 1:
+            return self.source_shape
+        return self.window.winfo_height() - self.INFO_PANEL_FIXED_H, self.window.winfo_width()
+    
     def move_to(self, pos):
         w, h, x, y = whxy(self)
         w_scr, h_scr, x_scr, y_scr = whxy(self.parent.selected_monitor)
@@ -311,6 +363,7 @@ class VideoWindow:
         elif pos == 'se':
             self.window.geometry(f"{w}x{h}+{x_scr + w_scr - w}+{y_scr + h_scr - h - os_taskbar_size}")
 
+    # === TODO - merge these functions below ===
     def update_framerate(self, event=None):
         slider = self.camera_controls_sliders['framerate']
         new_val = slider.get()
@@ -318,11 +371,16 @@ class VideoWindow:
 
         # The actual maximum framerate depends on the exposure, so it might not be what the user requested
         # Thus we need to update the slider value to the actual framerate
-        slider.set(self.parent.mgr.cameras[self.idx].framerate)
+        applied_fps = self.parent.mgr.cameras[self.idx].framerate
+        slider.set(applied_fps)
+
+        # Keep a local copy to warn user if read framerate is too different from wanted fps
+        self._applied_fps = applied_fps
 
         # Refresh fps counters for the UI
         self.parent._capture_clock = datetime.now()
         self.parent.start_indices[:] = self.parent.mgr.indices
+
 
     def update_exposure(self, event=None):
         slider = self.camera_controls_sliders['exposure']
@@ -381,20 +439,21 @@ class VideoWindow:
                 window.update_gamma()
 
     def _toggle_focus_display(self):
-        if self._display_focus.is_set():
-            self._display_focus.clear()
+        if self._show_focus.is_set():
+            self._show_focus.clear()
             self.show_focus_button.configure(highlightthickness=0)
         else:
-            self._display_focus.set()
+            self._show_focus.set()
             self.show_focus_button.configure(highlightthickness=2)
 
     def _toggle_mag_display(self):
-        if self._display_mag.is_set():
-            self._display_mag.clear()
+        if self._magnification.is_set():
+            self._magnification.clear()
             self.show_mag_button.configure(highlightthickness=0)
         else:
-            self._display_mag.set()
+            self._magnification.set()
             self.show_mag_button.configure(highlightthickness=2)
+    # === end TODO ===
 
     def _update_txtvars(self):
 
@@ -402,6 +461,11 @@ class VideoWindow:
             cap_fps = self.parent.capture_fps[self.idx]
 
             if 0 < cap_fps < 1000:  # only makes sense to display real values
+                if abs(cap_fps - self._applied_fps) > 10:
+                    self.txtvar_warning.set('[ WARNING: Framerate ]')
+                    self._warning.set()
+                else:
+                    self._warning.clear()
                 self.txtvar_capture_fps.set(f"{cap_fps:.2f} fps")
             else:
                 self.txtvar_capture_fps.set("-")
@@ -413,77 +477,88 @@ class VideoWindow:
 
         self.txtvar_display_fps.set(f"{self._fps:.2f} fps")
 
+    def _refresh_framebuffer(self):
+        self._frame_buffer.fill(0)
+
+        if self.parent.mgr.acquiring and self.parent.current_buffers is not None:
+            buf = self.parent.current_buffers[self.idx]
+            if buf is not None:
+                self._frame_buffer[:] = np.frombuffer(buf, dtype=np.uint8).reshape(self._source_shape)
+
+        self._brightness_var = np.round(self._frame_buffer.mean() / 255 * 100, decimals=2)
+
     def _update_video(self):
-        frame = np.random.randint(0, 255, self.video_dims, dtype='<u1')
 
-        if self.parent.mgr.acquiring:
-            if self.parent.current_buffers is not None:
-                buf = self.parent.current_buffers[self.idx]
-                if buf is not None:
-                    frame = np.frombuffer(buf, dtype=np.uint8).reshape(self._source_shape)
+        # Get window size and set new videofeed size, preserving aspect ratio
+        h, w = self.videofeed_shape
+        if w / h > self.aspect_ratio:
+            w = int(h * self.aspect_ratio)
         else:
-            frame = np.random.randint(0, 255, self.video_dims, dtype='<u1')
+            h = int(w / self.aspect_ratio)
 
-        self._brightness_var = np.round(frame.mean() / 255 * 100, decimals=2)
+        # Get new coordinates
+        x_centre, y_centre = w//2, h//2
+        x_north, y_north = w//2, 0
+        x_south, y_south = w//2, h
+        x_east, y_east = w, h//2
+        x_west, y_west = 0, h//2
 
-        if self._display_focus.is_set():
-            overlay = ndimage.gaussian_laplace(frame, sigma=1).astype(np.int32)
-            overlay = ndimage.gaussian_filter(overlay, 5).astype(np.int32)
-            lim = 90
-            overlay[overlay < lim] = 0
-            overlay[overlay >= lim] = 100
-
-            fo = np.clip(frame.astype(np.int32) + overlay, 0, 255).astype(np.uint8)
-            frame = np.stack([frame, fo, frame]).T.swapaxes(0, 1)
-
-        y_displ, x_displ = self.video_dims
-        x2_displ, y2_displ = x_displ // 2, y_displ // 2
-
-        img_pillow = Image.fromarray(frame).convert('RGBA')
-        img_pillow = img_pillow.resize((x_displ, y_displ))
+        img_pillow = Image.fromarray(self._frame_buffer).convert('RGB')
+        img_pillow = img_pillow.resize((w, h))
 
         d = ImageDraw.Draw(img_pillow)
-        d.line((0, y2_displ, x_displ, y2_displ), fill=(255, 255, 255, 200), width=1)
-        d.line((x2_displ, 0, x2_displ, y_displ), fill=(255, 255, 255, 200), width=1)
+        # Draw crosshair
+        d.line((x_west, y_west, x_east, y_east), fill=(255, 255, 255), width=1)         # Horizontal
+        d.line((x_north, y_north, x_south, y_south), fill=(255, 255, 255), width=1)     # Vertical
 
-        d.text((x2_displ - 100, y_displ - 40), self.parent.recording_var.get(), font=self._imgfnt, fill='red')
+        # Position the 'Recording' indicator
+        d.text((x_south, y_centre/2), self.parent.txtvar_recording.get(), anchor="ms", font=self._imgfnt, fill='red')
 
-        if self._display_mag.is_set():
-            y_source, x_source = self._source_shape
-            x2_source, y2_source = x_source // 2, y_source // 2
+        if self._warning.is_set():
+            d.text((x_north, y_centre/2), self.txtvar_warning.get(), anchor="ms", font=self._imgfnt, fill='orange')
 
-            mini_size_ratio = 12
-            mini_size = x2_source // mini_size_ratio, y2_source // mini_size_ratio
+        if self._show_focus.is_set():
+            lapl = ndimage.gaussian_laplace(img_pillow, sigma=1)
+            blur = ndimage.gaussian_filter(lapl, 5)
 
-            mini_x0 = x2_source - mini_size[0]
-            mini_y0 = y2_source - mini_size[1]
-            mini_x1 = x2_source + mini_size[0]
-            mini_y1 = y2_source + mini_size[1]
-            mini = Image.fromarray(frame[mini_y0:mini_y1, mini_x0:mini_x1]).convert('RGBA')
+            # threshold
+            lim = 90
+            blur[blur < lim] = 0
+            blur[blur >= lim] = 100
 
+            matrix = (98/255, 0, 0, 0,
+                      0, 203/255, 0, 0,
+                      0, 0, 90/255, 0)
+            overlay = Image.fromarray(blur).convert('RGB', matrix=matrix)
+            img_pillow.paste(overlay)
 
-            d.rectangle([(x2_displ - x2_displ // mini_size_ratio, y2_displ - y2_displ // mini_size_ratio),
-                             (x2_displ + x2_displ // mini_size_ratio, y2_displ + y2_displ // mini_size_ratio)],
-                             outline=(255, 255, 20, 200), width=1)
+        if self._magnification.is_set():
 
-            mag = 4
-            d.rectangle([(x_displ - (mini_size[0] * mag + 11), y_displ - (mini_size[1] * mag + 11)),
-                         (x_displ - 10, y_displ - 10)],
-                        outline=(255, 255, 20, 200), width=1)
+            # Slice directly from the framebuffer and make a (then zoomed) image
+            magn_img = Image.fromarray(self._frame_buffer[self.magn_A[0]:self.magn_B[0],
+                                       self.magn_A[1]:self.magn_B[1]]).convert('RGB')
+            magn_img = magn_img.resize((magn_img.width * self.magn_zoom, magn_img.height * self.magn_zoom))
 
-            mini = mini.resize((mini_size[0] * mag, mini_size[1] * mag))
-            img_pillow.paste(mini, (x_displ - (mini_size[0] * mag + 10), y_displ - (mini_size[1] * mag + 10)))
+            # Position of the top left corner of magnification window in the whole videofeed
+            magn_pos = w - magn_img.width - 10, h - magn_img.height - 10    # small margin of 10 px
 
-        imgtk = ImageTk.PhotoImage(image=img_pillow)
-        try:
-            self.video_canvas.configure(image=imgtk)
-            self.imagetk = imgtk
-        except Exception:
-            # If new image is garbage collected too early, do nothing - this prevents the image from flashing
-            pass
+            # Add frame around the magnified area
+            d.rectangle([(x_centre - self.magn_size[1] // 2, y_centre - self.magn_size[0] // 2),
+                         (x_centre + self.magn_size[1] // 2, y_centre + self.magn_size[0] // 2)],
+                        outline=(255, 237, 48), width=1)
+
+            img_pillow.paste(magn_img, magn_pos)
+
+            # Add frame around the magnification
+            d.rectangle([magn_pos, (w - 10, h - 10)], outline=(255, 237, 48), width=1)
+
+            # Add point in the centre of it
+            d.point([magn_pos[0] + magn_img.width // 2, magn_pos[1] + magn_img.height // 2],
+                    fill=(255, 237, 48))
+
+        self._refresh_videofeed(img_pillow)
 
     def update(self):
-
         while True:
             # Update display fps counter
             now = datetime.now()
@@ -492,6 +567,7 @@ class VideoWindow:
 
             self._counter += 1
 
+            self._refresh_framebuffer()
             self._update_video()
             self._update_txtvars()
 
@@ -507,37 +583,6 @@ class VideoWindow:
             self.parent._vis_checkboxes[self.idx].set(1)
             self.window.deiconify()
 
-    @property
-    def name(self):
-        return self._cam_name
-
-    @property
-    def color(self):
-        return self._bg_color
-
-    @property
-    def color_2(self):
-        return self._fg_color
-
-    @property
-    def count(self):
-        return self._counter
-
-    @property
-    def display_fps(self):
-        return self._fps
-
-    @property
-    def video_dims(self):
-        dims = self.current_dims - (self.INFO_PANEL_MIN_H, 0)
-        if any(dims <= 1):
-            return np.array([*self._source_shape])
-        else:
-            return dims
-
-    @property
-    def current_dims(self):
-        return np.array([self.window.winfo_height(), self.window.winfo_width()])
 
 class GUI:
     # Values below are in pixels
@@ -583,15 +628,15 @@ class GUI:
 
         self._counter = 0
 
-        self.recording_var = tk.StringVar()
-        self.userentry_var = tk.StringVar()
-        self.applied_name_var = tk.StringVar()
-        self.frames_saved_var = tk.StringVar()
+        self.txtvar_recording = tk.StringVar()
+        self.txtvar_userentry = tk.StringVar()
+        self.txtvar_applied_name = tk.StringVar()
+        self.txtvar_frames_saved = tk.StringVar()
 
-        self.recording_var.set('')
-        self.userentry_var.set('')
-        self.applied_name_var.set('')
-        self.frames_saved_var.set('')
+        self.txtvar_recording.set('')
+        self.txtvar_userentry.set('')
+        self.txtvar_applied_name.set('')
+        self.txtvar_frames_saved.set('')
 
         # Compute optimal video windows sizes
         self._max_videowindows_dims = compute_windows_size(self.source_dims, self.screen_dims)
@@ -658,7 +703,7 @@ class GUI:
             self.selected_monitor = self._monitors[0]
 
     def open_save_folder(self):
-        path = Path(self.applied_name_var.get()).resolve()
+        path = Path(self.txtvar_applied_name.get()).resolve()
         if path != Path(os.getcwd()).resolve():
             try:
                 os.startfile(path)
@@ -704,7 +749,7 @@ class GUI:
         pathname_label = tk.Label(editable_name_frame, text='Name: ', anchor=tk.W)
         pathname_label.pack(side="left", fill="y", expand=False)
 
-        self.pathname_textbox = tk.Entry(editable_name_frame, bg='white', fg='black', textvariable=self.userentry_var,
+        self.pathname_textbox = tk.Entry(editable_name_frame, bg='white', fg='black', textvariable=self.txtvar_userentry,
                                          font=self.regular, state='disabled')
         self.pathname_textbox.pack(side="left", fill="both", expand=True)
 
@@ -718,7 +763,7 @@ class GUI:
         save_dir_label = tk.Label(info_name_frame, text='Saves to:', anchor=tk.W)
         save_dir_label.pack(side="top", fill="both", expand=False)
 
-        save_dir_current = tk.Label(info_name_frame, textvariable=self.applied_name_var, anchor=tk.W)
+        save_dir_current = tk.Label(info_name_frame, textvariable=self.txtvar_applied_name, anchor=tk.W)
         save_dir_current.pack(side="left", fill="y", expand=True)
 
         # gothere_button = tk.Button(info_name_frame, text="Go", font=self.regular, command=self.open_save_folder)
@@ -742,7 +787,7 @@ class GUI:
                                          state='disabled')
         self.button_recpause.pack(padx=5, pady=5, side="top", fill="both", expand=True)
 
-        frames_saved_label = tk.Label(left_pane, textvariable=self.frames_saved_var, anchor=tk.E)
+        frames_saved_label = tk.Label(left_pane, textvariable=self.txtvar_frames_saved, anchor=tk.E)
         frames_saved_label.pack(side="bottom", fill="x", expand=True)
 
         # RIGHT HALF
@@ -863,8 +908,8 @@ class GUI:
                 pass
 
     def gui_set_name(self):
-        self.mgr.savepath = self.userentry_var.get()
-        self.applied_name_var.set(f'{Path(self.mgr.savepath).resolve()}')
+        self.mgr.savepath = self.txtvar_userentry.get()
+        self.txtvar_applied_name.set(f'{Path(self.mgr.savepath).resolve()}')
 
     def gui_toggle_set_name(self):
         if self.editing_disabled:
@@ -873,7 +918,7 @@ class GUI:
             self.editing_disabled = False
         else:
             self.gui_set_name()
-            self.userentry_var.set('')
+            self.txtvar_userentry.set('')
             self.pathname_textbox.config(state='disabled')
             self.pathname_button.config(text='Edit')
             self.editing_disabled = True
@@ -882,14 +927,14 @@ class GUI:
         if not self.mgr.recording:
             self.mgr.record()
 
-            self.recording_var.set('[ Recording... ]')
+            self.txtvar_recording.set('[ Recording... ]')
             self.button_recpause.config(text="Recording...\n\n(Space to toggle)", image=self.icon_rec_on)
 
     def gui_pause(self):
         if self.mgr.recording:
             self.mgr.pause()
 
-            self.recording_var.set('')
+            self.txtvar_recording.set('')
             self.button_recpause.config(text="Not recording\n\n(Space to toggle)", image=self.icon_rec_off)
 
     def gui_toggle_recording(self):
@@ -918,8 +963,8 @@ class GUI:
 
             self._capture_fps = np.zeros(self.mgr.nb_cameras, dtype=np.uintc)
 
-            self.userentry_var.set('')
-            self.applied_name_var.set('')
+            self.txtvar_userentry.set('')
+            self.txtvar_applied_name.set('')
 
             self.button_acquisition.config(text="Acquisition off", image=self.icon_capture_off)
             self.button_recpause.config(state="disabled")
@@ -949,8 +994,7 @@ class GUI:
             self._current_buffers = self.mgr.get_current_framebuffer()
 
             self._saved_frames = self.mgr.saved
-            self.frames_saved_var.set(f'Saved {sum(self._saved_frames)} frames total ({utils.pretty_size(sum(self._frame_sizes_bytes * self._saved_frames))})')
+            self.txtvar_frames_saved.set(f'Saved {sum(self._saved_frames)} frames total ({utils.pretty_size(sum(self._frame_sizes_bytes * self._saved_frames))})')
 
         self._counter += 1
-
-        self.root.after(50, self.update)
+        self.root.after(100, self.update)
