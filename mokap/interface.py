@@ -653,7 +653,7 @@ class GUI:
         ico = ImageTk.PhotoImage(Image.open(resources_path / "capture_on.png"))
         self.root.wm_iconphoto(True, ico)
 
-        self.root.wait_visibility(self.root)
+        # self.root.wait_visibility(self.root)
         self.root.title("Controls")
         self.root.protocol("WM_DELETE_WINDOW", self.quit)
         self.root.bind('<KeyPress>', self._handle_keypress)
@@ -1034,4 +1034,4 @@ class GUI:
             self.txtvar_frames_saved.set(f'Saved {sum(self._saved_frames)} frames total ({utils.pretty_size(sum(self._frame_sizes_bytes * self._saved_frames))})')
 
         self._counter += 1
-        self.root.after(16, self.update)
+        self.root.after(100, self.update)
