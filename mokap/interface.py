@@ -642,8 +642,6 @@ class VideoWindow:
 
 
 class GUI:
-    # Values below are in pixels
-    PADDING = 0
     CONTROLS_WIDTH = 550
     CONTROLS_HEIGHT = 300
 
@@ -720,7 +718,7 @@ class GUI:
 
         self.root.geometry(f"{self.CONTROLS_WIDTH}x{self.CONTROLS_HEIGHT}+{x}+{y}")
 
-        # Create control window
+        ##
 
         toolbar = tk.Frame(self.root, background="#E8E8E8", height=40)
         # statusbar = tk.Frame(self.root, background="#e3e3e3", height=20)
