@@ -4,6 +4,7 @@ import numpy as np
 from scipy import ndimage
 import colorsys
 
+
 def hex_to_hls(hex_str: str):
     hex_str = hex_str.lstrip('#')
     if len(hex_str) == 3:
