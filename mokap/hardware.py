@@ -254,6 +254,7 @@ class Camera:
         if '0815-0' in self.serial:
             self._name = f"virtual_{Camera.virtual_cams}"
             Camera.virtual_cams += 1
+            self._idx = int(self.serial[-1])
             self._color = '#f3a0f2'
         else:
             try:
