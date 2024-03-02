@@ -647,7 +647,10 @@ class GUI:
 
         # Set up root window
         self.root = tk.Tk()
-        ico = ImageTk.PhotoImage(Image.open("./mokap/icons/capture_on.png"))
+
+        resources_path = [p for p in Path().cwd().glob('**/*') if p.is_dir() and p.name == 'icons'][0]
+
+        ico = ImageTk.PhotoImage(Image.open(resources_path / "capture_on.png"))
         self.root.wm_iconphoto(True, ico)
 
         self.root.wait_visibility(self.root)
@@ -655,10 +658,10 @@ class GUI:
         self.root.protocol("WM_DELETE_WINDOW", self.quit)
         self.root.bind('<KeyPress>', self._handle_keypress)
 
-        self.icon_capture_on = tk.PhotoImage(file='./mokap/icons/capture_on.png')
-        self.icon_capture_off = tk.PhotoImage(file='./mokap/icons/capture_off_bw.png')
-        self.icon_rec_on = tk.PhotoImage(file='./mokap/icons/rec.png')
-        self.icon_rec_off = tk.PhotoImage(file='./mokap/icons/rec_bw.png')
+        self.icon_capture_on = tk.PhotoImage(file=resources_path / 'capture_on.png')
+        self.icon_capture_off = tk.PhotoImage(file=resources_path /'capture_off_bw.png')
+        self.icon_rec_on = tk.PhotoImage(file=resources_path /'rec.png')
+        self.icon_rec_off = tk.PhotoImage(file=resources_path /'rec_bw.png')
 
         # Set up fonts
         self.bold = font.Font(weight='bold', size=10)
