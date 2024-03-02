@@ -4,7 +4,7 @@ import mokap.utils as utils
 import os
 from dotenv import load_dotenv
 import pypylon.pylon as py
-from numcodecs import blosc
+# from numcodecs import blosc
 import configparser
 import platform
 import subprocess
@@ -16,7 +16,7 @@ with warnings.catch_warnings():
     warnings.filterwarnings('ignore', category=CryptographyDeprecationWarning)
     import paramiko
 
-blosc.use_threads = False
+# blosc.use_threads = False
 
 config = configparser.ConfigParser()
 config.read('config.conf')

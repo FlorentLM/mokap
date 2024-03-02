@@ -3,16 +3,14 @@ channels:
   - defaults
   - conda-forge
 dependencies:
-  - python=3.10
+  - python=3.11
   - pip=23.3.1
   - numpy=1.26.0
   - pillow=10.0.1
-  - zarr=2.13.3
   - python-dotenv=0.21.0
   - paramiko=2.8.1
-  - blosc=1.21.3
-  - opencv=4.7.0
-  - pyqt=5.15.10
+  - scipy
+  - opencv
   - pip:
       - pypylon==2.3.0
       - screeninfo==0.8.1

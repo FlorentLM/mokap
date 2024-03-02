@@ -1,6 +1,6 @@
 import re
 import subprocess as sp
-import zarr
+# import zarr
 from pathlib import Path
 from datetime import datetime
 import shutil

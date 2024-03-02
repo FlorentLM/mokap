@@ -10,12 +10,12 @@ import pypylon.pylon as py
 import mokap.files_op as files_op
 from datetime import datetime
 from collections import deque
-import zarr
-from numcodecs import Blosc, Delta
+# import zarr
+# from numcodecs import Blosc, Delta
 from mokap.hardware import SSHTrigger, Camera, setup_ulimit, get_basler_devices, config
 from mokap.utils import ensure_list
 from scipy import ndimage
-import cv2
+# import cv2
 from multiprocessing import Process
 from PIL import Image
 import platform
