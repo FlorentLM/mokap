@@ -105,7 +105,7 @@ class VideoWindow:
             [0, 1, 0],
             [0, 0, 0]], dtype=np.uint8)
 
-        # Setup default font
+        # Setup default image font
         try:
             if 'Linux' in platform.system():
                 self._imgfnt = ImageFont.truetype("DejaVuSans-Bold.ttf", 30)
@@ -164,7 +164,7 @@ class VideoWindow:
 
         name_bar = tk.Label(self.window, textvariable=self.txtvar_camera_name,
                             anchor='n', justify='center',
-                            fg=self.colour_2, bg=self.colour, font=parent.bold)
+                            fg=self.colour_2, bg=self.colour, font=parent.font_bold)
         name_bar.pack(fill='both')
 
         # Also set the window title while we're at it
@@ -189,12 +189,12 @@ class VideoWindow:
 
             l = tk.Label(f, text=f"{label} :",
                          anchor='e', justify='right', width=13,
-                         font=parent.regular)
+                         font=parent.font_regular)
             l.pack(side='left', fill='y')
 
             v = tk.Label(f, textvariable=var,
                          anchor='w', justify='left',
-                         font=parent.regular)
+                         font=parent.font_regular)
             v.pack(side='left', fill='y')
 
         ## View controls block
@@ -206,8 +206,8 @@ class VideoWindow:
         f_windowsnap.pack(side='top', fill='y')
 
         l_windowsnap = tk.Label(f_windowsnap, text=f"Snap window to:",
-                     anchor='e', justify='right',
-                     font=parent.regular)
+                                anchor='e', justify='right',
+                                font=parent.font_regular)
         l_windowsnap.pack(side='left', fill='y')
 
         f_buttons_windowsnap = tk.Frame(f_windowsnap)
@@ -232,14 +232,14 @@ class VideoWindow:
         self.show_focus_button = tk.Button(f_buttons_controls, text="Focus",
                                            width=10,
                                            highlightthickness=2, highlightbackground=self._window_bg_colour,
-                                           font=self.parent.regular,
+                                           font=self.parent.font_regular,
                                            command=self._toggle_focus_display)
         self.show_focus_button.grid(row=0, column=0)
 
         self.show_mag_button = tk.Button(f_buttons_controls, text="Magnifier",
                                          width=10,
                                          highlightthickness=2, highlightbackground="#FFED30",
-                                         font=self.parent.regular,
+                                         font=self.parent.font_regular,
                                          command=self._toggle_mag_display)
         self.show_mag_button.grid(row=0, column=1)
 
@@ -253,16 +253,21 @@ class VideoWindow:
                                           height=self.INFO_PANEL_FIXED_H)
         f_camera_controls.pack(padx=5, pady=5, side='right', fill='both', expand=True)
 
+        rf = tk.LabelFrame(f_camera_controls, text='Sync',
+                           width=1, font=self.parent.font_mini)
+        rf.pack(side='right', fill='both', expand=True)
+
+        lf = tk.Frame(f_camera_controls, padx=10)
+        lf.pack(side='left', fill='both', expand=True)
+
         self.camera_controls_sliders = {}
-        for label, val, func, func_all, slider_params in zip(['Framerate', 'Exposure', 'Gain', 'Gamma'],
+        self._apply_all_vars = {}
+
+        for label, val, func, slider_params in zip(['Framerate', 'Exposure', 'Gain', 'Gamma'],
                                               [self.parent.mgr.cameras[self.idx].framerate,
                                                self.parent.mgr.cameras[self.idx].exposure,
                                                self.parent.mgr.cameras[self.idx].gain,
                                                self.parent.mgr.cameras[self.idx].gamma],
-                                              [self.update_framerate,
-                                               self.update_exposure,
-                                               self.update_gain,
-                                               self.update_gamma],
                                               [self._update_fps_all_cams,
                                                self._update_exp_all_cams,
                                                self._update_gain_all_cams,
@@ -272,15 +277,15 @@ class VideoWindow:
                                                               (0.0, 24.0, 0.5, 3),
                                                               (0.0, 4.0, 0.05, 3),
                                                               ]):
-            f = tk.Frame(f_camera_controls)
+            f = tk.Frame(lf)
             f.pack(side='top', fill='both', expand=True)
 
-            # We go right to left because it's the rightmost block
-            b = tk.Button(f, text='All',
-                          width=2,
-                          font=self.parent.regular,
-                          command=func_all)
-            b.pack(side='right', fill='y', expand=True)
+            v = tk.IntVar()
+            b = tk.Checkbutton(rf, variable=v,
+                               state='normal')
+            v.set(1)
+            b.pack(side="top", fill="y", expand=True)
+            self._apply_all_vars[label.lower()] = v
 
             s = tk.Scale(f,
                          from_=slider_params[0], to=slider_params[1], resolution=slider_params[2], digits=slider_params[3],
@@ -292,10 +297,9 @@ class VideoWindow:
             key = label.split('(')[0].strip().lower()   # Get the simplified label (= wihtout spaces and units)
             self.camera_controls_sliders[key] = s
 
-
             l = tk.Label(f, text=f'{label} :',
                          anchor='se', justify='right', width=22,
-                         font=parent.regular)
+                         font=parent.font_regular)
             l.pack(side='right', fill='both', expand=True)
 
     def _refresh_videofeed(self, image):
@@ -417,7 +421,6 @@ class VideoWindow:
         self.parent._capture_clock = datetime.now()
         self.parent.start_indices[:] = self.parent.mgr.indices
 
-
     def update_exposure(self, event=None):
         slider = self.camera_controls_sliders['exposure']
         new_val = slider.get()
@@ -442,33 +445,37 @@ class VideoWindow:
         new_val = slider.get()
         self.parent.mgr.cameras[self.idx].gamma = new_val
 
-    def _update_fps_all_cams(self):
+    def _update_fps_all_cams(self, event=None):
+        self.update_framerate()
         for window in self.parent.video_windows:
-            if window is not self:
+            if window is not self and bool(window._apply_all_vars['framerate'].get()):
                 slider = self.camera_controls_sliders['framerate']
                 new_val = slider.get()
                 window.camera_controls_sliders['framerate'].set(new_val)
                 window.update_framerate()
 
-    def _update_exp_all_cams(self):
+    def _update_exp_all_cams(self, event=None):
+        self.update_exposure()
         for window in self.parent.video_windows:
-            if window is not self:
+            if window is not self and bool(window._apply_all_vars['exposure'].get()):
                 slider = self.camera_controls_sliders['exposure']
                 new_val = slider.get()
                 window.camera_controls_sliders['exposure'].set(new_val)
                 window.update_exposure()
 
-    def _update_gain_all_cams(self):
+    def _update_gain_all_cams(self, event=None):
+        self.update_gain()
         for window in self.parent.video_windows:
-            if window is not self:
+            if window is not self and bool(window._apply_all_vars['gain'].get()):
                 slider = self.camera_controls_sliders['gain']
                 new_val = slider.get()
                 window.camera_controls_sliders['gain'].set(new_val)
                 window.update_gain()
 
-    def _update_gamma_all_cams(self):
+    def _update_gamma_all_cams(self, event=None):
+        self.update_gamma()
         for window in self.parent.video_windows:
-            if window is not self:
+            if window is not self and bool(window._apply_all_vars['gamma'].get()):
                 slider = self.camera_controls_sliders['gamma']
                 new_val = slider.get()
                 window.camera_controls_sliders['gamma'].set(new_val)
@@ -671,8 +678,9 @@ class GUI:
         self.icon_rec_off = tk.PhotoImage(file=resources_path /'rec_bw.png')
 
         # Set up fonts
-        self.bold = font.Font(weight='bold', size=10)
-        self.regular = font.Font(size=9)
+        self.font_bold = font.Font(weight='bold', size=10)
+        self.font_regular = font.Font(size=9)
+        self.font_mini = font.Font(size=7)
 
         # Init default things
         self.mgr = mgr
@@ -730,11 +738,11 @@ class GUI:
 
         # TOOLBAR
         if 'Darwin' in platform.system():
-            self.button_exit = tk.Button(toolbar, text="Exit (Esc)", anchor=tk.CENTER, font=self.bold,
+            self.button_exit = tk.Button(toolbar, text="Exit (Esc)", anchor=tk.CENTER, font=self.font_bold,
                                          fg='#fd5754',
                                          command=self.quit)
         else:
-            self.button_exit = tk.Button(toolbar, text="Exit (Esc)", anchor=tk.CENTER, font=self.bold,
+            self.button_exit = tk.Button(toolbar, text="Exit (Esc)", anchor=tk.CENTER, font=self.font_bold,
                                          bg='#fd5754', fg='white',
                                          command=self.quit)
         self.button_exit.pack(side="left", fill="y", expand=False)
@@ -759,11 +767,11 @@ class GUI:
         pathname_label.pack(side="left", fill="y", expand=False)
 
         self.pathname_textbox = tk.Entry(editable_name_frame, bg='white', fg='black', textvariable=self.txtvar_userentry,
-                                         font=self.regular, state='disabled')
+                                         font=self.font_regular, state='disabled')
         self.pathname_textbox.pack(side="left", fill="both", expand=True)
 
         self.pathname_button = tk.Button(editable_name_frame,
-                                         text="Edit", font=self.regular, command=self.gui_toggle_set_name)
+                                         text="Edit", font=self.font_regular, command=self.gui_toggle_set_name)
         self.pathname_button.pack(side="right", fill="both", expand=False)
 
         info_name_frame = tk.Frame(name_frame)
@@ -775,14 +783,14 @@ class GUI:
         save_dir_current = tk.Label(info_name_frame, textvariable=self.txtvar_applied_name, anchor=tk.W)
         save_dir_current.pack(side="left", fill="y", expand=True)
 
-        gothere_button = tk.Button(info_name_frame, text="Go", font=self.regular, command=self.open_session_folder)
+        gothere_button = tk.Button(info_name_frame, text="Go", font=self.font_regular, command=self.open_session_folder)
         gothere_button.pack(side="right", fill="y", expand=False)
 
         #
 
         self.button_acquisition = tk.Button(left_pane,
                                             image=self.icon_capture_off,
-                                            compound='left', text="Acquisition off", anchor='center', font=self.regular,
+                                            compound='left', text="Acquisition off", anchor='center', font=self.font_regular,
                                             command=self.gui_toggle_acquisition,
                                             state='normal')
         self.button_acquisition.pack(padx=5, pady=5, side="top", fill="both", expand=True)
@@ -790,7 +798,7 @@ class GUI:
         self.button_recpause = tk.Button(left_pane,
                                          image=self.icon_rec_off,
                                          compound='left',
-                                         text="Not recording\n\n(Space to toggle)", anchor='center', font=self.bold,
+                                         text="Not recording\n\n(Space to toggle)", anchor='center', font=self.font_bold,
                                          command=self.gui_toggle_recording,
                                          state='disabled')
         self.button_recpause.pack(padx=5, pady=5, side="top", fill="both", expand=True)
@@ -813,7 +821,7 @@ class GUI:
         for window in self.video_windows:
             vis_var = tk.IntVar()
             vis_checkbox = tk.Checkbutton(windows_list_frame, text=f" {window.name.title()} camera", anchor=tk.W,
-                                          font=self.bold,
+                                          font=self.font_bold,
                                           fg=window.colour_2,
                                           bg=window.colour,
                                           selectcolor=window.colour,
@@ -842,7 +850,7 @@ class GUI:
         self.monitors_buttons.pack(side="top", fill="x", expand=False)
 
         self.autotile_button = tk.Button(monitors_frame,
-                                         text="Auto-tile windows", font=self.regular, command=self.autotile_windows)
+                                         text="Auto-tile windows", font=self.font_regular, command=self.autotile_windows)
         self.autotile_button.pack(side="top", fill="both", expand=False)
 
         ##
