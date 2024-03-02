@@ -721,59 +721,6 @@ class GUI:
         self.root.geometry(f"{self.CONTROLS_WIDTH}x{self.CONTROLS_HEIGHT}+{x}+{y}")
 
         # Create control window
-        self._create_controls()
-
-        self.update()  # Called once to init
-
-        self.root.attributes("-topmost", True)
-        self.root.mainloop()
-
-    @property
-    def current_buffers(self):
-        return self._current_buffers
-
-    @property
-    def capture_fps(self):
-        return self._capture_fps
-
-    @property
-    def count(self):
-        return self._counter
-
-    @property
-    def source_dims(self):
-        return np.array([(cam.height, cam.width) for cam in self.mgr.cameras], dtype=np.uint32).T
-
-    @property
-    def screen_dims(self):
-        monitor = self.selected_monitor
-        return np.array([monitor.height, monitor.width, monitor.x, monitor.y], dtype=np.uint32)
-
-    def set_monitor(self, idx=None):
-        if len(self._monitors) > 1 and idx is None:
-            self.selected_monitor = next(m for m in self._monitors if m.is_primary)
-        elif len(self._monitors) > 1 and idx is not None:
-            self.selected_monitor = self._monitors[idx]
-        else:
-            self.selected_monitor = self._monitors[0]
-
-    def open_session_folder(self):
-        path = Path(self.txtvar_applied_name.get()).resolve()
-
-        if 'Linux' in platform.system():
-            subprocess.Popen(['xdg-open', path])
-        elif 'Windows' in platform.system():
-            os.startfile(path)
-        elif 'Darwin' in platform.system():
-            subprocess.Popen(['open', path])
-        else:
-            pass
-
-    def nothing(self):
-        print('Nothing')
-        pass
-
-    def _create_controls(self):
 
         toolbar = tk.Frame(self.root, background="#E8E8E8", height=40)
         # statusbar = tk.Frame(self.root, background="#e3e3e3", height=20)
@@ -899,6 +846,58 @@ class GUI:
         self.autotile_button = tk.Button(monitors_frame,
                                          text="Auto-tile windows", font=self.regular, command=self.autotile_windows)
         self.autotile_button.pack(side="top", fill="both", expand=False)
+
+        ##
+
+        self.update()  # Called once to init
+
+        self.root.attributes("-topmost", True)
+        self.root.mainloop()
+
+    @property
+    def current_buffers(self):
+        return self._current_buffers
+
+    @property
+    def capture_fps(self):
+        return self._capture_fps
+
+    @property
+    def count(self):
+        return self._counter
+
+    @property
+    def source_dims(self):
+        return np.array([(cam.height, cam.width) for cam in self.mgr.cameras], dtype=np.uint32).T
+
+    @property
+    def screen_dims(self):
+        monitor = self.selected_monitor
+        return np.array([monitor.height, monitor.width, monitor.x, monitor.y], dtype=np.uint32)
+
+    def set_monitor(self, idx=None):
+        if len(self._monitors) > 1 and idx is None:
+            self.selected_monitor = next(m for m in self._monitors if m.is_primary)
+        elif len(self._monitors) > 1 and idx is not None:
+            self.selected_monitor = self._monitors[idx]
+        else:
+            self.selected_monitor = self._monitors[0]
+
+    def open_session_folder(self):
+        path = Path(self.txtvar_applied_name.get()).resolve()
+
+        if 'Linux' in platform.system():
+            subprocess.Popen(['xdg-open', path])
+        elif 'Windows' in platform.system():
+            os.startfile(path)
+        elif 'Darwin' in platform.system():
+            subprocess.Popen(['open', path])
+        else:
+            pass
+
+    def nothing(self):
+        print('Nothing')
+        pass
 
     def update_monitors_buttons(self):
         self.monitors_buttons.delete("all")
