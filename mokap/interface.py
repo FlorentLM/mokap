@@ -934,13 +934,12 @@ class GUI:
             w.auto_move()
 
     def _handle_keypress(self, event):
-        match event.keycode:
-            case 9:  # Esc
-                self.quit()
-            case 65:  # Space
-                self.gui_toggle_recording()
-            case _:
-                pass
+        if event.keycode == 9:  # Esc
+            self.quit()
+        elif event.keycode == 65:  # Space
+            self.gui_toggle_recording()
+        else:
+            pass
 
     def gui_set_name(self):
         self.mgr.savepath = self.txtvar_userentry.get()
