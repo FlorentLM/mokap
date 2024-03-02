@@ -4,8 +4,6 @@ import mokap.utils as utils
 import os
 from dotenv import load_dotenv
 import pypylon.pylon as py
-# from numcodecs import blosc
-import configparser
 import platform
 import subprocess
 import cv2
@@ -15,12 +13,6 @@ from cryptography.utils import CryptographyDeprecationWarning
 with warnings.catch_warnings():
     warnings.filterwarnings('ignore', category=CryptographyDeprecationWarning)
     import paramiko
-
-# blosc.use_threads = False
-
-config = configparser.ConfigParser()
-config.read('config.conf')
-
 
 ##
 
@@ -62,18 +54,10 @@ def disable_usb(hub_number):
         ret = out.read()
 
 
-def get_basler_devices(max_cams=None, allow_virtual=None) -> tuple[list[py.DeviceInfo], list[py.DeviceInfo]]:
-    if max_cams is None:
-        if 'GENERAL' in config.sections():
-            max_cams = config['GENERAL'].getint('max_cams', 99)
-        else:
-            max_cams = 99
+def get_basler_devices(max_cams=None, allow_virtual=False) -> tuple[list[py.DeviceInfo], list[py.DeviceInfo]]:
 
-    if allow_virtual is None:
-        if 'GENERAL' in config.sections():
-            allow_virtual = config['GENERAL'].getboolean('allow_virtual', False)
-        else:
-            allow_virtual = False
+    if max_cams is None:
+        max_cams = 99
 
     instance = py.TlFactory.GetInstance()
 
@@ -193,25 +177,25 @@ class SSHTrigger:
 ##
 
 class Camera:
-    virtual_cams = 0
-    unknown_cams = 0
+    instancied_cams = []
 
     def __init__(self,
+                 name='unnamed',
                  framerate=60,
                  exposure=5000,
                  triggered=True,
                  binning=1,
                  binning_mode='sum'):
 
-        self._color = None
         self._ptr = None
         self._dptr = None
+        self._is_virtual = False
 
         self._serial = ''
-        self._name = 'unknown'
+        self._name = name
 
-        self._width = config['GENERAL'].getint('sensor_w')
-        self._height = config['GENERAL'].getint('sensor_h')
+        self._width = 0
+        self._height = 0
 
         self._framerate = framerate
         self._exposure = exposure
@@ -228,16 +212,22 @@ class Camera:
 
     def __repr__(self):
         if self._connected:
-            return f"{self.name.title()} camera (S/N {self.serial})"
+            v = 'Virtual ' if self._is_virtual else ''
+            return f"{v}Camera [S/N {self.serial}] (id={self._idx}, name={self._name})"
         else:
-            return f"{self.name.title()} camera not connected"
+            return f"Camera disconnected"
 
     def connect(self, cam_ptr=None) -> None:
+
+        available_idx = len(Camera.instancied_cams)
 
         if cam_ptr is None:
             real_cams, virtual_cams = get_basler_devices()
             devices = real_cams + virtual_cams
-            self._ptr = py.InstantCamera(py.TlFactory.GetInstance().CreateDevice(devices[self._idx]))
+            if available_idx <= len(devices):
+                self._ptr = py.InstantCamera(py.TlFactory.GetInstance().CreateDevice(devices[available_idx]))
+            else:
+                raise RuntimeError("Not enough cameras detected!")
         else:
             self._ptr = cam_ptr
 
@@ -246,26 +236,17 @@ class Camera:
         self.ptr.GrabCameraEvents = False
         self.ptr.Open()
         self._serial = self.dptr.GetSerialNumber()
-        self._connected = True
-
-        known_cams = list(config.sections())
-        known_cams.remove('GENERAL')
 
         if '0815-0' in self.serial:
-            self._name = f"virtual_{Camera.virtual_cams}"
-            Camera.virtual_cams += 1
+            self._is_virtual = True
             self._idx = int(self.serial[-1])
-            self._color = '#f3a0f2'
+            assert self._idx == available_idx   # This is probably useless
         else:
-            try:
-                self._idx = [config[k]['serial'] for k in known_cams].index(self._serial)
-                self._name = config[known_cams[self._idx]].get('name', 'unknown')
-                self._color = '#' + config[known_cams[self._idx]].get('color', '#f0a108').lstrip('#')
-            except ValueError:
-                self._name = f"unkown_{Camera.unknown_cams}"
-                Camera.unknown_cams += 1
-                self._idx = - Camera.unknown_cams
-                self._color = '#f0a108'
+            self._is_virtual = False
+            self._idx = available_idx
+
+        if self._name in Camera.instancied_cams:
+            self._name += f"_{self._idx}"
 
         self.ptr.UserSetSelector.SetValue("Default")
         self.ptr.UserSetLoad.Execute()
@@ -275,10 +256,11 @@ class Camera:
         self.ptr.DeviceLinkThroughputLimitMode.SetValue('On')
         self.ptr.DeviceLinkThroughputLimit.SetValue(342000000)
 
-        if 'virtual' not in self.name:
+        if not self._is_virtual:
 
             self.ptr.ExposureTimeMode.SetValue('Standard')
             self.ptr.ExposureAuto = 'Off'
+            self.ptr.GainAuto = 'Off'
             self.ptr.TriggerDelay.Value = 0.0
             self.ptr.LineDebouncerTime.Value = 5.0
             self.ptr.MaxNumBuffer = 20
@@ -296,16 +278,23 @@ class Camera:
                 self.ptr.TriggerMode = "Off"
                 self.ptr.AcquisitionFrameRateEnable.SetValue(True)
 
+        # Apply binning - THIS ALSO SETS the width and height
         self.binning = self._binning
         self.binning_mode = self._binning_mode
+
+        if self._is_virtual:
+            self.ptr.Width = 860
+            self.ptr.Height = 740
+            self._width = 860
+            self._height = 740
+
         self.framerate = self._framerate
         self.exposure = self._exposure
-
-        self.ptr.GainAuto.SetValue('Off')
         self.gain = self._gain
         self.gamma = self._gamma
 
-        print(f"Camera [S/N {self.serial}] (id={self._idx}, name={self._name}, col={self._color} initialised).")
+        Camera.instancied_cams.append(self._name)
+        self._connected = True
 
     def disconnect(self) -> None:
         if self._connected:
@@ -317,9 +306,11 @@ class Camera:
             self._dptr = None
             self._connected = False
             self._serial = ''
-            self._name = 'unknown'
-            self._width = config['GENERAL'].getint('sensor_w')
-            self._height = config['GENERAL'].getint('sensor_h')
+            self._name = 'unnamed'
+            self._width = 0
+            self._height = 0
+
+        self._connected = False
 
     def start_grabbing(self) -> None:
         if self._connected:
@@ -356,9 +347,25 @@ class Camera:
     def name(self) -> str:
         return self._name
 
+    @name.setter
+    def name(self, new_name : str) -> None:
+
+        if new_name == self._name or self._name == f"{new_name}_{self._idx}":
+            return
+        if new_name not in Camera.instancied_cams and f"{new_name}_{self._idx}" not in Camera.instancied_cams:
+            Camera.instancied_cams[Camera.instancied_cams.index(self._name)] = new_name
+            self._name = new_name
+        elif f"{self._name}_{self._idx}" not in Camera.instancied_cams:
+            Camera.instancied_cams[Camera.instancied_cams.index(self._name)] = f"{self._name}_{self._idx}"
+            self._name = f"{self._name}_{self._idx}"
+        else:
+            existing = Camera.instancied_cams.index(new_name)
+            raise ValueError(f"A camera with the name {new_name} already exists: {existing}")    # TODO - handle this case nicely
+        print(f"Applied: {self._name}")
+
     @property
-    def color(self) -> str:
-        return self._color
+    def connected(self) -> bool:
+        return self._connected
 
     @property
     def triggered(self) -> bool:
@@ -388,13 +395,13 @@ class Camera:
     def binning(self, value: int) -> None:
         assert value in [1, 2, 3, 4]
         if self._connected:
-            if 'virtual' not in self.name:
+            if not self._is_virtual:
                 self.ptr.BinningVertical.SetValue(value)
                 self.ptr.BinningHorizontal.SetValue(value)
 
             # Actual frame size
-            self._width = config['GENERAL'].getint('sensor_w') // value
-            self._height = config['GENERAL'].getint('sensor_h') // value
+            self._width = self.ptr.SensorWidth.GetValue() // value
+            self._height = self.ptr.SensorHeight.GetValue() // value
 
             # Set ROI to full frame
             self.ptr.OffsetX = 0
@@ -415,7 +422,7 @@ class Camera:
             value = 'Sum'
 
         if self._connected:
-            if 'virtual' not in self.name:
+            if not self._is_virtual:
                 self.ptr.BinningVerticalMode.SetValue(value)
                 self.ptr.BinningHorizontalMode.SetValue(value)
 
@@ -425,11 +432,12 @@ class Camera:
     @exposure.setter
     def exposure(self, value: int) -> None:
         if self._connected:
-            if 'virtual' in self.name:
+            if not self._is_virtual:
+                self.ptr.ExposureTime = value
+            else:
                 self.ptr.ExposureTimeAbs = value
                 self.ptr.ExposureTimeRaw = value
-            else:
-                self.ptr.ExposureTime = value
+
         # And keep a local value to avoid querying the camera every time we read it
         self._exposure = value
 
@@ -459,15 +467,7 @@ class Camera:
                 self.ptr.AcquisitionFrameRateEnable.SetValue(False)
                 self._framerate = self.ptr.ResultingFrameRate.GetValue()
             else:
-                if 'virtual' in self.name:
-
-                    self.ptr.AcquisitionFrameRateAbs = 220
-                    f = np.round(self.ptr.ResultingFrameRateAbs.GetValue() - 0.5 * 10 ** (-2),
-                                 2)  # custom floor with decimals
-                    new_framerate = min(value, f)
-
-                    self.ptr.AcquisitionFrameRateAbs = new_framerate
-                else:
+                if not self._is_virtual:
                     self.ptr.AcquisitionFrameRateEnable.SetValue(True)
                     self.ptr.AcquisitionFrameRate.SetValue(220.0)
 
@@ -477,6 +477,14 @@ class Camera:
 
                     self.ptr.AcquisitionFrameRateEnable.SetValue(True)
                     self.ptr.AcquisitionFrameRate.SetValue(new_framerate)
+
+                else:
+                    self.ptr.AcquisitionFrameRateAbs = 220
+                    f = np.round(self.ptr.ResultingFrameRateAbs.GetValue() - 0.5 * 10 ** (-2),
+                                 2)  # custom floor with decimals
+                    new_framerate = min(value, f)
+
+                    self.ptr.AcquisitionFrameRateAbs = new_framerate
 
                 self._framerate = new_framerate
 

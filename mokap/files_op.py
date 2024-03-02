@@ -1,22 +1,8 @@
 import re
 import subprocess as sp
-# import zarr
 from pathlib import Path
-from datetime import datetime
 import shutil
 import shlex
-
-##
-
-videos_folder = Path('/mnt/data/Videos')
-data_folder = Path('/mnt/data/RawFrames')
-
-# videos_folder = Path('/mnt/storage/ForelegsExpVideos')
-# data_folder = Path('/mnt/storage/ForelegsExp')
-#
-# videos_folder = Path('D:\\Videos')
-# data_folder = Path('D:\\RawFrames')
-
 
 ##
 
@@ -38,7 +24,7 @@ DEFAULT_FMT = COMPRESSED
 ##
 
 def exists_check(path):
-    """ Checks if a file or folder of the given name exists. If so, created a suffixed version of the name
+    """ Checks if a file or folder of the given name exists. If so, create a suffixed version of the name
     in a smart way. Returns the new, safe to use, name. """
     i = 2
     while path.exists():
@@ -59,17 +45,6 @@ def exists_check(path):
         path = path.parent / new_name
         i += 1
     return path
-
-
-def mk_folder(name=''):
-    if name == '':
-        name = datetime.now().strftime('%y%m%d-%H%M')
-
-    new_path = exists_check(data_folder / name)
-
-    new_path.mkdir(parents=True, exist_ok=False)
-    return new_path
-
 
 def rm_if_empty(path):
     path = Path(path)
@@ -118,14 +93,18 @@ def natural_sort_key(s):
 
 
 def videos_from_zarr(filepath, cams=None, format=None, force=False):
-    filepath = Path(filepath)
-    print(filepath)
+    import zarr
 
+    filepath = Path(filepath).resolve()
+
+    if not filepath.exists():
+        return
     if (filepath / 'recording').exists() and not force:
         return
-
     if (filepath / 'converted').exists() and not force:
         return
+
+    print(f"Converting {filepath.stem}")
 
     root = zarr.open((filepath / f'{filepath.stem}.zarr').as_posix(), mode="r")
     nb_cams, nb_frames, h, w = root['frames'].shape
@@ -174,7 +153,7 @@ def videos_from_zarr(filepath, cams=None, format=None, force=False):
 
         print(stats)
 
-        outfolder = videos_folder / filepath.stem
+        outfolder = filepath / 'videos' / filepath.stem
         if not outfolder.exists():
             outfolder.mkdir(parents=True, exist_ok=False)
 
@@ -204,8 +183,17 @@ def videos_from_zarr(filepath, cams=None, format=None, force=False):
         print(f'Done creating {outname + conv_settings["ftype"]}.')
 
 
-def convert_videos(path, name_filter='*', output_format=None, delete_source=False):
-    path = Path(path)
+def convert_videos(path, name_filter='*', output_format=None, delete_source=False, force=False):
+    path = Path(path).resolve()
+
+    if not path.exists():
+        return
+    if (path / 'recording').exists() and not force:
+        return
+    if (path / 'converted').exists() and not force:
+        return
+
+    print(f"Converting {path.stem}")
 
     if path.is_file():
         to_convert = [path]

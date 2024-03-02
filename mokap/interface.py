@@ -6,7 +6,6 @@ import numpy as np
 from datetime import datetime
 from threading import Thread, Event
 import screeninfo
-import colorsys
 from scipy import ndimage
 import platform
 from pathlib import Path
@@ -14,19 +13,6 @@ import os
 import subprocess
 from mokap import utils
 from functools import partial
-
-
-def hex_to_hls(hex_str: str):
-    hex_str = hex_str.lstrip('#')
-    if len(hex_str) == 3:
-        hex_str = ''.join([c + c for c in hex_str])
-    return colorsys.rgb_to_hls(*tuple(int(hex_str[i:i + 2], 16) for i in (0, 2, 4)))
-
-
-def hls_to_hex(h, l, s):
-    r, g, b = colorsys.hls_to_rgb(h, l, s)
-    new_hex = f'#{int(r):02x}{int(g):02x}{int(b):02x}'
-    return new_hex
 
 
 def whxy(what):
@@ -70,10 +56,16 @@ class VideoWindow:
     videowindows_ids = []
 
     INFO_PANEL_FIXED_H = 180  # in pixels
+    INFO_PANEL_FIXED_W = 620  # in pixels
 
     def __init__(self, parent):
 
         self.window = tk.Toplevel()
+        self.window.minsize(self.INFO_PANEL_FIXED_W, self.INFO_PANEL_FIXED_H + 50)  # 50 px video haha
+
+        if 'Darwin' in platform.system():
+            # Trick to force macOS to open a window and not a tab
+            self.window.resizable(False, False)
         self.parent = parent
 
         self.idx = len(VideoWindow.videowindows_ids)
@@ -81,13 +73,14 @@ class VideoWindow:
 
         self._source_shape = (self.parent.mgr.cameras[self.idx].height, self.parent.mgr.cameras[self.idx].width)
         self._cam_name = self.parent.mgr.cameras[self.idx].name
-        self._bg_color = self.parent.mgr.cameras[self.idx].color
-        self._fg_color = '#ffffff' if hex_to_hls(self._bg_color)[1] < 150 else '#000000'
+        self._bg_colour = f'#{self.parent.mgr.colours[self._cam_name].lstrip("#")}'
+        self._fg_colour = '#ffffff' if utils.hex_to_hls(self._bg_colour)[1] < 150 else '#000000'
 
         h, w = self._source_shape
         self.window.geometry(f"{w}x{h + self.INFO_PANEL_FIXED_H}")
         self.window.protocol("WM_DELETE_WINDOW", self.toggle_visibility)
 
+        self._window_bg_colour = self.window.cget("background")
         # Init state
         self._counter = 0
         self._clock = datetime.now()
@@ -171,7 +164,7 @@ class VideoWindow:
 
         name_bar = tk.Label(self.window, textvariable=self.txtvar_camera_name,
                             anchor='n', justify='center',
-                            fg=self.color_2, bg=self.color, font=parent.bold)
+                            fg=self.colour_2, bg=self.colour, font=parent.bold)
         name_bar.pack(fill='both')
 
         # Also set the window title while we're at it
@@ -234,19 +227,17 @@ class VideoWindow:
                 b.grid(row=r, column=c)
 
         f_buttons_controls = tk.Frame(view_info_frame, padx=5)
-        f_buttons_controls.pack(side='bottom', fill='x', expand=True)
+        f_buttons_controls.pack(side='bottom', fill='both', expand=True)
 
         self.show_focus_button = tk.Button(f_buttons_controls, text="Focus",
                                            width=10,
-                                           bd=2,
-                                           highlightthickness=0, highlightbackground="#62CB5A",
+                                           highlightthickness=2, highlightbackground=self._window_bg_colour,
                                            font=self.parent.regular,
                                            command=self._toggle_focus_display)
         self.show_focus_button.grid(row=0, column=0)
 
         self.show_mag_button = tk.Button(f_buttons_controls, text="Magnifier",
                                          width=10,
-                                         bd=0,
                                          highlightthickness=2, highlightbackground="#FFED30",
                                          font=self.parent.regular,
                                          command=self._toggle_mag_display)
@@ -317,16 +308,24 @@ class VideoWindow:
             pass
 
     @property
-    def name(self):
+    def name(self) -> str:
         return self._cam_name
 
     @property
-    def color(self):
-        return self._bg_color
+    def colour(self) -> str:
+        return f'#{self._bg_colour.lstrip("#")}'
+
 
     @property
-    def color_2(self):
-        return self._fg_color
+    def colour_2(self) -> str:
+        return f'#{self._fg_colour.lstrip("#")}'
+
+    def color(self) -> str:
+        return self.colour
+
+    @property
+    def color_2(self) -> str:
+        return self.colour_2
 
     @property
     def source_shape(self):
@@ -478,19 +477,19 @@ class VideoWindow:
     def _toggle_focus_display(self):
         if self._show_focus.is_set():
             self._show_focus.clear()
-            self.show_focus_button.configure(bd=2, highlightthickness=0)
+            self.show_focus_button.configure(highlightbackground=self._window_bg_colour)
         else:
             self._show_focus.set()
-            self.show_focus_button.configure(bd=0, highlightthickness=2)
+            self.show_focus_button.configure(highlightbackground='#62CB5A')
 
     def _toggle_mag_display(self):
         if self._magnification.is_set():
             self._magnification.clear()
-            self.show_mag_button.configure(bd=2, highlightthickness=0)
+            self.show_mag_button.configure(highlightbackground=self._window_bg_colour)
             self.slider_magn.config(state='disabled')
         else:
             self._magnification.set()
-            self.show_mag_button.configure(bd=0, highlightthickness=2)
+            self.show_mag_button.configure(highlightbackground='#FFED30')
             self.slider_magn.config(state='active')
     # === end TODO ===
 
@@ -606,6 +605,10 @@ class VideoWindow:
         self._refresh_videofeed(img_pillow)
 
     def update(self):
+        if 'Darwin' in platform.system():
+            # Reenable resizing on macOS (see trick at winow creation)
+            self.window.resizable(True, True)
+
         while True:
             # Update display fps counter
             now = datetime.now()
@@ -621,15 +624,21 @@ class VideoWindow:
 
             self.visible.wait()
 
+
     def toggle_visibility(self):
         if self.visible.is_set():
             self.visible.clear()
             self.parent._vis_checkboxes[self.idx].set(0)
             self.window.withdraw()
         else:
+            if 'Darwin' in platform.system():
+                # Trick to force macOS to open a window and not a tab
+                self.window.resizable(False, False)
             self.visible.set()
             self.parent._vis_checkboxes[self.idx].set(1)
             self.window.deiconify()
+            if 'Darwin' in platform.system():
+                self.window.resizable(True, True)
 
 
 class GUI:
@@ -748,13 +757,17 @@ class GUI:
         else:
             self.selected_monitor = self._monitors[0]
 
-    def open_save_folder(self):
+    def open_session_folder(self):
         path = Path(self.txtvar_applied_name.get()).resolve()
-        if path != Path(os.getcwd()).resolve():
-            try:
-                os.startfile(path)
-            except AttributeError:
-                subprocess.Popen(['xdg-open', path])
+
+        if 'Linux' in platform.system():
+            subprocess.Popen(['xdg-open', path])
+        elif 'Windows' in platform.system():
+            os.startfile(path)
+        elif 'Darwin' in platform.system():
+            subprocess.Popen(['open', path])
+        else:
+            pass
 
     def nothing(self):
         print('Nothing')
@@ -771,9 +784,14 @@ class GUI:
         maincontent.pack(padx=3, pady=3, side="top", fill="both", expand=True)
 
         # TOOLBAR
-        self.button_exit = tk.Button(toolbar, text="Exit (Esc)", anchor=tk.CENTER, font=self.bold,
-                                     bg='#fd5754', fg='white',
-                                     command=self.quit)
+        if 'Darwin' in platform.system():
+            self.button_exit = tk.Button(toolbar, text="Exit (Esc)", anchor=tk.CENTER, font=self.bold,
+                                         fg='#fd5754',
+                                         command=self.quit)
+        else:
+            self.button_exit = tk.Button(toolbar, text="Exit (Esc)", anchor=tk.CENTER, font=self.bold,
+                                         bg='#fd5754', fg='white',
+                                         command=self.quit)
         self.button_exit.pack(side="left", fill="y", expand=False)
 
         left_pane = tk.LabelFrame(maincontent, text="Acquisition")
@@ -812,7 +830,7 @@ class GUI:
         save_dir_current = tk.Label(info_name_frame, textvariable=self.txtvar_applied_name, anchor=tk.W)
         save_dir_current.pack(side="left", fill="y", expand=True)
 
-        gothere_button = tk.Button(info_name_frame, text="Go", font=self.regular, command=self.open_save_folder)
+        gothere_button = tk.Button(info_name_frame, text="Go", font=self.regular, command=self.open_session_folder)
         gothere_button.pack(side="right", fill="y", expand=False)
 
         #
@@ -851,11 +869,11 @@ class GUI:
             vis_var = tk.IntVar()
             vis_checkbox = tk.Checkbutton(windows_list_frame, text=f" {window.name.title()} camera", anchor=tk.W,
                                           font=self.bold,
-                                          fg=window.color_2,
-                                          bg=window.color,
-                                          selectcolor=window.color,
-                                          activebackground=window.color,
-                                          activeforeground=window.color,
+                                          fg=window.colour_2,
+                                          bg=window.colour,
+                                          selectcolor=window.colour,
+                                          activebackground=window.colour,
+                                          activeforeground=window.colour,
                                           variable=vis_var,
                                           command=window.toggle_visibility,
                                           state='normal')
@@ -945,8 +963,8 @@ class GUI:
             pass
 
     def gui_set_name(self):
-        self.mgr.savepath = self.txtvar_userentry.get()
-        self.txtvar_applied_name.set(f'{Path(self.mgr.savepath).resolve()}')
+        self.mgr.session_name = self.txtvar_userentry.get()
+        self.txtvar_applied_name.set(f'{Path(self.mgr.session_name).resolve()}')
 
     def gui_toggle_set_name(self):
         if self.editing_disabled:
@@ -983,7 +1001,7 @@ class GUI:
 
     def gui_toggle_acquisition(self):
 
-        if self.mgr.savepath is None:
+        if self.mgr.session_name is None:
             self.gui_set_name()
 
         if not self.mgr.acquiring:

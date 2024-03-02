@@ -2,6 +2,33 @@ import subprocess
 from typing import List, Optional, Set, Tuple, Union
 import numpy as np
 from scipy import ndimage
+import colorsys
+
+def hex_to_hls(hex_str: str):
+    hex_str = hex_str.lstrip('#')
+    if len(hex_str) == 3:
+        hex_str = ''.join([c + c for c in hex_str])
+
+    r_i, g_i, b_i = tuple(int(hex_str[i:i + 2], 16) for i in (0, 2, 4))
+    r_f, g_f, b_f = colorsys.rgb_to_hls(r_i/255.0, g_i/255.0, b_i/255.0)
+    return round(r_f*360), round(g_f*100), round(b_f*100)
+
+
+def hls_to_hex(*hls):
+    if len(hls) == 1:
+        h, l, s = hls[0]
+    elif len(hls) != 3:
+        raise TypeError('Either pass three separate values or a tuple')
+    else:
+        h, l, s = hls
+
+    if not ((h <= 1 and l <= 1 and s <= 1) and (type(h) == float and type(l) == float and type(s) == float)):
+        h = h/360
+        l = l/100
+        s = s/100
+    r, g, b = colorsys.hls_to_rgb(h, l, s)
+    new_hex = f'#{int(round(r*255)):02x}{int(round(g*255)):02x}{int(round(b*255)):02x}'
+    return new_hex
 
 
 def randframe(w=1440, h=1080):
