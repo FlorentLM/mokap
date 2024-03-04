@@ -70,11 +70,13 @@ class Manager:
         self._gamma: float = 1.0
         self._triggered: bool = triggered
 
-        default_base_folder = Path(__file__).parent / 'recordings'
+        default_base_folder = Path('./')
         if 'GENERAL' in self.confparser.sections():
-             self._base_folder = Path(self.confparser['GENERAL'].get('base_folder', default_base_folder))
+             self._base_folder = Path(self.confparser['GENERAL'].get('base_folder', default_base_folder.as_posix())) / 'MokapRecordings'
         else:
-            self._base_folder = default_base_folder
+            self._base_folder = default_base_folder / 'MokapRecordings'
+        if self._base_folder.parent == self._base_folder.name:
+            self._base_folder = self._base_folder.parent
         self._base_folder.mkdir(parents=True, exist_ok=True)
         self._session_name: Union[Path, None] = None
 

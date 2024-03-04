@@ -176,6 +176,7 @@ class SSHTrigger:
 
 ##
 
+
 class Camera:
     instancied_cams = []
 
@@ -278,15 +279,13 @@ class Camera:
                 self.ptr.TriggerMode = "Off"
                 self.ptr.AcquisitionFrameRateEnable.SetValue(True)
 
+        if self._is_virtual:
+            self._width = 920
+            self._height = 540
+
         # Apply binning - THIS ALSO SETS the width and height
         self.binning = self._binning
         self.binning_mode = self._binning_mode
-
-        if self._is_virtual:
-            self.ptr.Width = 860
-            self.ptr.Height = 740
-            self._width = 860
-            self._height = 740
 
         self.framerate = self._framerate
         self.exposure = self._exposure
@@ -395,13 +394,16 @@ class Camera:
     def binning(self, value: int) -> None:
         assert value in [1, 2, 3, 4]
         if self._connected:
-            if not self._is_virtual:
-                self.ptr.BinningVertical.SetValue(value)
-                self.ptr.BinningHorizontal.SetValue(value)
+            self.ptr.BinningVertical.SetValue(value)
+            self.ptr.BinningHorizontal.SetValue(value)
 
-            # Actual frame size
-            self._width = self.ptr.SensorWidth.GetValue() // value
-            self._height = self.ptr.SensorHeight.GetValue() // value
+            if not self._is_virtual:
+                # Actual frame size
+                self._width = self.ptr.SensorWidth.GetValue() // value
+                self._height = self.ptr.SensorHeight.GetValue() // value
+            else:
+                self._width = self._width // value
+                self._height = self._height // value
 
             # Set ROI to full frame
             self.ptr.OffsetX = 0
