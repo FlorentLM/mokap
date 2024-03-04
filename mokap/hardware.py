@@ -404,11 +404,11 @@ class Camera:
                 self._width = self._width // value
                 self._height = self._height // value
 
-            # Set ROI to full frame
-            self.ptr.OffsetX = 0
-            self.ptr.OffsetY = 0
+            # Set ROI to full frame and centre it
             self.ptr.Width = self._width
             self.ptr.Height = self._height
+            self.ptr.CenterX = True
+            self.ptr.CenterY = True
 
         # And keep a local value to avoid querying the camera every time we read it
         self._binning = value

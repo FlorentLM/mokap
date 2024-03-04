@@ -145,7 +145,7 @@ class Manager:
         real_cams, virtual_cams = get_basler_devices(max_cams=max_cams, allow_virtual=allow_virtual)
         devices = real_cams + virtual_cams
         if not self._silent:
-            print(f"[INFO] Found {len(devices)} camera{'s' if self._nb_cams > 1 else ''} connected "
+            print(f"[INFO] Found {len(devices)} camera{'s' if len(devices) > 1 else ''} connected "
                   f"({len(real_cams)} physical, {len(virtual_cams)} virtual).")
 
         return devices
