@@ -55,8 +55,8 @@ def compute_windows_size(source_dims, screen_dims):
 class VideoWindow:
     videowindows_ids = []
 
-    INFO_PANEL_FIXED_H = 180  # in pixels
-    INFO_PANEL_FIXED_W = 620  # in pixels
+    INFO_PANEL_FIXED_H = 200  # in pixels
+    INFO_PANEL_FIXED_W = 650  # in pixels
 
     def __init__(self, parent):
 
@@ -110,7 +110,7 @@ class VideoWindow:
             if 'Linux' in platform.system():
                 self._imgfnt = ImageFont.truetype("DejaVuSans-Bold.ttf", 30)
             elif 'Windows' in platform.system():
-                self._imgfnt = ImageFont.truetype("arial-bold.ttf", 30)
+                self._imgfnt = ImageFont.truetype("arial-bold.ttf", 60)
             elif 'Darwin' in platform.system():
                 self._imgfnt = ImageFont.truetype("KeyboardBold.ttf", 30)
             else:
@@ -649,8 +649,8 @@ class VideoWindow:
 
 
 class GUI:
-    CONTROLS_WIDTH = 550
-    CONTROLS_HEIGHT = 300
+    CONTROLS_MIN_WIDTH = 600
+    CONTROLS_MIN_HEIGHT = 320
 
     def __init__(self, mgr):
 
@@ -664,7 +664,7 @@ class GUI:
 
         resources_path = [p for p in Path().cwd().glob('**/*') if p.is_dir() and p.name == 'icons'][0]
 
-        ico = ImageTk.PhotoImage(Image.open(resources_path / "capture_on.png"))
+        ico = ImageTk.PhotoImage(Image.open(resources_path / "mokap.png"))
         self.root.wm_iconphoto(True, ico)
 
         # self.root.wait_visibility(self.root)
@@ -675,7 +675,7 @@ class GUI:
         self.icon_capture_on = tk.PhotoImage(file=resources_path / 'capture_on.png')
         self.icon_capture_off = tk.PhotoImage(file=resources_path /'capture_off_bw.png')
         self.icon_rec_on = tk.PhotoImage(file=resources_path /'rec.png')
-        self.icon_rec_off = tk.PhotoImage(file=resources_path /'rec_bw.png')
+        self.icon_rec_off = tk.PhotoImage(file=resources_path /'rec_off.png')
 
         # Set up fonts
         self.font_bold = font.Font(weight='bold', size=10)
@@ -721,10 +721,10 @@ class GUI:
             t.start()
             self.windows_threads.append(t)
 
-        x = self.selected_monitor.x + self.selected_monitor.width // 2 - self.CONTROLS_HEIGHT // 2
-        y = self.selected_monitor.y + self.selected_monitor.height // 2 - self.CONTROLS_WIDTH // 2
+        x = self.selected_monitor.x + self.selected_monitor.width // 2 - self.CONTROLS_MIN_HEIGHT // 2
+        y = self.selected_monitor.y + self.selected_monitor.height // 2 - self.CONTROLS_MIN_WIDTH // 2
 
-        self.root.geometry(f"{self.CONTROLS_WIDTH}x{self.CONTROLS_HEIGHT}+{x}+{y}")
+        self.root.geometry(f"{self.CONTROLS_MIN_WIDTH}x{self.CONTROLS_MIN_HEIGHT}+{x}+{y}")
 
         ##
 
@@ -752,7 +752,7 @@ class GUI:
 
         maincontent.add(left_pane)
         maincontent.add(right_pane)
-        maincontent.paneconfig(left_pane, width=300)
+        maincontent.paneconfig(left_pane, width=400)
         maincontent.paneconfig(right_pane, width=200)
 
         # LEFT HALF
