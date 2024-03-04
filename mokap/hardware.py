@@ -360,7 +360,6 @@ class Camera:
         else:
             existing = Camera.instancied_cams.index(new_name)
             raise ValueError(f"A camera with the name {new_name} already exists: {existing}")    # TODO - handle this case nicely
-        print(f"Applied: {self._name}")
 
     @property
     def connected(self) -> bool:

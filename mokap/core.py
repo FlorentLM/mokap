@@ -32,7 +32,6 @@ class FrameHandler(py.ImageEventHandler):
         siz = camera.Width.GetValue() * camera.Height.GetValue()
         if self.latest is None:
             self.latest = bytearray(siz)
-            print(f"Buffer initialised: {siz}")
 
     def OnImagesSkipped(self, camera, nb_skipped):
         print(f"[WARN] Skipped {nb_skipped} images!")
