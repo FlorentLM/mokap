@@ -20,7 +20,7 @@
 
 ## Mokap
 
-### Windows and Linux
+### Windows, macOS and Linux
 
 #### Miniconda:
 * If you don't have Miniconda installed, see [here](https://docs.conda.io/projects/miniconda/en/latest/)
@@ -29,6 +29,14 @@
 
 ###### Linux-specific optional dependencies
   * (Optional) Install [uhubctl](https://github.com/mvp/uhubctl) and follow their [post-install instructions](https://github.com/mvp/uhubctl#linux-usb-permissions).
+
+###### Notes regarding disk write performance
+In most situations, the bottleneck for acquiring high framerate videos from multiple cameras (in our case 5 cameras filming at 220 fps in 1440x1080 px) was disk IO.
+We got very good performance using BTRFS on Linux, but your experience may vary.
+
+On Windows, it is recommended to disable cache writing, otherwise the OS will try to optimise writing by using the available RAM, and it will crash quickly.
+Although there are BTRFS drivers for Windows that work very well, they do not support no-cache writing (yet?), so it is not recommended to use BTRFS on Windows with Mokap.
+
 
 # Usage
 

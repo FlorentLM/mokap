@@ -16,7 +16,7 @@ mgr.binning_mode = 'avg'
 mgr.gain = 24
 
 # Set framerate in images per second
-mgr.framerate = 30
+mgr.framerate = 220
 
 if __name__ == '__main__':
     if mgr.nb_cameras == 0:
