@@ -35,7 +35,7 @@ In most situations, the bottleneck for acquiring high framerate videos from mult
 We got very good performance using BTRFS on Linux, but your experience may vary.
 
 On Windows, it is recommended to disable cache writing, otherwise the OS will try to optimise writing by using the available RAM, and it will crash quickly.
-Although there are BTRFS drivers for Windows that work very well, they do not support no-cache writing (yet?), so it is not recommended to use BTRFS on Windows with Mokap.
+Although there are [BTRFS drivers for Windows](https://github.com/maharmstone/btrfs) that work very well, they do not support no-cache writing (yet?), so it is not recommended to use BTRFS on Windows with Mokap.
 
 
 # Usage
