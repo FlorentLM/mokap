@@ -28,16 +28,22 @@ class FrameHandler(py.ImageEventHandler):
         self.rec = False
         super().__init__(*args)
 
+    def OnImageEventHandlerRegistered(self, camera):
+        siz = camera.Width.GetValue() * camera.Height.GetValue()
+        if self.latest is None:
+            self.latest = bytearray(siz)
+            print(f"Buffer initialised: {siz}")
+
     def OnImagesSkipped(self, camera, nb_skipped):
-        print(f"Skipped {nb_skipped} images.")
+        print(f"[WARN] Skipped {nb_skipped} images!")
 
     def OnImageGrabbed(self, camera, res):
         if res.GrabSucceeded():
-            self.indice = res.ImageNumber
+            self.indice = 0 + res.ImageNumber
             buf = res.GetBuffer()
+            self.latest[:] = buf
             if self._is_recording.is_set():
                 self.frames.append(buf)
-            self.latest = buf
 
 
 class Manager:
