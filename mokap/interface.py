@@ -263,17 +263,20 @@ class VideoWindow:
         self.camera_controls_sliders = {}
         self._apply_all_vars = {}
 
-        for label, val, func, slider_params in zip(['Framerate', 'Exposure', 'Gain', 'Gamma'],
+        for label, val, func, slider_params in zip(['Framerate', 'Exposure', 'Blacks', 'Gain', 'Gamma'],
                                               [self.parent.mgr.cameras[self.idx].framerate,
                                                self.parent.mgr.cameras[self.idx].exposure,
+                                               self.parent.mgr.cameras[self.idx].blacks,
                                                self.parent.mgr.cameras[self.idx].gain,
                                                self.parent.mgr.cameras[self.idx].gamma],
                                               [self._update_fps_all_cams,
                                                self._update_exp_all_cams,
+                                               self._update_blacks_all_cams,
                                                self._update_gain_all_cams,
                                                self._update_gamma_all_cams],
                                                              [(1, 220, 1, 1),
                                                               (4300, 25000, 5, 1),
+                                                              (0.0, 32.0, 0.5, 3),
                                                               (0.0, 24.0, 0.5, 3),
                                                               (0.0, 4.0, 0.05, 3),
                                                               ]):
@@ -435,6 +438,11 @@ class VideoWindow:
         # And callback to the update framerate function because the new exposure time might cap the framerate out
         self.update_framerate(event)
 
+    def update_blacks(self, event=None):
+        slider = self.camera_controls_sliders['blacks']
+        new_val = slider.get()
+        self.parent.mgr.cameras[self.idx].blacks = new_val
+
     def update_gain(self, event=None):
         slider = self.camera_controls_sliders['gain']
         new_val = slider.get()
@@ -462,6 +470,15 @@ class VideoWindow:
                 new_val = slider.get()
                 window.camera_controls_sliders['exposure'].set(new_val)
                 window.update_exposure()
+
+    def _update_blacks_all_cams(self, event=None):
+        self.update_blacks()
+        for window in self.parent.video_windows:
+            if window is not self and bool(window._apply_all_vars['blacks'].get()):
+                slider = self.camera_controls_sliders['blacks']
+                new_val = slider.get()
+                window.camera_controls_sliders['blacks'].set(new_val)
+                window.update_blacks()
 
     def _update_gain_all_cams(self, event=None):
         self.update_gain()
