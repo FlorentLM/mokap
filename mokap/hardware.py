@@ -437,7 +437,7 @@ class Camera:
         self._binning_mode = value
 
     @exposure.setter
-    def exposure(self, value: int) -> None:
+    def exposure(self, value: float) -> None:
         if self._connected:
             if not self._is_virtual:
                 self.ptr.ExposureTime = value
@@ -451,21 +451,46 @@ class Camera:
     @blacks.setter
     def blacks(self, value: float) -> None:
         if self._connected:
-            self.ptr.BlackLevel.SetValue(value)
+            try:
+                self.ptr.BlackLevel.SetValue(value)
+            except py.OutOfRangeException as e:
+                exception_message = e.args[0]
+                if 'must be smaller than or equal ' in exception_message:
+                    value = float(exception_message.split('must be smaller than or equal ')[1].split('. : OutOfRangeException')[0])
+                elif 'must be greater than or equal ' in exception_message:
+                    value = float(exception_message.split('must be greater than or equal ')[1].split('. : OutOfRangeException')[0])
+                self.ptr.BlackLevel.SetValue(value)
         # And keep a local value to avoid querying the camera every time we read it
         self._blacks = value
 
     @gain.setter
     def gain(self, value: float) -> None:
         if self._connected:
-            self.ptr.Gain.SetValue(value)
+            try:
+                self.ptr.Gain.SetValue(value)
+            except py.OutOfRangeException as e:
+                exception_message = e.args[0]
+                if 'must be smaller than or equal ' in exception_message:
+                    value = float(exception_message.split('must be smaller than or equal ')[1].split('. : OutOfRangeException')[0])
+                elif 'must be greater than or equal ' in exception_message:
+                    value = float(exception_message.split('must be greater than or equal ')[1].split('. : OutOfRangeException')[0])
+                self.ptr.Gain.SetValue(value)
         # And keep a local value to avoid querying the camera every time we read it
         self._gain = value
 
     @gamma.setter
     def gamma(self, value: float) -> None:
         if self._connected:
-            self.ptr.Gamma.SetValue(value)
+            try:
+                self.ptr.Gamma.SetValue(value)
+            except py.OutOfRangeException as e:
+                exception_message = e.args[0]
+                if 'must be smaller than or equal ' in exception_message:
+                    value = float(exception_message.split('must be smaller than or equal ')[1].split('. : OutOfRangeException')[0])
+                elif 'must be greater than or equal ' in exception_message:
+                    value = float(exception_message.split('must be greater than or equal ')[1].split('. : OutOfRangeException')[0])
+                self.ptr.Gamma.SetValue(value)
+
         # And keep a local value to avoid querying the camera every time we read it
         self._gamma = value
 

@@ -55,7 +55,7 @@ def compute_windows_size(source_dims, screen_dims):
 class VideoWindow:
     videowindows_ids = []
 
-    INFO_PANEL_FIXED_H = 200  # in pixels
+    INFO_PANEL_FIXED_H = 250  # in pixels
     INFO_PANEL_FIXED_W = 650  # in pixels
 
     def __init__(self, parent):
@@ -275,9 +275,9 @@ class VideoWindow:
                                                self._update_gain_all_cams,
                                                self._update_gamma_all_cams],
                                                              [(1, 220, 1, 1),
-                                                              (4300, 25000, 5, 1),
+                                                              (21, 1e5, 5, 1),    # in microseconds - 1e5 ~ 10 fps
                                                               (0.0, 32.0, 0.5, 3),
-                                                              (0.0, 24.0, 0.5, 3),
+                                                              (0.0, 36.0, 0.5, 3),
                                                               (0.0, 4.0, 0.05, 3),
                                                               ]):
             f = tk.Frame(lf)
@@ -429,6 +429,11 @@ class VideoWindow:
         new_val = slider.get()
         self.parent.mgr.cameras[self.idx].exposure = new_val
 
+        # And update the slider to the actual new value (can be different than the one requested)
+        slider.set(self.parent.mgr.cameras[self.idx].exposure)
+
+        #
+        #
         # We also need to update the framerate slider to current resulting fps after exposure change
         slider_framerate = self.camera_controls_sliders['framerate']
         slider_framerate.set(self.parent.mgr.cameras[self.idx].framerate)
@@ -438,20 +443,32 @@ class VideoWindow:
         # And callback to the update framerate function because the new exposure time might cap the framerate out
         self.update_framerate(event)
 
+        #
+        #
+
     def update_blacks(self, event=None):
         slider = self.camera_controls_sliders['blacks']
         new_val = slider.get()
         self.parent.mgr.cameras[self.idx].blacks = new_val
+
+        # And update the slider to the actual new value (can be different than the one requested)
+        slider.set(self.parent.mgr.cameras[self.idx].blacks)
 
     def update_gain(self, event=None):
         slider = self.camera_controls_sliders['gain']
         new_val = slider.get()
         self.parent.mgr.cameras[self.idx].gain = new_val
 
+        # And update the slider to the actual new value (can be different than the one requested)
+        slider.set(self.parent.mgr.cameras[self.idx].gain)
+
     def update_gamma(self, event=None):
         slider = self.camera_controls_sliders['gamma']
         new_val = slider.get()
         self.parent.mgr.cameras[self.idx].gamma = new_val
+
+        # And update the slider to the actual new value (can be different than the one requested)
+        slider.set(self.parent.mgr.cameras[self.idx].gamma)
 
     def _update_fps_all_cams(self, event=None):
         self.update_framerate()
