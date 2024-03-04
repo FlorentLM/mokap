@@ -200,7 +200,7 @@ class Camera:
 
         self._framerate = framerate
         self._exposure = exposure
-        self._blacklvl = 0.0
+        self._blacks = 0.0
         self._gain = 1.0
         self._gamma = 1.0
         self._triggered = triggered
@@ -302,7 +302,7 @@ class Camera:
 
         self.framerate = self._framerate
         self.exposure = self._exposure
-        self.blacklvl = self._blacklvl
+        self.blacks = self._blacks
         self.gain = self._gain
         self.gamma = self._gamma
 
@@ -388,8 +388,8 @@ class Camera:
         return self._exposure
 
     @property
-    def blacklvl(self) -> float:
-        return self._blacklvl
+    def blacks(self) -> float:
+        return self._blacks
 
     @property
     def gain(self) -> float:
@@ -448,12 +448,12 @@ class Camera:
         # And keep a local value to avoid querying the camera every time we read it
         self._exposure = value
 
-    @blacklvl.setter
-    def blacklvl(self, value: float) -> None:
+    @blacks.setter
+    def blacks(self, value: float) -> None:
         if self._connected:
             self.ptr.BlackLevel.SetValue(value)
         # And keep a local value to avoid querying the camera every time we read it
-        self._blacklvl = value
+        self._blacks = value
 
     @gain.setter
     def gain(self, value: float) -> None:
