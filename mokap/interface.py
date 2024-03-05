@@ -591,13 +591,10 @@ class VideoWindow:
 
         # Get window size and set new videofeed size, preserving aspect ratio
         h, w = self.videofeed_shape
-        print(f"Aspect ratio: {h}x{w}")
         if w / h > self.aspect_ratio:
             w = int(h * self.aspect_ratio)
         else:
             h = int(w / self.aspect_ratio)
-
-        print(f"corrected ratio: {h}x{w}")
 
         # Get new coordinates
         x_centre, y_centre = w//2, h//2
