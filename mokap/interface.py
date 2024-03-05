@@ -130,7 +130,7 @@ class VideoWindow:
 
         # Set initial values
         h, w = self.parent.mgr.cameras[self.idx].height, self.parent.mgr.cameras[self.idx].width
-        self.txtvar_resolution.set(f"{h}×{w} px")
+        self.txtvar_resolution.set(f"{w}×{h} px")
         self.txtvar_exposure.set(f"{self.parent.mgr.cameras[self.idx].exposure} µs")
         self._applied_fps = self.parent.mgr.cameras[self.idx].framerate
 
@@ -278,7 +278,7 @@ class VideoWindow:
                                                               (21, 1e5, 5, 1),    # in microseconds - 1e5 ~ 10 fps
                                                               (0.0, 32.0, 0.5, 3),
                                                               (0.0, 36.0, 0.5, 3),
-                                                              (0.0, 4.0, 0.05, 3),
+                                                              (0.0, 3.99, 0.05, 3),
                                                               ]):
             f = tk.Frame(lf)
             f.pack(side='top', fill='both', expand=True)
@@ -1083,7 +1083,12 @@ class GUI:
             capture_dt = (now - self._capture_clock).total_seconds()
 
             self._now_indices[:] = self.mgr.indices
-            self._capture_fps[:] = (self._now_indices - self.start_indices) / capture_dt + 0.00001
+
+            with np.errstate(divide='raise'):
+                try:
+                    self._capture_fps[:] = (self._now_indices - self.start_indices) / capture_dt
+                except FloatingPointError:
+                    self._capture_fps.fill(0)
 
             self._current_buffers = self.mgr.get_current_framebuffer()
 
