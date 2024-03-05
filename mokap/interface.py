@@ -52,13 +52,14 @@ def compute_windows_size(source_dims, screen_dims):
 
     return computed_dims
 
+
 class VideoWindowBase:
     mainvideowindows_ids = []
 
     INFO_PANEL_FIXED_H = 220  # in pixels
     INFO_PANEL_FIXED_W = 630  # in pixels
 
-    def __init__(self, parent):
+    def __init__(self, parent, idx=None):
 
         self.window = tk.Toplevel()
         self.window.minsize(self.INFO_PANEL_FIXED_W, self.INFO_PANEL_FIXED_H + 50)  # 50 px video haha
@@ -68,8 +69,11 @@ class VideoWindowBase:
             self.window.resizable(False, False)
         self.parent = parent
 
-        self.idx = len(VideoWindowMain.mainvideowindows_ids)
-        VideoWindowMain.mainvideowindows_ids.append(self.idx)
+        if idx is None:
+            self.idx = len(VideoWindowBase.mainvideowindows_ids)
+            VideoWindowBase.mainvideowindows_ids.append(self.idx)
+        else:
+            self.idx = idx
 
         self._source_shape = (self.parent.mgr.cameras[self.idx].height, self.parent.mgr.cameras[self.idx].width)
         self._cam_name = self.parent.mgr.cameras[self.idx].name
@@ -237,11 +241,11 @@ class VideoWindowBase:
             h = int(w / self.aspect_ratio)
 
         # Get new coordinates
-        x_centre, y_centre = w//2, h//2
-        x_north, y_north = w//2, 0
-        x_south, y_south = w//2, h
-        x_east, y_east = w, h//2
-        x_west, y_west = 0, h//2
+        x_centre, y_centre = w // 2, h // 2
+        x_north, y_north = w // 2, 0
+        x_south, y_south = w // 2, h
+        x_east, y_east = w, h // 2
+        x_west, y_west = 0, h // 2
 
         img_pillow = Image.fromarray(self._frame_buffer, mode='L').convert('RGBA')
         img_pillow = img_pillow.resize((w, h))
@@ -269,12 +273,16 @@ class VideoWindowBase:
             else:
                 self.visible.wait()
 
-    def toggle_visibility(self):
-        if self.visible.is_set():
+    def toggle_visibility(self, tf=None):
+        if tf is None:
+            tf = not self.visible.is_set()
+
+        if self.visible.is_set() and tf is False:
             self.visible.clear()
             self.parent.vis_checkboxes[self.idx].set(0)
             self.window.withdraw()
-        else:
+
+        elif not self.visible.is_set() and tf is True:
             if 'Darwin' in platform.system():
                 # Trick to force macOS to open a window and not a tab
                 self.window.resizable(False, False)
@@ -283,6 +291,13 @@ class VideoWindowBase:
             self.window.deiconify()
             if 'Darwin' in platform.system():
                 self.window.resizable(True, True)
+        else:
+            pass
+
+
+class VideoWindowCalib(VideoWindowBase):
+    def __init__(self, parent, idx):
+        super().__init__(parent, idx)
 
 
 class VideoWindowMain(VideoWindowBase):
@@ -357,7 +372,6 @@ class VideoWindowMain(VideoWindowBase):
                                self.txtvar_exposure,
                                self.txtvar_brightness,
                                self.txtvar_display_fps]):
-
             f = tk.Frame(f_information)
             f.pack(side='top', fill='x', expand=True)
 
@@ -592,23 +606,34 @@ class VideoWindowMain(VideoWindowBase):
                 window.camera_controls_sliders['gamma'].set(new_val)
                 window.update_gamma()
 
-    def _toggle_focus_display(self):
-        if self._show_focus.is_set():
+    def _toggle_focus_display(self, tf=None):
+        if tf is None:
+            tf = not self.visible.is_set()
+
+        if self.visible.is_set() and tf is False:
             self._show_focus.clear()
             self.show_focus_button.configure(highlightbackground=self._window_bg_colour)
-        else:
+        elif not self.visible.is_set() and tf is True:
             self._show_focus.set()
             self.show_focus_button.configure(highlightbackground='#62CB5A')
+        else:
+            pass
 
-    def _toggle_mag_display(self):
-        if self._magnification.is_set():
+    def _toggle_mag_display(self, tf=None):
+        if tf is None:
+            tf = not self.visible.is_set()
+
+        if self.visible.is_set() and tf is False:
             self._magnification.clear()
             self.show_mag_button.configure(highlightbackground=self._window_bg_colour)
             self.slider_magn.config(state='disabled')
-        else:
+        elif not self.visible.is_set() and tf is True:
             self._magnification.set()
             self.show_mag_button.configure(highlightbackground='#FFED30')
             self.slider_magn.config(state='active')
+        else:
+            pass
+
     # === end TODO ===
 
     def _update_txtvars(self):
@@ -645,35 +670,36 @@ class VideoWindowMain(VideoWindowBase):
             h = int(w / self.aspect_ratio)
 
         # Get new coordinates
-        x_centre, y_centre = w//2, h//2
-        x_north, y_north = w//2, 0
-        x_south, y_south = w//2, h
-        x_east, y_east = w, h//2
-        x_west, y_west = 0, h//2
+        x_centre, y_centre = w // 2, h // 2
+        x_north, y_north = w // 2, 0
+        x_south, y_south = w // 2, h
+        x_east, y_east = w, h // 2
+        x_west, y_west = 0, h // 2
 
         img_pillow = Image.fromarray(self._frame_buffer, mode='L').convert('RGBA')
         img_pillow = img_pillow.resize((w, h))
 
         d = ImageDraw.Draw(img_pillow)
         # Draw crosshair
-        d.line((x_west, y_west, x_east, y_east), fill=(255, 255, 255), width=1)         # Horizontal
-        d.line((x_north, y_north, x_south, y_south), fill=(255, 255, 255), width=1)     # Vertical
+        d.line((x_west, y_west, x_east, y_east), fill=(255, 255, 255), width=1)  # Horizontal
+        d.line((x_north, y_north, x_south, y_south), fill=(255, 255, 255), width=1)  # Vertical
 
         # Position the 'Recording' indicator
-        d.text((x_centre, (y_south - y_centre/2)), self.parent.txtvar_recording.get(), anchor="ms", font=self._imgfnt, fill='red')
+        d.text((x_centre, (y_south - y_centre / 2)), self.parent.txtvar_recording.get(), anchor="ms", font=self._imgfnt,
+               fill='red')
 
         if self._warning.is_set():
-            d.text((x_centre, y_centre/2), self.txtvar_warning.get(), anchor="ms", font=self._imgfnt, fill='orange')
+            d.text((x_centre, y_centre / 2), self.txtvar_warning.get(), anchor="ms", font=self._imgfnt, fill='orange')
 
         if self._magnification.is_set():
-
             # Slice directly from the framebuffer and make a (then zoomed) image
             magn_img = Image.fromarray(self._frame_buffer[self.magn_A[0]:self.magn_B[0],
                                        self.magn_A[1]:self.magn_B[1]]).convert('RGB')
-            magn_img = magn_img.resize((int(magn_img.width * self.magn_zoom.get()), int(magn_img.height * self.magn_zoom.get())))
+            magn_img = magn_img.resize(
+                (int(magn_img.width * self.magn_zoom.get()), int(magn_img.height * self.magn_zoom.get())))
 
             # Position of the top left corner of magnification window in the whole videofeed
-            magn_pos = w - magn_img.width - 10, h - magn_img.height - 10    # small margin of 10 px
+            magn_pos = w - magn_img.width - 10, h - magn_img.height - 10  # small margin of 10 px
 
             # Add frame around the magnified area
             d.rectangle([(x_centre - self.magn_size[1] // 2, y_centre - self.magn_size[0] // 2),
@@ -687,8 +713,8 @@ class VideoWindowMain(VideoWindowBase):
 
             # Add a small + in the centre
             c = magn_pos[0] + magn_img.width // 2, magn_pos[1] + magn_img.height // 2
-            d.line((c[0] - 5, c[1], c[0] + 5, c[1]), fill=(255, 237, 48), width=1)      # Horizontal
-            d.line((c[0], c[1] - 5, c[0], c[1] + 5), fill=(255, 237, 48), width=1)      # Vertical
+            d.line((c[0] - 5, c[1], c[0] + 5, c[1]), fill=(255, 237, 48), width=1)  # Horizontal
+            d.line((c[0], c[1] - 5, c[0], c[1] + 5), fill=(255, 237, 48), width=1)  # Vertical
 
         if self._show_focus.is_set():
             lapl = ndimage.gaussian_laplace(np.array(img_pillow)[:, :, 0].astype(np.uint8), sigma=1)
@@ -717,6 +743,7 @@ class GUI:
         CONTROLS_MIN_HEIGHT = 320
     else:
         CONTROLS_MIN_HEIGHT = 280
+
     def __init__(self, mgr):
 
         # Detect monitors and pick the default one
@@ -738,9 +765,10 @@ class GUI:
         self.root.bind('<KeyPress>', self._handle_keypress)
 
         self.icon_capture_on = tk.PhotoImage(file=resources_path / 'capture_on.png')
-        self.icon_capture_off = tk.PhotoImage(file=resources_path /'capture_off_bw.png')
-        self.icon_rec_on = tk.PhotoImage(file=resources_path /'rec.png')
-        self.icon_rec_off = tk.PhotoImage(file=resources_path /'rec_off.png')
+        self.icon_capture_off = tk.PhotoImage(file=resources_path / 'capture_off_bw.png')
+        self.icon_calib = tk.PhotoImage(file=resources_path / 'calibrate.png')
+        self.icon_rec_on = tk.PhotoImage(file=resources_path / 'rec.png')
+        self.icon_rec_off = tk.PhotoImage(file=resources_path / 'rec_off.png')
 
         # Set up fonts
         self.font_bold = font.Font(weight='bold', size=10)
@@ -785,6 +813,10 @@ class GUI:
             t = Thread(target=vw.update, args=(), daemon=False)
             t.start()
             self.windows_threads.append(t)
+
+        # Create list to store calibration windows
+        self.calib_windows = []
+        self.calib_windows_threads = []
 
         x = self.selected_monitor.x + self.selected_monitor.width // 2 - self.CONTROLS_MIN_HEIGHT // 2
         y = self.selected_monitor.y + self.selected_monitor.height // 2 - self.CONTROLS_MIN_WIDTH // 2
@@ -831,7 +863,8 @@ class GUI:
         pathname_label = tk.Label(editable_name_frame, text='Name: ', anchor=tk.W)
         pathname_label.pack(side="left", fill="y", expand=False)
 
-        self.pathname_textbox = tk.Entry(editable_name_frame, bg='white', fg='black', textvariable=self.txtvar_userentry,
+        self.pathname_textbox = tk.Entry(editable_name_frame, bg='white', fg='black',
+                                         textvariable=self.txtvar_userentry,
                                          font=self.font_regular, state='disabled')
         self.pathname_textbox.pack(side="left", fill="both", expand=True)
 
@@ -855,15 +888,26 @@ class GUI:
 
         self.button_acquisition = tk.Button(left_pane,
                                             image=self.icon_capture_off,
-                                            compound='left', text="Acquisition off", anchor='center', font=self.font_regular,
+                                            compound='left', text="Acquisition off", anchor='center',
+                                            font=self.font_regular,
                                             command=self.gui_toggle_acquisition,
                                             state='normal')
         self.button_acquisition.pack(padx=5, pady=5, side="top", fill="both", expand=True)
 
+        self.button_calibration = tk.Button(left_pane,
+                                            image=self.icon_calib,
+                                            compound='left',
+                                            text="Calibrate", anchor='center',
+                                            font=self.font_bold,
+                                            command=self.gui_calibrate,
+                                            state='normal')
+        self.button_calibration.pack(padx=5, pady=5, side="top", fill="both", expand=True)
+
         self.button_recpause = tk.Button(left_pane,
                                          image=self.icon_rec_off,
                                          compound='left',
-                                         text="Not recording\n\n(Space to toggle)", anchor='center', font=self.font_bold,
+                                         text="Not recording\n\n(Space to toggle)", anchor='center',
+                                         font=self.font_bold,
                                          command=self.gui_toggle_recording,
                                          state='disabled')
         self.button_recpause.pack(padx=5, pady=5, side="top", fill="both", expand=True)
@@ -915,7 +959,8 @@ class GUI:
         self.monitors_buttons.pack(side="top", fill="x", expand=False)
 
         self.autotile_button = tk.Button(monitors_frame,
-                                         text="Auto-tile windows", font=self.font_regular, command=self.autotile_windows)
+                                         text="Auto-tile windows", font=self.font_regular,
+                                         command=self.autotile_windows)
         self.autotile_button.pack(side="top", fill="both", expand=False)
 
         ##
@@ -1032,58 +1077,57 @@ class GUI:
         else:
             pass
 
-    def gui_set_name(self):
-        self.mgr.session_name = self.txtvar_userentry.get()
-        self.txtvar_applied_name.set(f'{Path(self.mgr.session_name).resolve()}')
+    def gui_toggle_set_name(self, tf=None):
+        if tf is None:
+            tf = not self.editing_disabled
 
-    def gui_toggle_set_name(self):
-        if self.editing_disabled:
+        if self.editing_disabled and tf is False:
             self.pathname_textbox.config(state='normal')
             self.pathname_button.config(text='Set')
             self.editing_disabled = False
-        else:
-            self.gui_set_name()
+        elif self.editing_disabled and tf is True:
+            self.mgr.session_name = self.txtvar_userentry.get()
+            self.txtvar_applied_name.set(f'{Path(self.mgr.session_name).resolve()}')
             self.txtvar_userentry.set('')
             self.pathname_textbox.config(state='disabled')
             self.pathname_button.config(text='Edit')
             self.editing_disabled = True
-
-    def gui_recording(self):
-        if not self.mgr.recording:
-            self.mgr.record()
-
-            self.txtvar_recording.set('[ Recording... ]')
-            self.button_recpause.config(text="Recording...\n\n(Space to toggle)", image=self.icon_rec_on)
-
-    def gui_pause(self):
-        if self.mgr.recording:
-            self.mgr.pause()
-
-            self.txtvar_recording.set('')
-            self.button_recpause.config(text="Not recording\n\n(Space to toggle)", image=self.icon_rec_off)
-
-    def gui_toggle_recording(self):
-        if self.mgr.acquiring:
-            if not self.mgr.recording:
-                self.gui_recording()
-            else:
-                self.gui_pause()
-
-    def gui_toggle_acquisition(self):
-
-        if self.mgr.session_name is None:
-            self.gui_set_name()
-
-        if not self.mgr.acquiring:
-            self.mgr.on()
-
-            self._capture_clock = datetime.now()
-            self.start_indices[:] = self.mgr.indices
-
-            self.button_acquisition.config(text="Acquiring", image=self.icon_capture_on)
-            self.button_recpause.config(state="normal")
         else:
-            self.gui_pause()
+            pass
+
+    def gui_toggle_recording(self, tf=None):
+        if self.mgr.acquiring:
+            if tf is None:
+                tf = not self.mgr.recording
+
+            if self.mgr.recording and tf is False:
+                self.mgr.record()
+                self.txtvar_recording.set('[ Recording... ]')
+                self.button_recpause.config(text="Recording...\n\n(Space to toggle)", image=self.icon_rec_on)
+            elif self.mgr.recording and tf is True:
+                self.mgr.pause()
+                self.txtvar_recording.set('')
+                self.button_recpause.config(text="Not recording\n\n(Space to toggle)", image=self.icon_rec_off)
+            else:
+                pass
+
+    def gui_calibrate(self):
+        for w in self.video_windows:
+            w.toggle_visibility(False)
+
+            c = VideoWindowCalib(parent=self, idx=w.idx)
+            self.calib_windows.append(c)
+
+            t = Thread(target=c.update, args=(), daemon=False)
+            t.start()
+            self.calib_windows_threads.append(t)
+
+    def gui_toggle_acquisition(self, tf=None):
+        if tf is None:
+            tf = not self.mgr.acquiring
+
+        if self.mgr.acquiring and tf is False:
+            self.gui_toggle_recording(False)
             self.mgr.off()
 
             self._capture_fps = np.zeros(self.mgr.nb_cameras, dtype=np.uintc)
@@ -1093,6 +1137,21 @@ class GUI:
 
             self.button_acquisition.config(text="Acquisition off", image=self.icon_capture_off)
             self.button_recpause.config(state="disabled")
+
+        elif not self.mgr.acquiring and tf is True:
+            if self.mgr.session_name is None:
+                self.gui_toggle_set_name(True)
+
+            self.mgr.on()
+
+            self._capture_clock = datetime.now()
+            self.start_indices[:] = self.mgr.indices
+
+            self.button_acquisition.config(text="Acquiring", image=self.icon_capture_on)
+            self.button_recpause.config(state="normal")
+
+        else:
+            pass
 
     def quit(self):
         for vw in self.video_windows:
@@ -1124,7 +1183,8 @@ class GUI:
             self._current_buffers = self.mgr.get_current_framebuffer()
 
             self._saved_frames = self.mgr.saved
-            self.txtvar_frames_saved.set(f'Saved {sum(self._saved_frames)} frames total ({utils.pretty_size(sum(self._frame_sizes_bytes * self._saved_frames))})')
+            self.txtvar_frames_saved.set(
+                f'Saved {sum(self._saved_frames)} frames total ({utils.pretty_size(sum(self._frame_sizes_bytes * self._saved_frames))})')
 
         self._counter += 1
         self.root.after(1, self.update)
