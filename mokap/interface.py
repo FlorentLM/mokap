@@ -55,8 +55,8 @@ def compute_windows_size(source_dims, screen_dims):
 class VideoWindow:
     videowindows_ids = []
 
-    INFO_PANEL_FIXED_H = 250  # in pixels
-    INFO_PANEL_FIXED_W = 650  # in pixels
+    INFO_PANEL_FIXED_H = 200  # in pixels
+    INFO_PANEL_FIXED_W = 630  # in pixels
 
     def __init__(self, parent):
 
@@ -74,7 +74,7 @@ class VideoWindow:
         self._source_shape = (self.parent.mgr.cameras[self.idx].height, self.parent.mgr.cameras[self.idx].width)
         self._cam_name = self.parent.mgr.cameras[self.idx].name
         self._bg_colour = f'#{self.parent.mgr.colours[self._cam_name].lstrip("#")}'
-        self._fg_colour = '#ffffff' if utils.hex_to_hls(self._bg_colour)[1] < 150 else '#000000'
+        self._fg_colour = '#ffffff' if utils.hex_to_hls(self._bg_colour)[1] < 60 else '#000000'
 
         h, w = self._source_shape
         self.window.geometry(f"{w}x{h + self.INFO_PANEL_FIXED_H}")
@@ -106,18 +106,7 @@ class VideoWindow:
             [0, 1, 0],
             [0, 0, 0]], dtype=np.uint8)
 
-        # Setup default image font
-        try:
-            if 'Linux' in platform.system():
-                self._imgfnt = ImageFont.truetype("DejaVuSans-Bold.ttf", 30)
-            elif 'Windows' in platform.system():
-                self._imgfnt = ImageFont.truetype("arial-bold.ttf", 60)
-            elif 'Darwin' in platform.system():
-                self._imgfnt = ImageFont.truetype("KeyboardBold.ttf", 30)
-            else:
-                self._imgfnt = ImageFont.load_default()
-        except OSError:
-                self._imgfnt = ImageFont.load_default()
+        self._imgfnt = ImageFont.load_default()
 
         # Initialise text vars
         self.txtvar_warning = tk.StringVar()
@@ -135,11 +124,10 @@ class VideoWindow:
         self.txtvar_exposure.set(f"{self.parent.mgr.cameras[self.idx].exposure} µs")
         self._applied_fps = self.parent.mgr.cameras[self.idx].framerate
 
-
         ## Main video frame
 
         # Where the video will be displayed
-        self._videofeed = tk.Label(self.window, bg="black", compound='center')
+        self._videofeed = tk.Label(self.window, bg='black', compound='center')
         self._videofeed.pack(fill='both', expand=True)
 
         # Where the full frame data will be stored
@@ -152,7 +140,7 @@ class VideoWindow:
         ## Magnification parameters
         magn_portion = 12
         self.magn_zoom = tk.DoubleVar()
-        self.magn_zoom.set(3)
+        self.magn_zoom.set(2)
 
         self.magn_size = self.source_shape[0] // magn_portion, self.source_shape[1] // magn_portion
         magn_half_size = self.magn_size[0] // 2, self.magn_size[1] // 2
@@ -163,10 +151,13 @@ class VideoWindow:
         ## Camera name bar
         self.txtvar_camera_name.set(f'{self._cam_name.title()} camera')
 
-        name_bar = tk.Label(self.window, textvariable=self.txtvar_camera_name,
-                            anchor='n', justify='center',
+        INFO_PANEL_FRAME = tk.Frame(self.window, height=self.INFO_PANEL_FIXED_H,)
+        INFO_PANEL_FRAME.pack(side='top', fill='x', expand=False)
+
+        name_bar = tk.Label(INFO_PANEL_FRAME, textvariable=self.txtvar_camera_name,
+                            anchor='center', justify='center', height=2,
                             fg=self.colour_2, bg=self.colour, font=parent.font_bold)
-        name_bar.pack(fill='both')
+        name_bar.pack(side='top', fill='x')
 
         # Also set the window title while we're at it
         self.window.title(self.txtvar_camera_name.get())
@@ -174,9 +165,9 @@ class VideoWindow:
         ## Bottom panel
 
         ## Information block
-        f_information = tk.LabelFrame(self.window, text="Information",
+        f_information = tk.LabelFrame(INFO_PANEL_FRAME, text="Information",
                                       height=self.INFO_PANEL_FIXED_H)
-        f_information.pack(padx=5, pady=5, side='left', fill='both', expand=True)
+        f_information.pack(padx=5, pady=5, side='left', fill='y', expand=True)
 
         for label, var in zip(['Resolution', 'Capture', 'Exposure', 'Brightness', 'Display'],
                               [self.txtvar_resolution,
@@ -198,21 +189,80 @@ class VideoWindow:
                          font=parent.font_regular)
             v.pack(side='left', fill='y')
 
+        ## Camera controls block
+        f_camera_controls = tk.LabelFrame(INFO_PANEL_FRAME, text="Control",
+                                          height=self.INFO_PANEL_FIXED_H)
+        f_camera_controls.pack(ipadx=5, padx=5, pady=5, side='left', fill='y', expand=True)
+
+        lf = tk.Frame(f_camera_controls)
+        lf.pack(ipady=10, side='left', fill='y', expand=True)
+
+        self.camera_controls_sliders = {}
+        self._apply_all_vars = {}
+
+        rf = tk.LabelFrame(f_camera_controls, text='Sync',
+                           width=1, font=self.parent.font_mini)
+        rf.pack(side='right', fill='y', expand=True)
+
+        for label, val, func, slider_params in zip(['Framerate', 'Exposure', 'Blacks', 'Gain', 'Gamma'],
+                                                   [self.parent.mgr.cameras[self.idx].framerate,
+                                                    self.parent.mgr.cameras[self.idx].exposure,
+                                                    self.parent.mgr.cameras[self.idx].blacks,
+                                                    self.parent.mgr.cameras[self.idx].gain,
+                                                    self.parent.mgr.cameras[self.idx].gamma],
+                                                   [self._update_fps_all_cams,
+                                                    self._update_exp_all_cams,
+                                                    self._update_blacks_all_cams,
+                                                    self._update_gain_all_cams,
+                                                    self._update_gamma_all_cams],
+                                                   [(1, 220, 1, 1),
+                                                    (21, 1e5, 5, 1),  # in microseconds - 1e5 ~ 10 fps
+                                                    (0.0, 32.0, 0.5, 3),
+                                                    (0.0, 36.0, 0.5, 3),
+                                                    (0.0, 3.99, 0.05, 3),
+                                                    ]):
+            f = tk.Frame(lf)
+            f.pack(side='top', fill='y', expand=True)
+
+            v = tk.IntVar()
+            b = tk.Checkbutton(rf, variable=v,
+                               state='normal')
+            v.set(1)
+            b.pack(side="top", fill="y", expand=True)
+            self._apply_all_vars[label.lower()] = v
+
+            s = tk.Scale(f,
+                         from_=slider_params[0], to=slider_params[1], resolution=slider_params[2],
+                         digits=slider_params[3],
+                         orient='horizontal', width=4, sliderlength=12)
+            s.set(val)
+            s.bind("<ButtonRelease-1>", func)
+            s.pack(side='right', fill='y', expand=True)
+
+            key = label.split('(')[0].strip().lower()  # Get the simplified label (= wihtout spaces and units)
+            self.camera_controls_sliders[key] = s
+
+            l = tk.Label(f, text=f'{label} :',
+                         anchor='se', justify='right', width=12,
+                         font=parent.font_regular)
+            l.pack(side='right', fill='both', expand=True)
+
         ## View controls block
-        view_info_frame = tk.LabelFrame(self.window, text="View",
-                                        height=self.INFO_PANEL_FIXED_H, width=50)
-        view_info_frame.pack(padx=5, pady=5, side='left', fill='y', expand=True)
+        view_info_frame = tk.LabelFrame(INFO_PANEL_FRAME, text="View",
+                                        height=self.INFO_PANEL_FIXED_H)
+        view_info_frame.pack(padx=5, pady=5, side='right', fill='y', expand=True)
 
         f_windowsnap = tk.Frame(view_info_frame)
         f_windowsnap.pack(side='top', fill='y')
 
         l_windowsnap = tk.Label(f_windowsnap, text=f"Snap window to:",
-                                anchor='e', justify='right',
-                                font=parent.font_regular)
+                                anchor='w', justify='left',
+                                font=parent.font_regular,
+                                padx=5, pady=10)
         l_windowsnap.pack(side='left', fill='y')
 
-        f_buttons_windowsnap = tk.Frame(f_windowsnap)
-        f_buttons_windowsnap.pack(padx=2, pady=2, side='left', fill='both', expand=True)
+        f_buttons_windowsnap = tk.Frame(f_windowsnap, padx=2, pady=10)
+        f_buttons_windowsnap.pack(side='left', fill='y', expand=True)
 
         self.positions = np.array([['nw', 'n', 'ne'],
                                    ['w', 'c', 'e'],
@@ -228,17 +278,17 @@ class VideoWindow:
                 b.grid(row=r, column=c)
 
         f_buttons_controls = tk.Frame(view_info_frame, padx=5)
-        f_buttons_controls.pack(side='bottom', fill='both', expand=True)
+        f_buttons_controls.pack(side='top', fill='y', expand=False)
 
         self.show_focus_button = tk.Button(f_buttons_controls, text="Focus",
-                                           width=10,
+                                           width=8,
                                            highlightthickness=2, highlightbackground=self._window_bg_colour,
                                            font=self.parent.font_regular,
                                            command=self._toggle_focus_display)
         self.show_focus_button.grid(row=0, column=0)
 
         self.show_mag_button = tk.Button(f_buttons_controls, text="Magnifier",
-                                         width=10,
+                                         width=8,
                                          highlightthickness=2, highlightbackground="#FFED30",
                                          font=self.parent.font_regular,
                                          command=self._toggle_mag_display)
@@ -246,65 +296,9 @@ class VideoWindow:
 
         self.slider_magn = tk.Scale(f_buttons_controls, variable=self.magn_zoom,
                                     from_=1, to=10, resolution=0.1, orient='horizontal',
-                                    width=8, sliderlength=8)
-        self.slider_magn.grid(row=1, column=1)
-
-        ## Camera controls block
-        f_camera_controls = tk.LabelFrame(self.window, text="Control",
-                                          height=self.INFO_PANEL_FIXED_H)
-        f_camera_controls.pack(padx=5, pady=5, side='right', fill='both', expand=True)
-
-        rf = tk.LabelFrame(f_camera_controls, text='Sync',
-                           width=1, font=self.parent.font_mini)
-        rf.pack(side='right', fill='both', expand=True)
-
-        lf = tk.Frame(f_camera_controls, padx=10)
-        lf.pack(side='left', fill='both', expand=True)
-
-        self.camera_controls_sliders = {}
-        self._apply_all_vars = {}
-
-        for label, val, func, slider_params in zip(['Framerate', 'Exposure', 'Blacks', 'Gain', 'Gamma'],
-                                              [self.parent.mgr.cameras[self.idx].framerate,
-                                               self.parent.mgr.cameras[self.idx].exposure,
-                                               self.parent.mgr.cameras[self.idx].blacks,
-                                               self.parent.mgr.cameras[self.idx].gain,
-                                               self.parent.mgr.cameras[self.idx].gamma],
-                                              [self._update_fps_all_cams,
-                                               self._update_exp_all_cams,
-                                               self._update_blacks_all_cams,
-                                               self._update_gain_all_cams,
-                                               self._update_gamma_all_cams],
-                                                             [(1, 220, 1, 1),
-                                                              (21, 1e5, 5, 1),    # in microseconds - 1e5 ~ 10 fps
-                                                              (0.0, 32.0, 0.5, 3),
-                                                              (0.0, 36.0, 0.5, 3),
-                                                              (0.0, 3.99, 0.05, 3),
-                                                              ]):
-            f = tk.Frame(lf)
-            f.pack(side='top', fill='both', expand=True)
-
-            v = tk.IntVar()
-            b = tk.Checkbutton(rf, variable=v,
-                               state='normal')
-            v.set(1)
-            b.pack(side="top", fill="y", expand=True)
-            self._apply_all_vars[label.lower()] = v
-
-            s = tk.Scale(f,
-                         from_=slider_params[0], to=slider_params[1], resolution=slider_params[2], digits=slider_params[3],
-                         orient='horizontal', width=8, sliderlength=16)
-            s.set(val)
-            s.bind("<ButtonRelease-1>", func)
-            s.pack(side='right', fill='both', expand=True)
-
-            key = label.split('(')[0].strip().lower()   # Get the simplified label (= wihtout spaces and units)
-            self.camera_controls_sliders[key] = s
-
-            l = tk.Label(f, text=f'{label} :',
-                         anchor='se', justify='right', width=22,
-                         font=parent.font_regular)
-            l.pack(side='right', fill='both', expand=True)
+                                    width=5, sliderlength=12,
+                                    )
+        self.slider_magn.grid(padx=15, row=1, column=1)
 
     def _refresh_videofeed(self, image):
         imagetk = ImageTk.PhotoImage(image=image)
@@ -322,7 +316,6 @@ class VideoWindow:
     @property
     def colour(self) -> str:
         return f'#{self._bg_colour.lstrip("#")}'
-
 
     @property
     def colour_2(self) -> str:
@@ -352,7 +345,7 @@ class VideoWindow:
         h, w = self.window.winfo_height() - self.INFO_PANEL_FIXED_H, self.window.winfo_width()
         if h <= 1 or w <= 1:
             return self.source_shape
-        return self.window.winfo_height() - self.INFO_PANEL_FIXED_H, self.window.winfo_width()
+        return h, w
 
     def auto_size(self, apply=True):
         arbitrary_taskbar_h = 60
@@ -571,6 +564,7 @@ class VideoWindow:
 
         # Get window size and set new videofeed size, preserving aspect ratio
         h, w = self.videofeed_shape
+
         if w / h > self.aspect_ratio:
             w = int(h * self.aspect_ratio)
         else:
@@ -680,8 +674,10 @@ class VideoWindow:
 
 class GUI:
     CONTROLS_MIN_WIDTH = 600
-    CONTROLS_MIN_HEIGHT = 320
-
+    if 'Windows' in platform.system():
+        CONTROLS_MIN_HEIGHT = 320
+    else:
+        CONTROLS_MIN_HEIGHT = 280
     def __init__(self, mgr):
 
         # Detect monitors and pick the default one
