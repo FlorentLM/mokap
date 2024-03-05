@@ -567,7 +567,7 @@ class VideoWindow:
                 self._frame_buffer[:] = np.frombuffer(buf, dtype=np.uint8).reshape(self._source_shape)
 
     def _update_video(self):
-
+        import io
         # Get window size and set new videofeed size, preserving aspect ratio
         h, w = self.videofeed_shape
         if w / h > self.aspect_ratio:
@@ -582,7 +582,7 @@ class VideoWindow:
         x_east, y_east = w, h//2
         x_west, y_west = 0, h//2
 
-        img_pillow = Image.fromarray(self._frame_buffer, mode='L').convert('RGBA')
+        img_pillow = Image.fromarray(self._frame_buffer, mode='L').convert('RGB')
         img_pillow = img_pillow.resize((w, h))
 
         d = ImageDraw.Draw(img_pillow)
@@ -615,10 +615,6 @@ class VideoWindow:
 
             # Add frame around the magnification
             d.rectangle([magn_pos, (w - 10, h - 10)], outline=(255, 237, 48), width=1)
-
-            # # Add point in the centre of it
-            # d.point([magn_pos[0] + magn_img.width // 2, magn_pos[1] + magn_img.height // 2],
-            #         fill=(255, 237, 48))
 
             # Add a small + in the centre
             c = magn_pos[0] + magn_img.width // 2, magn_pos[1] + magn_img.height // 2
@@ -660,7 +656,6 @@ class VideoWindow:
 
             self._refresh_framebuffer()
             self._update_video()
-
             self._update_txtvars()
 
             self.visible.wait()
@@ -1096,4 +1091,4 @@ class GUI:
             self.txtvar_frames_saved.set(f'Saved {sum(self._saved_frames)} frames total ({utils.pretty_size(sum(self._frame_sizes_bytes * self._saved_frames))})')
 
         self._counter += 1
-        self.root.after(100, self.update)
+        self.root.after(1, self.update)

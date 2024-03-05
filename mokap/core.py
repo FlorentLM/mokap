@@ -240,9 +240,9 @@ class Manager:
 
     @framerate.setter
     def framerate(self, value: int) -> None:
-        self._framerate = value
         for i, cam in enumerate(self._cameras_list):
             cam.framerate = value
+            self._framerate =  self._framerate
 
     @property
     def exposure(self) -> int:
@@ -250,9 +250,9 @@ class Manager:
 
     @exposure.setter
     def exposure(self, value: int) -> None:
-        self._exposure = value
         for i, cam in enumerate(self._cameras_list):
             cam.exposure = value
+            self._exposure = cam.exposure
 
     @property
     def gain(self) -> float:
@@ -260,9 +260,9 @@ class Manager:
 
     @gain.setter
     def gain(self, value: float) -> None:
-        self._gain = value
         for i, cam in enumerate(self._cameras_list):
             cam.gain = value
+            self._gain = value
 
     @property
     def gamma(self) -> float:
@@ -270,9 +270,9 @@ class Manager:
 
     @gamma.setter
     def gamma(self, value: float) -> None:
-        self._gamma = value
         for i, cam in enumerate(self._cameras_list):
             cam.gamma = value
+            self._gamma = cam.gamma
 
     @property
     def binning(self) -> int:
@@ -284,9 +284,9 @@ class Manager:
 
     @binning.setter
     def binning(self, value: int) -> None:
-        self._binning = value
         for i, cam in enumerate(self._cameras_list):
             cam.binning = value
+            self._binning = cam.binning
             # And update the buffer to the new size
             self._lastframe_buffers_list[i] = RawArray('B', cam.height * cam.width)
 
@@ -351,12 +351,18 @@ class Manager:
     def _update_display_buffers(self, cam_idx: int) -> NoReturn:
 
         handler = self._frames_handlers_list[cam_idx]
+        tick = time.time()
+        tock = time.time()
 
         while self._acquiring.is_set():
-            time.sleep((1 / self._display_framerate) * 0.9)
-            self._lastframe_buffers_list[cam_idx] = handler.latest
-            self._displayed_frames_counter[cam_idx] += 1
-            self._grabbed_frames_counter[cam_idx] = handler.indice
+            if tock - tick >= (1 / self._display_framerate):
+                self._lastframe_buffers_list[cam_idx] = handler.latest
+                self._displayed_frames_counter[cam_idx] += 1
+                self._grabbed_frames_counter[cam_idx] = handler.indice
+                tick = tock
+            else:
+                time.sleep(1 / self._display_framerate)
+            tock = time.time()
 
     def _grab_frames(self, cam_idx: int) -> NoReturn:
 
