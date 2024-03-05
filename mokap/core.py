@@ -84,6 +84,7 @@ class Manager:
             self._base_folder = self._base_folder.parent
         self._base_folder.mkdir(parents=True, exist_ok=True)
         self._session_name: Union[Path, None] = None
+        self._saving_ext = self.confparser['GENERAL'].get('save_format', 'bmp').lower().lstrip('.')
 
         self._executor: Union[ThreadPoolExecutor, None] = None
 
@@ -338,9 +339,16 @@ class Manager:
 
                 for frame in data:
                     img = Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1)
-                    img.save(folder / f"{str(self._saved_frames_counter[cam_idx]).zfill(9)}.bmp")
-                    # TODO - Add support for multiple formats, which could be defined in the config file
-                    # img.save(folder / f"{str(self._saved_frames_counter[cam_idx]).zfill(9)}.jpg", quality=100, keep_rgb=True)
+                    if self._saving_ext == 'bmp':
+                        img.save(folder / f"{str(self._saved_frames_counter[cam_idx]).zfill(9)}.{self._saving_ext}")
+                    elif self._saving_ext == 'jpg' or self._saving_ext == 'jpeg':
+                        img.save(folder / f"{str(self._saved_frames_counter[cam_idx]).zfill(9)}.{self._saving_ext}", quality=100, keep_rgb=True)
+                    elif self._saving_ext == 'png':
+                        img.save(folder / f"{str(self._saved_frames_counter[cam_idx]).zfill(9)}.{self._saving_ext}", compress_level=1)
+                    elif self._saving_ext == 'tif' or self._saving_ext == 'tiff':
+                        img.save(folder / f"{str(self._saved_frames_counter[cam_idx]).zfill(9)}.{self._saving_ext}", quality=100)
+                    else:
+                        img.save(folder / f"{str(self._saved_frames_counter[cam_idx]).zfill(9)}.bmp")
                     self._saved_frames_counter[cam_idx] += 1
 
                 if saving_started and not self._recording.is_set():
