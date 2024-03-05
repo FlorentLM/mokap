@@ -55,7 +55,7 @@ def compute_windows_size(source_dims, screen_dims):
 class VideoWindow:
     videowindows_ids = []
 
-    INFO_PANEL_FIXED_H = 200  # in pixels
+    INFO_PANEL_FIXED_H = 220  # in pixels
     INFO_PANEL_FIXED_W = 630  # in pixels
 
     def __init__(self, parent):
@@ -166,8 +166,9 @@ class VideoWindow:
 
         ## Information block
         f_information = tk.LabelFrame(INFO_PANEL_FRAME, text="Information",
-                                      height=self.INFO_PANEL_FIXED_H)
-        f_information.pack(padx=5, pady=5, side='left', fill='y', expand=True)
+                                      height=self.INFO_PANEL_FIXED_H,
+                                      width=200)
+        f_information.pack(ipadx=10, ipady=3, padx=5, pady=5, side='left', fill='y', expand=False)
 
         for label, var in zip(['Resolution', 'Capture', 'Exposure', 'Brightness', 'Display'],
                               [self.txtvar_resolution,
@@ -191,8 +192,9 @@ class VideoWindow:
 
         ## Camera controls block
         f_camera_controls = tk.LabelFrame(INFO_PANEL_FRAME, text="Control",
-                                          height=self.INFO_PANEL_FIXED_H)
-        f_camera_controls.pack(ipadx=5, padx=5, pady=5, side='left', fill='y', expand=True)
+                                          height=self.INFO_PANEL_FIXED_H,
+                                          width=200)
+        f_camera_controls.pack(ipadx=10, ipady=3, padx=5, pady=5, side='left', fill='y', expand=False)
 
         lf = tk.Frame(f_camera_controls)
         lf.pack(ipady=10, side='left', fill='y', expand=True)
@@ -234,10 +236,10 @@ class VideoWindow:
             s = tk.Scale(f,
                          from_=slider_params[0], to=slider_params[1], resolution=slider_params[2],
                          digits=slider_params[3],
-                         orient='horizontal', width=4, sliderlength=12)
+                         orient='horizontal', width=6, sliderlength=10, length=80)
             s.set(val)
             s.bind("<ButtonRelease-1>", func)
-            s.pack(side='right', fill='y', expand=True)
+            s.pack(padx=3, side='right', fill='y', expand=True)
 
             key = label.split('(')[0].strip().lower()  # Get the simplified label (= wihtout spaces and units)
             self.camera_controls_sliders[key] = s
@@ -249,8 +251,9 @@ class VideoWindow:
 
         ## View controls block
         view_info_frame = tk.LabelFrame(INFO_PANEL_FRAME, text="View",
-                                        height=self.INFO_PANEL_FIXED_H)
-        view_info_frame.pack(padx=5, pady=5, side='right', fill='y', expand=True)
+                                        height=self.INFO_PANEL_FIXED_H,
+                                        width=200)
+        view_info_frame.pack(ipadx=10, ipady=3, padx=5, pady=5, side='left', fill='y', expand=False)
 
         f_windowsnap = tk.Frame(view_info_frame)
         f_windowsnap.pack(side='top', fill='y')
@@ -261,8 +264,8 @@ class VideoWindow:
                                 padx=5, pady=10)
         l_windowsnap.pack(side='left', fill='y')
 
-        f_buttons_windowsnap = tk.Frame(f_windowsnap, padx=2, pady=10)
-        f_buttons_windowsnap.pack(side='left', fill='y', expand=True)
+        f_buttons_windowsnap = tk.Frame(f_windowsnap, padx=5, pady=10)
+        f_buttons_windowsnap.pack(side='left', fill='both', expand=True)
 
         self.positions = np.array([['nw', 'n', 'ne'],
                                    ['w', 'c', 'e'],
@@ -272,13 +275,13 @@ class VideoWindow:
         for r in range(3):
             for c in range(3):
                 b = tk.Button(f_buttons_windowsnap,
-                              image=self._pixel, compound="center", padx=0, pady=0,
+                              image=self._pixel, compound="center",
                               width=6, height=6,
                               command=partial(self.move_to, self.positions[r, c]))
                 b.grid(row=r, column=c)
 
         f_buttons_controls = tk.Frame(view_info_frame, padx=5)
-        f_buttons_controls.pack(side='top', fill='y', expand=False)
+        f_buttons_controls.pack(ipadx=2, side='top', fill='y', expand=False)
 
         self.show_focus_button = tk.Button(f_buttons_controls, text="Focus",
                                            width=8,
@@ -288,17 +291,16 @@ class VideoWindow:
         self.show_focus_button.grid(row=0, column=0)
 
         self.show_mag_button = tk.Button(f_buttons_controls, text="Magnifier",
-                                         width=8,
+                                         width=10,
                                          highlightthickness=2, highlightbackground="#FFED30",
                                          font=self.parent.font_regular,
                                          command=self._toggle_mag_display)
         self.show_mag_button.grid(row=0, column=1)
 
         self.slider_magn = tk.Scale(f_buttons_controls, variable=self.magn_zoom,
-                                    from_=1, to=10, resolution=0.1, orient='horizontal',
-                                    width=5, sliderlength=12,
-                                    )
-        self.slider_magn.grid(padx=15, row=1, column=1)
+                                    from_=1, to=5, resolution=0.1, orient='horizontal',
+                                    width=10, sliderlength=10, length=80)
+        self.slider_magn.grid(row=1, column=1, padx=(0, 0))
 
     def _refresh_videofeed(self, image):
         imagetk = ImageTk.PhotoImage(image=image)
@@ -356,6 +358,10 @@ class VideoWindow:
             w = self.parent.selected_monitor.width // 2
             h = int(w / self.aspect_ratio) + self.INFO_PANEL_FIXED_H
 
+        if w < self.INFO_PANEL_FIXED_W:
+            w = self.INFO_PANEL_FIXED_W
+        if h < self.INFO_PANEL_FIXED_H:
+            h = self.INFO_PANEL_FIXED_H
         if apply:
             self.window.geometry(f'{w}x{h}')
         return w, h
@@ -384,21 +390,21 @@ class VideoWindow:
         elif pos == 'n':
             self.window.geometry(f"{w}x{h}+{x_scr + w_scr//2 - w//2}+{y_scr}")
         elif pos == 'ne':
-            self.window.geometry(f"{w}x{h}+{x_scr + w_scr - w}+{y_scr}")
+            self.window.geometry(f"{w}x{h}+{x_scr + w_scr - w - 1}+{y_scr}")
 
         elif pos == 'w':
             self.window.geometry(f"{w}x{h}+{x_scr}+{y_scr + h_scr//2 - h//2}")
         elif pos == 'c':
             self.window.geometry(f"{w}x{h}+{x_scr + w_scr//2 - w//2}+{y_scr + h_scr//2 - h//2}")
         elif pos == 'e':
-            self.window.geometry(f"{w}x{h}+{x_scr + w_scr - w}+{y_scr + h_scr//2 - h//2}")
+            self.window.geometry(f"{w}x{h}+{x_scr + w_scr - w - 1}+{y_scr + h_scr//2 - h//2}")
 
         elif pos == 'sw':
             self.window.geometry(f"{w}x{h}+{x_scr}+{y_scr + h_scr - h - arbitrary_taskbar_h}")
         elif pos == 's':
             self.window.geometry(f"{w}x{h}+{x_scr + w_scr//2 - w//2}+{y_scr + h_scr - h - arbitrary_taskbar_h}")
         elif pos == 'se':
-            self.window.geometry(f"{w}x{h}+{x_scr + w_scr - w}+{y_scr + h_scr - h - arbitrary_taskbar_h}")
+            self.window.geometry(f"{w}x{h}+{x_scr + w_scr - w - 1}+{y_scr + h_scr - h - arbitrary_taskbar_h}")
 
     # === TODO - merge these functions below ===
     def update_framerate(self, event=None):
