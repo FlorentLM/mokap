@@ -82,13 +82,6 @@ class VideoWindow:
 
         self._window_bg_colour = self.window.cget("background")
 
-        # Create the tooltip window (hidden by default)
-        self.tooltip = tk.Toplevel(self.window)
-        self.tooltip.overrideredirect(True)
-        self.tooltip.withdraw()
-        self.tooltip_label = tk.Label(self.tooltip, text="", background="lightyellow", relief="solid", borderwidth=1)
-        self.tooltip_label.pack()
-
         # Init state
         self._counter = 0
         self._clock = datetime.now()
@@ -242,8 +235,6 @@ class VideoWindow:
                                            highlightthickness=2, highlightbackground=self._window_bg_colour,
                                            font=self.parent.font_regular,
                                            command=self._toggle_focus_display)
-        self.show_focus_button.bind("<Enter>", lambda event, text="Highlight areas that are in focus": self.show_tooltip(event, text))
-        self.show_focus_button.bind("<Leave>", self.hide_tooltip)
         self.show_focus_button.grid(row=0, column=0)
 
         self.show_mag_button = tk.Button(f_buttons_controls, text="Magnifier",
@@ -265,8 +256,6 @@ class VideoWindow:
 
         rf = tk.LabelFrame(f_camera_controls, text='Sync',
                            width=1, font=self.parent.font_mini)
-        rf.bind("<Enter>", lambda event, text="Synchronize these settings to all cameras?": self.show_tooltip(event, text))
-        rf.bind("<Leave>", self.hide_tooltip)
         rf.pack(side='right', fill='both', expand=True)
 
         lf = tk.Frame(f_camera_controls, padx=10)
@@ -316,15 +305,6 @@ class VideoWindow:
                          anchor='se', justify='right', width=22,
                          font=parent.font_regular)
             l.pack(side='right', fill='both', expand=True)
-
-    def show_tooltip(self, event, tooltip_text):
-        self.tooltip.geometry(f"+{self.window.winfo_pointerx() + 10}+{self.window.winfo_pointery() + 10}")
-        self.tooltip_label.config(text=tooltip_text)
-        self.tooltip.after(1000, self.tooltip.deiconify)
-
-    # Function to hide tooltips
-    def hide_tooltip(self, event):
-        self.tooltip.withdraw()
 
     def _refresh_videofeed(self, image):
         imagetk = ImageTk.PhotoImage(image=image)
