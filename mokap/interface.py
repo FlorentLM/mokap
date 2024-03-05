@@ -1,5 +1,6 @@
 import sys
-import time
+import cv2
+from cv2 import aruco
 import tkinter as tk
 import tkinter.font as font
 from PIL import Image, ImageTk, ImageDraw, ImageFont
@@ -240,13 +241,6 @@ class VideoWindowBase:
         else:
             h = int(w / self.aspect_ratio)
 
-        # Get new coordinates
-        x_centre, y_centre = w // 2, h // 2
-        x_north, y_north = w // 2, 0
-        x_south, y_south = w // 2, h
-        x_east, y_east = w, h // 2
-        x_west, y_west = 0, h // 2
-
         img_pillow = Image.fromarray(self._frame_buffer, mode='L').convert('RGBA')
         img_pillow = img_pillow.resize((w, h))
 
@@ -298,6 +292,64 @@ class VideoWindowBase:
 class VideoWindowCalib(VideoWindowBase):
     def __init__(self, parent, idx):
         super().__init__(parent, idx)
+        # ChAruco board variables
+        CHARUCOBOARD_ROWCOUNT = 7
+        CHARUCOBOARD_COLCOUNT = 5
+
+        self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_1000)
+        self.detector_parameters = cv2.aruco.DetectorParameters()
+        self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.detector_parameters)
+
+        # # Create constants to be passed into OpenCV and Aruco methods
+        # self.CHARUCO_BOARD = aruco.CharucoBoard_create(
+        #     squaresX=CHARUCOBOARD_COLCOUNT,
+        #     squaresY=CHARUCOBOARD_ROWCOUNT,
+        #     squareLength=0.04,
+        #     markerLength=0.02,
+        #     dictionary=self.aruco_dict)
+
+    def _calib(self):
+
+        img_arr = np.frombuffer(self._frame_buffer, dtype=np.uint8).reshape(self.source_shape)
+        # img_col = cv2.cvtColor(img_arr, cv2.COLOR_GRAY2BGR)
+
+        # Find aruco markers in the query image
+        corners, ids, reject_candidates = self.detector.detectMarkers(img_arr)
+
+        print(ids)
+
+        # # Outline the aruco markers found in our query image
+        # img_col = aruco.drawDetectedMarkers(
+        #     image=img_col,
+        #     corners=corners)
+        #
+        # # Get charuco corners and ids from detected aruco markers
+        # response, charuco_corners, charuco_ids = aruco.interpolateCornersCharuco(
+        #     markerCorners=corners,
+        #     markerIds=ids,
+        #     image=img_arr,
+        #     board=self.CHARUCO_BOARD)
+
+    def update(self):
+        if self.window.resizable() == (0, 0):
+            # Reenable resizing on macOS (see trick at winow creation)
+            self.window.resizable(True, True)
+
+        while True:
+            self._refresh_framebuffer()
+            self._calib()
+            self._update_video()
+
+            # if self.visible.is_set():
+            #     # Update display fps counter
+            #     now = datetime.now()
+            #     dt = (now - self._clock).total_seconds()
+            #     self._fps = (self._counter - self._counter_start) / dt
+            #     self._refresh_framebuffer()
+            #     self._update_video()
+            #     self._counter += 1
+            # else:
+            #     self.visible.wait()
 
 
 class VideoWindowMain(VideoWindowBase):
@@ -608,12 +660,12 @@ class VideoWindowMain(VideoWindowBase):
 
     def _toggle_focus_display(self, tf=None):
         if tf is None:
-            tf = not self.visible.is_set()
+            tf = not self._show_focus.is_set()
 
-        if self.visible.is_set() and tf is False:
+        if self._show_focus.is_set() and tf is False:
             self._show_focus.clear()
             self.show_focus_button.configure(highlightbackground=self._window_bg_colour)
-        elif not self.visible.is_set() and tf is True:
+        elif not self._show_focus.is_set() and tf is True:
             self._show_focus.set()
             self.show_focus_button.configure(highlightbackground='#62CB5A')
         else:
@@ -621,13 +673,13 @@ class VideoWindowMain(VideoWindowBase):
 
     def _toggle_mag_display(self, tf=None):
         if tf is None:
-            tf = not self.visible.is_set()
+            tf = not self._magnification.is_set()
 
-        if self.visible.is_set() and tf is False:
+        if self._magnification.is_set() and tf is False:
             self._magnification.clear()
             self.show_mag_button.configure(highlightbackground=self._window_bg_colour)
             self.slider_magn.config(state='disabled')
-        elif not self.visible.is_set() and tf is True:
+        elif not self._magnification.is_set() and tf is True:
             self._magnification.set()
             self.show_mag_button.configure(highlightbackground='#FFED30')
             self.slider_magn.config(state='active')
@@ -885,32 +937,32 @@ class GUI:
         gothere_button.pack(side="right", fill="y", expand=False)
 
         #
+        f_buttons = tk.Frame(left_pane)
+        f_buttons.pack(padx=5, side="top", fill="both", expand=True)
 
-        self.button_acquisition = tk.Button(left_pane,
+        self.button_acquisition = tk.Button(f_buttons,
                                             image=self.icon_capture_off,
                                             compound='left', text="Acquisition off", anchor='center',
                                             font=self.font_regular,
                                             command=self.gui_toggle_acquisition,
                                             state='normal')
-        self.button_acquisition.pack(padx=5, pady=5, side="top", fill="both", expand=True)
+        self.button_acquisition.grid(padx=2, pady=2, row=0, column=0, sticky="news")
 
-        self.button_calibration = tk.Button(left_pane,
+        self.button_calibration = tk.Button(f_buttons,
                                             image=self.icon_calib,
-                                            compound='left',
-                                            text="Calibrate", anchor='center',
+                                            compound='left', text="Calibrate", anchor='center',
                                             font=self.font_bold,
                                             command=self.gui_calibrate,
                                             state='normal')
-        self.button_calibration.pack(padx=5, pady=5, side="top", fill="both", expand=True)
+        self.button_calibration.grid(padx=2, pady=2, row=0, column=1, sticky="news")
 
-        self.button_recpause = tk.Button(left_pane,
+        self.button_recpause = tk.Button(f_buttons,
                                          image=self.icon_rec_off,
-                                         compound='left',
-                                         text="Not recording\n\n(Space to toggle)", anchor='center',
+                                         compound='left', text="Not recording (Space to toggle)", anchor='center',
                                          font=self.font_bold,
                                          command=self.gui_toggle_recording,
                                          state='disabled')
-        self.button_recpause.pack(padx=5, pady=5, side="top", fill="both", expand=True)
+        self.button_recpause.grid(padx=2, pady=2, row=1, column=0, columnspan=2, sticky="news")
 
         frames_saved_label = tk.Label(left_pane, textvariable=self.txtvar_frames_saved, anchor=tk.E)
         frames_saved_label.pack(side="bottom", fill="x", expand=True)
@@ -1085,7 +1137,8 @@ class GUI:
             self.pathname_textbox.config(state='normal')
             self.pathname_button.config(text='Set')
             self.editing_disabled = False
-        elif self.editing_disabled and tf is True:
+
+        elif not self.editing_disabled and tf is True:
             self.mgr.session_name = self.txtvar_userentry.get()
             self.txtvar_applied_name.set(f'{Path(self.mgr.session_name).resolve()}')
             self.txtvar_userentry.set('')
@@ -1101,13 +1154,15 @@ class GUI:
                 tf = not self.mgr.recording
 
             if self.mgr.recording and tf is False:
-                self.mgr.record()
-                self.txtvar_recording.set('[ Recording... ]')
-                self.button_recpause.config(text="Recording...\n\n(Space to toggle)", image=self.icon_rec_on)
-            elif self.mgr.recording and tf is True:
                 self.mgr.pause()
                 self.txtvar_recording.set('')
-                self.button_recpause.config(text="Not recording\n\n(Space to toggle)", image=self.icon_rec_off)
+                self.button_recpause.config(text="Not recording (Space to toggle)", image=self.icon_rec_off)
+
+            elif not self.mgr.recording and tf is True:
+                self.mgr.record()
+                self.txtvar_recording.set('[ Recording... ]')
+                self.button_recpause.config(text="Recording... (Space to toggle)", image=self.icon_rec_on)
+
             else:
                 pass
 
