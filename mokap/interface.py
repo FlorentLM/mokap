@@ -943,6 +943,7 @@ class GUI:
         self.button_acquisition = tk.Button(f_buttons,
                                             image=self.icon_capture_off,
                                             compound='left', text="Acquisition off", anchor='center',
+                                            width=150,
                                             font=self.font_regular,
                                             command=self.gui_toggle_acquisition,
                                             state='normal')
@@ -951,6 +952,7 @@ class GUI:
         self.button_calibration = tk.Button(f_buttons,
                                             image=self.icon_calib,
                                             compound='left', text="Calibrate", anchor='center',
+                                            width=150,
                                             font=self.font_bold,
                                             command=self.gui_calibrate,
                                             state='normal')
