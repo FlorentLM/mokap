@@ -23,7 +23,7 @@ def whxy(what):
     elif isinstance(what, GUI):
         dims, x, y = what.root.geometry().split('+')
         w, h = dims.split('x')
-    elif isinstance(what, VideoWindow):
+    elif isinstance(what, VideoWindowMain):
         dims, x, y = what.window.geometry().split('+')
         w, h = dims.split('x')
     elif isinstance(what, screeninfo.Monitor):
@@ -39,7 +39,7 @@ def compute_windows_size(source_dims, screen_dims):
 
     # For 2x3 screen grid
     max_window_w = screenw // 3
-    max_window_h = screenh // 2 - VideoWindow.INFO_PANEL_FIXED_H
+    max_window_h = screenh // 2 - VideoWindowMain.INFO_PANEL_FIXED_H
 
     # Scale it up or down, so it fits half the screen height
     if sourceh / max_window_h >= sourcew / max_window_w:
@@ -48,13 +48,12 @@ def compute_windows_size(source_dims, screen_dims):
         scale = max_window_w / sourcew
 
     computed_dims = np.floor(np.array([sourceh, sourcew]) * scale).astype(int)
-    computed_dims[0] += VideoWindow.INFO_PANEL_FIXED_H
+    computed_dims[0] += VideoWindowMain.INFO_PANEL_FIXED_H
 
     return computed_dims
 
-
-class VideoWindow:
-    videowindows_ids = []
+class VideoWindowBase:
+    mainvideowindows_ids = []
 
     INFO_PANEL_FIXED_H = 220  # in pixels
     INFO_PANEL_FIXED_W = 630  # in pixels
@@ -69,8 +68,8 @@ class VideoWindow:
             self.window.resizable(False, False)
         self.parent = parent
 
-        self.idx = len(VideoWindow.videowindows_ids)
-        VideoWindow.videowindows_ids.append(self.idx)
+        self.idx = len(VideoWindowMain.mainvideowindows_ids)
+        VideoWindowMain.mainvideowindows_ids.append(self.idx)
 
         self._source_shape = (self.parent.mgr.cameras[self.idx].height, self.parent.mgr.cameras[self.idx].width)
         self._cam_name = self.parent.mgr.cameras[self.idx].name
@@ -93,40 +92,13 @@ class VideoWindow:
         self.visible = Event()
         self.visible.set()
 
-        self._show_focus = Event()
-        self._show_focus.clear()
-
-        self._magnification = Event()
-        self._magnification.set()
-
-        self._warning = Event()
-        self._warning.clear()
-
-        # Kernel to use for focus detection
-        self._kernel = np.array([
-            [0, 0, 0],
-            [0, 1, 0],
-            [0, 0, 0]], dtype=np.uint8)
-
         self._imgfnt = ImageFont.load_default()
 
-        # Initialise text vars
-        self.txtvar_warning = tk.StringVar()
-
         self.txtvar_camera_name = tk.StringVar()
-        self.txtvar_resolution = tk.StringVar()
-        self.txtvar_exposure = tk.StringVar()
-        self.txtvar_capture_fps = tk.StringVar()
-        self.txtvar_brightness = tk.StringVar()
-        self.txtvar_display_fps = tk.StringVar()
+        self.txtvar_camera_name.set(f'{self._cam_name.title()} camera')
+        self.window.title(self.txtvar_camera_name.get())
 
-        # Set initial values
-        h, w = self.parent.mgr.cameras[self.idx].height, self.parent.mgr.cameras[self.idx].width
-        self.txtvar_resolution.set(f"{w}×{h} px")
-        self.txtvar_exposure.set(f"{self.parent.mgr.cameras[self.idx].exposure} µs")
-        self._applied_fps = self.parent.mgr.cameras[self.idx].framerate
-
-        ## Main video frame
+        ## Initialise main video frame
 
         # Where the video will be displayed
         self._videofeed = tk.Label(self.window, bg='black', compound='center')
@@ -139,179 +111,8 @@ class VideoWindow:
         self.auto_size()
         self._refresh_videofeed(Image.fromarray(self._frame_buffer))
 
-        ## Magnification parameters
-        magn_portion = 12
-        self.magn_zoom = tk.DoubleVar()
-        self.magn_zoom.set(2)
-
-        self.magn_size = self.source_shape[0] // magn_portion, self.source_shape[1] // magn_portion
-        magn_half_size = self.magn_size[0] // 2, self.magn_size[1] // 2
-
-        self.magn_A = self.source_half_shape[0] - magn_half_size[0], self.source_half_shape[1] - magn_half_size[1]
-        self.magn_B = self.source_half_shape[0] + magn_half_size[0], self.source_half_shape[1] + magn_half_size[1]
-
-        ## Camera name bar
-        self.txtvar_camera_name.set(f'{self._cam_name.title()} camera')
-
-        INFO_PANEL_FRAME = tk.Frame(self.window, height=self.INFO_PANEL_FIXED_H,)
-        INFO_PANEL_FRAME.pack(side='top', fill='x', expand=False)
-
-        name_bar = tk.Label(INFO_PANEL_FRAME, textvariable=self.txtvar_camera_name,
-                            anchor='center', justify='center', height=2,
-                            fg=self.colour_2, bg=self.colour, font=parent.font_bold)
-        name_bar.pack(side='top', fill='x')
-
-        # Also set the window title while we're at it
-        self.window.title(self.txtvar_camera_name.get())
-
-        ## Bottom panel
-
-        ## Information block
-        f_information = tk.LabelFrame(INFO_PANEL_FRAME, text="Information",
-                                      height=self.INFO_PANEL_FIXED_H,
-                                      width=200)
-        f_information.pack(ipadx=10, ipady=3, padx=5, pady=5, side='left', fill='y', expand=False)
-
-        for label, var in zip(['Resolution', 'Capture', 'Exposure', 'Brightness', 'Display'],
-                              [self.txtvar_resolution,
-                               self.txtvar_capture_fps,
-                               self.txtvar_exposure,
-                               self.txtvar_brightness,
-                               self.txtvar_display_fps]):
-
-            f = tk.Frame(f_information)
-            f.pack(side='top', fill='x', expand=True)
-
-            l = tk.Label(f, text=f"{label} :",
-                         anchor='e', justify='right', width=13,
-                         font=parent.font_regular)
-            l.pack(side='left', fill='y')
-
-            v = tk.Label(f, textvariable=var,
-                         anchor='w', justify='left',
-                         font=parent.font_regular)
-            v.pack(side='left', fill='y')
-
-        ## Camera controls block
-        f_camera_controls = tk.LabelFrame(INFO_PANEL_FRAME, text="Control",
-                                          height=self.INFO_PANEL_FIXED_H,
-                                          width=200)
-        f_camera_controls.pack(ipadx=10, ipady=3, padx=5, pady=5, side='left', fill='y', expand=False)
-
-        lf = tk.Frame(f_camera_controls)
-        lf.pack(ipady=10, side='left', fill='y', expand=True)
-
-        self.camera_controls_sliders = {}
-        self._apply_all_vars = {}
-
-        rf = tk.LabelFrame(f_camera_controls, text='Sync',
-                           width=1, font=self.parent.font_mini)
-        rf.pack(side='right', fill='y', expand=True)
-
-        for label, val, func, slider_params in zip(['Framerate', 'Exposure', 'Blacks', 'Gain', 'Gamma'],
-                                                   [self.parent.mgr.cameras[self.idx].framerate,
-                                                    self.parent.mgr.cameras[self.idx].exposure,
-                                                    self.parent.mgr.cameras[self.idx].blacks,
-                                                    self.parent.mgr.cameras[self.idx].gain,
-                                                    self.parent.mgr.cameras[self.idx].gamma],
-                                                   [self._update_fps_all_cams,
-                                                    self._update_exp_all_cams,
-                                                    self._update_blacks_all_cams,
-                                                    self._update_gain_all_cams,
-                                                    self._update_gamma_all_cams],
-                                                   [(1, 220, 1, 1),
-                                                    (21, 1e5, 5, 1),  # in microseconds - 1e5 ~ 10 fps
-                                                    (0.0, 32.0, 0.5, 3),
-                                                    (0.0, 36.0, 0.5, 3),
-                                                    (0.0, 3.99, 0.05, 3),
-                                                    ]):
-            f = tk.Frame(lf)
-            f.pack(side='top', fill='y', expand=True)
-
-            v = tk.IntVar()
-            b = tk.Checkbutton(rf, variable=v,
-                               state='normal')
-            v.set(1)
-            b.pack(side="top", fill="y", expand=True)
-            self._apply_all_vars[label.lower()] = v
-
-            s = tk.Scale(f,
-                         from_=slider_params[0], to=slider_params[1], resolution=slider_params[2],
-                         digits=slider_params[3],
-                         orient='horizontal', width=6, sliderlength=10, length=80)
-            s.set(val)
-            s.bind("<ButtonRelease-1>", func)
-            s.pack(padx=3, side='right', fill='y', expand=True)
-
-            key = label.split('(')[0].strip().lower()  # Get the simplified label (= wihtout spaces and units)
-            self.camera_controls_sliders[key] = s
-
-            l = tk.Label(f, text=f'{label} :',
-                         anchor='se', justify='right', width=12,
-                         font=parent.font_regular)
-            l.pack(side='right', fill='both', expand=True)
-
-        ## View controls block
-        view_info_frame = tk.LabelFrame(INFO_PANEL_FRAME, text="View",
-                                        height=self.INFO_PANEL_FIXED_H,
-                                        width=200)
-        view_info_frame.pack(ipadx=10, ipady=3, padx=5, pady=5, side='left', fill='y', expand=False)
-
-        f_windowsnap = tk.Frame(view_info_frame)
-        f_windowsnap.pack(side='top', fill='y')
-
-        l_windowsnap = tk.Label(f_windowsnap, text=f"Snap window to:",
-                                anchor='w', justify='left',
-                                font=parent.font_regular,
-                                padx=5, pady=10)
-        l_windowsnap.pack(side='left', fill='y')
-
-        f_buttons_windowsnap = tk.Frame(f_windowsnap, padx=5, pady=10)
-        f_buttons_windowsnap.pack(side='left', fill='both', expand=True)
-
-        self.positions = np.array([['nw', 'n', 'ne'],
-                                   ['w', 'c', 'e'],
-                                   ['sw', 's', 'se']])
-
-        self._pixel = tk.PhotoImage(width=1, height=1)
-        for r in range(3):
-            for c in range(3):
-                b = tk.Button(f_buttons_windowsnap,
-                              image=self._pixel, compound="center",
-                              width=6, height=6,
-                              command=partial(self.move_to, self.positions[r, c]))
-                b.grid(row=r, column=c)
-
-        f_buttons_controls = tk.Frame(view_info_frame, padx=5)
-        f_buttons_controls.pack(ipadx=2, side='top', fill='y', expand=False)
-
-        self.show_focus_button = tk.Button(f_buttons_controls, text="Focus",
-                                           width=8,
-                                           highlightthickness=2, highlightbackground=self._window_bg_colour,
-                                           font=self.parent.font_regular,
-                                           command=self._toggle_focus_display)
-        self.show_focus_button.grid(row=0, column=0)
-
-        self.show_mag_button = tk.Button(f_buttons_controls, text="Magnifier",
-                                         width=10,
-                                         highlightthickness=2, highlightbackground="#FFED30",
-                                         font=self.parent.font_regular,
-                                         command=self._toggle_mag_display)
-        self.show_mag_button.grid(row=0, column=1)
-
-        self.slider_magn = tk.Scale(f_buttons_controls, variable=self.magn_zoom,
-                                    from_=1, to=5, resolution=0.1, orient='horizontal',
-                                    width=10, sliderlength=10, length=80)
-        self.slider_magn.grid(row=1, column=1, padx=(0, 0))
-
-    def _refresh_videofeed(self, image):
-        imagetk = ImageTk.PhotoImage(image=image)
-        try:
-            self._videofeed.configure(image=imagetk)
-            self.imagetk = imagetk
-        except Exception:
-            # If new image is garbage collected too early, do nothing - this prevents the image from flashing
-            pass
+    def _create_controls(self):
+        raise NotImplementedError
 
     @property
     def name(self) -> str:
@@ -375,7 +176,7 @@ class VideoWindow:
 
         if self.idx <= nb_positions:
             pos = positions[self.idx]
-        else:   # Start over to first position
+        else:  # Start over to first position
             pos = positions[self.idx % nb_positions]
 
         self.move_to(pos)
@@ -390,23 +191,297 @@ class VideoWindow:
         if pos == 'nw':
             self.window.geometry(f"{w}x{h}+{x_scr}+{y_scr}")
         elif pos == 'n':
-            self.window.geometry(f"{w}x{h}+{x_scr + w_scr//2 - w//2}+{y_scr}")
+            self.window.geometry(f"{w}x{h}+{x_scr + w_scr // 2 - w // 2}+{y_scr}")
         elif pos == 'ne':
             self.window.geometry(f"{w}x{h}+{x_scr + w_scr - w - 1}+{y_scr}")
 
         elif pos == 'w':
-            self.window.geometry(f"{w}x{h}+{x_scr}+{y_scr + h_scr//2 - h//2}")
+            self.window.geometry(f"{w}x{h}+{x_scr}+{y_scr + h_scr // 2 - h // 2}")
         elif pos == 'c':
-            self.window.geometry(f"{w}x{h}+{x_scr + w_scr//2 - w//2}+{y_scr + h_scr//2 - h//2}")
+            self.window.geometry(f"{w}x{h}+{x_scr + w_scr // 2 - w // 2}+{y_scr + h_scr // 2 - h // 2}")
         elif pos == 'e':
-            self.window.geometry(f"{w}x{h}+{x_scr + w_scr - w - 1}+{y_scr + h_scr//2 - h//2}")
+            self.window.geometry(f"{w}x{h}+{x_scr + w_scr - w - 1}+{y_scr + h_scr // 2 - h // 2}")
 
         elif pos == 'sw':
             self.window.geometry(f"{w}x{h}+{x_scr}+{y_scr + h_scr - h - arbitrary_taskbar_h}")
         elif pos == 's':
-            self.window.geometry(f"{w}x{h}+{x_scr + w_scr//2 - w//2}+{y_scr + h_scr - h - arbitrary_taskbar_h}")
+            self.window.geometry(f"{w}x{h}+{x_scr + w_scr // 2 - w // 2}+{y_scr + h_scr - h - arbitrary_taskbar_h}")
         elif pos == 'se':
             self.window.geometry(f"{w}x{h}+{x_scr + w_scr - w - 1}+{y_scr + h_scr - h - arbitrary_taskbar_h}")
+
+    def _refresh_framebuffer(self):
+        self._frame_buffer.fill(0)
+
+        if self.parent.mgr.acquiring and self.parent.current_buffers is not None:
+            buf = self.parent.current_buffers[self.idx]
+            if buf is not None:
+                self._frame_buffer[:] = np.frombuffer(buf, dtype=np.uint8).reshape(self._source_shape)
+
+    def _refresh_videofeed(self, image):
+        imagetk = ImageTk.PhotoImage(image=image)
+        try:
+            self._videofeed.configure(image=imagetk)
+            self.imagetk = imagetk
+        except Exception:
+            # If new image is garbage collected too early, do nothing - this prevents the image from flashing
+            pass
+
+    def _update_video(self):
+
+        # Get window size and set new videofeed size, preserving aspect ratio
+        h, w = self.videofeed_shape
+
+        if w / h > self.aspect_ratio:
+            w = int(h * self.aspect_ratio)
+        else:
+            h = int(w / self.aspect_ratio)
+
+        # Get new coordinates
+        x_centre, y_centre = w//2, h//2
+        x_north, y_north = w//2, 0
+        x_south, y_south = w//2, h
+        x_east, y_east = w, h//2
+        x_west, y_west = 0, h//2
+
+        img_pillow = Image.fromarray(self._frame_buffer, mode='L').convert('RGBA')
+        img_pillow = img_pillow.resize((w, h))
+
+        self._refresh_videofeed(img_pillow)
+
+    def _update_txtvars(self):
+        pass
+
+    def update(self):
+        if 'Darwin' in platform.system():
+            # Reenable resizing on macOS (see trick at winow creation)
+            self.window.resizable(True, True)
+
+        while True:
+            if self.visible.is_set():
+                # Update display fps counter
+                now = datetime.now()
+                dt = (now - self._clock).total_seconds()
+                self._fps = (self._counter - self._counter_start) / dt
+                self._refresh_framebuffer()
+                self._update_video()
+                self._update_txtvars()
+                self._counter += 1
+            else:
+                self.visible.wait()
+
+    def toggle_visibility(self):
+        if self.visible.is_set():
+            self.visible.clear()
+            self.parent.vis_checkboxes[self.idx].set(0)
+            self.window.withdraw()
+        else:
+            if 'Darwin' in platform.system():
+                # Trick to force macOS to open a window and not a tab
+                self.window.resizable(False, False)
+            self.visible.set()
+            self.parent.vis_checkboxes[self.idx].set(1)
+            self.window.deiconify()
+            if 'Darwin' in platform.system():
+                self.window.resizable(True, True)
+
+
+class VideoWindowMain(VideoWindowBase):
+
+    def __init__(self, parent):
+        super().__init__(parent)
+
+        self._show_focus = Event()
+        self._show_focus.clear()
+
+        self._magnification = Event()
+        self._magnification.set()
+
+        self._warning = Event()
+        self._warning.clear()
+
+        ## Magnification parameters
+        magn_portion = 12
+        self.magn_zoom = tk.DoubleVar()
+        self.magn_zoom.set(2)
+
+        self.magn_size = self.source_shape[0] // magn_portion, self.source_shape[1] // magn_portion
+        magn_half_size = self.magn_size[0] // 2, self.magn_size[1] // 2
+
+        self.magn_A = self.source_half_shape[0] - magn_half_size[0], self.source_half_shape[1] - magn_half_size[1]
+        self.magn_B = self.source_half_shape[0] + magn_half_size[0], self.source_half_shape[1] + magn_half_size[1]
+
+        # Initialise text vars
+        self.txtvar_warning = tk.StringVar()
+
+        self.txtvar_resolution = tk.StringVar()
+        self.txtvar_exposure = tk.StringVar()
+        self.txtvar_capture_fps = tk.StringVar()
+        self.txtvar_brightness = tk.StringVar()
+        self.txtvar_display_fps = tk.StringVar()
+
+        # Kernel to use for focus detection
+        self._kernel = np.array([
+            [0, 0, 0],
+            [0, 1, 0],
+            [0, 0, 0]], dtype=np.uint8)
+
+        # Set initial values
+        h, w = self.parent.mgr.cameras[self.idx].height, self.parent.mgr.cameras[self.idx].width
+        self.txtvar_resolution.set(f"{w}×{h} px")
+        self.txtvar_exposure.set(f"{self.parent.mgr.cameras[self.idx].exposure} µs")
+        self._applied_fps = self.parent.mgr.cameras[self.idx].framerate
+
+        self._create_controls()
+
+    def _create_controls(self):
+
+        ## Bottom panel
+        INFO_PANEL_FRAME = tk.Frame(self.window, height=self.INFO_PANEL_FIXED_H, )
+        INFO_PANEL_FRAME.pack(side='top', fill='x', expand=False)
+
+        # Camera name bar
+        name_bar = tk.Label(INFO_PANEL_FRAME, textvariable=self.txtvar_camera_name,
+                            anchor='center', justify='center', height=2,
+                            fg=self.colour_2, bg=self.colour, font=self.parent.font_bold)
+        name_bar.pack(side='top', fill='x')
+
+        ## Information block
+        f_information = tk.LabelFrame(INFO_PANEL_FRAME, text="Information",
+                                      height=self.INFO_PANEL_FIXED_H,
+                                      width=200)
+        f_information.pack(ipadx=10, ipady=3, padx=5, pady=5, side='left', fill='y', expand=False)
+
+        for label, var in zip(['Resolution', 'Capture', 'Exposure', 'Brightness', 'Display'],
+                              [self.txtvar_resolution,
+                               self.txtvar_capture_fps,
+                               self.txtvar_exposure,
+                               self.txtvar_brightness,
+                               self.txtvar_display_fps]):
+
+            f = tk.Frame(f_information)
+            f.pack(side='top', fill='x', expand=True)
+
+            l = tk.Label(f, text=f"{label} :",
+                         anchor='e', justify='right', width=13,
+                         font=self.parent.font_regular)
+            l.pack(side='left', fill='y')
+
+            v = tk.Label(f, textvariable=var,
+                         anchor='w', justify='left',
+                         font=self.parent.font_regular)
+            v.pack(side='left', fill='y')
+
+        ## Camera controls block
+        f_camera_controls = tk.LabelFrame(INFO_PANEL_FRAME, text="Control",
+                                          height=self.INFO_PANEL_FIXED_H,
+                                          width=200)
+        f_camera_controls.pack(ipadx=10, ipady=3, padx=5, pady=5, side='left', fill='y', expand=False)
+
+        lf = tk.Frame(f_camera_controls)
+        lf.pack(ipady=10, side='left', fill='y', expand=True)
+
+        self.camera_controls_sliders = {}
+        self._apply_all_vars = {}
+
+        rf = tk.LabelFrame(f_camera_controls, text='Sync',
+                           width=1, font=self.parent.font_mini)
+        rf.pack(side='right', fill='y', expand=True)
+
+        for label, val, func, slider_params in zip(['Framerate', 'Exposure', 'Blacks', 'Gain', 'Gamma'],
+                                                   [self.parent.mgr.cameras[self.idx].framerate,
+                                                    self.parent.mgr.cameras[self.idx].exposure,
+                                                    self.parent.mgr.cameras[self.idx].blacks,
+                                                    self.parent.mgr.cameras[self.idx].gain,
+                                                    self.parent.mgr.cameras[self.idx].gamma],
+                                                   [self._update_fps_all_cams,
+                                                    self._update_exp_all_cams,
+                                                    self._update_blacks_all_cams,
+                                                    self._update_gain_all_cams,
+                                                    self._update_gamma_all_cams],
+                                                   [(1, 220, 1, 1),
+                                                    (21, 1e5, 5, 1),  # in microseconds - 1e5 ~ 10 fps
+                                                    (0.0, 32.0, 0.5, 3),
+                                                    (0.0, 36.0, 0.5, 3),
+                                                    (0.0, 3.99, 0.05, 3),
+                                                    ]):
+            f = tk.Frame(lf)
+            f.pack(side='top', fill='y', expand=True)
+
+            v = tk.IntVar()
+            b = tk.Checkbutton(rf, variable=v,
+                               state='normal')
+            v.set(1)
+            b.pack(side="top", fill="y", expand=True)
+            self._apply_all_vars[label.lower()] = v
+
+            s = tk.Scale(f,
+                         from_=slider_params[0], to=slider_params[1], resolution=slider_params[2],
+                         digits=slider_params[3],
+                         orient='horizontal', width=6, sliderlength=10, length=80)
+            s.set(val)
+            s.bind("<ButtonRelease-1>", func)
+            s.pack(padx=3, side='right', fill='y', expand=True)
+
+            key = label.split('(')[0].strip().lower()  # Get the simplified label (= wihtout spaces and units)
+            self.camera_controls_sliders[key] = s
+
+            l = tk.Label(f, text=f'{label} :',
+                         anchor='se', justify='right', width=12,
+                         font=self.parent.font_regular)
+            l.pack(side='right', fill='both', expand=True)
+
+        ## View controls block
+        view_info_frame = tk.LabelFrame(INFO_PANEL_FRAME, text="View",
+                                        height=self.INFO_PANEL_FIXED_H,
+                                        width=200)
+        view_info_frame.pack(ipadx=10, ipady=3, padx=5, pady=5, side='left', fill='y', expand=False)
+
+        f_windowsnap = tk.Frame(view_info_frame)
+        f_windowsnap.pack(side='top', fill='y')
+
+        l_windowsnap = tk.Label(f_windowsnap, text=f"Snap window to:",
+                                anchor='w', justify='left',
+                                font=self.parent.font_regular,
+                                padx=5, pady=10)
+        l_windowsnap.pack(side='left', fill='y')
+
+        f_buttons_windowsnap = tk.Frame(f_windowsnap, padx=5, pady=10)
+        f_buttons_windowsnap.pack(side='left', fill='both', expand=True)
+
+        self.positions = np.array([['nw', 'n', 'ne'],
+                                   ['w', 'c', 'e'],
+                                   ['sw', 's', 'se']])
+
+        self._pixel = tk.PhotoImage(width=1, height=1)
+        for r in range(3):
+            for c in range(3):
+                b = tk.Button(f_buttons_windowsnap,
+                              image=self._pixel, compound="center",
+                              width=6, height=6,
+                              command=partial(self.move_to, self.positions[r, c]))
+                b.grid(row=r, column=c)
+
+        f_buttons_controls = tk.Frame(view_info_frame, padx=5)
+        f_buttons_controls.pack(ipadx=2, side='top', fill='y', expand=False)
+
+        self.show_focus_button = tk.Button(f_buttons_controls, text="Focus",
+                                           width=8,
+                                           highlightthickness=2, highlightbackground=self._window_bg_colour,
+                                           font=self.parent.font_regular,
+                                           command=self._toggle_focus_display)
+        self.show_focus_button.grid(row=0, column=0)
+
+        self.show_mag_button = tk.Button(f_buttons_controls, text="Magnifier",
+                                         width=10,
+                                         highlightthickness=2, highlightbackground="#FFED30",
+                                         font=self.parent.font_regular,
+                                         command=self._toggle_mag_display)
+        self.show_mag_button.grid(row=0, column=1)
+
+        self.slider_magn = tk.Scale(f_buttons_controls, variable=self.magn_zoom,
+                                    from_=1, to=5, resolution=0.1, orient='horizontal',
+                                    width=10, sliderlength=10, length=80)
+        self.slider_magn.grid(row=1, column=1, padx=(0, 0))
 
     # === TODO - merge these functions below ===
     def update_framerate(self, event=None):
@@ -559,15 +634,6 @@ class VideoWindow:
 
         self.txtvar_display_fps.set(f"{self._fps:.2f} fps")
 
-
-    def _refresh_framebuffer(self):
-        self._frame_buffer.fill(0)
-
-        if self.parent.mgr.acquiring and self.parent.current_buffers is not None:
-            buf = self.parent.current_buffers[self.idx]
-            if buf is not None:
-                self._frame_buffer[:] = np.frombuffer(buf, dtype=np.uint8).reshape(self._source_shape)
-
     def _update_video(self):
 
         # Get window size and set new videofeed size, preserving aspect ratio
@@ -644,40 +710,6 @@ class VideoWindow:
 
         self._refresh_videofeed(img_pillow)
 
-    def update(self):
-        if 'Darwin' in platform.system():
-            # Reenable resizing on macOS (see trick at winow creation)
-            self.window.resizable(True, True)
-
-        while True:
-            if self.visible.is_set():
-                # Update display fps counter
-                now = datetime.now()
-                dt = (now - self._clock).total_seconds()
-                self._fps = (self._counter - self._counter_start) / dt
-                self._refresh_framebuffer()
-                self._update_video()
-                self._update_txtvars()
-                self._counter += 1
-            else:
-                self.visible.wait()
-
-
-    def toggle_visibility(self):
-        if self.visible.is_set():
-            self.visible.clear()
-            self.parent._vis_checkboxes[self.idx].set(0)
-            self.window.withdraw()
-        else:
-            if 'Darwin' in platform.system():
-                # Trick to force macOS to open a window and not a tab
-                self.window.resizable(False, False)
-            self.visible.set()
-            self.parent._vis_checkboxes[self.idx].set(1)
-            self.window.deiconify()
-            if 'Darwin' in platform.system():
-                self.window.resizable(True, True)
-
 
 class GUI:
     CONTROLS_MIN_WIDTH = 600
@@ -747,7 +779,7 @@ class GUI:
         self.video_windows = []
         self.windows_threads = []
         for i in range(self.mgr.nb_cameras):
-            vw = VideoWindow(parent=self)
+            vw = VideoWindowMain(parent=self)
             self.video_windows.append(vw)
 
             t = Thread(target=vw.update, args=(), daemon=False)
@@ -850,7 +882,7 @@ class GUI:
         windows_list_frame = tk.Frame(windows_visibility_frame)
         windows_list_frame.pack(side="top", fill="both", expand=True)
 
-        self._vis_checkboxes = []
+        self.vis_checkboxes = []
         for window in self.video_windows:
             vis_var = tk.IntVar()
             vis_checkbox = tk.Checkbutton(windows_list_frame, text=f" {window.name.title()} camera", anchor=tk.W,
@@ -865,7 +897,7 @@ class GUI:
                                           state='normal')
             vis_var.set(int(window.visible.is_set()))
             vis_checkbox.pack(side="top", fill="x", expand=True)
-            self._vis_checkboxes.append(vis_var)
+            self.vis_checkboxes.append(vis_var)
 
         monitors_frame = tk.Frame(right_pane)
         monitors_frame.pack(side="top", fill="both", expand=True)
