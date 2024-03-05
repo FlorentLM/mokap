@@ -1,4 +1,5 @@
 import time
+import math
 import numpy as np
 import mokap.utils as utils
 import os
@@ -456,9 +457,13 @@ class Camera:
             except py.OutOfRangeException as e:
                 exception_message = e.args[0]
                 if 'must be smaller than or equal ' in exception_message:
-                    value = float(exception_message.split('must be smaller than or equal ')[1].split('. : OutOfRangeException')[0])
+                    value = math.floor(100 * float(
+                        exception_message.split('must be smaller than or equal ')[1].split('. : OutOfRangeException')[
+                            0])) / 100.0
                 elif 'must be greater than or equal ' in exception_message:
-                    value = float(exception_message.split('must be greater than or equal ')[1].split('. : OutOfRangeException')[0])
+                    value = math.ceil(100 * float(
+                        exception_message.split('must be greater than or equal ')[1].split('. : OutOfRangeException')[
+                            0])) / 100.0
                 self.ptr.BlackLevel.SetValue(value)
         # And keep a local value to avoid querying the camera every time we read it
         self._blacks = value
@@ -471,9 +476,13 @@ class Camera:
             except py.OutOfRangeException as e:
                 exception_message = e.args[0]
                 if 'must be smaller than or equal ' in exception_message:
-                    value = float(exception_message.split('must be smaller than or equal ')[1].split('. : OutOfRangeException')[0])
+                    value = math.floor(100 * float(
+                        exception_message.split('must be smaller than or equal ')[1].split('. : OutOfRangeException')[
+                            0])) / 100.0
                 elif 'must be greater than or equal ' in exception_message:
-                    value = float(exception_message.split('must be greater than or equal ')[1].split('. : OutOfRangeException')[0])
+                    value = math.ceil(100 * float(
+                        exception_message.split('must be greater than or equal ')[1].split('. : OutOfRangeException')[
+                            0])) / 100.0
                 self.ptr.Gain.SetValue(value)
         # And keep a local value to avoid querying the camera every time we read it
         self._gain = value
@@ -486,12 +495,17 @@ class Camera:
             except py.OutOfRangeException as e:
                 exception_message = e.args[0]
                 if 'must be smaller than or equal ' in exception_message:
-                    value = float(exception_message.split('must be smaller than or equal ')[1].split('. : OutOfRangeException')[0])
+                    value = math.floor(100 * float(
+                        exception_message.split('must be smaller than or equal ')[1].split('. : OutOfRangeException')[
+                            0])) / 100.0
                 elif 'must be greater than or equal ' in exception_message:
-                    value = float(exception_message.split('must be greater than or equal ')[1].split('. : OutOfRangeException')[0])
+                    value = math.ceil(100 * float(
+                        exception_message.split('must be greater than or equal ')[1].split('. : OutOfRangeException')[
+                            0])) / 100.0
                 self.ptr.Gamma.SetValue(value)
 
         # And keep a local value to avoid querying the camera every time we read it
+
         self._gamma = value
 
     @property
@@ -511,7 +525,8 @@ class Camera:
                     self.ptr.AcquisitionFrameRate.SetValue(220.0)
 
                     # custom floor with decimals
-                    f = np.round(self.ptr.ResultingFrameRate.GetValue() - 0.5 * 10 ** (-2), 2)
+                    f = math.floor(self.ptr.ResultingFrameRate.GetValue() * 100) / 100.0
+
                     new_framerate = min(value, f)
 
                     self.ptr.AcquisitionFrameRateEnable.SetValue(True)
@@ -519,8 +534,7 @@ class Camera:
 
                 else:
                     self.ptr.AcquisitionFrameRateAbs = 220
-                    f = np.round(self.ptr.ResultingFrameRateAbs.GetValue() - 0.5 * 10 ** (-2),
-                                 2)  # custom floor with decimals
+                    f = math.floor(self.ptr.ResultingFrameRate.GetValue() * 100) / 100.0
                     new_framerate = min(value, f)
 
                     self.ptr.AcquisitionFrameRateAbs = new_framerate
