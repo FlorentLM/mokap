@@ -583,7 +583,7 @@ class VideoWindow:
         x_east, y_east = w, h//2
         x_west, y_west = 0, h//2
 
-        img_pillow = Image.fromarray(self._frame_buffer, mode='L').convert('RGB')
+        img_pillow = Image.fromarray(self._frame_buffer, mode='L').convert('RGBA')
         img_pillow = img_pillow.resize((w, h))
 
         d = ImageDraw.Draw(img_pillow)
