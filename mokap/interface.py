@@ -1,4 +1,5 @@
 import sys
+import time
 import tkinter as tk
 import tkinter.font as font
 from PIL import Image, ImageTk, ImageDraw, ImageFont
@@ -84,6 +85,7 @@ class VideoWindow:
 
         # Init state
         self._counter = 0
+        self._counter_start = 0
         self._clock = datetime.now()
         self._fps = 0
 
@@ -648,18 +650,17 @@ class VideoWindow:
             self.window.resizable(True, True)
 
         while True:
-            # Update display fps counter
-            now = datetime.now()
-            dt = (now - self._clock).total_seconds()
-            self._fps = self._counter / dt
-
-            self._counter += 1
-
-            self._refresh_framebuffer()
-            self._update_video()
-            self._update_txtvars()
-
-            self.visible.wait()
+            if self.visible.is_set():
+                # Update display fps counter
+                now = datetime.now()
+                dt = (now - self._clock).total_seconds()
+                self._fps = (self._counter - self._counter_start) / dt
+                self._refresh_framebuffer()
+                self._update_video()
+                self._update_txtvars()
+                self._counter += 1
+            else:
+                self.visible.wait()
 
 
     def toggle_visibility(self):
