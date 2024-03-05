@@ -224,16 +224,20 @@ class Camera:
         if not self._is_virtual:
             self._width = self.ptr.WidthMax.GetValue() - (16 // self._binning)
             self._height = self.ptr.HeightMax.GetValue() - (8 // self._binning)
+
+            # Apply the dimensions to the ROI
+            self.ptr.Width = self._width
+            self.ptr.Height = self._height
+            self.ptr.CenterX = True
+            self.ptr.CenterY = True
+
         else:
             # We hardcode these for virtual cameras, because the virtual sensor is otherwise 4096x4096 px...
             self._width = 1440
             self._height = 1080
+            self.ptr.Width = self._width
+            self.ptr.Height = self._height
 
-        # Apply the dimensions to the ROI
-        self.ptr.Width = self._width
-        self.ptr.Height = self._height
-        self.ptr.CenterX = True
-        self.ptr.CenterY = True
 
     def connect(self, cam_ptr=None) -> None:
 
