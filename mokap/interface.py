@@ -207,7 +207,7 @@ class VideoWindow:
 
         ## View controls block
         view_info_frame = tk.LabelFrame(self.window, text="View",
-                                        height=self.INFO_PANEL_FIXED_H, width=100)
+                                        height=self.INFO_PANEL_FIXED_H, width=50)
         view_info_frame.pack(padx=5, pady=5, side='left', fill='y', expand=True)
 
         f_windowsnap = tk.Frame(view_info_frame)
@@ -588,13 +588,16 @@ class VideoWindow:
                 self._frame_buffer[:] = np.frombuffer(buf, dtype=np.uint8).reshape(self._source_shape)
 
     def _update_video(self):
-        import io
+
         # Get window size and set new videofeed size, preserving aspect ratio
         h, w = self.videofeed_shape
+        print(f"Aspect ratio: {h}x{w}")
         if w / h > self.aspect_ratio:
             w = int(h * self.aspect_ratio)
         else:
             h = int(w / self.aspect_ratio)
+
+        print(f"corrected ratio: {h}x{w}")
 
         # Get new coordinates
         x_centre, y_centre = w//2, h//2
