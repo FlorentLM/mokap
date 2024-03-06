@@ -313,48 +313,46 @@ class Manager:
             print(f"[INFO] Disconnected {self._nb_cams} camera{'s' if self._nb_cams > 1 else ''}.")
         self._nb_cams = 0
 
-    def _init_storage(self) -> None:
-        pass
-
     def _writer_frames(self, cam_idx: int) -> NoReturn:
 
         h = self._cameras_list[cam_idx].height
         w = self._cameras_list[cam_idx].width
 
-        folder = self.session_name / f"cam{cam_idx}"
-        folder.mkdir(parents=True, exist_ok=True)
-
+        folder = self.full_path / f"cam{cam_idx}"
         handler = self._frames_handlers_list[cam_idx]
-
         saving_started = False
 
         while self._acquiring.is_set():
 
-            # Swap frames buffers
-            data, handler.frames = handler.frames, deque()
-
-            if len(data) > 0:
+            if self._recording.is_set():
                 if not saving_started:
                     saving_started = True
 
-                for frame in data:
-                    img = Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1)
-                    if self._saving_ext == 'bmp':
-                        img.save(folder / f"{str(self._saved_frames_counter[cam_idx]).zfill(9)}.{self._saving_ext}")
-                    elif self._saving_ext == 'jpg' or self._saving_ext == 'jpeg':
-                        img.save(folder / f"{str(self._saved_frames_counter[cam_idx]).zfill(9)}.{self._saving_ext}", quality=100, keep_rgb=True)
-                    elif self._saving_ext == 'png':
-                        img.save(folder / f"{str(self._saved_frames_counter[cam_idx]).zfill(9)}.{self._saving_ext}", compress_level=1)
-                    elif self._saving_ext == 'tif' or self._saving_ext == 'tiff':
-                        img.save(folder / f"{str(self._saved_frames_counter[cam_idx]).zfill(9)}.{self._saving_ext}", quality=100)
-                    else:
-                        img.save(folder / f"{str(self._saved_frames_counter[cam_idx]).zfill(9)}.bmp")
-                    self._saved_frames_counter[cam_idx] += 1
+                # Swap frames buffers
+                data, handler.frames = handler.frames, deque()
 
-                if saving_started and not self._recording.is_set():
-                    self._finished_saving[cam_idx].set()
+                if len(data) > 0:
+                    for frame in data:
+                        img = Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1)
+                        if self._saving_ext == 'bmp':
+                            img.save(folder / f"{str(self._saved_frames_counter[cam_idx]).zfill(9)}.{self._saving_ext}")
+                        elif self._saving_ext == 'jpg' or self._saving_ext == 'jpeg':
+                            img.save(folder / f"{str(self._saved_frames_counter[cam_idx]).zfill(9)}.{self._saving_ext}",
+                                     quality=100, keep_rgb=True)
+                        elif self._saving_ext == 'png':
+                            img.save(folder / f"{str(self._saved_frames_counter[cam_idx]).zfill(9)}.{self._saving_ext}",
+                                     compress_level=1)
+                        elif self._saving_ext == 'tif' or self._saving_ext == 'tiff':
+                            img.save(folder / f"{str(self._saved_frames_counter[cam_idx]).zfill(9)}.{self._saving_ext}",
+                                     quality=100)
+                        else:
+                            img.save(folder / f"{str(self._saved_frames_counter[cam_idx]).zfill(9)}.bmp")
+                        self._saved_frames_counter[cam_idx] += 1
             else:
-                time.sleep((1 / self.framerate) * 0.9)
+                if not saving_started:
+                    self._recording.wait()
+                else:
+                    self._finished_saving[cam_idx].set()
 
     def _update_display_buffers(self, cam_idx: int) -> NoReturn:
 
@@ -385,17 +383,11 @@ class Manager:
                                           py.Cleanup_Delete)
         cam.start_grabbing()
 
-    def _reset_name(self) -> None:
-        if self._session_name is not None:
-            files_op.rm_if_empty(self._session_name)
-        self._session_name = None
-
     def _soft_reset(self) -> None:
 
-        if self._session_name is not None:
-            (self._session_name / 'recording').unlink(missing_ok=True)
-
-        self._reset_name()
+        # if self._session_name is not None:
+        #     files_op.rm_if_empty(self.full_path)
+        self._session_name = None
 
         self._start_times = []
         self._stop_times = []
@@ -412,15 +404,16 @@ class Manager:
     def record(self) -> None:
 
         if not self._recording.is_set():
-            self._recording.set()
 
-            (self._session_name / 'recording').touch()
+            self._record_init_directories()
+            self._recording.set()
 
             if not self._silent:
                 print('[INFO] Recording started...')
 
     def pause(self) -> None:
         if self._recording.is_set():
+
             self._recording.clear()
 
             if not self._silent:
@@ -438,10 +431,10 @@ class Manager:
                 self.trigger.start(self._framerate, 250000)
                 time.sleep(0.5)
 
-            if self._session_name is None:
-                self.session_name = ''
-
             self._acquiring.set()
+
+            folder = files_op.exists_check(self.full_path)
+            folder.mkdir(parents=True, exist_ok=False)
 
             self._executor = ThreadPoolExecutor(max_workers=20)
 
@@ -466,25 +459,43 @@ class Manager:
             if self._triggered:
                 self.trigger.stop()
 
+            self._record_cleanup_directories()
+
             self._soft_reset()
             if not self._silent:
                 print(f'[INFO] Grabbing stopped.')
 
     @property
-    def session_name(self) -> Path:
+    def session_name(self) -> str:
+        if self._session_name == '' or self._session_name is None:
+            default_name = datetime.now().strftime('%y%m%d-%H%M')
+            print(f'Empty session name, creating one: {default_name}')
+            self._session_name = default_name
         return self._session_name
 
     @session_name.setter
-    def session_name(self, session_name='') -> None:
+    def session_name(self, new_name='') -> None:
+        if new_name == '' or new_name is None:
+            replacement = datetime.now().strftime('%y%m%d-%H%M')
+            print(f'New name empty, defaulting to: {replacement}')
+            new_name = replacement
+        self._session_name = new_name
 
-        self.pause()
-        self._soft_reset()
+    def _record_init_directories(self):
 
-        if session_name == '':
-            session_name = datetime.now().strftime('%y%m%d-%H%M')
+        (self.full_path / 'recording').touch(exist_ok=True)
 
-        self._session_name = files_op.exists_check(self._base_folder / session_name)
-        self._session_name.mkdir(parents=True, exist_ok=False)
+        for c in self.cameras:
+            (self.full_path / f'cam{c.idx}').mkdir(parents=True, exist_ok=True)
+
+    def _record_cleanup_directories(self):
+
+        (self.full_path / 'recording').unlink(missing_ok=True)
+        files_op.rm_if_empty(self.full_path)
+
+    @property
+    def full_path(self) -> Path:
+        return self._base_folder / self.session_name
 
     @property
     def nb_cameras(self) -> int:
@@ -533,8 +544,6 @@ class Manager:
         if self._saved_frames_counter is None:
             print('[ERROR] Please connect at least 1 camera first.')
         return np.frombuffer(self._saved_frames_counter, dtype=np.uint32)
-
-
 
     def get_current_framebuffer(self, i: int = None) -> Union[bytearray, list[bytearray]]:
         if i is None:

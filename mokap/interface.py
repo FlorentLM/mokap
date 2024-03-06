@@ -921,7 +921,7 @@ class GUI:
         self.pathname_textbox.pack(side="left", fill="both", expand=True)
 
         self.pathname_button = tk.Button(editable_name_frame,
-                                         text="Edit", font=self.font_regular, command=self.gui_toggle_set_name)
+                                         text="Edit", font=self.font_regular, command=self.gui_toggle_text_editing)
         self.pathname_button.pack(side="right", fill="both", expand=False)
 
         info_name_frame = tk.Frame(name_frame)
@@ -1131,8 +1131,10 @@ class GUI:
                 self.gui_toggle_recording()
             else:
                 pass
+    def _apply_new_session_name(self):
+        self.mgr.session_name = self.txtvar_userentry.get()
 
-    def gui_toggle_set_name(self, tf=None):
+    def gui_toggle_text_editing(self, tf=None):
         if tf is None:
             tf = not self.editing_disabled
 
@@ -1142,12 +1144,11 @@ class GUI:
             self.editing_disabled = False
 
         elif not self.editing_disabled and tf is True:
-            self.mgr.session_name = self.txtvar_userentry.get()
-            self.txtvar_applied_name.set(f'{Path(self.mgr.session_name).resolve()}')
-            self.txtvar_userentry.set('')
             self.pathname_textbox.config(state='disabled')
             self.pathname_button.config(text='Edit')
+            self._apply_new_session_name()
             self.editing_disabled = True
+            self.txtvar_applied_name.set(f'{self.mgr.full_path.resolve()}')
         else:
             pass
 
@@ -1197,8 +1198,6 @@ class GUI:
             self.button_recpause.config(state="disabled")
 
         elif not self.mgr.acquiring and tf is True:
-            if self.mgr.session_name is None:
-                self.gui_toggle_set_name(True)
 
             self.mgr.on()
 

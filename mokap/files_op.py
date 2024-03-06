@@ -46,14 +46,17 @@ def exists_check(path):
         i += 1
     return path
 
-def rm_if_empty(path):
+def rm_if_empty_zarr(path):
+
     path = Path(path)
 
     if not path.exists():
+        # if it doesn't exist, nothing to do.
         return
     else:
-        # if empty, delete folder, done.
+        # if it exists
         if not any(path.iterdir()):
+            # ...and already empty, delete it, done.
             path.rmdir()
 
         # if not empty, check if there is more than one file
@@ -79,6 +82,25 @@ def rm_if_empty(path):
                     if second_child_2 is None and first_child_2.stem == '.zarray':
                         shutil.rmtree(path)
 
+def rm_if_empty(path):
+
+    path = Path(path)
+
+    if not path.exists():
+        # if it doesn't exist, nothing to do.
+        return
+    else:
+        # if it exists
+        if not any(path.iterdir()):
+            # ...and already empty, delete it, done.
+            path.rmdir()
+
+        # if not empty, recursively check again
+        else:
+            for f in path.glob('*'):
+                if f.is_file():
+                    return
+                rm_if_empty(f)
 
 def clean_folder(path):
     path = Path(path)

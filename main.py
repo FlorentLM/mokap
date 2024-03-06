@@ -10,7 +10,7 @@ mgr.connect()
 mgr.exposure = 80000
 
 # Enable binning
-mgr.binning = 2
+mgr.binning = 1
 mgr.binning_mode = 'avg'
 
 mgr.gain = 0
