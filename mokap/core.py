@@ -83,7 +83,7 @@ class Manager:
         if self._base_folder.parent == self._base_folder.name:
             self._base_folder = self._base_folder.parent
         self._base_folder.mkdir(parents=True, exist_ok=True)
-        self._session_name: Union[Path, None] = None
+        self._session_name: str = ''
         self._saving_ext = self.confparser['GENERAL'].get('save_format', 'bmp').lower().lstrip('.')
 
         self._executor: Union[ThreadPoolExecutor, None] = None
@@ -414,16 +414,17 @@ class Manager:
     def on(self) -> None:
 
         if not self._acquiring.is_set():
+
+            # Just in case
+            if self._session_name == '':
+                self.session_name = ''
+
             if self._triggered:
                 # Start trigger thread on the RPi
                 self.trigger.start(self._framerate, 250000)
                 time.sleep(0.5)
 
             self._acquiring.set()
-
-            folder = files_op.exists_check(self.full_path)
-            folder.mkdir(parents=True, exist_ok=False)
-            self._session_name = folder.name
 
             self._executor = ThreadPoolExecutor(max_workers=20)
 
@@ -448,9 +449,8 @@ class Manager:
             if self._triggered:
                 self.trigger.stop()
 
-            files_op.rm_if_empty(self.full_path)
-
-            self._session_name = None
+            files_op.rm_if_empty(self._base_folder / self._session_name)
+            self._session_name = ''
 
             self._start_times = []
             self._stop_times = []
@@ -469,19 +469,34 @@ class Manager:
 
     @property
     def session_name(self) -> str:
-        if self._session_name == '' or self._session_name is None:
-            default_name = datetime.now().strftime('%y%m%d-%H%M')
-            print(f'Empty session name, creating one: {default_name}')
-            self._session_name = default_name
+        if self._session_name == '':
+            self.session_name = ''
         return self._session_name
 
     @session_name.setter
     def session_name(self, new_name='') -> None:
+        was_on = self._acquiring.is_set()
+        if was_on:
+            self.off()
+            was_on = True
+
+        old_name = self._session_name
+
+        # Cleanup old folder if needed
+        if old_name != '' and old_name is not None:
+            files_op.rm_if_empty(self._base_folder / old_name)
+
         if new_name == '' or new_name is None:
-            replacement = datetime.now().strftime('%y%m%d-%H%M')
-            print(f'New name empty, defaulting to: {replacement}')
-            new_name = replacement
-        self._session_name = new_name
+            new_name = datetime.now().strftime('%y%m%d-%H%M')
+
+        new_folder = files_op.exists_check(self._base_folder / new_name)
+        new_folder.mkdir(parents=True, exist_ok=False)
+
+        self._session_name = new_folder.name
+
+        if was_on:
+            self.on()
+
 
     @property
     def full_path(self) -> Path:

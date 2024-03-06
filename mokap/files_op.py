@@ -85,11 +85,11 @@ def rm_if_empty_zarr(path):
 def rm_if_empty(path):
 
     path = Path(path)
-
     if not path.exists():
         # if it doesn't exist, nothing to do.
         return
     else:
+
         # if it exists
         if not any(path.iterdir()):
             # ...and already empty, delete it, done.
