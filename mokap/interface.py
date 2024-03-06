@@ -1131,8 +1131,6 @@ class GUI:
                 self.gui_toggle_recording()
             else:
                 pass
-    def _apply_new_session_name(self):
-        self.mgr.session_name = self.txtvar_userentry.get()
 
     def gui_toggle_text_editing(self, tf=None):
         if tf is None:
@@ -1146,7 +1144,7 @@ class GUI:
         elif not self.editing_disabled and tf is True:
             self.pathname_textbox.config(state='disabled')
             self.pathname_button.config(text='Edit')
-            self._apply_new_session_name()
+            self.mgr.session_name = self.txtvar_userentry.get()
             self.editing_disabled = True
             self.txtvar_applied_name.set(f'{self.mgr.full_path.resolve()}')
         else:
@@ -1200,6 +1198,8 @@ class GUI:
         elif not self.mgr.acquiring and tf is True:
 
             self.mgr.on()
+
+            self.txtvar_applied_name.set(f'{self.mgr.full_path.resolve()}')
 
             self._capture_clock = datetime.now()
             self.start_indices[:] = self.mgr.indices

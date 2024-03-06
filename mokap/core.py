@@ -383,29 +383,15 @@ class Manager:
                                           py.Cleanup_Delete)
         cam.start_grabbing()
 
-    def _soft_reset(self) -> None:
-
-        # if self._session_name is not None:
-        #     files_op.rm_if_empty(self.full_path)
-        self._session_name = None
-
-        self._start_times = []
-        self._stop_times = []
-
-        self._grabbed_frames_counter = RawArray('I', self._nb_cams)
-        self._displayed_frames_counter = RawArray('I', self._nb_cams)
-        self._saved_frames_counter = RawArray('I', self._nb_cams)
-        self._grabbed_frames_counter[:] = [0] * self._nb_cams
-        self._displayed_frames_counter[:] = [0] * self._nb_cams
-        self._saved_frames_counter[:] = [0] * self._nb_cams
-
-        self._executor = None
-
     def record(self) -> None:
 
         if not self._recording.is_set():
 
-            self._record_init_directories()
+            (self.full_path / 'recording').touch(exist_ok=True)
+
+            for c in self.cameras:
+                (self.full_path / f'cam{c.idx}').mkdir(parents=True, exist_ok=True)
+
             self._recording.set()
 
             if not self._silent:
@@ -419,6 +405,8 @@ class Manager:
             if not self._silent:
                 print('[INFO] Finishing saving...')
             [e.wait() for e in self._finished_saving]
+
+            (self.full_path / 'recording').unlink(missing_ok=True)
 
             if not self._silent:
                 print('[INFO] Done saving.')
@@ -435,6 +423,7 @@ class Manager:
 
             folder = files_op.exists_check(self.full_path)
             folder.mkdir(parents=True, exist_ok=False)
+            self._session_name = folder.name
 
             self._executor = ThreadPoolExecutor(max_workers=20)
 
@@ -459,9 +448,22 @@ class Manager:
             if self._triggered:
                 self.trigger.stop()
 
-            self._record_cleanup_directories()
+            files_op.rm_if_empty(self.full_path)
 
-            self._soft_reset()
+            self._session_name = None
+
+            self._start_times = []
+            self._stop_times = []
+
+            self._grabbed_frames_counter = RawArray('I', self._nb_cams)
+            self._displayed_frames_counter = RawArray('I', self._nb_cams)
+            self._saved_frames_counter = RawArray('I', self._nb_cams)
+            self._grabbed_frames_counter[:] = [0] * self._nb_cams
+            self._displayed_frames_counter[:] = [0] * self._nb_cams
+            self._saved_frames_counter[:] = [0] * self._nb_cams
+
+            self._executor = None
+
             if not self._silent:
                 print(f'[INFO] Grabbing stopped.')
 
@@ -480,18 +482,6 @@ class Manager:
             print(f'New name empty, defaulting to: {replacement}')
             new_name = replacement
         self._session_name = new_name
-
-    def _record_init_directories(self):
-
-        (self.full_path / 'recording').touch(exist_ok=True)
-
-        for c in self.cameras:
-            (self.full_path / f'cam{c.idx}').mkdir(parents=True, exist_ok=True)
-
-    def _record_cleanup_directories(self):
-
-        (self.full_path / 'recording').unlink(missing_ok=True)
-        files_op.rm_if_empty(self.full_path)
 
     @property
     def full_path(self) -> Path:
