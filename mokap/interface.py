@@ -1124,12 +1124,13 @@ class GUI:
             w.auto_move()
 
     def _handle_keypress(self, event):
-        if event.keycode == 9:  # Esc
-            self.quit()
-        elif event.keycode == 65:  # Space
-            self.gui_toggle_recording()
-        else:
-            pass
+        if self.editing_disabled:
+            if event.keycode == 9:  # Esc
+                self.quit()
+            elif event.keycode == 65:  # Space
+                self.gui_toggle_recording()
+            else:
+                pass
 
     def gui_toggle_set_name(self, tf=None):
         if tf is None:
