@@ -311,40 +311,41 @@ class VideoWindowCalib(VideoWindowBase):
             0.02,                        # marker side length (same unit than squareLength)
             self.aruco_dict)
 
-        self.detected_corners = []      # Corners seen so far
-        self.detected_ids = []          # Corresponding aruco ids
+        self.detected_charuco_corners = []      # Corners seen so far
+        self.detected_charuco_ids = []          # Corresponding aruco ids
 
     def _calib(self):
 
         img_arr = np.frombuffer(self._frame_buffer, dtype=np.uint8).reshape(self.source_shape)
         img_col = cv2.cvtColor(img_arr, cv2.COLOR_GRAY2BGR)
 
-        # Detect aruco markers
-        corners, ids, reject_candidates = self.detector.detectMarkers(img_arr)
+        if len(self.detected_charuco_corners) < 10:
+            # Detect aruco markers
+            corners, ids, reject_candidates = self.detector.detectMarkers(img_arr)
 
-        img_col = cv2.aruco.drawDetectedMarkers(image=img_col, corners=corners)
+            img_col = cv2.aruco.drawDetectedMarkers(image=img_col, corners=corners)
 
-        if len(corners) > 0:
+            if len(corners) > 0:
 
-            # Charuco corners and ids from detected aruco markers
-            charuco_response, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(
-                markerCorners=corners,
-                markerIds=ids,
-                image=img_arr,
-                board=self._charuco_board)
+                # Charuco corners and ids from detected aruco markers
+                charuco_response, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(
+                    markerCorners=corners,
+                    markerIds=ids,
+                    image=img_arr,
+                    board=self._charuco_board)
 
-            if charuco_response > 5:
+                if charuco_response > 5:
 
-                # self.detected_corners.append(charuco_corners)
-                # self.detected_ids.append(charuco_ids)
+                    self.detected_charuco_corners.append(charuco_corners)
+                    self.detected_charuco_ids.append(charuco_ids)
 
-                # Draw the Charuco board corners
-                img_col = cv2.aruco.drawDetectedCornersCharuco(
-                    image=img_col,
-                    charucoCorners=charuco_corners,
-                    charucoIds=charuco_ids)
-            # else:
-            #     print("No charuco board detected")
+                    # Draw the Charuco board corners
+                    img_col = cv2.aruco.drawDetectedCornersCharuco(
+                        image=img_col,
+                        charucoCorners=charuco_corners,
+                        charucoIds=charuco_ids)
+                # else:
+                #     print("No charuco board detected")
 
             # Get window size and set new videofeed size, preserving aspect ratio
             h, w = self.videofeed_shape
