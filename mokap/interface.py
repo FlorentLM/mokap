@@ -68,6 +68,9 @@ class VideoWindowBase:
         if 'Darwin' in platform.system():
             # Trick to force macOS to open a window and not a tab
             self.window.resizable(False, False)
+            self._macos_trick = True
+        else:
+            self._macos_trick = False
         self.parent = parent
 
         if idx is None:
@@ -250,8 +253,7 @@ class VideoWindowBase:
         pass
 
     def update(self):
-        if 'Darwin' in platform.system():
-            # Reenable resizing on macOS (see trick at winow creation)
+        if self._macos_trick:
             self.window.resizable(True, True)
 
         while True:
@@ -280,10 +282,11 @@ class VideoWindowBase:
             if 'Darwin' in platform.system():
                 # Trick to force macOS to open a window and not a tab
                 self.window.resizable(False, False)
+                self._macos_trick = True
             self.visible.set()
             self.parent.vis_checkboxes[self.idx].set(1)
             self.window.deiconify()
-            if 'Darwin' in platform.system():
+            if self._macos_trick:
                 self.window.resizable(True, True)
         else:
             pass
@@ -292,43 +295,69 @@ class VideoWindowBase:
 class VideoWindowCalib(VideoWindowBase):
     def __init__(self, parent, idx):
         super().__init__(parent, idx)
+
         # ChAruco board variables
-        CHARUCOBOARD_ROWCOUNT = 7
-        CHARUCOBOARD_COLCOUNT = 5
+        self._nb_rows = 7
+        self._nb_cols = 5
 
         self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_1000)
+
         self.detector_parameters = cv2.aruco.DetectorParameters()
         self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.detector_parameters)
 
-        # # Create constants to be passed into OpenCV and Aruco methods
-        # self.CHARUCO_BOARD = aruco.CharucoBoard_create(
-        #     squaresX=CHARUCOBOARD_COLCOUNT,
-        #     squaresY=CHARUCOBOARD_ROWCOUNT,
-        #     squareLength=0.04,
-        #     markerLength=0.02,
-        #     dictionary=self.aruco_dict)
+        self._charuco_board = cv2.aruco.CharucoBoard(
+            (self._nb_cols, self._nb_rows),     # number of chessboard squares in x and y directions
+            0.04,                        # chessboard square side length (normally in meters)
+            0.02,                        # marker side length (same unit than squareLength)
+            self.aruco_dict)
+
+        self.detected_corners = []      # Corners seen so far
+        self.detected_ids = []          # Corresponding aruco ids
 
     def _calib(self):
 
         img_arr = np.frombuffer(self._frame_buffer, dtype=np.uint8).reshape(self.source_shape)
-        # img_col = cv2.cvtColor(img_arr, cv2.COLOR_GRAY2BGR)
+        img_col = cv2.cvtColor(img_arr, cv2.COLOR_GRAY2BGR)
 
-        # Find aruco markers in the query image
+        # Detect aruco markers
         corners, ids, reject_candidates = self.detector.detectMarkers(img_arr)
 
-        print(ids)
+        img_col = cv2.aruco.drawDetectedMarkers(image=img_col, corners=corners)
 
-        # # Outline the aruco markers found in our query image
-        # img_col = aruco.drawDetectedMarkers(
-        #     image=img_col,
-        #     corners=corners)
-        #
-        # # Get charuco corners and ids from detected aruco markers
-        # response, charuco_corners, charuco_ids = aruco.interpolateCornersCharuco(
-        #     markerCorners=corners,
-        #     markerIds=ids,
-        #     image=img_arr,
-        #     board=self.CHARUCO_BOARD)
+        if len(corners) > 0:
+
+            # Charuco corners and ids from detected aruco markers
+            charuco_response, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(
+                markerCorners=corners,
+                markerIds=ids,
+                image=img_arr,
+                board=self._charuco_board)
+
+            if charuco_response > 5:
+
+                # self.detected_corners.append(charuco_corners)
+                # self.detected_ids.append(charuco_ids)
+
+                # Draw the Charuco board corners
+                img_col = cv2.aruco.drawDetectedCornersCharuco(
+                    image=img_col,
+                    charucoCorners=charuco_corners,
+                    charucoIds=charuco_ids)
+            # else:
+            #     print("No charuco board detected")
+
+            # Get window size and set new videofeed size, preserving aspect ratio
+            h, w = self.videofeed_shape
+
+            if w / h > self.aspect_ratio:
+                w = int(h * self.aspect_ratio)
+            else:
+                h = int(w / self.aspect_ratio)
+
+            img_pillow = Image.fromarray(img_col)
+            img_pillow = img_pillow.resize((w, h))
+
+            self._refresh_videofeed(img_pillow)
 
     def update(self):
         if self.window.resizable() == (0, 0):
@@ -338,7 +367,6 @@ class VideoWindowCalib(VideoWindowBase):
         while True:
             self._refresh_framebuffer()
             self._calib()
-            self._update_video()
 
             # if self.visible.is_set():
             #     # Update display fps counter
