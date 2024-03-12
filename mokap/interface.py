@@ -1,6 +1,7 @@
 import sys
 import cv2
 import tkinter as tk
+from tkinter.filedialog import askopenfilename
 import tkinter.font as font
 from PIL import Image, ImageTk, ImageDraw, ImageFont
 import numpy as np
@@ -245,7 +246,7 @@ class VideoWindowBase:
             # If new image is garbage collected too early, do nothing - this prevents the image from flashing
             pass
 
-    def _update_video(self):
+    def _update_visualisation(self):
 
         # Get window size and set new videofeed size, preserving aspect ratio
         h, w = self.videofeed_shape
@@ -274,7 +275,7 @@ class VideoWindowBase:
                 dt = (now - self._clock).total_seconds()
                 self._fps = (self._counter - self._counter_start) / dt
                 self._refresh_framebuffer()
-                self._update_video()
+                self._update_visualisation()
                 self._update_txtvars()
                 self._counter += 1
             else:
@@ -321,16 +322,22 @@ class VideoWindowCalib(VideoWindowBase):
         detector_params = cv2.aruco.DetectorParameters()
         self.detector = cv2.aruco.ArucoDetector(self._aruco_dict, detector_params)
 
-        max_frames = 150
+        self._max_frames = 150
+        self._recommended_coverage_pct = 60
 
-        self.detected_charuco_corners = deque(maxlen=max_frames)      # Corners seen so far
-        self.detected_charuco_ids = deque(maxlen=max_frames)          # Corresponding aruco ids
+        self.detected_charuco_corners = deque(maxlen=self._max_frames)      # Corners seen so far
+        self.detected_charuco_ids = deque(maxlen=self._max_frames)          # Corresponding aruco ids
 
         self.camera_matrix = None
         self.dist_coeffs = None
 
         self._calib_error = 99
         self._coverage_pct = 0
+
+        # Set initial values
+        h, w = self.parent.mgr.cameras[self.idx].height, self.parent.mgr.cameras[self.idx].width
+        self.txtvar_resolution.set(f"{w}×{h} px")
+        self.txtvar_exposure.set(f"{self.parent.mgr.cameras[self.idx].exposure} µs")
 
         self._create_controls()
 
@@ -370,6 +377,37 @@ class VideoWindowCalib(VideoWindowBase):
                          anchor='w', justify='left',
                          font=self.parent.font_regular)
             v.pack(side='left', fill='y')
+
+        ## Save/Load block
+
+        f_information = tk.LabelFrame(INFO_PANEL_FRAME, text="Calibration",
+                                      height=self.INFO_PANEL_FIXED_H,
+                                      width=300)
+        f_information.pack(ipadx=10, ipady=3, padx=5, pady=5, side='left', fill='y', expand=False)
+
+        f_calibrate = tk.Frame(f_information)
+        f_calibrate.pack(padx=5, pady=5, side="top", fill="x", expand=True)
+
+        self.calibrate_button = tk.Button(f_calibrate, text="Calibrate", font=self.parent.font_bold,
+                                     command=self._perform_calibration, fg='green', state='disabled')
+        self.calibrate_button.pack(side="left", fill="both", expand=False)
+
+        self.reset_coverage_button = tk.Button(f_calibrate, text="Reset", font=self.parent.font_regular,
+                                     command=self._reset_coverage)
+
+        self.reset_coverage_button.pack(side="left", fill="both", expand=False)
+
+        f_saveload = tk.Frame(f_information)
+        f_saveload.pack(padx=5, pady=5, side="top", fill="x", expand=True)
+
+        self.load_button = tk.Button(f_saveload, text="Load", font=self.parent.font_regular, command=self.load_calibration)
+        self.load_button.pack(side="left", fill="both", expand=False)
+
+        self.save_button = tk.Button(f_saveload, text="Save", font=self.parent.font_regular, command=self.save_calibration)
+        self.save_button.pack(side="left", fill="both", expand=False)
+
+        self.saved_label = tk.Label(f_information, text='', anchor='w', justify='left', font=self.parent.font_regular)
+        self.saved_label.pack(side='left', fill='y')
 
         ## View controls block
         view_info_frame = tk.LabelFrame(INFO_PANEL_FRAME, text="View",
@@ -419,6 +457,8 @@ class VideoWindowCalib(VideoWindowBase):
                                                                                                markerIds=marker_ids,
                                                                                                image=img_arr,
                                                                                                board=self._charuco_board,
+                                                                                               cameraMatrix=self.camera_matrix,
+                                                                                               distCoeffs=self.dist_coeffs,
                                                                                                minMarkers=0)
             if charuco_retval > 4:
 
@@ -447,31 +487,62 @@ class VideoWindowCalib(VideoWindowBase):
                     self.detected_charuco_corners.append(charuco_corners)
                     self.detected_charuco_ids.append(charuco_ids)
 
-                # print(overlap)
-
         return img_col
 
 
-    def _calib(self):
+    def _perform_calibration(self):
 
-        if self.camera_matrix is None and self._coverage_pct >= 75:
+        retval, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.aruco.calibrateCameraCharuco(charucoCorners=self.detected_charuco_corners,
+                                                                                            charucoIds=self.detected_charuco_ids,
+                                                                                            board=self._charuco_board,
+                                                                                            imageSize=self._source_shape[:2],
+                                                                                            cameraMatrix=self.camera_matrix,
+                                                                                            distCoeffs=self.dist_coeffs,
+                                                                                            flags=cv2.CALIB_USE_QR)
+        self._calib_error = retval
+        self.camera_matrix = camera_matrix
+        self.dist_coeffs = dist_coeffs
 
-            print("Calibration...")
+        self._reset_coverage()
+        self.saved_label.config(text=f'')
 
-            retval, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.aruco.calibrateCameraCharuco(charucoCorners=self.detected_charuco_corners,
-                                                                                                charucoIds=self.detected_charuco_ids,
-                                                                                                board=self._charuco_board,
-                                                                                                imageSize=self._source_shape[:2],
-                                                                                                cameraMatrix=self.camera_matrix,
-                                                                                                distCoeffs=self.dist_coeffs,
-                                                                                                flags=cv2.CALIB_USE_QR)
-            self._calib_error = retval
-            self.camera_matrix = camera_matrix
-            self.dist_coeffs = dist_coeffs
+    def _reset_coverage(self):
+        self._total_coverage_area = np.zeros((*self.source_shape, 3), dtype=np.uint8)
+        self._current_coverage_area = np.zeros(self.source_shape, dtype=np.uint8)
 
-            # Save calibration data
-            # np.save('camera_matrix.npy', camera_matrix)
-            # np.save('dist_coeffs.npy', dist_coeffs)
+        self.detected_charuco_corners = deque(maxlen=self._max_frames)  # Corners seen so far
+        self.detected_charuco_ids = deque(maxlen=self._max_frames)  # Corresponding aruco ids
+
+        self._coverage_pct = 0
+
+    def save_calibration(self):
+        save_folder = self.parent.mgr.full_path / f'cam{self.idx}'
+        save_folder.mkdir(exist_ok=True, parents=True)
+
+        np.save(save_folder / 'camera_matrix.npy', self.camera_matrix)
+        np.save(save_folder / 'dist_coeffs.npy', self.dist_coeffs)
+
+        if (save_folder / 'camera_matrix.npy').exists() and (save_folder / 'dist_coeffs.npy').exists():
+            self.saved_label.config(text=f'Saved.')
+
+    def load_calibration(self, load_path=None):
+
+        if load_path is None:
+            load_path = askopenfilename()
+        load_path = Path(load_path)
+
+        if load_path.is_file():
+            load_path = load_path.parent
+
+        if f'cam{self.idx}' not in load_path.name and (load_path / f'cam{self.idx}').exists():
+            load_path = load_path / f'cam{self.idx}'
+
+        if f'cam{self.idx}' in load_path.name:
+            self.camera_matrix = np.load(load_path / 'camera_matrix.npy')
+            self.dist_coeffs = np.load(load_path / 'dist_coeffs.npy')
+            self.saved_label.config(text=f'Loaded.')
+        else:
+            print('Calibration files not found.')
 
     # def detect_pose(self):
     #
@@ -508,43 +579,69 @@ class VideoWindowCalib(VideoWindowBase):
     #                                   thickness=3)
     #     return img_col
 
+    def _update_txtvars(self):
+
+        if self.parent.mgr.acquiring:
+            cap_fps = self.parent.capture_fps[self.idx]
+
+            if 0 < cap_fps < 1000:  # only makes sense to display real values
+                self.txtvar_capture_fps.set(f"{cap_fps:.2f} fps")
+            else:
+                self.txtvar_capture_fps.set("-")
+
+            brightness = np.round(self._frame_buffer.mean() / 255 * 100, decimals=2)
+            self.txtvar_brightness.set(f"{brightness:.2f}%")
+        else:
+            self.txtvar_capture_fps.set("Off")
+            self.txtvar_brightness.set("-")
+
+        self.txtvar_display_fps.set(f"{self._fps:.2f} fps")
+
+    def _update_visualisation(self):
+
+        if self._coverage_pct >= self._recommended_coverage_pct:
+            self.calibrate_button.config(state='normal')
+            col = (0, 255, 0)
+        else:
+            self.calibrate_button.config(state='disabled')
+            col = (255, 255, 255)
+
+        image_viz = self._detect()
+
+        image_viz = cv2.addWeighted(image_viz, 0.5, self._total_coverage_area, 0.5, 0.0)
+
+        if self.camera_matrix is not None:
+            image_viz = cv2.undistort(image_viz, self.camera_matrix, self.dist_coeffs)
+
+        image_viz = cv2.putText(image_viz,
+                                f'Area covered: {self._coverage_pct:.2f}% ({len(self.detected_charuco_corners)} images)',
+                                (50, 50), cv2.FONT_HERSHEY_SIMPLEX,
+                                1, col, 2, cv2.LINE_AA)
+
+        image_viz = cv2.putText(image_viz, f'Calib error: {self._calib_error if self._calib_error < 10 else "-"}',
+                                (50, 100), cv2.FONT_HERSHEY_SIMPLEX,
+                                1, (255, 255, 255), 2, cv2.LINE_AA)
+
+        # Get window size and set new videofeed size, preserving aspect ratio
+        h, w = self.videofeed_shape
+
+        if w / h > self.aspect_ratio:
+            w = int(h * self.aspect_ratio)
+        else:
+            h = int(w / self.aspect_ratio)
+
+        img_pillow = Image.fromarray(image_viz)
+        img_pillow = img_pillow.resize((w, h))
+
+        self._refresh_videofeed(img_pillow)
+
+
     def update(self):
         if self.window.resizable() == (0, 0):
             # Reenable resizing on macOS (see trick at winow creation)
             self.window.resizable(True, True)
 
         while self.parent._is_calibrating.is_set():
-            self._refresh_framebuffer()
-
-            image_viz = self._detect()
-
-            self._calib()
-
-            image_viz = cv2.putText(image_viz, f'Area covered: {self._coverage_pct:.2f}% ({len(self.detected_charuco_corners)} images)',
-                                    (50, 50), cv2.FONT_HERSHEY_SIMPLEX,
-                                    1, (0, 255, 0), 2, cv2.LINE_AA)
-
-            image_viz = cv2.putText(image_viz,f'Calib error: {self._calib_error if self._calib_error < 10 else "-"}',
-                                    (50, 100), cv2.FONT_HERSHEY_SIMPLEX,
-                                    1, (255, 255, 0), 2, cv2.LINE_AA)
-
-            image_viz = cv2.addWeighted(image_viz, 0.5, self._total_coverage_area, 0.5, 0.0)
-
-            if self.camera_matrix is not None:
-                image_viz = cv2.undistort(image_viz, self.camera_matrix, self.dist_coeffs)
-
-            # Get window size and set new videofeed size, preserving aspect ratio
-            h, w = self.videofeed_shape
-
-            if w / h > self.aspect_ratio:
-                w = int(h * self.aspect_ratio)
-            else:
-                h = int(w / self.aspect_ratio)
-
-            img_pillow = Image.fromarray(image_viz)
-            img_pillow = img_pillow.resize((w, h))
-
-            self._refresh_videofeed(img_pillow)
 
             if self.visible.is_set():
                 # Update display fps counter
@@ -552,6 +649,9 @@ class VideoWindowCalib(VideoWindowBase):
                 dt = (now - self._clock).total_seconds()
                 self._fps = (self._counter - self._counter_start) / dt
                 self._refresh_framebuffer()
+                self._update_txtvars()
+                self._update_visualisation()
+
                 self._counter += 1
             else:
                 self.visible.wait()
@@ -918,7 +1018,7 @@ class VideoWindowMain(VideoWindowBase):
 
         self.txtvar_display_fps.set(f"{self._fps:.2f} fps")
 
-    def _update_video(self):
+    def _update_visualisation(self):
 
         # Get window size and set new videofeed size, preserving aspect ratio
         h, w = self.videofeed_shape
@@ -1492,7 +1592,7 @@ class GUI:
             with warnings.catch_warnings():
                 try:
                     self._capture_fps[:] = (self._now_indices - self.start_indices) / capture_dt
-                except RuntimeWarning:
+                except Warning:
                     self._capture_fps.fill(0)
 
             self._current_buffers = self.mgr.get_current_framebuffer()
