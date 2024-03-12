@@ -15,6 +15,7 @@ import subprocess
 from mokap import utils
 from functools import partial
 from collections import deque
+import warnings
 np.set_printoptions(precision=4, suppress=True)
 
 
@@ -1488,10 +1489,10 @@ class GUI:
 
             self._now_indices[:] = self.mgr.indices
 
-            with np.errstate(divide='raise'):
+            with warnings.catch_warnings():
                 try:
                     self._capture_fps[:] = (self._now_indices - self.start_indices) / capture_dt
-                except FloatingPointError:
+                except RuntimeWarning:
                     self._capture_fps.fill(0)
 
             self._current_buffers = self.mgr.get_current_framebuffer()
