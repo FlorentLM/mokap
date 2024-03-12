@@ -15,6 +15,8 @@ import os
 import subprocess
 from mokap import utils
 from functools import partial
+from collections import deque
+np.set_printoptions(precision=4, suppress=True)
 
 
 def whxy(what):
@@ -101,6 +103,15 @@ class VideoWindowBase:
         self.visible.set()
 
         self._imgfnt = ImageFont.load_default()
+
+        # Initialise text vars
+        self.txtvar_warning = tk.StringVar()
+
+        self.txtvar_resolution = tk.StringVar()
+        self.txtvar_exposure = tk.StringVar()
+        self.txtvar_capture_fps = tk.StringVar()
+        self.txtvar_brightness = tk.StringVar()
+        self.txtvar_display_fps = tk.StringVar()
 
         self.txtvar_camera_name = tk.StringVar()
         self.txtvar_camera_name.set(f'{self._cam_name.title()} camera')
@@ -297,55 +308,270 @@ class VideoWindowCalib(VideoWindowBase):
         super().__init__(parent, idx)
 
         # ChAruco board variables
-        self._nb_rows = 7
-        self._nb_cols = 5
+        self.BOARD_ROWS = 5  # Total rows in the board (chessboard)
+        self.BOARD_COLS = 4  # Total cols in the board
+        self.ARUCO_SQ_L = 4  # Side length of each individual aruco markers
+        self.PHYSICAL_L = 15  # Length of the small side of the board in real life units (i.e. mm)
 
-        self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_1000)
+        self.aruco_dict, self._charuco_board = self.generate_board(self.BOARD_ROWS,
+                                                self.BOARD_COLS,
+                                                self.ARUCO_SQ_L,
+                                                self.PHYSICAL_L, DPI_OUT=1200, save=False)
 
         self.detector_parameters = cv2.aruco.DetectorParameters()
         self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.detector_parameters)
 
-        self._charuco_board = cv2.aruco.CharucoBoard(
-            (self._nb_cols, self._nb_rows),     # number of chessboard squares in x and y directions
-            0.04,                        # chessboard square side length (normally in meters)
-            0.02,                        # marker side length (same unit than squareLength)
-            self.aruco_dict)
+        self._max_frames = 20
+        self._min_frames = 5
+        self.detected_charuco_corners = deque(maxlen=self._max_frames)      # Corners seen so far
+        self.detected_charuco_ids = deque(maxlen=self._max_frames)          # Corresponding aruco ids
 
-        self.detected_charuco_corners = []      # Corners seen so far
-        self.detected_charuco_ids = []          # Corresponding aruco ids
+        # focal_pixel = (55 / 4.98) * self.source_shape[1] # 4.98 is the sensor width in mm
+        #
+        # self.camera_matrix = np.array([[ focal_pixel,    0.0, self.source_shape[0]/2.0],
+        #                                [    0.0, focal_pixel, self.source_shape[1]/2.0],
+        #                                [    0.0,    0.0,                      1.0]])
+        # self.dist_coeffs = np.zeros([5, 1])
 
-    def _calib(self):
+        self.camera_matrix = None
+        self.dist_coeffs = None
+
+        self._calib_error = 99
+
+        self._create_controls()
+
+    def _create_controls(self):
+
+        ## Bottom panel
+        INFO_PANEL_FRAME = tk.Frame(self.window, height=self.INFO_PANEL_FIXED_H, )
+        INFO_PANEL_FRAME.pack(side='top', fill='x', expand=False)
+
+        # Camera name bar
+        name_bar = tk.Label(INFO_PANEL_FRAME, textvariable=self.txtvar_camera_name,
+                            anchor='center', justify='center', height=2,
+                            fg=self.colour_2, bg=self.colour, font=self.parent.font_bold)
+        name_bar.pack(side='top', fill='x')
+
+        ## Information block
+        f_information = tk.LabelFrame(INFO_PANEL_FRAME, text="Information",
+                                      height=self.INFO_PANEL_FIXED_H,
+                                      width=200)
+        f_information.pack(ipadx=10, ipady=3, padx=5, pady=5, side='left', fill='y', expand=False)
+
+        for label, var in zip(['Resolution', 'Capture', 'Exposure', 'Brightness', 'Display'],
+                              [self.txtvar_resolution,
+                               self.txtvar_capture_fps,
+                               self.txtvar_exposure,
+                               self.txtvar_brightness,
+                               self.txtvar_display_fps]):
+            f = tk.Frame(f_information)
+            f.pack(side='top', fill='x', expand=True)
+
+            l = tk.Label(f, text=f"{label} :",
+                         anchor='e', justify='right', width=13,
+                         font=self.parent.font_regular)
+            l.pack(side='left', fill='y')
+
+            v = tk.Label(f, textvariable=var,
+                         anchor='w', justify='left',
+                         font=self.parent.font_regular)
+            v.pack(side='left', fill='y')
+
+        ## View controls block
+        view_info_frame = tk.LabelFrame(INFO_PANEL_FRAME, text="View",
+                                        height=self.INFO_PANEL_FIXED_H,
+                                        width=200)
+        view_info_frame.pack(ipadx=10, ipady=3, padx=5, pady=5, side='left', fill='y', expand=False)
+
+        f_windowsnap = tk.Frame(view_info_frame)
+        f_windowsnap.pack(side='top', fill='y')
+
+        l_windowsnap = tk.Label(f_windowsnap, text=f"Snap window to:",
+                                anchor='w', justify='left',
+                                font=self.parent.font_regular,
+                                padx=5, pady=10)
+        l_windowsnap.pack(side='left', fill='y')
+
+        f_buttons_windowsnap = tk.Frame(f_windowsnap, padx=5, pady=10)
+        f_buttons_windowsnap.pack(side='left', fill='both', expand=True)
+
+        self.positions = np.array([['nw', 'n', 'ne'],
+                                   ['w', 'c', 'e'],
+                                   ['sw', 's', 'se']])
+
+        self._pixel = tk.PhotoImage(width=1, height=1)
+        for r in range(3):
+            for c in range(3):
+                b = tk.Button(f_buttons_windowsnap,
+                              image=self._pixel, compound="center",
+                              width=6, height=6,
+                              command=partial(self.move_to, self.positions[r, c]))
+                b.grid(row=r, column=c)
+
+        f_buttons_controls = tk.Frame(view_info_frame, padx=5)
+        f_buttons_controls.pack(ipadx=2, side='top', fill='y', expand=False)
+
+    def generate_board(self, BOARD_ROWS, BOARD_COLS, ARUCO_SQ_L, PHYSICAL_L, DPI_OUT=1200, save=True):
+        A4 = 210, 297
+
+        ratio = 2  # chessboard squares are twice as big as aruco markers
+        aruco_padding = 1  # There is a 1 aruco-grid wide margin around the aruco symbol
+
+        marker_sq_px = (aruco_padding + ARUCO_SQ_L + aruco_padding)
+        chessboard_sq_px = marker_sq_px * ratio
+
+        chessboard_sq_mm = PHYSICAL_L / BOARD_COLS
+        marker_sq_mm = chessboard_sq_mm / ratio
+
+        board_w_px = chessboard_sq_px * BOARD_COLS
+        board_h_px = chessboard_sq_px * BOARD_ROWS
+
+        board_w_mm = chessboard_sq_mm * BOARD_COLS
+        board_h_mm = chessboard_sq_mm * BOARD_ROWS
+
+        aruco_dict = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, f'DICT_{ARUCO_SQ_L}X{ARUCO_SQ_L}_50'))
+        board = cv2.aruco.CharucoBoard((BOARD_COLS, BOARD_ROWS),  # number of chessboard squares in x and y directions
+                                       chessboard_sq_mm,  # chessboard square side length (normally in meters)
+                                       marker_sq_mm,  # marker side length (same unit than squareLength)
+                                       aruco_dict)
+
+        ppm = board_w_px / board_w_mm
+
+        array = board.generateImage((board_w_px, board_h_px), None, 0, aruco_padding)
+        img = Image.fromarray(array, 'L')
+
+        doc_size_px = (int(round(A4[0] * ppm)), int(round(A4[1] * ppm)))
+
+        padded = Image.new('RGB', doc_size_px, (255, 255, 255))
+        padded.paste(img, ((doc_size_px[0] - board_w_px) // 2, (doc_size_px[1] - board_h_px) // 2))
+
+        doc_size_inches = (A4[0] / 25.4, A4[1] / 25.4)
+
+        doc_size_px_final = int(round(doc_size_inches[0] * DPI_OUT)), int(round(doc_size_inches[1] * DPI_OUT))
+        out = padded.resize(doc_size_px_final, resample=Image.Resampling.NEAREST)
+
+        if save:
+            out.save(f'{BOARD_ROWS}X{BOARD_COLS}_{board_w_mm}mm_{DPI_OUT}dpi.bmp', dpi=(DPI_OUT, DPI_OUT))
+        return aruco_dict, board
+
+    def _detect(self):
 
         img_arr = np.frombuffer(self._frame_buffer, dtype=np.uint8).reshape(self.source_shape)
         img_col = cv2.cvtColor(img_arr, cv2.COLOR_GRAY2BGR)
 
-        if len(self.detected_charuco_corners) < 10:
-            # Detect aruco markers
-            corners, ids, reject_candidates = self.detector.detectMarkers(img_arr)
+        # Detect aruco markers
+        marker_corners, marker_ids, _ = self.detector.detectMarkers(img_arr)
 
-            img_col = cv2.aruco.drawDetectedMarkers(image=img_col, corners=corners)
+        if marker_ids is not None and len(marker_ids) > 5:
+            img_col = cv2.aruco.drawDetectedMarkers(img_col, marker_corners, marker_ids)
+            charuco_retval, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(marker_corners,
+                                                                                               marker_ids,
+                                                                                               img_arr,
+                                                                                               self._charuco_board)
 
-            if len(corners) > 0:
+            # hull = cv2.convexHull(charuco_corners)
+            # print(hull)
+            # cv2.drawContours(img_col, hull, 0, (255, 255, 0), 1, 8)
 
-                # Charuco corners and ids from detected aruco markers
-                charuco_response, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(
-                    markerCorners=corners,
-                    markerIds=ids,
-                    image=img_arr,
-                    board=self._charuco_board)
+            img_col = cv2.polylines(img_col, [charuco_corners],
+                                  True, (255, 255, 0), 1)
 
-                if charuco_response > 5:
+            if charuco_retval > 4:
+                self.detected_charuco_corners.append(charuco_corners)
+                self.detected_charuco_ids.append(charuco_ids)
 
-                    self.detected_charuco_corners.append(charuco_corners)
-                    self.detected_charuco_ids.append(charuco_ids)
+                img_col = cv2.aruco.drawDetectedCornersCharuco(
+                    image=img_col,
+                    charucoCorners=charuco_corners,
+                    charucoIds=charuco_ids)
 
-                    # Draw the Charuco board corners
-                    img_col = cv2.aruco.drawDetectedCornersCharuco(
-                        image=img_col,
-                        charucoCorners=charuco_corners,
-                        charucoIds=charuco_ids)
-                # else:
-                #     print("No charuco board detected")
+        return img_col
+
+    def _calib(self):
+
+        if len(self.detected_charuco_ids) >= self._min_frames:
+
+            retval, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.aruco.calibrateCameraCharuco(charucoCorners=self.detected_charuco_corners,
+                                                                                                charucoIds=self.detected_charuco_ids,
+                                                                                                board=self._charuco_board,
+                                                                                                imageSize=self._source_shape[:2],
+                                                                                                cameraMatrix=self.camera_matrix,
+                                                                                                # distCoeffs=self.dist_coeffs)
+                                                                                                distCoeffs=self.dist_coeffs,
+                                                                                                flags=cv2.CALIB_USE_LU)
+                                                                                                # flags=cv2.CALIB_USE_LU)
+            if retval <= self._calib_error:
+                self._calib_error = retval
+                self.camera_matrix = camera_matrix
+                self.dist_coeffs = dist_coeffs
+
+            # Save calibration data
+            # np.save('camera_matrix.npy', camera_matrix)
+            # np.save('dist_coeffs.npy', dist_coeffs)
+            # print('Saved calibration data.')
+        else:
+            return
+
+    # def detect_pose(self):
+    #
+    #     img_arr = np.frombuffer(self._frame_buffer, dtype=np.uint8).reshape(self.source_shape)
+    #
+    #     # Undistort the image
+    #     undistorted_image = cv2.undistort(img_arr, self.camera_matrix, self.dist_coeffs)
+    #     img_col = cv2.cvtColor(undistorted_image, cv2.COLOR_GRAY2BGR)
+    #
+    #     # Detect markers in the undistorted image
+    #     marker_corners, marker_ids, _ = cv2.aruco.detectMarkers(undistorted_image,
+    #                                                             self.aruco_dict,
+    #                                                             parameters=self.detector_parameters)
+    #
+    #     # If at least one marker is detected
+    #     if marker_ids is not None and len(marker_ids) > 0:
+    #         # Interpolate CharUco corners
+    #         charuco_retval, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(marker_corners,
+    #                                                                                            marker_ids,
+    #                                                                                            undistorted_image,
+    #                                                                                            self._charuco_board)
+    #
+    #         # If enough corners are found, estimate the pose
+    #         if charuco_retval > 4:
+    #             retval, rvec, tvec = cv2.aruco.estimatePoseCharucoBoard(charuco_corners, charuco_ids,
+    #                                                                     self._charuco_board,
+    #                                                                     self.camera_matrix, self.dist_coeffs,
+    #                                                                     None, None)
+    #
+    #             # If pose estimation is successful, draw the axis
+    #             if retval:
+    #                 img_col = cv2.drawFrameAxes(img_col, self.camera_matrix, self.dist_coeffs, rvec, tvec,
+    #                                   length=1,
+    #                                   thickness=3)
+    #     return img_col
+
+    def update(self):
+        if self.window.resizable() == (0, 0):
+            # Reenable resizing on macOS (see trick at winow creation)
+            self.window.resizable(True, True)
+
+        while True:
+            self._refresh_framebuffer()
+
+            image_viz = self._detect()
+
+            self._calib()
+
+            if self.camera_matrix is not None:
+                image_viz = cv2.undistort(image_viz, self.camera_matrix, self.dist_coeffs)
+
+
+            # c = (0, 255, 0) if self._calib_error else (255, 0, 0)
+            # image_viz = cv2.putText(image_viz,
+            #                               f'Calibrated: {"YES" if self._calib_error else "NO"}',
+            #                         (50, 150), cv2.FONT_HERSHEY_SIMPLEX,
+            #                         1, c, 2, cv2.LINE_AA)
+
+            image_viz = cv2.putText(image_viz,f'Calib error: {self._calib_error}',
+                                    (50, 150), cv2.FONT_HERSHEY_SIMPLEX,
+                                    1, (255, 255, 0), 2, cv2.LINE_AA)
 
             # Get window size and set new videofeed size, preserving aspect ratio
             h, w = self.videofeed_shape
@@ -355,19 +581,11 @@ class VideoWindowCalib(VideoWindowBase):
             else:
                 h = int(w / self.aspect_ratio)
 
-            img_pillow = Image.fromarray(img_col)
+            img_pillow = Image.fromarray(image_viz)
             img_pillow = img_pillow.resize((w, h))
 
             self._refresh_videofeed(img_pillow)
 
-    def update(self):
-        if self.window.resizable() == (0, 0):
-            # Reenable resizing on macOS (see trick at winow creation)
-            self.window.resizable(True, True)
-
-        while True:
-            self._refresh_framebuffer()
-            self._calib()
 
             # if self.visible.is_set():
             #     # Update display fps counter
@@ -896,6 +1114,7 @@ class GUI:
             self.windows_threads.append(t)
 
         # Create list to store calibration windows
+        self._is_calibrating = Event()
         self.calib_windows = []
         self.calib_windows_threads = []
 
@@ -983,7 +1202,7 @@ class GUI:
                                             compound='left', text="Calibrate", anchor='center',
                                             width=150,
                                             font=self.font_bold,
-                                            command=self.gui_calibrate,
+                                            command=self.gui_toggle_calibrate,
                                             state='normal')
         self.button_calibration.grid(padx=2, pady=2, row=0, column=1, sticky="news")
 
@@ -1114,14 +1333,26 @@ class GUI:
                                                    fill=col, outline='',
                                                    tag=f'screen_{i}')
 
+    def visible_windows(self, include_main=False):
+        windows = [w for w in self.video_windows if w.visible.is_set()]
+        windows += [w for w in self.calib_windows if w.visible.is_set()]
+        if include_main:
+            windows += [self]
+        return windows
+
     def screen_update(self, val):
 
         old_monitor_x, old_monitor_y = self.selected_monitor.x, self.selected_monitor.y
 
+        old_root_x = self.root.winfo_rootx()
+        old_root_y = self.root.winfo_rooty()
+        rel_mouse_x = self.root.winfo_pointerx() - old_root_x
+        rel_mouse_y = self.root.winfo_pointery() - old_root_y
+
         self.set_monitor(val)
         self.update_monitors_buttons()
 
-        for window_to_move in [self, *self.video_windows]:
+        for window_to_move in self.visible_windows(include_main=True):
             w, h, x, y = whxy(window_to_move)
 
             d_x = x - old_monitor_x
@@ -1147,19 +1378,29 @@ class GUI:
             else:
                 window_to_move.window.geometry(f'{w}x{h}+{new_x}+{new_y}')
 
+        movement_x = self.root.winfo_rootx() - old_root_x
+        movement_y = self.root.winfo_rooty() - old_root_y
+
+        self.root.event_generate('<Motion>', warp=True, x=movement_x + rel_mouse_x, y=movement_y + rel_mouse_y)
+
     def autotile_windows(self):
-        for w in self.video_windows:
+        for w in self.visible_windows(include_main=False):
             w.auto_size()
             w.auto_move()
 
     def _handle_keypress(self, event):
         if self.editing_disabled:
-            if event.keycode == 9:  # Esc
+            # if event.keycode == 9:  # Esc
+            if event.keycode == 27:  # Esc
                 self.quit()
-            elif event.keycode == 65:  # Space
+            # elif event.keycode == 65:  # Space
+            elif event.keycode == 32:  # Space
                 self.gui_toggle_recording()
             else:
                 pass
+        else:
+            if event.keycode == 13:  # Enter
+                self.gui_toggle_text_editing(True)
 
     def gui_toggle_text_editing(self, tf=None):
         if tf is None:
@@ -1197,16 +1438,35 @@ class GUI:
             else:
                 pass
 
-    def gui_calibrate(self):
-        for w in self.video_windows:
-            w.toggle_visibility(False)
+    def gui_toggle_calibrate(self, tf=None):
+        if tf is None:
+            tf = not self._is_calibrating.is_set()
 
-            c = VideoWindowCalib(parent=self, idx=w.idx)
-            self.calib_windows.append(c)
+        if self._is_calibrating.is_set() and tf is False:
+            self._is_calibrating.clear()
+            for window in self.calib_windows:
+                w, h, x, y = whxy(window)
+                self.video_windows[window.idx].toggle_visibility(True)
+                window.window.destroy()
 
-            t = Thread(target=c.update, args=(), daemon=False)
-            t.start()
-            self.calib_windows_threads.append(t)
+        elif not self._is_calibrating.is_set() and tf is True:
+
+            self._is_calibrating.set()
+
+            for window in self.video_windows:
+                w, h, x, y = whxy(window)
+                window.toggle_visibility(False)
+
+                c = VideoWindowCalib(parent=self, idx=window.idx)
+                self.calib_windows.append(c)
+
+                c.window.geometry(f'{w}x{h}+{x}+{y}')
+
+                t = Thread(target=c.update, args=(), daemon=False)
+                t.start()
+                self.calib_windows_threads.append(t)
+        else:
+            pass
 
     def gui_toggle_acquisition(self, tf=None):
         if tf is None:
