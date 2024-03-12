@@ -1,6 +1,5 @@
 import sys
 import cv2
-from cv2 import aruco
 import tkinter as tk
 import tkinter.font as font
 from PIL import Image, ImageTk, ImageDraw, ImageFont
@@ -307,36 +306,30 @@ class VideoWindowCalib(VideoWindowBase):
     def __init__(self, parent, idx):
         super().__init__(parent, idx)
 
+        self._total_coverage_area = np.zeros((*self.source_shape, 3), dtype=np.uint8)
+        self._current_coverage_area = np.zeros(self.source_shape, dtype=np.uint8)
+
         # ChAruco board variables
-        self.BOARD_ROWS = 5  # Total rows in the board (chessboard)
-        self.BOARD_COLS = 4  # Total cols in the board
-        self.ARUCO_SQ_L = 4  # Side length of each individual aruco markers
-        self.PHYSICAL_L = 15  # Length of the small side of the board in real life units (i.e. mm)
+        BOARD_ROWS = 5  # Total rows in the board (chessboard)
+        BOARD_COLS = 4  # Total cols in the board
+        ARUCO_SQ_L = 4  # Side length of each individual aruco markers
+        PHYSICAL_L = 15  # Length of the small side of the board in real life units (i.e. mm)
 
-        self.aruco_dict, self._charuco_board = self.generate_board(self.BOARD_ROWS,
-                                                self.BOARD_COLS,
-                                                self.ARUCO_SQ_L,
-                                                self.PHYSICAL_L, DPI_OUT=1200, save=False)
+        self._aruco_dict, self._charuco_board = utils.generate_board(BOARD_ROWS, BOARD_COLS, ARUCO_SQ_L, PHYSICAL_L)
 
-        self.detector_parameters = cv2.aruco.DetectorParameters()
-        self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.detector_parameters)
+        detector_params = cv2.aruco.DetectorParameters()
+        self.detector = cv2.aruco.ArucoDetector(self._aruco_dict, detector_params)
 
-        self._max_frames = 20
-        self._min_frames = 5
-        self.detected_charuco_corners = deque(maxlen=self._max_frames)      # Corners seen so far
-        self.detected_charuco_ids = deque(maxlen=self._max_frames)          # Corresponding aruco ids
+        max_frames = 150
 
-        # focal_pixel = (55 / 4.98) * self.source_shape[1] # 4.98 is the sensor width in mm
-        #
-        # self.camera_matrix = np.array([[ focal_pixel,    0.0, self.source_shape[0]/2.0],
-        #                                [    0.0, focal_pixel, self.source_shape[1]/2.0],
-        #                                [    0.0,    0.0,                      1.0]])
-        # self.dist_coeffs = np.zeros([5, 1])
+        self.detected_charuco_corners = deque(maxlen=max_frames)      # Corners seen so far
+        self.detected_charuco_ids = deque(maxlen=max_frames)          # Corresponding aruco ids
 
         self.camera_matrix = None
         self.dist_coeffs = None
 
         self._calib_error = 99
+        self._coverage_pct = 0
 
         self._create_controls()
 
@@ -411,49 +404,6 @@ class VideoWindowCalib(VideoWindowBase):
         f_buttons_controls = tk.Frame(view_info_frame, padx=5)
         f_buttons_controls.pack(ipadx=2, side='top', fill='y', expand=False)
 
-    def generate_board(self, BOARD_ROWS, BOARD_COLS, ARUCO_SQ_L, PHYSICAL_L, DPI_OUT=1200, save=True):
-        A4 = 210, 297
-
-        ratio = 2  # chessboard squares are twice as big as aruco markers
-        aruco_padding = 1  # There is a 1 aruco-grid wide margin around the aruco symbol
-
-        marker_sq_px = (aruco_padding + ARUCO_SQ_L + aruco_padding)
-        chessboard_sq_px = marker_sq_px * ratio
-
-        chessboard_sq_mm = PHYSICAL_L / BOARD_COLS
-        marker_sq_mm = chessboard_sq_mm / ratio
-
-        board_w_px = chessboard_sq_px * BOARD_COLS
-        board_h_px = chessboard_sq_px * BOARD_ROWS
-
-        board_w_mm = chessboard_sq_mm * BOARD_COLS
-        board_h_mm = chessboard_sq_mm * BOARD_ROWS
-
-        aruco_dict = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, f'DICT_{ARUCO_SQ_L}X{ARUCO_SQ_L}_50'))
-        board = cv2.aruco.CharucoBoard((BOARD_COLS, BOARD_ROWS),  # number of chessboard squares in x and y directions
-                                       chessboard_sq_mm,  # chessboard square side length (normally in meters)
-                                       marker_sq_mm,  # marker side length (same unit than squareLength)
-                                       aruco_dict)
-
-        ppm = board_w_px / board_w_mm
-
-        array = board.generateImage((board_w_px, board_h_px), None, 0, aruco_padding)
-        img = Image.fromarray(array, 'L')
-
-        doc_size_px = (int(round(A4[0] * ppm)), int(round(A4[1] * ppm)))
-
-        padded = Image.new('RGB', doc_size_px, (255, 255, 255))
-        padded.paste(img, ((doc_size_px[0] - board_w_px) // 2, (doc_size_px[1] - board_h_px) // 2))
-
-        doc_size_inches = (A4[0] / 25.4, A4[1] / 25.4)
-
-        doc_size_px_final = int(round(doc_size_inches[0] * DPI_OUT)), int(round(doc_size_inches[1] * DPI_OUT))
-        out = padded.resize(doc_size_px_final, resample=Image.Resampling.NEAREST)
-
-        if save:
-            out.save(f'{BOARD_ROWS}X{BOARD_COLS}_{board_w_mm}mm_{DPI_OUT}dpi.bmp', dpi=(DPI_OUT, DPI_OUT))
-        return aruco_dict, board
-
     def _detect(self):
 
         img_arr = np.frombuffer(self._frame_buffer, dtype=np.uint8).reshape(self.source_shape)
@@ -464,53 +414,63 @@ class VideoWindowCalib(VideoWindowBase):
 
         if marker_ids is not None and len(marker_ids) > 5:
             img_col = cv2.aruco.drawDetectedMarkers(img_col, marker_corners, marker_ids)
-            charuco_retval, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(marker_corners,
-                                                                                               marker_ids,
-                                                                                               img_arr,
-                                                                                               self._charuco_board)
-
-            # hull = cv2.convexHull(charuco_corners)
-            # print(hull)
-            # cv2.drawContours(img_col, hull, 0, (255, 255, 0), 1, 8)
-
-            img_col = cv2.polylines(img_col, [charuco_corners],
-                                  True, (255, 255, 0), 1)
-
+            charuco_retval, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(markerCorners=marker_corners,
+                                                                                               markerIds=marker_ids,
+                                                                                               image=img_arr,
+                                                                                               board=self._charuco_board,
+                                                                                               minMarkers=0)
             if charuco_retval > 4:
-                self.detected_charuco_corners.append(charuco_corners)
-                self.detected_charuco_ids.append(charuco_ids)
 
                 img_col = cv2.aruco.drawDetectedCornersCharuco(
                     image=img_col,
                     charucoCorners=charuco_corners,
                     charucoIds=charuco_ids)
 
+                hull = cv2.convexHull(charuco_corners)
+
+                self._current_coverage_area.fill(0)
+                current = cv2.drawContours(self._current_coverage_area, [hull.astype(int)], 0, (255, 255, 255), -1).astype(bool)
+
+                current_total = self._total_coverage_area[:, :, 1].astype(bool)     # Total 'seen' area
+
+                overlap = (current_total & current)     # Overlap between current detection and everything seen so far
+                new = (current & ~overlap)              # Area that is new in current detection
+                # missing_area = ~current_total          # Area that is still missing
+
+                self._coverage_pct = current_total.sum()/np.prod(self.source_shape) * 100   # Percentage covered so far
+
+                # if (new & missing_area).sum() > new.sum() * 0.75:
+                if new.sum() > current.sum() * 0.2:
+                    self._total_coverage_area[:, :, 1][new] = 255
+
+                    self.detected_charuco_corners.append(charuco_corners)
+                    self.detected_charuco_ids.append(charuco_ids)
+
+                # print(overlap)
+
         return img_col
+
 
     def _calib(self):
 
-        if len(self.detected_charuco_ids) >= self._min_frames:
+        if self.camera_matrix is None and self._coverage_pct >= 75:
+
+            print("Calibration...")
 
             retval, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.aruco.calibrateCameraCharuco(charucoCorners=self.detected_charuco_corners,
                                                                                                 charucoIds=self.detected_charuco_ids,
                                                                                                 board=self._charuco_board,
                                                                                                 imageSize=self._source_shape[:2],
                                                                                                 cameraMatrix=self.camera_matrix,
-                                                                                                # distCoeffs=self.dist_coeffs)
                                                                                                 distCoeffs=self.dist_coeffs,
-                                                                                                flags=cv2.CALIB_USE_LU)
-                                                                                                # flags=cv2.CALIB_USE_LU)
-            if retval <= self._calib_error:
-                self._calib_error = retval
-                self.camera_matrix = camera_matrix
-                self.dist_coeffs = dist_coeffs
+                                                                                                flags=cv2.CALIB_USE_QR)
+            self._calib_error = retval
+            self.camera_matrix = camera_matrix
+            self.dist_coeffs = dist_coeffs
 
             # Save calibration data
             # np.save('camera_matrix.npy', camera_matrix)
             # np.save('dist_coeffs.npy', dist_coeffs)
-            # print('Saved calibration data.')
-        else:
-            return
 
     # def detect_pose(self):
     #
@@ -552,26 +512,25 @@ class VideoWindowCalib(VideoWindowBase):
             # Reenable resizing on macOS (see trick at winow creation)
             self.window.resizable(True, True)
 
-        while True:
+        while self.parent._is_calibrating.is_set():
             self._refresh_framebuffer()
 
             image_viz = self._detect()
 
             self._calib()
 
+            image_viz = cv2.putText(image_viz, f'Area covered: {self._coverage_pct:.2f}% ({len(self.detected_charuco_corners)} images)',
+                                    (50, 50), cv2.FONT_HERSHEY_SIMPLEX,
+                                    1, (0, 255, 0), 2, cv2.LINE_AA)
+
+            image_viz = cv2.putText(image_viz,f'Calib error: {self._calib_error if self._calib_error < 10 else "-"}',
+                                    (50, 100), cv2.FONT_HERSHEY_SIMPLEX,
+                                    1, (255, 255, 0), 2, cv2.LINE_AA)
+
+            image_viz = cv2.addWeighted(image_viz, 0.5, self._total_coverage_area, 0.5, 0.0)
+
             if self.camera_matrix is not None:
                 image_viz = cv2.undistort(image_viz, self.camera_matrix, self.dist_coeffs)
-
-
-            # c = (0, 255, 0) if self._calib_error else (255, 0, 0)
-            # image_viz = cv2.putText(image_viz,
-            #                               f'Calibrated: {"YES" if self._calib_error else "NO"}',
-            #                         (50, 150), cv2.FONT_HERSHEY_SIMPLEX,
-            #                         1, c, 2, cv2.LINE_AA)
-
-            image_viz = cv2.putText(image_viz,f'Calib error: {self._calib_error}',
-                                    (50, 150), cv2.FONT_HERSHEY_SIMPLEX,
-                                    1, (255, 255, 0), 2, cv2.LINE_AA)
 
             # Get window size and set new videofeed size, preserving aspect ratio
             h, w = self.videofeed_shape
@@ -586,17 +545,17 @@ class VideoWindowCalib(VideoWindowBase):
 
             self._refresh_videofeed(img_pillow)
 
+            if self.visible.is_set():
+                # Update display fps counter
+                now = datetime.now()
+                dt = (now - self._clock).total_seconds()
+                self._fps = (self._counter - self._counter_start) / dt
+                self._refresh_framebuffer()
+                self._counter += 1
+            else:
+                self.visible.wait()
 
-            # if self.visible.is_set():
-            #     # Update display fps counter
-            #     now = datetime.now()
-            #     dt = (now - self._clock).total_seconds()
-            #     self._fps = (self._counter - self._counter_start) / dt
-            #     self._refresh_framebuffer()
-            #     self._update_video()
-            #     self._counter += 1
-            # else:
-            #     self.visible.wait()
+        self.window.destroy()
 
 
 class VideoWindowMain(VideoWindowBase):
@@ -1066,6 +1025,7 @@ class GUI:
         self.icon_capture_on = tk.PhotoImage(file=resources_path / 'capture_on.png')
         self.icon_capture_off = tk.PhotoImage(file=resources_path / 'capture_off_bw.png')
         self.icon_calib = tk.PhotoImage(file=resources_path / 'calibrate.png')
+        self.icon_calib_off = tk.PhotoImage(file=resources_path / 'calibrate_bw.png')
         self.icon_rec_on = tk.PhotoImage(file=resources_path / 'rec.png')
         self.icon_rec_off = tk.PhotoImage(file=resources_path / 'rec_off.png')
 
@@ -1198,10 +1158,10 @@ class GUI:
         self.button_acquisition.grid(padx=2, pady=2, row=0, column=0, sticky="news")
 
         self.button_calibration = tk.Button(f_buttons,
-                                            image=self.icon_calib,
-                                            compound='left', text="Calibrate", anchor='center',
+                                            image=self.icon_calib_off,
+                                            compound='left', text=" Calibrate", anchor='center',
                                             width=150,
-                                            font=self.font_bold,
+                                            font=self.font_regular,
                                             command=self.gui_toggle_calibrate,
                                             state='normal')
         self.button_calibration.grid(padx=2, pady=2, row=0, column=1, sticky="news")
@@ -1444,14 +1404,22 @@ class GUI:
 
         if self._is_calibrating.is_set() and tf is False:
             self._is_calibrating.clear()
+
+            if self.mgr.acquiring:
+                self.button_recpause.config(state="normal")
+
+            self.button_calibration.config(text=" Calibrate", image=self.icon_calib_off)
+
             for window in self.calib_windows:
-                w, h, x, y = whxy(window)
                 self.video_windows[window.idx].toggle_visibility(True)
-                window.window.destroy()
 
         elif not self._is_calibrating.is_set() and tf is True:
 
             self._is_calibrating.set()
+
+            self.button_recpause.config(state="disabled")
+
+            self.button_calibration.config(text=" Finish", image=self.icon_calib)
 
             for window in self.video_windows:
                 w, h, x, y = whxy(window)
