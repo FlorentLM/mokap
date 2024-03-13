@@ -398,20 +398,20 @@ class VideoWindowCalib(VideoWindowBase):
         f_snapshots = tk.Frame(f_information)
         f_snapshots.pack(side="top", fill="x", expand=True)
 
-        self.snap_button = tk.Button(f_snapshots, text="Take snapshot", font=self.parent.font_bold,
+        self.snap_button = tk.Button(f_snapshots, text="Snapshot", font=self.parent.font_bold,
                                      command=self._toggle_snapshot)
         self.snap_button.pack(padx=5, pady=5, side="left", fill="both", expand=False)
 
         self.autosnap_var = tk.IntVar(value=0)
         autosnap_button = tk.Checkbutton(f_snapshots, text="Auto snapshot", variable=self.autosnap_var, font=self.parent.font_regular)
-        autosnap_button.pack(padx=5, pady=5, side="left", fill="both", expand=False)
+        autosnap_button.pack(padx=5, pady=5, side="top", fill="both", expand=False)
 
         self.reset_coverage_button = tk.Button(f_snapshots, text="Clear snapshots", font=self.parent.font_regular,
                                      command=self._reset_coverage)
 
-        self.reset_coverage_button.pack(padx=5, pady=5, side="left", fill="both", expand=False)
+        self.reset_coverage_button.pack(padx=5, pady=5, side="top", fill="both", expand=False)
 
-        self.calibrate_button = tk.Button(f_information, text="Calibrate",
+        self.calibrate_button = tk.Button(f_information, text="Compute calibration",
                                          highlightthickness=2, highlightbackground=self.parent.col_red,
                                          font=self.parent.font_bold,
                                          command=self._perform_calibration)
@@ -692,18 +692,22 @@ class VideoWindowCalib(VideoWindowBase):
                                       distCoeffs=self.dist_coeffs,
                                       rvec=rvec, tvec=tvec, length=5)
 
+        image_viz = cv2.putText(image_viz, f'Snapshots coverage:',
+                                (50, 50), cv2.FONT_HERSHEY_SIMPLEX,
+                                1, (255, 255, 255), 2, cv2.LINE_AA)
+
         image_viz = cv2.putText(image_viz,
                                 f'{self._coverage_pct:.2f}% ({len(self.detected_charuco_corners)} images)',
-                                (50, 50), cv2.FONT_HERSHEY_SIMPLEX,
+                                (400, 50), cv2.FONT_HERSHEY_SIMPLEX,
                                 1, pct_color, 2, cv2.LINE_AA)
 
-        image_viz = cv2.putText(image_viz, f'Calibation: ',
+        image_viz = cv2.putText(image_viz, f'Calibration:',
                                 (50, 100), cv2.FONT_HERSHEY_SIMPLEX,
                                 1, (255, 255, 255), 2, cv2.LINE_AA)
 
         calib_col = self.parent.col_green_rgb if self.camera_matrix is not None else self.parent.col_white_rgb
-        image_viz = cv2.putText(image_viz, f'{"APPLIED" if self.camera_matrix is not None else "NONE"}',
-                                (230, 100), cv2.FONT_HERSHEY_SIMPLEX,
+        image_viz = cv2.putText(image_viz, f'{"Applied" if self.camera_matrix is not None else "-"}',
+                                (250, 100), cv2.FONT_HERSHEY_SIMPLEX,
                                 1, calib_col, 2, cv2.LINE_AA)
 
         # Get window size and set new videofeed size, preserving aspect ratio
