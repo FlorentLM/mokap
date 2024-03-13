@@ -7,12 +7,28 @@ from PIL import Image
 import cv2
 
 
-def hex_to_hls(hex_str: str):
+def hex_to_rgb(hex_str: str):
     hex_str = hex_str.lstrip('#')
     if len(hex_str) == 3:
         hex_str = ''.join([c + c for c in hex_str])
 
-    r_i, g_i, b_i = tuple(int(hex_str[i:i + 2], 16) for i in (0, 2, 4))
+    return tuple(int(hex_str[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def rgb_to_hex(*rgb):
+    if len(rgb) == 1:
+        r, g, b = rgb[0]
+    elif len(rgb) != 3:
+        raise TypeError('Either pass three separate values or a tuple')
+    else:
+        r, g, b = rgb
+
+    new_hex = f'#{int(round(r)):02x}{int(round(g)):02x}{int(round(b)):02x}'
+    return new_hex
+
+
+def hex_to_hls(hex_str: str):
+    r_i, g_i, b_i = hex_to_rgb(hex_str)
     r_f, g_f, b_f = colorsys.rgb_to_hls(r_i / 255.0, g_i / 255.0, b_i / 255.0)
     return round(r_f * 360), round(g_f * 100), round(b_f * 100)
 

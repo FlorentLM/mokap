@@ -1,8 +1,9 @@
 import sys
 import cv2
 import tkinter as tk
-from tkinter.filedialog import askopenfilename
+from tkinter.filedialog import askopenfilename, askdirectory
 import tkinter.font as font
+from tkinter import ttk
 from PIL import Image, ImageTk, ImageDraw, ImageFont
 import numpy as np
 from datetime import datetime
@@ -60,8 +61,12 @@ def compute_windows_size(source_dims, screen_dims):
 class VideoWindowBase:
     mainvideowindows_ids = []
 
-    INFO_PANEL_FIXED_H = 220  # in pixels
-    INFO_PANEL_FIXED_W = 630  # in pixels
+    if 'Windows' in platform.system():
+        INFO_PANEL_FIXED_H = 250  # in pixels
+        INFO_PANEL_FIXED_W = 650  # in pixels
+    else:
+        INFO_PANEL_FIXED_H = 220  # in pixels
+        INFO_PANEL_FIXED_W = 630  # in pixels
 
     def __init__(self, parent, idx=None):
 
@@ -84,14 +89,14 @@ class VideoWindowBase:
 
         self._source_shape = (self.parent.mgr.cameras[self.idx].height, self.parent.mgr.cameras[self.idx].width)
         self._cam_name = self.parent.mgr.cameras[self.idx].name
+
         self._bg_colour = f'#{self.parent.mgr.colours[self._cam_name].lstrip("#")}'
-        self._fg_colour = '#ffffff' if utils.hex_to_hls(self._bg_colour)[1] < 60 else '#000000'
+        self._fg_colour = self.parent.col_white if utils.hex_to_hls(self._bg_colour)[1] < 60 else self.parent.col_black
+        self._window_bg_colour = self.window.cget('background')
 
         h, w = self._source_shape
         self.window.geometry(f"{w}x{h + self.INFO_PANEL_FIXED_H}")
         self.window.protocol("WM_DELETE_WINDOW", self.toggle_visibility)
-
-        self._window_bg_colour = self.window.cget("background")
 
         # Init state
         self._counter = 0
@@ -323,21 +328,26 @@ class VideoWindowCalib(VideoWindowBase):
         self.detector = cv2.aruco.ArucoDetector(self._aruco_dict, detector_params)
 
         self._max_frames = 150
-        self._recommended_coverage_pct = 60
+        self._recommended_coverage_pct_high = 80
+        self._recommended_coverage_pct_mid = 50
+        self._recommended_coverage_pct_low = 25
 
-        self.detected_charuco_corners = deque(maxlen=self._max_frames)      # Corners seen so far
-        self.detected_charuco_ids = deque(maxlen=self._max_frames)          # Corresponding aruco ids
+        self.current_charuco_corners = None                                 # Currently visible corners
+        self.current_charuco_ids = None                                     # Corresponding aruco ids
+        self.detected_charuco_corners = deque(maxlen=self._max_frames)      # All corners seen so far
+        self.detected_charuco_ids = deque(maxlen=self._max_frames)          # All corresponding aruco ids
 
         self.camera_matrix = None
         self.dist_coeffs = None
 
-        self._calib_error = 99
         self._coverage_pct = 0
 
         # Set initial values
         h, w = self.parent.mgr.cameras[self.idx].height, self.parent.mgr.cameras[self.idx].width
         self.txtvar_resolution.set(f"{w}×{h} px")
         self.txtvar_exposure.set(f"{self.parent.mgr.cameras[self.idx].exposure} µs")
+
+        self._manual_snapshot = False
 
         self._create_controls()
 
@@ -385,17 +395,28 @@ class VideoWindowCalib(VideoWindowBase):
                                       width=300)
         f_information.pack(ipadx=10, ipady=3, padx=5, pady=5, side='left', fill='y', expand=False)
 
-        f_calibrate = tk.Frame(f_information)
-        f_calibrate.pack(padx=5, pady=5, side="top", fill="x", expand=True)
+        f_snapshots = tk.Frame(f_information)
+        f_snapshots.pack(side="top", fill="x", expand=True)
 
-        self.calibrate_button = tk.Button(f_calibrate, text="Calibrate", font=self.parent.font_bold,
-                                     command=self._perform_calibration, fg='green', state='disabled')
-        self.calibrate_button.pack(side="left", fill="both", expand=False)
+        self.snap_button = tk.Button(f_snapshots, text="Take snapshot", font=self.parent.font_bold,
+                                     command=self._toggle_snapshot)
+        self.snap_button.pack(padx=5, pady=5, side="left", fill="both", expand=False)
 
-        self.reset_coverage_button = tk.Button(f_calibrate, text="Reset", font=self.parent.font_regular,
+        self.autosnap_var = tk.IntVar(value=0)
+        autosnap_button = tk.Checkbutton(f_snapshots, text="Auto snapshot", variable=self.autosnap_var, font=self.parent.font_regular)
+        autosnap_button.pack(padx=5, pady=5, side="left", fill="both", expand=False)
+
+        self.reset_coverage_button = tk.Button(f_snapshots, text="Clear snapshots", font=self.parent.font_regular,
                                      command=self._reset_coverage)
 
-        self.reset_coverage_button.pack(side="left", fill="both", expand=False)
+        self.reset_coverage_button.pack(padx=5, pady=5, side="left", fill="both", expand=False)
+
+        self.calibrate_button = tk.Button(f_information, text="Calibrate",
+                                         highlightthickness=2, highlightbackground=self.parent.col_red,
+                                         font=self.parent.font_bold,
+                                         command=self._perform_calibration)
+
+        self.calibrate_button.pack(padx=5, pady=5, side="left", fill="both", expand=False)
 
         f_saveload = tk.Frame(f_information)
         f_saveload.pack(padx=5, pady=5, side="top", fill="x", expand=True)
@@ -443,13 +464,25 @@ class VideoWindowCalib(VideoWindowBase):
         f_buttons_controls = tk.Frame(view_info_frame, padx=5)
         f_buttons_controls.pack(ipadx=2, side='top', fill='y', expand=False)
 
+    def _toggle_snapshot(self):
+        self._manual_snapshot = True
+
     def _detect(self):
 
         img_arr = np.frombuffer(self._frame_buffer, dtype=np.uint8).reshape(self.source_shape)
         img_col = cv2.cvtColor(img_arr, cv2.COLOR_GRAY2BGR)
 
         # Detect aruco markers
-        marker_corners, marker_ids, _ = self.detector.detectMarkers(img_arr)
+        marker_corners, marker_ids, rejected = self.detector.detectMarkers(img_arr)
+
+        marker_corners, marker_ids, rejected, recovered = cv2.aruco.refineDetectedMarkers(
+            image=img_arr,
+            board=self._charuco_board,
+            detectedCorners=marker_corners,
+            detectedIds=marker_ids,
+            rejectedCorners=rejected)
+
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.0001)
 
         if marker_ids is not None and len(marker_ids) > 5:
             img_col = cv2.aruco.drawDetectedMarkers(img_col, marker_corners, marker_ids)
@@ -460,6 +493,16 @@ class VideoWindowCalib(VideoWindowBase):
                                                                                                cameraMatrix=self.camera_matrix,
                                                                                                distCoeffs=self.dist_coeffs,
                                                                                                minMarkers=0)
+
+            charuco_corners = cv2.cornerSubPix(img_arr, charuco_corners,
+                             winSize=(20, 20),
+                             zeroZone=(-1, -1),
+                             criteria=criteria)
+
+            # Keep copy for visualisation in case of resetting
+            self.current_charuco_ids = charuco_ids
+            self.current_charuco_corners = charuco_corners
+
             if charuco_retval > 4:
 
                 img_col = cv2.aruco.drawDetectedCornersCharuco(
@@ -470,7 +513,12 @@ class VideoWindowCalib(VideoWindowBase):
                 hull = cv2.convexHull(charuco_corners)
 
                 self._current_coverage_area.fill(0)
-                current = cv2.drawContours(self._current_coverage_area, [hull.astype(int)], 0, (255, 255, 255), -1).astype(bool)
+                current = cv2.drawContours(self._current_coverage_area,
+                                           [hull.astype(int)], 0,
+                                           self.parent.col_white_rgb, -1).astype(bool)
+                img_col = cv2.drawContours(img_col,
+                                           [hull.astype(int)], 0,
+                                           self.parent.col_green_rgb, 2)
 
                 current_total = self._total_coverage_area[:, :, 1].astype(bool)     # Total 'seen' area
 
@@ -480,17 +528,22 @@ class VideoWindowCalib(VideoWindowBase):
 
                 self._coverage_pct = current_total.sum()/np.prod(self.source_shape) * 100   # Percentage covered so far
 
-                # if (new & missing_area).sum() > new.sum() * 0.75:
-                if new.sum() > current.sum() * 0.2:
-                    self._total_coverage_area[:, :, 1][new] = 255
+                # auto_snapshot = bool(self.autosnap_var.get()) & ((new & missing_area).sum() > new.sum() * 0.75)
+                auto_snapshot = bool(self.autosnap_var.get()) & (new.sum() > current.sum() * 0.2)
+                if auto_snapshot or self._manual_snapshot:
+                    self._total_coverage_area[new] += (np.array(self.parent.col_green_rgb) * 0.25).astype(np.uint8)
 
                     self.detected_charuco_corners.append(charuco_corners)
                     self.detected_charuco_ids.append(charuco_ids)
+                    self._manual_snapshot = False
 
         return img_col
 
 
     def _perform_calibration(self):
+
+        self._videofeed.configure(text='Calibrating...', fg='white')
+        self._refresh_videofeed(Image.fromarray(np.zeros_like(self._frame_buffer), mode='L'))
 
         retval, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.aruco.calibrateCameraCharuco(charucoCorners=self.detected_charuco_corners,
                                                                                             charucoIds=self.detected_charuco_ids,
@@ -499,9 +552,12 @@ class VideoWindowCalib(VideoWindowBase):
                                                                                             cameraMatrix=self.camera_matrix,
                                                                                             distCoeffs=self.dist_coeffs,
                                                                                             flags=cv2.CALIB_USE_QR)
+
         self._calib_error = retval
         self.camera_matrix = camera_matrix
         self.dist_coeffs = dist_coeffs
+
+        self._videofeed.configure(text='')
 
         self._reset_coverage()
         self.saved_label.config(text=f'')
@@ -516,7 +572,9 @@ class VideoWindowCalib(VideoWindowBase):
         self._coverage_pct = 0
 
     def save_calibration(self):
-        save_folder = self.parent.mgr.full_path / f'cam{self.idx}'
+        cam_name = self._cam_name.lower()
+
+        save_folder = self.parent.mgr.full_path.parent / 'calibrations' / self.parent.mgr.full_path.name / cam_name.lower()
         save_folder.mkdir(exist_ok=True, parents=True)
 
         np.save(save_folder / 'camera_matrix.npy', self.camera_matrix)
@@ -528,16 +586,18 @@ class VideoWindowCalib(VideoWindowBase):
     def load_calibration(self, load_path=None):
 
         if load_path is None:
-            load_path = askopenfilename()
+            load_path = askdirectory()
         load_path = Path(load_path)
 
         if load_path.is_file():
             load_path = load_path.parent
 
-        if f'cam{self.idx}' not in load_path.name and (load_path / f'cam{self.idx}').exists():
+        cam_name = self._cam_name.lower()
+
+        if cam_name not in load_path.name and (load_path / cam_name).exists():
             load_path = load_path / f'cam{self.idx}'
 
-        if f'cam{self.idx}' in load_path.name:
+        if cam_name in load_path.name:
             self.camera_matrix = np.load(load_path / 'camera_matrix.npy')
             self.dist_coeffs = np.load(load_path / 'dist_coeffs.npy')
             self.saved_label.config(text=f'Loaded.')
@@ -599,28 +659,52 @@ class VideoWindowCalib(VideoWindowBase):
 
     def _update_visualisation(self):
 
-        if self._coverage_pct >= self._recommended_coverage_pct:
-            self.calibrate_button.config(state='normal')
-            col = (0, 255, 0)
+        if self._coverage_pct >= self._recommended_coverage_pct_high:
+            self.calibrate_button.configure(highlightbackground=self.parent.col_green)
+            pct_color = self.parent.col_green_rgb
+        elif self._recommended_coverage_pct_high > self._coverage_pct >= self._recommended_coverage_pct_mid:
+            self.calibrate_button.configure(highlightbackground=self.parent.col_yelgreen)
+            pct_color = self.parent.col_yelgreen_rgb
+        elif self._recommended_coverage_pct_mid > self._coverage_pct >= self._recommended_coverage_pct_low:
+            self.calibrate_button.configure(highlightbackground=self.parent.col_orange)
+            pct_color = self.parent.col_orange_rgb
         else:
-            self.calibrate_button.config(state='disabled')
-            col = (255, 255, 255)
+            self.calibrate_button.configure(highlightbackground=self.parent.col_red)
+            pct_color = self.parent.col_red_rgb
 
         image_viz = self._detect()
 
-        image_viz = cv2.addWeighted(image_viz, 0.5, self._total_coverage_area, 0.5, 0.0)
+        image_viz = cv2.addWeighted(image_viz, 1.0, self._total_coverage_area, 0.8, 0.0)
 
         if self.camera_matrix is not None:
             image_viz = cv2.undistort(image_viz, self.camera_matrix, self.dist_coeffs)
 
-        image_viz = cv2.putText(image_viz,
-                                f'Area covered: {self._coverage_pct:.2f}% ({len(self.detected_charuco_corners)} images)',
-                                (50, 50), cv2.FONT_HERSHEY_SIMPLEX,
-                                1, col, 2, cv2.LINE_AA)
+            if self.current_charuco_corners is not None:
+                valid, rvec, tvec = cv2.aruco.estimatePoseCharucoBoard(charucoCorners=self.current_charuco_corners,
+                                                                       charucoIds=self.current_charuco_ids,
+                                                                       board=self._charuco_board,
+                                                                       cameraMatrix=self.camera_matrix,
+                                                                       distCoeffs=self.dist_coeffs,
+                                                                       rvec=None, tvec=None)
+                if valid:
+                    cv2.drawFrameAxes(image=image_viz,
+                                      cameraMatrix=self.camera_matrix,
+                                      distCoeffs=self.dist_coeffs,
+                                      rvec=rvec, tvec=tvec, length=5)
 
-        image_viz = cv2.putText(image_viz, f'Calib error: {self._calib_error if self._calib_error < 10 else "-"}',
+        image_viz = cv2.putText(image_viz,
+                                f'{self._coverage_pct:.2f}% ({len(self.detected_charuco_corners)} images)',
+                                (50, 50), cv2.FONT_HERSHEY_SIMPLEX,
+                                1, pct_color, 2, cv2.LINE_AA)
+
+        image_viz = cv2.putText(image_viz, f'Calibation: ',
                                 (50, 100), cv2.FONT_HERSHEY_SIMPLEX,
                                 1, (255, 255, 255), 2, cv2.LINE_AA)
+
+        calib_col = self.parent.col_green_rgb if self.camera_matrix is not None else self.parent.col_white_rgb
+        image_viz = cv2.putText(image_viz, f'{"APPLIED" if self.camera_matrix is not None else "NONE"}',
+                                (230, 100), cv2.FONT_HERSHEY_SIMPLEX,
+                                1, calib_col, 2, cv2.LINE_AA)
 
         # Get window size and set new videofeed size, preserving aspect ratio
         h, w = self.videofeed_shape
@@ -846,7 +930,7 @@ class VideoWindowMain(VideoWindowBase):
 
         self.show_mag_button = tk.Button(f_buttons_controls, text="Magnifier",
                                          width=10,
-                                         highlightthickness=2, highlightbackground="#FFED30",
+                                         highlightthickness=2, highlightbackground=self.parent.col_yellow,
                                          font=self.parent.font_regular,
                                          command=self._toggle_mag_display)
         self.show_mag_button.grid(row=0, column=1)
@@ -974,7 +1058,7 @@ class VideoWindowMain(VideoWindowBase):
             self.show_focus_button.configure(highlightbackground=self._window_bg_colour)
         elif not self._show_focus.is_set() and tf is True:
             self._show_focus.set()
-            self.show_focus_button.configure(highlightbackground='#62CB5A')
+            self.show_focus_button.configure(highlightbackground=self.parent.col_green)
         else:
             pass
 
@@ -988,7 +1072,7 @@ class VideoWindowMain(VideoWindowBase):
             self.slider_magn.config(state='disabled')
         elif not self._magnification.is_set() and tf is True:
             self._magnification.set()
-            self.show_mag_button.configure(highlightbackground='#FFED30')
+            self.show_mag_button.configure(highlightbackground=self.parent.col_yellow)
             self.slider_magn.config(state='active')
         else:
             pass
@@ -1040,17 +1124,23 @@ class VideoWindowMain(VideoWindowBase):
 
         d = ImageDraw.Draw(img_pillow)
         # Draw crosshair
-        d.line((x_west, y_west, x_east, y_east), fill=(255, 255, 255), width=1)  # Horizontal
-        d.line((x_north, y_north, x_south, y_south), fill=(255, 255, 255), width=1)  # Vertical
+        d.line((x_west, y_west, x_east, y_east), fill=self.parent.col_white_rgb, width=1)  # Horizontal
+        d.line((x_north, y_north, x_south, y_south), fill=self.parent.col_white_rgb, width=1)  # Vertical
 
         # Position the 'Recording' indicator
-        d.text((x_centre, (y_south - y_centre / 2)), self.parent.txtvar_recording.get(), anchor="ms", font=self._imgfnt,
-               fill='red')
+        d.text((x_centre, (y_south - y_centre / 2)), self.parent.txtvar_recording.get(),
+               anchor="ms", font=self._imgfnt,
+               fill=self.parent.col_red)
 
         if self._warning.is_set():
-            d.text((x_centre, y_centre / 2), self.txtvar_warning.get(), anchor="ms", font=self._imgfnt, fill='orange')
+            d.text((x_centre, y_centre / 2), self.txtvar_warning.get(),
+                   anchor="ms", font=self._imgfnt,
+                   fill=self.parent.col_orange)
 
         if self._magnification.is_set():
+
+            col = self.parent.col_yellow_rgb
+
             # Slice directly from the framebuffer and make a (then zoomed) image
             magn_img = Image.fromarray(self._frame_buffer[self.magn_A[0]:self.magn_B[0],
                                        self.magn_A[1]:self.magn_B[1]]).convert('RGB')
@@ -1063,17 +1153,17 @@ class VideoWindowMain(VideoWindowBase):
             # Add frame around the magnified area
             d.rectangle([(x_centre - self.magn_size[1] // 2, y_centre - self.magn_size[0] // 2),
                          (x_centre + self.magn_size[1] // 2, y_centre + self.magn_size[0] // 2)],
-                        outline=(255, 237, 48), width=1)
+                        outline=col, width=1)
 
             img_pillow.paste(magn_img, magn_pos)
 
             # Add frame around the magnification
-            d.rectangle([magn_pos, (w - 10, h - 10)], outline=(255, 237, 48), width=1)
+            d.rectangle([magn_pos, (w - 10, h - 10)], outline=col, width=1)
 
             # Add a small + in the centre
             c = magn_pos[0] + magn_img.width // 2, magn_pos[1] + magn_img.height // 2
-            d.line((c[0] - 5, c[1], c[0] + 5, c[1]), fill=(255, 237, 48), width=1)  # Horizontal
-            d.line((c[0], c[1] - 5, c[0], c[1] + 5), fill=(255, 237, 48), width=1)  # Vertical
+            d.line((c[0] - 5, c[1], c[0] + 5, c[1]), fill=col, width=1)  # Horizontal
+            d.line((c[0], c[1] - 5, c[0], c[1] + 5), fill=col, width=1)  # Vertical
 
         if self._show_focus.is_set():
             lapl = ndimage.gaussian_laplace(np.array(img_pillow)[:, :, 0].astype(np.uint8), sigma=1)
@@ -1129,6 +1219,33 @@ class GUI:
         self.icon_calib_off = tk.PhotoImage(file=resources_path / 'calibrate_bw.png')
         self.icon_rec_on = tk.PhotoImage(file=resources_path / 'rec.png')
         self.icon_rec_off = tk.PhotoImage(file=resources_path / 'rec_off.png')
+
+        # Colours
+        self.col_white = "#ffffff"
+        self.col_black = "#000000"
+        self.col_lightgray = "#e3e3e3"
+        self.col_midgray = "#c0c0c0"
+        self.col_darkgray = "#515151"
+        self.col_red = "#FF3C3C"
+        self.col_orange = "#FF9B32"
+        self.col_yellow = "#FFEB1E"
+        self.col_yelgreen = "#A5EB14"
+        self.col_green = "#00E655"
+        self.col_blue = "#5ac3f5"
+        self.col_purple = "#c887ff"
+
+        self.col_white_rgb = utils.hex_to_rgb(self.col_white)
+        self.col_black_rgb = utils.hex_to_rgb(self.col_black)
+        self.col_lightgray_rgb = utils.hex_to_rgb(self.col_lightgray)
+        self.col_midgray_rgb = utils.hex_to_rgb(self.col_midgray)
+        self.col_darkgray_rgb = utils.hex_to_rgb(self.col_darkgray)
+        self.col_red_rgb = utils.hex_to_rgb(self.col_red)
+        self.col_orange_rgb = utils.hex_to_rgb(self.col_orange)
+        self.col_yellow_rgb = utils.hex_to_rgb(self.col_yellow)
+        self.col_yelgreen_rgb = utils.hex_to_rgb(self.col_green)
+        self.col_green_rgb = utils.hex_to_rgb(self.col_green)
+        self.col_blue_rgb = utils.hex_to_rgb(self.col_blue)
+        self.col_purple_rgb = utils.hex_to_rgb(self.col_purple)
 
         # Set up fonts
         self.font_bold = font.Font(weight='bold', size=10)
@@ -1186,7 +1303,7 @@ class GUI:
 
         ##
 
-        toolbar = tk.Frame(self.root, background="#E8E8E8", height=40)
+        toolbar = tk.Frame(self.root, background=self.col_lightgray, height=40)
         # statusbar = tk.Frame(self.root, background="#e3e3e3", height=20)
         maincontent = tk.PanedWindow(self.root)
 
@@ -1197,11 +1314,11 @@ class GUI:
         # TOOLBAR
         if 'Darwin' in platform.system():
             self.button_exit = tk.Button(toolbar, text="Exit (Esc)", anchor=tk.CENTER, font=self.font_bold,
-                                         fg='#fd5754',
+                                         fg=self.col_red,
                                          command=self.quit)
         else:
             self.button_exit = tk.Button(toolbar, text="Exit (Esc)", anchor=tk.CENTER, font=self.font_bold,
-                                         bg='#fd5754', fg='white',
+                                         bg=self.col_red, fg=self.col_white,
                                          command=self.quit)
         self.button_exit.pack(side="left", fill="y", expand=False)
 
@@ -1224,7 +1341,7 @@ class GUI:
         pathname_label = tk.Label(editable_name_frame, text='Name: ', anchor=tk.W)
         pathname_label.pack(side="left", fill="y", expand=False)
 
-        self.pathname_textbox = tk.Entry(editable_name_frame, bg='white', fg='black',
+        self.pathname_textbox = tk.Entry(editable_name_frame, bg=self.col_white, fg=self.col_black,
                                          textvariable=self.txtvar_userentry,
                                          font=self.font_regular, state='disabled')
         self.pathname_textbox.pack(side="left", fill="both", expand=True)
@@ -1260,7 +1377,7 @@ class GUI:
 
         self.button_calibration = tk.Button(f_buttons,
                                             image=self.icon_calib_off,
-                                            compound='left', text=" Calibrate", anchor='center',
+                                            compound='left', text=" Calibration", anchor='center',
                                             width=150,
                                             font=self.font_regular,
                                             command=self.gui_toggle_calibrate,
@@ -1384,9 +1501,9 @@ class GUI:
         for i, m in enumerate(self._monitors):
             w, h, x, y = m.width // 40, m.height // 40, m.x // 40, m.y // 40
             if m.name == self.selected_monitor.name:
-                col = '#515151'
+                col = self.col_darkgray
             else:
-                col = '#c0c0c0'
+                col = self.col_midgray
 
             rect_x = x + 10
             rect_y = y + 10
@@ -1509,7 +1626,7 @@ class GUI:
             if self.mgr.acquiring:
                 self.button_recpause.config(state="normal")
 
-            self.button_calibration.config(text=" Calibrate", image=self.icon_calib_off)
+            self.button_calibration.config(text=" Calibration", image=self.icon_calib_off)
 
             for window in self.calib_windows:
                 self.video_windows[window.idx].toggle_visibility(True)
@@ -1520,7 +1637,7 @@ class GUI:
 
             self.button_recpause.config(state="disabled")
 
-            self.button_calibration.config(text=" Finish", image=self.icon_calib)
+            self.button_calibration.config(text=" Terminate", image=self.icon_calib)
 
             for window in self.video_windows:
                 w, h, x, y = whxy(window)
