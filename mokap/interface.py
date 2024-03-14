@@ -1053,33 +1053,25 @@ class VideoWindowMain(VideoWindowBase):
                 window.camera_controls_sliders['gamma'].set(new_val)
                 window.update_gamma()
 
-    def _toggle_focus_display(self, tf=None):
-        if tf is None:
-            tf = not self._show_focus.is_set()
+    def _toggle_focus_display(self):
 
-        if self._show_focus.is_set() and tf is False:
+        if self._show_focus.is_set():
             self._show_focus.clear()
             self.show_focus_button.configure(highlightbackground=self._window_bg_colour)
-        elif not self._show_focus.is_set() and tf is True:
+        else:
             self._show_focus.set()
             self.show_focus_button.configure(highlightbackground=self.parent.col_green)
-        else:
-            pass
 
-    def _toggle_mag_display(self, tf=None):
-        if tf is None:
-            tf = not self._magnification.is_set()
+    def _toggle_mag_display(self):
 
-        if self._magnification.is_set() and tf is False:
+        if self._magnification.is_set():
             self._magnification.clear()
             self.show_mag_button.configure(highlightbackground=self._window_bg_colour)
             self.slider_magn.config(state='disabled')
-        elif not self._magnification.is_set() and tf is True:
+        else:
             self._magnification.set()
             self.show_mag_button.configure(highlightbackground=self.parent.col_yellow)
             self.slider_magn.config(state='active')
-        else:
-            pass
 
     # === end TODO ===
 
@@ -1217,12 +1209,12 @@ class GUI:
         self.root.protocol("WM_DELETE_WINDOW", self.quit)
         self.root.bind('<KeyPress>', self._handle_keypress)
 
-        self.icon_capture_on = tk.PhotoImage(file=resources_path / 'capture_on.png')
-        self.icon_capture_off = tk.PhotoImage(file=resources_path / 'capture_off_bw.png')
-        self.icon_calib = tk.PhotoImage(file=resources_path / 'calibrate.png')
-        self.icon_calib_off = tk.PhotoImage(file=resources_path / 'calibrate_bw.png')
+        self.icon_capture = tk.PhotoImage(file=resources_path / 'capture.png')
+        self.icon_capture_bw = tk.PhotoImage(file=resources_path / 'capture_bw.png')
+        self.icon_snapshot = tk.PhotoImage(file=resources_path / 'snapshot.png')
+        self.icon_snapshot_bw = tk.PhotoImage(file=resources_path / 'snapshot_bw.png')
         self.icon_rec_on = tk.PhotoImage(file=resources_path / 'rec.png')
-        self.icon_rec_off = tk.PhotoImage(file=resources_path / 'rec_off.png')
+        self.icon_rec_bw = tk.PhotoImage(file=resources_path / 'rec_bw.png')
 
         # Colours
         self.col_white = "#ffffff"
@@ -1297,23 +1289,37 @@ class GUI:
 
         # Create list to store calibration windows
         self._is_calibrating = Event()
+        self._is_calibrating.clear()
         self.calib_windows = []
         self.calib_windows_threads = []
 
-        x = self.selected_monitor.x + self.selected_monitor.width // 2 - self.CONTROLS_MIN_HEIGHT // 2
-        y = self.selected_monitor.y + self.selected_monitor.height // 2 - self.CONTROLS_MIN_WIDTH // 2
-
-        self.root.geometry(f"{self.CONTROLS_MIN_WIDTH}x{self.CONTROLS_MIN_HEIGHT}+{x}+{y}")
+        # x = self.selected_monitor.x + self.selected_monitor.width // 2 - self.CONTROLS_MIN_HEIGHT // 2
+        # y = self.selected_monitor.y + self.selected_monitor.height // 2 - self.CONTROLS_MIN_WIDTH // 2
+        #
+        self.root.geometry(f"{self.CONTROLS_MIN_WIDTH}x{self.CONTROLS_MIN_HEIGHT}")
 
         ##
 
-        toolbar = tk.Frame(self.root, background=self.col_lightgray, height=40)
+        toolbar = tk.Frame(self.root, height=40)
         # statusbar = tk.Frame(self.root, background="#e3e3e3", height=20)
         maincontent = tk.PanedWindow(self.root)
 
         toolbar.pack(side="top", fill="x")
         # statusbar.pack(side="bottom", fill="x")
         maincontent.pack(padx=3, pady=3, side="top", fill="both", expand=True)
+
+        # Creating Menubar
+
+        # Mode switch
+        self.mode_var = tk.StringVar()
+        modes_choices = {'Recording', 'Calibration'}
+        self.mode_var.set('Recording')
+        mode_label = tk.Label(toolbar, text='Mode: ', anchor=tk.W)
+        mode_label.pack(side="left", fill="y", expand=False)
+        mode_button = tk.OptionMenu(toolbar, self.mode_var, *modes_choices)
+        mode_button.config(anchor=tk.CENTER)
+        mode_button.pack(ipady=2, side="left", fill="y", expand=False)
+        self.mode_var.trace('w', self._toggle_calibrate)
 
         # TOOLBAR
         if 'Darwin' in platform.system():
@@ -1324,7 +1330,7 @@ class GUI:
             self.button_exit = tk.Button(toolbar, text="Exit (Esc)", anchor=tk.CENTER, font=self.font_bold,
                                          bg=self.col_red, fg=self.col_white,
                                          command=self.quit)
-        self.button_exit.pack(side="left", fill="y", expand=False)
+        self.button_exit.pack(pady=2, side="right", fill="y", expand=False)
 
         left_pane = tk.LabelFrame(maincontent, text="Acquisition")
         right_pane = tk.LabelFrame(maincontent, text="Display")
@@ -1351,7 +1357,7 @@ class GUI:
         self.pathname_textbox.pack(side="left", fill="both", expand=True)
 
         self.pathname_button = tk.Button(editable_name_frame,
-                                         text="Edit", font=self.font_regular, command=self.gui_toggle_text_editing)
+                                         text="Edit", font=self.font_regular, command=self._toggle_text_editing)
         self.pathname_button.pack(side="right", fill="both", expand=False)
 
         info_name_frame = tk.Frame(name_frame)
@@ -1371,28 +1377,28 @@ class GUI:
         f_buttons.pack(padx=5, side="top", fill="both", expand=True)
 
         self.button_acquisition = tk.Button(f_buttons,
-                                            image=self.icon_capture_off,
+                                            image=self.icon_capture_bw,
                                             compound='left', text="Acquisition off", anchor='center',
                                             width=150,
                                             font=self.font_regular,
-                                            command=self.gui_toggle_acquisition,
+                                            command=self._toggle_acquisition,
                                             state='normal')
         self.button_acquisition.grid(padx=2, pady=2, row=0, column=0, sticky="news")
 
-        self.button_calibration = tk.Button(f_buttons,
-                                            image=self.icon_calib_off,
-                                            compound='left', text=" Calibration", anchor='center',
-                                            width=150,
-                                            font=self.font_regular,
-                                            command=self.gui_toggle_calibrate,
-                                            state='normal')
-        self.button_calibration.grid(padx=2, pady=2, row=0, column=1, sticky="news")
+        self.button_snapshot = tk.Button(f_buttons,
+                                         image=self.icon_snapshot,
+                                         compound='left', text="Snapshot", anchor='center',
+                                         width=150,
+                                         font=self.font_regular,
+                                         command=self._take_snapshot,
+                                         state='disabled')
+        self.button_snapshot.grid(padx=2, pady=2, row=0, column=1, sticky="news")
 
         self.button_recpause = tk.Button(f_buttons,
-                                         image=self.icon_rec_off,
+                                         image=self.icon_rec_bw,
                                          compound='left', text="Not recording (Space to toggle)", anchor='center',
                                          font=self.font_bold,
-                                         command=self.gui_toggle_recording,
+                                         command=self._toggle_recording,
                                          state='disabled')
         self.button_recpause.grid(padx=2, pady=2, row=1, column=0, columnspan=2, sticky="news")
 
@@ -1577,14 +1583,27 @@ class GUI:
                 self.quit()
             # elif event.keycode == 65:  # Space
             elif event.keycode == 32:  # Space
-                self.gui_toggle_recording()
+                self._toggle_recording()
             else:
                 pass
         else:
             if event.keycode == 13:  # Enter
-                self.gui_toggle_text_editing(True)
+                self._toggle_text_editing(True)
 
-    def gui_toggle_text_editing(self, tf=None):
+    def _take_snapshot(self):
+
+        dims = self.source_dims.T
+        ext = self.mgr.saving_ext
+        now = datetime.now().strftime('%y%m%d-%H%M')
+
+        if self.mgr.acquiring:
+            arrays = [np.frombuffer(c, dtype=np.uint8) for c in self._current_buffers]
+
+            for a, arr in enumerate(arrays):
+                img = Image.fromarray(arr.reshape(dims[a]))
+                img.save(self.mgr.full_path.resolve() / f"snapshot_{now}_{self.mgr.cameras[a].name}.{ext}")
+
+    def _toggle_text_editing(self, tf=None):
         if tf is None:
             tf = not self.editing_disabled
 
@@ -1602,7 +1621,7 @@ class GUI:
         else:
             pass
 
-    def gui_toggle_recording(self, tf=None):
+    def _toggle_recording(self, tf=None):
         if self.mgr.acquiring:
             if tf is None:
                 tf = not self.mgr.recording
@@ -1610,7 +1629,7 @@ class GUI:
             if self.mgr.recording and tf is False:
                 self.mgr.pause()
                 self.txtvar_recording.set('')
-                self.button_recpause.config(text="Not recording (Space to toggle)", image=self.icon_rec_off)
+                self.button_recpause.config(text="Not recording (Space to toggle)", image=self.icon_rec_bw)
 
             elif not self.mgr.recording and tf is True:
                 self.mgr.record()
@@ -1620,28 +1639,24 @@ class GUI:
             else:
                 pass
 
-    def gui_toggle_calibrate(self, tf=None):
-        if tf is None:
-            tf = not self._is_calibrating.is_set()
+    def _toggle_calibrate(self, *events):
+        mode = self.mode_var.get()
 
-        if self._is_calibrating.is_set() and tf is False:
+        if self._is_calibrating.is_set() and mode == 'Recording':
             self._is_calibrating.clear()
 
             if self.mgr.acquiring:
+                self.button_snapshot.config(state="normal")
                 self.button_recpause.config(state="normal")
-
-            self.button_calibration.config(text=" Calibration", image=self.icon_calib_off)
 
             for window in self.calib_windows:
                 self.video_windows[window.idx].toggle_visibility(True)
 
-        elif not self._is_calibrating.is_set() and tf is True:
+        elif not self._is_calibrating.is_set() and mode == 'Calibration':
 
             self._is_calibrating.set()
 
             self.button_recpause.config(state="disabled")
-
-            self.button_calibration.config(text=" Terminate", image=self.icon_calib)
 
             for window in self.video_windows:
                 w, h, x, y = whxy(window)
@@ -1658,12 +1673,10 @@ class GUI:
         else:
             pass
 
-    def gui_toggle_acquisition(self, tf=None):
-        if tf is None:
-            tf = not self.mgr.acquiring
+    def _toggle_acquisition(self):
 
-        if self.mgr.acquiring and tf is False:
-            self.gui_toggle_recording(False)
+        if self.mgr.acquiring:
+            self._toggle_recording(False)
             self.mgr.off()
 
             self._capture_fps = np.zeros(self.mgr.nb_cameras, dtype=np.uintc)
@@ -1671,11 +1684,11 @@ class GUI:
             self.txtvar_userentry.set('')
             self.txtvar_applied_name.set('')
 
-            self.button_acquisition.config(text="Acquisition off", image=self.icon_capture_off)
+            self.button_acquisition.config(text="Acquisition off", image=self.icon_capture_bw)
+            self.button_snapshot.config(state="disabled")
             self.button_recpause.config(state="disabled")
 
-        elif not self.mgr.acquiring and tf is True:
-
+        else:
             self.mgr.on()
 
             self.txtvar_applied_name.set(f'{self.mgr.full_path.resolve()}')
@@ -1683,11 +1696,10 @@ class GUI:
             self._capture_clock = datetime.now()
             self.start_indices[:] = self.mgr.indices
 
-            self.button_acquisition.config(text="Acquiring", image=self.icon_capture_on)
-            self.button_recpause.config(state="normal")
-
-        else:
-            pass
+            self.button_acquisition.config(text="Acquiring", image=self.icon_capture)
+            self.button_snapshot.config(state="normal")
+            if not self._is_calibrating:
+                self.button_recpause.config(state="normal")
 
     def quit(self):
         for vw in self.video_windows:

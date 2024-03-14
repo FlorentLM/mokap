@@ -77,14 +77,14 @@ class Manager:
 
         default_base_folder = Path('./')
         if 'GENERAL' in self.confparser.sections():
-             self._base_folder = Path(self.confparser['GENERAL'].get('base_folder', default_base_folder.as_posix())) / 'MokapRecordings'
+             self._base_folder = Path(self.confparser['GENERAL'].get('base_folder', default_base_folder.as_posix()).strip("'").strip('"')) / 'MokapRecordings'
         else:
             self._base_folder = default_base_folder / 'MokapRecordings'
         if self._base_folder.parent == self._base_folder.name:
             self._base_folder = self._base_folder.parent
         self._base_folder.mkdir(parents=True, exist_ok=True)
         self._session_name: str = ''
-        self._saving_ext = self.confparser['GENERAL'].get('save_format', 'bmp').lower().lstrip('.')
+        self._saving_ext = self.confparser['GENERAL'].get('save_format', 'bmp').lower().lstrip('.').strip("'").strip('"')
 
         self._executor: Union[ThreadPoolExecutor, None] = None
 
@@ -543,6 +543,10 @@ class Manager:
         if self._saved_frames_counter is None:
             print('[ERROR] Please connect at least 1 camera first.')
         return self._saved_frames_counter
+
+    @property
+    def saving_ext(self):
+        return self._saving_ext.lower().lstrip('.').strip("'").strip('"')
 
     @property
     def saved(self) -> np.array:
