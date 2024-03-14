@@ -494,10 +494,13 @@ class VideoWindowCalib(VideoWindowBase):
                                                                                                distCoeffs=self.dist_coeffs,
                                                                                                minMarkers=0)
 
-            charuco_corners = cv2.cornerSubPix(img_arr, charuco_corners,
-                             winSize=(20, 20),
-                             zeroZone=(-1, -1),
-                             criteria=criteria)
+            try:
+                charuco_corners = cv2.cornerSubPix(img_arr, charuco_corners,
+                                 winSize=(20, 20),
+                                 zeroZone=(-1, -1),
+                                 criteria=criteria)
+            except:
+                pass
 
             # Keep copy for visualisation in case of resetting
             self.current_charuco_ids = charuco_ids
