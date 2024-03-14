@@ -59,7 +59,6 @@ def compute_windows_size(source_dims, screen_dims):
 
 
 class VideoWindowBase:
-    mainvideowindows_ids = []
 
     if 'Windows' in platform.system():
         INFO_PANEL_FIXED_H = 250  # in pixels
@@ -68,7 +67,7 @@ class VideoWindowBase:
         INFO_PANEL_FIXED_H = 220  # in pixels
         INFO_PANEL_FIXED_W = 630  # in pixels
 
-    def __init__(self, parent, idx=None):
+    def __init__(self, parent, idx):
 
         self.window = tk.Toplevel()
         self.window.minsize(self.INFO_PANEL_FIXED_W, self.INFO_PANEL_FIXED_H + 50)  # 50 px video haha
@@ -76,17 +75,13 @@ class VideoWindowBase:
         if 'Darwin' in platform.system():
             # Trick to force macOS to open a window and not a tab
             self.window.resizable(False, False)
-            self._macos_trick = True
+            self.macos_trick = True
         else:
-            self._macos_trick = False
+            self.macos_trick = False
+
         self.parent = parent
 
-        if idx is None:
-            self.idx = len(VideoWindowBase.mainvideowindows_ids)
-            VideoWindowBase.mainvideowindows_ids.append(self.idx)
-        else:
-            self.idx = idx
-
+        self.idx = idx
         self._source_shape = (self.parent.mgr.cameras[self.idx].height, self.parent.mgr.cameras[self.idx].width)
         self._cam_name = self.parent.mgr.cameras[self.idx].name
 
@@ -107,6 +102,9 @@ class VideoWindowBase:
         # Set thread-safe events
         self.visible = Event()
         self.visible.set()
+
+        self.should_stop = Event()
+        self.should_stop.clear()
 
         self._imgfnt = ImageFont.load_default()
 
@@ -270,10 +268,10 @@ class VideoWindowBase:
         pass
 
     def update(self):
-        if self._macos_trick:
+        if self.macos_trick:
             self.window.resizable(True, True)
 
-        while True:
+        while not self.should_stop.is_set():
             if self.visible.is_set():
                 # Update display fps counter
                 now = datetime.now()
@@ -292,26 +290,30 @@ class VideoWindowBase:
 
         if self.visible.is_set() and tf is False:
             self.visible.clear()
-            self.parent.vis_checkboxes[self.idx].set(0)
+            self.parent.child_windows_visibility_vars[self.idx].set(0)
             self.window.withdraw()
 
         elif not self.visible.is_set() and tf is True:
             if 'Darwin' in platform.system():
                 # Trick to force macOS to open a window and not a tab
                 self.window.resizable(False, False)
-                self._macos_trick = True
+                self.macos_trick = True
             self.visible.set()
-            self.parent.vis_checkboxes[self.idx].set(1)
+            self.parent.child_windows_visibility_vars[self.idx].set(1)
             self.window.deiconify()
-            if self._macos_trick:
+            if self.macos_trick:
                 self.window.resizable(True, True)
         else:
             pass
 
 
 class VideoWindowCalib(VideoWindowBase):
+
     def __init__(self, parent, idx):
         super().__init__(parent, idx)
+
+        self._source_shape = (self.parent.mgr.cameras[self.idx].height, self.parent.mgr.cameras[self.idx].width)
+        self._cam_name = self.parent.mgr.cameras[self.idx].name
 
         self._total_coverage_area = np.zeros((*self.source_shape, 3), dtype=np.uint8)
         self._current_coverage_area = np.zeros(self.source_shape, dtype=np.uint8)
@@ -728,11 +730,10 @@ class VideoWindowCalib(VideoWindowBase):
 
 
     def update(self):
-        if self.window.resizable() == (0, 0):
-            # Reenable resizing on macOS (see trick at winow creation)
+        if self.macos_trick:
             self.window.resizable(True, True)
 
-        while self.parent._is_calibrating.is_set():
+        while not self.should_stop.is_set():
 
             if self.visible.is_set():
                 # Update display fps counter
@@ -747,13 +748,11 @@ class VideoWindowCalib(VideoWindowBase):
             else:
                 self.visible.wait()
 
-        self.window.destroy()
-
 
 class VideoWindowMain(VideoWindowBase):
 
-    def __init__(self, parent):
-        super().__init__(parent)
+    def __init__(self, parent, idx):
+        super().__init__(parent, idx)
 
         self._show_focus = Event()
         self._show_focus.clear()
@@ -1279,29 +1278,27 @@ class GUI:
         self._reference = None
         self._current_buffers = None
 
-        # Create video windows
-        self.video_windows = []
-        self.windows_threads = []
-        for i in range(self.mgr.nb_cameras):
-            vw = VideoWindowMain(parent=self)
-            self.video_windows.append(vw)
-
-            t = Thread(target=vw.update, args=(), daemon=False)
-            t.start()
-            self.windows_threads.append(t)
-
         # Create list to store calibration windows
         self._is_calibrating = Event()
         self._is_calibrating.clear()
-        self.calib_windows = []
-        self.calib_windows_threads = []
 
-        # x = self.selected_monitor.x + self.selected_monitor.width // 2 - self.CONTROLS_MIN_HEIGHT // 2
-        # y = self.selected_monitor.y + self.selected_monitor.height // 2 - self.CONTROLS_MIN_WIDTH // 2
-        #
+        self.child_windows = []
+        self.child_threads = []
+
+        self._create_controls()
+
         self.root.geometry(f"{self.CONTROLS_MIN_WIDTH}x{self.CONTROLS_MIN_HEIGHT}")
 
+        self._start_child_windows()
+
         ##
+
+        self.update()  # Called once to init
+
+        self.root.attributes("-topmost", True)
+        self.root.mainloop()
+
+    def _create_controls(self):
 
         toolbar = tk.Frame(self.root, height=40)
         # statusbar = tk.Frame(self.root, background="#e3e3e3", height=20)
@@ -1315,7 +1312,7 @@ class GUI:
 
         # Mode switch
         self.mode_var = tk.StringVar()
-        modes_choices = {'Recording', 'Calibration'}
+        modes_choices = ['Recording', 'Calibration']
         self.mode_var.set('Recording')
         mode_label = tk.Label(toolbar, text='Mode: ', anchor=tk.W)
         mode_label.pack(side="left", fill="y", expand=False)
@@ -1419,22 +1416,21 @@ class GUI:
         windows_list_frame = tk.Frame(windows_visibility_frame)
         windows_list_frame.pack(side="top", fill="both", expand=True)
 
-        self.vis_checkboxes = []
-        for window in self.video_windows:
+        self.child_windows_visibility_vars = []
+        self.child_windows_visibility_buttons = []
+
+        for i in range(self.mgr.nb_cameras):
             vis_var = tk.IntVar()
-            vis_checkbox = tk.Checkbutton(windows_list_frame, text=f" {window.name.title()} camera", anchor=tk.W,
+            vis_checkbox = tk.Checkbutton(windows_list_frame, text=f"", anchor=tk.W,
                                           font=self.font_bold,
-                                          fg=window.colour_2,
-                                          bg=window.colour,
-                                          selectcolor=window.colour,
-                                          activebackground=window.colour,
-                                          activeforeground=window.colour,
                                           variable=vis_var,
-                                          command=window.toggle_visibility,
+                                          command=self.nothing,
                                           state='normal')
-            vis_var.set(int(window.visible.is_set()))
+            vis_var.set(0)
             vis_checkbox.pack(side="top", fill="x", expand=True)
-            self.vis_checkboxes.append(vis_var)
+
+            self.child_windows_visibility_buttons.append(vis_checkbox)
+            self.child_windows_visibility_vars.append(vis_var)
 
         monitors_frame = tk.Frame(right_pane)
         monitors_frame.pack(side="top", fill="both", expand=True)
@@ -1456,12 +1452,49 @@ class GUI:
                                          command=self.autotile_windows)
         self.autotile_button.pack(side="top", fill="both", expand=False)
 
-        ##
+    def _update_child_windows_list(self):
 
-        self.update()  # Called once to init
+        for w, window in enumerate(self.child_windows):
 
-        self.root.attributes("-topmost", True)
-        self.root.mainloop()
+            self.child_windows_visibility_vars[w].set(int(window.visible.is_set()))
+            self.child_windows_visibility_buttons[w].config(text=f" {window.name.title()} camera",
+                                                            fg=window.colour_2,
+                                                            bg=window.colour,
+                                                            selectcolor=window.colour,
+                                                            activebackground=window.colour,
+                                                            activeforeground=window.colour,
+                                                            command=window.toggle_visibility)
+
+    def _start_child_windows(self):
+        for c in self.mgr.cameras:
+
+            if self._is_calibrating.is_set():
+                w = VideoWindowCalib(parent=self, idx=c.idx)
+                self.child_windows.append(w)
+
+                t = Thread(target=w.update, args=(), daemon=False)
+                t.start()
+                self.child_threads.append(t)
+
+            else:
+                w = VideoWindowMain(parent=self, idx=c.idx)
+                self.child_windows.append(w)
+
+                t = Thread(target=w.update, args=(), daemon=False)
+                t.start()
+                self.child_threads.append(t)
+
+        self._update_child_windows_list()
+
+    def _stop_child_windows(self):
+        for w in self.child_windows:
+            w.should_stop.set()
+
+        for w in self.child_windows:
+            w.window.destroy()
+
+        self.child_windows = []
+        self.child_threads = []
 
     @property
     def current_buffers(self):
@@ -1646,33 +1679,24 @@ class GUI:
         mode = self.mode_var.get()
 
         if self._is_calibrating.is_set() and mode == 'Recording':
+            self._stop_child_windows()
+
             self._is_calibrating.clear()
 
             if self.mgr.acquiring:
                 self.button_snapshot.config(state="normal")
                 self.button_recpause.config(state="normal")
 
-            for window in self.calib_windows:
-                self.video_windows[window.idx].toggle_visibility(True)
+            self._start_child_windows()
 
         elif not self._is_calibrating.is_set() and mode == 'Calibration':
+            self._stop_child_windows()
 
             self._is_calibrating.set()
-
             self.button_recpause.config(state="disabled")
 
-            for window in self.video_windows:
-                w, h, x, y = whxy(window)
-                window.toggle_visibility(False)
+            self._start_child_windows()
 
-                c = VideoWindowCalib(parent=self, idx=window.idx)
-                self.calib_windows.append(c)
-
-                c.window.geometry(f'{w}x{h}+{x}+{y}')
-
-                t = Thread(target=c.update, args=(), daemon=False)
-                t.start()
-                self.calib_windows_threads.append(t)
         else:
             pass
 
@@ -1705,8 +1729,9 @@ class GUI:
                 self.button_recpause.config(state="normal")
 
     def quit(self):
-        for vw in self.video_windows:
-            vw.visible.clear()
+        for w in self.child_windows:
+            w.visible.clear()
+            w.should_stop.set()
 
         if self.mgr.acquiring:
             self.mgr.off()
@@ -1737,5 +1762,6 @@ class GUI:
             self.txtvar_frames_saved.set(
                 f'Saved {sum(self._saved_frames)} frames total ({utils.pretty_size(sum(self._frame_sizes_bytes * self._saved_frames))})')
 
+        print(len(self.child_threads))
         self._counter += 1
         self.root.after(1, self.update)
