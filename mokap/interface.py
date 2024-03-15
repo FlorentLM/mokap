@@ -1186,10 +1186,7 @@ class VideoWindowMain(VideoWindowBase):
 
 class GUI:
     CONTROLS_MIN_WIDTH = 600
-    if 'Windows' in platform.system():
-        CONTROLS_MIN_HEIGHT = 320
-    else:
-        CONTROLS_MIN_HEIGHT = 280
+    CONTROLS_MIN_HEIGHT = 300
 
     def __init__(self, mgr):
 
@@ -1206,7 +1203,6 @@ class GUI:
         ico = ImageTk.PhotoImage(Image.open(resources_path / "mokap.png"))
         self.root.wm_iconphoto(True, ico)
 
-        # self.root.wait_visibility(self.root)
         self.root.title("Controls")
         self.root.protocol("WM_DELETE_WINDOW", self.quit)
         self.root.bind('<KeyPress>', self._handle_keypress)
@@ -1300,13 +1296,13 @@ class GUI:
 
     def _create_controls(self):
 
-        toolbar = tk.Frame(self.root, height=40)
-        # statusbar = tk.Frame(self.root, background="#e3e3e3", height=20)
-        maincontent = tk.PanedWindow(self.root)
+        toolbar = tk.Frame(self.root, height=38)
+        statusbar = tk.Frame(self.root, background="#e3e3e3", height=15)
+        maincontent = tk.Frame(self.root)
 
         toolbar.pack(side="top", fill="x")
-        # statusbar.pack(side="bottom", fill="x")
-        maincontent.pack(padx=3, pady=3, side="top", fill="both", expand=True)
+        statusbar.pack(side="bottom", fill="x")
+        maincontent.pack(padx=2, pady=2, side="top", fill="both", expand=True)
 
         # Creating Menubar
 
@@ -1318,7 +1314,7 @@ class GUI:
         mode_label.pack(side="left", fill="y", expand=False)
         mode_button = tk.OptionMenu(toolbar, self.mode_var, *modes_choices)
         mode_button.config(anchor=tk.CENTER)
-        mode_button.pack(ipady=2, side="left", fill="y", expand=False)
+        mode_button.pack(padx=2, pady=2, ipady=2, side="left", fill="y", expand=False)
         self.mode_var.trace('w', self._toggle_calibrate)
 
         # TOOLBAR
@@ -1330,20 +1326,18 @@ class GUI:
             self.button_exit = tk.Button(toolbar, text="Exit (Esc)", anchor=tk.CENTER, font=self.font_bold,
                                          bg=self.col_red, fg=self.col_white,
                                          command=self.quit)
-        self.button_exit.pack(pady=2, side="right", fill="y", expand=False)
+        self.button_exit.pack(padx=3, pady=4, side="right", fill="y", expand=False)
 
         left_pane = tk.LabelFrame(maincontent, text="Acquisition")
         right_pane = tk.LabelFrame(maincontent, text="Display")
 
-        maincontent.add(left_pane)
-        maincontent.add(right_pane)
-        maincontent.paneconfig(left_pane, width=400)
-        maincontent.paneconfig(right_pane, width=200)
+        left_pane.pack(padx=3, pady=3, side="left", fill="both", expand=True)
+        right_pane.pack(padx=3, pady=3, side="left", fill="both", expand=True)
 
         # LEFT HALF
 
         name_frame = tk.Frame(left_pane)
-        name_frame.pack(side="top", fill="x", expand=True)
+        name_frame.pack(padx=3, side="top", fill="x", expand=True)
 
         editable_name_frame = tk.Frame(name_frame)
         editable_name_frame.pack(side="top", fill="x", expand=True)
@@ -1358,7 +1352,7 @@ class GUI:
 
         self.pathname_button = tk.Button(editable_name_frame,
                                          text="Edit", font=self.font_regular, command=self._toggle_text_editing)
-        self.pathname_button.pack(side="right", fill="both", expand=False)
+        self.pathname_button.pack(padx=3, side="right", fill="both", expand=False)
 
         info_name_frame = tk.Frame(name_frame)
         info_name_frame.pack(side="top", fill="x", expand=True)
@@ -1366,33 +1360,36 @@ class GUI:
         save_dir_label = tk.Label(info_name_frame, text='Saves to:', anchor=tk.W)
         save_dir_label.pack(side="top", fill="both", expand=False)
 
-        save_dir_current = tk.Label(info_name_frame, textvariable=self.txtvar_applied_name, anchor=tk.W)
-        save_dir_current.pack(side="left", fill="y", expand=True)
+        save_dir_current = tk.Label(info_name_frame, textvariable=self.txtvar_applied_name, anchor=tk.W, fg=self.col_darkgray)
+        save_dir_current.pack(side="left", fill="both", expand=True)
 
-        gothere_button = tk.Button(info_name_frame, text="Go", font=self.font_regular, command=self.open_session_folder)
-        gothere_button.pack(side="right", fill="y", expand=False)
+        gothere_button = tk.Button(info_name_frame, text="Open", font=self.font_regular, command=self.open_session_folder)
+        gothere_button.pack(padx=3, pady=4, side="right", fill="y", expand=False)
 
         #
         f_buttons = tk.Frame(left_pane)
-        f_buttons.pack(padx=5, side="top", fill="both", expand=True)
+        f_buttons.pack(padx=3, pady=3, side="top", fill="both", expand=True)
 
-        self.button_acquisition = tk.Button(f_buttons,
+        f_buttons_row_1 = tk.Frame(f_buttons)
+        f_buttons_row_1.pack(pady=3, side="top", fill="both", expand=True)
+
+        self.button_acquisition = tk.Button(f_buttons_row_1,
                                             image=self.icon_capture_bw,
                                             compound='left', text="Acquisition off", anchor='center',
                                             width=150,
                                             font=self.font_regular,
                                             command=self._toggle_acquisition,
                                             state='normal')
-        self.button_acquisition.grid(padx=2, pady=2, row=0, column=0, sticky="news")
+        self.button_acquisition.pack(padx=3, side="left", fill="both", expand=True)
 
-        self.button_snapshot = tk.Button(f_buttons,
+        self.button_snapshot = tk.Button(f_buttons_row_1,
                                          image=self.icon_snapshot,
                                          compound='left', text="Snapshot", anchor='center',
                                          width=150,
                                          font=self.font_regular,
                                          command=self._take_snapshot,
                                          state='disabled')
-        self.button_snapshot.grid(padx=2, pady=2, row=0, column=1, sticky="news")
+        self.button_snapshot.pack(padx=3, side="left", fill="both", expand=True)
 
         self.button_recpause = tk.Button(f_buttons,
                                          image=self.icon_rec_bw,
@@ -1400,10 +1397,10 @@ class GUI:
                                          font=self.font_bold,
                                          command=self._toggle_recording,
                                          state='disabled')
-        self.button_recpause.grid(padx=2, pady=2, row=1, column=0, columnspan=2, sticky="news")
+        self.button_recpause.pack(padx=3, pady=3, side="top", fill="both", expand=True)
 
-        frames_saved_label = tk.Label(left_pane, textvariable=self.txtvar_frames_saved, anchor=tk.E)
-        frames_saved_label.pack(side="bottom", fill="x", expand=True)
+        frames_saved_label = tk.Label(statusbar, textvariable=self.txtvar_frames_saved, anchor=tk.E)
+        frames_saved_label.pack(side="right", fill="both", expand=True)
 
         # RIGHT HALF
 
@@ -1438,7 +1435,7 @@ class GUI:
         monitors_label = tk.Label(monitors_frame, text='Active monitor:', anchor=tk.W)
         monitors_label.pack(side="top", fill="x", expand=False)
 
-        m_canvas_y_size = max([m.y + m.height for m in self._monitors]) // 40 + 2 * 10
+        m_canvas_y_size = max([m.y + m.height for m in self._monitors]) // 50 + 2 * 10
 
         self.monitors_buttons = tk.Canvas(monitors_frame, height=m_canvas_y_size)
         self.update_monitors_buttons()
@@ -1450,7 +1447,7 @@ class GUI:
         self.autotile_button = tk.Button(monitors_frame,
                                          text="Auto-tile windows", font=self.font_regular,
                                          command=self.autotile_windows)
-        self.autotile_button.pack(side="top", fill="both", expand=False)
+        self.autotile_button.pack(padx=6, pady=6, side="bottom", fill="both", expand=True)
 
     def _update_child_windows_list(self):
 
