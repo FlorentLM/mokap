@@ -1762,6 +1762,5 @@ class GUI:
             self.txtvar_frames_saved.set(
                 f'Saved {sum(self._saved_frames)} frames total ({utils.pretty_size(sum(self._frame_sizes_bytes * self._saved_frames))})')
 
-        print(len(self.child_threads))
         self._counter += 1
         self.root.after(1, self.update)
