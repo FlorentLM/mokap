@@ -61,8 +61,6 @@ def compute_windows_size(source_dims, screen_dims):
 class VideoWindowBase:
 
     INFO_PANEL_MINSIZE_H = 200
-    INFO_PANEL_DEFAULT_H = 210
-
     VIDEO_PANEL_MINSIZE_H = 50  # haha
     WINDOW_MIN_W = 630
 
@@ -99,12 +97,17 @@ class VideoWindowBase:
         self._counter_start = 0
         self._clock = datetime.now()
         self._fps = 0
+        self._applied_fps = self.parent.mgr.cameras[self.idx].framerate
 
         ## Set thread-safe events
         self.visible = Event()
         self.visible.set()
+
         self.should_stop = Event()
         self.should_stop.clear()
+
+        self._warning = Event()
+        self._warning.clear()
 
         ## Initialise text vars
         self.txtvar_warning = tk.StringVar()
@@ -132,11 +135,11 @@ class VideoWindowBase:
         self.panes_container.add(self.VIDEO_PANEL)
         self.panes_container.add(self.INFO_PANEL)
         self.panes_container.paneconfig(self.VIDEO_PANEL)
-        self.panes_container.paneconfig(self.INFO_PANEL, height=self.INFO_PANEL_DEFAULT_H, minsize=self.INFO_PANEL_MINSIZE_H)
+        self.panes_container.paneconfig(self.INFO_PANEL, height=self.INFO_PANEL_MINSIZE_H, minsize=self.INFO_PANEL_MINSIZE_H)
 
         # Finally initialise the window by resize it and starting the video feed
         self.auto_size()
-        self._refresh_videofeed(Image.fromarray(self._frame_buffer))
+        self._refresh_videofeed(Image.fromarray(self._frame_buffer, mode='L').convert('RGBA'))
 
     def _create_common_controls(self):
 
@@ -245,7 +248,7 @@ class VideoWindowBase:
 
     @property
     def videofeed_shape(self):
-        h, w = self.window.winfo_height() - self.INFO_PANEL_MINSIZE_H, self.window.winfo_width()
+        h, w = self.VIDEO_PANEL.winfo_height(), self.VIDEO_PANEL.winfo_width()
         if h <= 1 or w <= 1:
             return self.source_shape
         return h, w
@@ -261,8 +264,8 @@ class VideoWindowBase:
 
         if w < self.WINDOW_MIN_W:
             w = self.WINDOW_MIN_W
-        if h < self.INFO_PANEL_MINSIZE_H:
-            h = self.INFO_PANEL_MINSIZE_H
+        if h < self.INFO_PANEL_MINSIZE_H + self.VIDEO_PANEL_MINSIZE_H:
+            h = self.INFO_PANEL_MINSIZE_H + self.VIDEO_PANEL_MINSIZE_H
         if apply:
             self.window.geometry(f'{w}x{h}')
         return w, h
@@ -337,7 +340,7 @@ class VideoWindowBase:
             if buf is not None:
                 self._frame_buffer[:] = np.frombuffer(buf, dtype=np.uint8).reshape(self._source_shape)
 
-    def _refresh_videofeed(self, image):
+    def _refresh_videofeed(self, image: Image):
         imagetk = ImageTk.PhotoImage(image=image)
         try:
             self.VIDEO_PANEL.configure(image=imagetk)
@@ -346,7 +349,10 @@ class VideoWindowBase:
             # If new image is garbage collected too early, do nothing - this prevents the image from flashing
             pass
 
-    def _update_visualisation(self):
+    def _full_frame_processing(self) -> Image:
+        return Image.fromarray(self._frame_buffer, mode='L').convert('RGB')
+
+    def _resize_videofeed_image(self, image: Image) -> Image:
 
         # Get window size and set new videofeed size, preserving aspect ratio
         h, w = self.videofeed_shape
@@ -356,13 +362,37 @@ class VideoWindowBase:
         else:
             h = int(w / self.aspect_ratio)
 
-        img_pillow = Image.fromarray(self._frame_buffer, mode='L').convert('RGBA')
-        img_pillow = img_pillow.resize((w, h))
+        img_pillow_resized = image.resize((w, h))
 
-        self._refresh_videofeed(img_pillow)
+        return img_pillow_resized
+
+    def _update_visualisations(self) -> Image:
+        full_size_image = self._full_frame_processing()
+        resized = self._resize_videofeed_image(full_size_image)
+        return resized
 
     def _update_txtvars(self):
-        pass
+
+        if self.parent.mgr.acquiring:
+            cap_fps = self.parent.capture_fps[self.idx]
+
+            if 0 < cap_fps < 1000:  # only makes sense to display real values
+                if abs(cap_fps - self._applied_fps) > 10:
+                    self.txtvar_warning.set('[ WARNING: Framerate ]')
+                    self._warning.set()
+                else:
+                    self._warning.clear()
+                self.txtvar_capture_fps.set(f"{cap_fps:.2f} fps")
+            else:
+                self.txtvar_capture_fps.set("-")
+
+            brightness = np.round(self._frame_buffer.mean() / 255 * 100, decimals=2)
+            self.txtvar_brightness.set(f"{brightness:.2f}%")
+        else:
+            self.txtvar_capture_fps.set("Off")
+            self.txtvar_brightness.set("-")
+
+        self.txtvar_display_fps.set(f"{self._fps:.2f} fps")
 
     def update(self):
         if self.macos_trick:
@@ -370,13 +400,19 @@ class VideoWindowBase:
 
         while not self.should_stop.is_set():
             if self.visible.is_set():
+
                 # Update display fps counter
                 now = datetime.now()
                 dt = (now - self._clock).total_seconds()
                 self._fps = (self._counter - self._counter_start) / dt
-                self._refresh_framebuffer()
-                self._update_visualisation()
+
                 self._update_txtvars()
+                self._refresh_framebuffer()
+
+                image_with_vis = self._update_visualisations()
+
+                self._refresh_videofeed(image_with_vis)
+
                 self._counter += 1
             else:
                 self.visible.wait()
@@ -478,7 +514,7 @@ class VideoWindowCalib(VideoWindowBase):
     def _toggle_snapshot(self):
         self._manual_snapshot = True
 
-    def _detect(self):
+    def _detect(self) -> Image:
 
         img_arr = np.frombuffer(self._frame_buffer, dtype=np.uint8).reshape(self.source_shape)
         img_col = cv2.cvtColor(img_arr, cv2.COLOR_GRAY2BGR)
@@ -553,7 +589,6 @@ class VideoWindowCalib(VideoWindowBase):
 
         return img_col
 
-
     def _perform_calibration(self):
 
         self.VIDEO_PANEL.configure(text='Calibrating...', fg='white')
@@ -616,7 +651,7 @@ class VideoWindowCalib(VideoWindowBase):
             self.dist_coeffs = np.load(load_path / 'dist_coeffs.npy')
             self.saved_label.config(text=f'Loaded.')
         else:
-            print('Calibration files not found.')
+            self.saved_label.config(text=f'No calibration loaded.')
 
     # def detect_pose(self):
     #
@@ -653,25 +688,10 @@ class VideoWindowCalib(VideoWindowBase):
     #                                   thickness=3)
     #     return img_col
 
-    def _update_txtvars(self):
+    def _full_frame_processing(self) -> Image:
+        return self._detect()
 
-        if self.parent.mgr.acquiring:
-            cap_fps = self.parent.capture_fps[self.idx]
-
-            if 0 < cap_fps < 1000:  # only makes sense to display real values
-                self.txtvar_capture_fps.set(f"{cap_fps:.2f} fps")
-            else:
-                self.txtvar_capture_fps.set("-")
-
-            brightness = np.round(self._frame_buffer.mean() / 255 * 100, decimals=2)
-            self.txtvar_brightness.set(f"{brightness:.2f}%")
-        else:
-            self.txtvar_capture_fps.set("Off")
-            self.txtvar_brightness.set("-")
-
-        self.txtvar_display_fps.set(f"{self._fps:.2f} fps")
-
-    def _update_visualisation(self):
+    def _update_visualisations(self):
 
         if self._coverage_pct >= self._recommended_coverage_pct_high:
             self.calibrate_button.configure(highlightbackground=self.parent.col_green)
@@ -686,12 +706,12 @@ class VideoWindowCalib(VideoWindowBase):
             self.calibrate_button.configure(highlightbackground=self.parent.col_red)
             pct_color = self.parent.col_red_rgb
 
-        image_viz = self._detect()
+        image = self._full_frame_processing()
 
-        image_viz = cv2.addWeighted(image_viz, 1.0, self._total_coverage_area, 0.8, 0.0)
+        image = cv2.addWeighted(image, 1.0, self._total_coverage_area, 0.8, 0.0)
 
         if self.camera_matrix is not None:
-            image_viz = cv2.undistort(image_viz, self.camera_matrix, self.dist_coeffs)
+            image = cv2.undistort(image, self.camera_matrix, self.dist_coeffs)
 
             if self.current_charuco_corners is not None:
                 valid, rvec, tvec = cv2.aruco.estimatePoseCharucoBoard(charucoCorners=self.current_charuco_corners,
@@ -701,60 +721,33 @@ class VideoWindowCalib(VideoWindowBase):
                                                                        distCoeffs=self.dist_coeffs,
                                                                        rvec=None, tvec=None)
                 if valid:
-                    cv2.drawFrameAxes(image=image_viz,
+                    cv2.drawFrameAxes(image=image,
                                       cameraMatrix=self.camera_matrix,
                                       distCoeffs=self.dist_coeffs,
                                       rvec=rvec, tvec=tvec, length=5)
 
-        image_viz = cv2.putText(image_viz, f'Snapshots coverage:',
+        image = cv2.putText(image, f'Snapshots coverage:',
                                 (50, 50), cv2.FONT_HERSHEY_SIMPLEX,
                                 1, (255, 255, 255), 2, cv2.LINE_AA)
 
-        image_viz = cv2.putText(image_viz,
+        image = cv2.putText(image,
                                 f'{self._coverage_pct:.2f}% ({len(self.detected_charuco_corners)} images)',
                                 (400, 50), cv2.FONT_HERSHEY_SIMPLEX,
                                 1, pct_color, 2, cv2.LINE_AA)
 
-        image_viz = cv2.putText(image_viz, f'Calibration:',
+        image = cv2.putText(image, f'Calibration:',
                                 (50, 100), cv2.FONT_HERSHEY_SIMPLEX,
                                 1, (255, 255, 255), 2, cv2.LINE_AA)
 
         calib_col = self.parent.col_green_rgb if self.camera_matrix is not None else self.parent.col_white_rgb
-        image_viz = cv2.putText(image_viz, f'{"Applied" if self.camera_matrix is not None else "-"}',
+        image = cv2.putText(image, f'{"Applied" if self.camera_matrix is not None else "-"}',
                                 (250, 100), cv2.FONT_HERSHEY_SIMPLEX,
                                 1, calib_col, 2, cv2.LINE_AA)
 
-        # Get window size and set new videofeed size, preserving aspect ratio
-        h, w = self.videofeed_shape
+        img_pil = Image.fromarray(image, mode='RGB')
+        resized = self._resize_videofeed_image(img_pil)
 
-        if w / h > self.aspect_ratio:
-            w = int(h * self.aspect_ratio)
-        else:
-            h = int(w / self.aspect_ratio)
-
-        img_pillow = Image.fromarray(image_viz)
-        img_pillow = img_pillow.resize((w, h))
-
-        self._refresh_videofeed(img_pillow)
-
-    def update(self):
-        if self.macos_trick:
-            self.window.resizable(True, True)
-
-        while not self.should_stop.is_set():
-
-            if self.visible.is_set():
-                # Update display fps counter
-                now = datetime.now()
-                dt = (now - self._clock).total_seconds()
-                self._fps = (self._counter - self._counter_start) / dt
-                self._refresh_framebuffer()
-                self._update_txtvars()
-                self._update_visualisation()
-
-                self._counter += 1
-            else:
-                self.visible.wait()
+        return resized
 
 
 class VideoWindowMain(VideoWindowBase):
@@ -767,9 +760,6 @@ class VideoWindowMain(VideoWindowBase):
 
         self._magnification = Event()
         self._magnification.set()
-
-        self._warning = Event()
-        self._warning.clear()
 
         ## Magnification parameters
         magn_portion = 12
@@ -791,7 +781,6 @@ class VideoWindowMain(VideoWindowBase):
 
         # Other specific stuff
         self._imgfnt = ImageFont.load_default()
-        self._applied_fps = self.parent.mgr.cameras[self.idx].framerate
 
         self._create_common_controls()
         self._create_specific_controls()
@@ -941,50 +930,20 @@ class VideoWindowMain(VideoWindowBase):
             self.show_mag_button.configure(highlightbackground=self.parent.col_yellow)
             self.slider_magn.config(state='active')
 
-    def _update_txtvars(self):
+    def _update_visualisations(self):
 
-        if self.parent.mgr.acquiring:
-            cap_fps = self.parent.capture_fps[self.idx]
-
-            if 0 < cap_fps < 1000:  # only makes sense to display real values
-                if abs(cap_fps - self._applied_fps) > 10:
-                    self.txtvar_warning.set('[ WARNING: Framerate ]')
-                    self._warning.set()
-                else:
-                    self._warning.clear()
-                self.txtvar_capture_fps.set(f"{cap_fps:.2f} fps")
-            else:
-                self.txtvar_capture_fps.set("-")
-
-            brightness = np.round(self._frame_buffer.mean() / 255 * 100, decimals=2)
-            self.txtvar_brightness.set(f"{brightness:.2f}%")
-        else:
-            self.txtvar_capture_fps.set("Off")
-            self.txtvar_brightness.set("-")
-
-        self.txtvar_display_fps.set(f"{self._fps:.2f} fps")
-
-    def _update_visualisation(self):
-
-        # Get window size and set new videofeed size, preserving aspect ratio
+        # # Get new coordinates
         h, w = self.videofeed_shape
-
-        if w / h > self.aspect_ratio:
-            w = int(h * self.aspect_ratio)
-        else:
-            h = int(w / self.aspect_ratio)
-
-        # Get new coordinates
         x_centre, y_centre = w // 2, h // 2
         x_north, y_north = w // 2, 0
         x_south, y_south = w // 2, h
         x_east, y_east = w, h // 2
         x_west, y_west = 0, h // 2
 
-        img_pillow = Image.fromarray(self._frame_buffer, mode='L').convert('RGBA')
-        img_pillow = img_pillow.resize((w, h))
+        image = self._full_frame_processing()
+        image = self._resize_videofeed_image(image)
 
-        d = ImageDraw.Draw(img_pillow)
+        d = ImageDraw.Draw(image)
         # Draw crosshair
         d.line((x_west, y_west, x_east, y_east), fill=self.parent.col_white_rgb, width=1)  # Horizontal
         d.line((x_north, y_north, x_south, y_south), fill=self.parent.col_white_rgb, width=1)  # Vertical
@@ -1017,7 +976,7 @@ class VideoWindowMain(VideoWindowBase):
                          (x_centre + self.magn_size[1] // 2, y_centre + self.magn_size[0] // 2)],
                         outline=col, width=1)
 
-            img_pillow.paste(magn_img, magn_pos)
+            image.paste(magn_img, magn_pos)
 
             # Add frame around the magnification
             d.rectangle([magn_pos, (w - 10, h - 10)], outline=col, width=1)
@@ -1028,7 +987,7 @@ class VideoWindowMain(VideoWindowBase):
             d.line((c[0], c[1] - 5, c[0], c[1] + 5), fill=col, width=1)  # Vertical
 
         if self._show_focus.is_set():
-            lapl = ndimage.gaussian_laplace(np.array(img_pillow)[:, :, 0].astype(np.uint8), sigma=1)
+            lapl = ndimage.gaussian_laplace(np.array(image)[:, :, 0].astype(np.uint8), sigma=1)
             blur = ndimage.gaussian_filter(lapl, 5)
 
             # threshold
@@ -1043,10 +1002,9 @@ class VideoWindowMain(VideoWindowBase):
             a = Image.fromarray(blur * 127, mode='L')
 
             overlay = Image.merge('RGBA', (r, g, b, a))
-            img_pillow = Image.alpha_composite(img_pillow, overlay)
+            image = Image.alpha_composite(image, overlay)
 
-        self._refresh_videofeed(img_pillow)
-
+        return image
 
 class GUI:
     CONTROLS_MIN_WIDTH = 600
@@ -1623,4 +1581,4 @@ class GUI:
                 f'Saved {sum(self._saved_frames)} frames total ({utils.pretty_size(sum(self._frame_sizes_bytes * self._saved_frames))})')
 
         self._counter += 1
-        self.root.after(1, self.update)
+        self.root.after(100, self.update)
