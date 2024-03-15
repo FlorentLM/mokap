@@ -169,7 +169,7 @@ def generate_board(board_rows, board_cols, aruco_sq_l, physical_l, dpi_out=1200,
 
     doc_size_px = (int(round(A4[0] * ppm)), int(round(A4[1] * ppm)))
 
-    padded = Image.new('RGB', doc_size_px, (255, 255, 255))
+    padded = Image.new('L', doc_size_px, 255)
     padded.paste(img, ((doc_size_px[0] - board_w_px) // 2, (doc_size_px[1] - board_h_px) // 2))
 
     doc_size_inches = (A4[0] / 25.4, A4[1] / 25.4)
