@@ -1266,7 +1266,7 @@ class GUI:
         self.txtvar_recording.set('')
         self.txtvar_userentry.set('')
         self.txtvar_applied_name.set('')
-        self.txtvar_frames_saved.set('')
+        self.txtvar_frames_saved.set(f'Saved 0 frames total (0 bytes)')
 
         # Compute optimal video windows sizes
         self._frame_sizes_bytes = np.prod(self.source_dims, axis=0)
@@ -1297,7 +1297,7 @@ class GUI:
     def _create_controls(self):
 
         toolbar = tk.Frame(self.root, height=38)
-        statusbar = tk.Frame(self.root, background="#e3e3e3", height=15)
+        statusbar = tk.Frame(self.root, background="#e3e3e3")
         maincontent = tk.Frame(self.root)
 
         toolbar.pack(side="top", fill="x")
@@ -1399,7 +1399,7 @@ class GUI:
                                          state='disabled')
         self.button_recpause.pack(padx=3, pady=3, side="top", fill="both", expand=True)
 
-        frames_saved_label = tk.Label(statusbar, textvariable=self.txtvar_frames_saved, anchor=tk.E)
+        frames_saved_label = tk.Label(statusbar, textvariable=self.txtvar_frames_saved, anchor=tk.NE)
         frames_saved_label.pack(side="right", fill="both", expand=True)
 
         # RIGHT HALF
@@ -1555,8 +1555,7 @@ class GUI:
                                                    tag=f'screen_{i}')
 
     def visible_windows(self, include_main=False):
-        windows = [w for w in self.video_windows if w.visible.is_set()]
-        windows += [w for w in self.calib_windows if w.visible.is_set()]
+        windows = [w for w in self.child_windows if w.visible.is_set()]
         if include_main:
             windows += [self]
         return windows
