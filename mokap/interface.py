@@ -790,7 +790,7 @@ class VideoWindowMain(VideoWindowBase):
     def _create_specific_controls(self):
 
         ## Centre Frame: Camera controls block
-        self.RIGHT_FRAME.config(text='Controls')
+        self.CENTRE_FRAME.config(text='Controls')
 
         lf = tk.Frame(self.CENTRE_FRAME)
         lf.pack(ipady=3, side='left', fill='y', expand=True)
@@ -802,23 +802,16 @@ class VideoWindowMain(VideoWindowBase):
                            width=1, font=self.parent.font_mini)
         rf.pack(side='right', fill='both', expand=True)
 
-        for label, val, func, slider_params in zip(['Framerate', 'Exposure', 'Blacks', 'Gain', 'Gamma'],
-                                                   [self.parent.mgr.cameras[self.idx].framerate,
-                                                    self.parent.mgr.cameras[self.idx].exposure,
-                                                    self.parent.mgr.cameras[self.idx].blacks,
-                                                    self.parent.mgr.cameras[self.idx].gain,
-                                                    self.parent.mgr.cameras[self.idx].gamma],
-                                                   [self._update_fps_all_cams,
-                                                    self._update_exp_all_cams,
-                                                    self._update_blacks_all_cams,
-                                                    self._update_gain_all_cams,
-                                                    self._update_gamma_all_cams],
+        for label, slider_params in zip(['framerate', 'exposure', 'blacks', 'gain', 'gamma'],
                                                    [(1, 220, 1, 1),
                                                     (21, 1e5, 5, 1),  # in microseconds - 1e5 ~ 10 fps
                                                     (0.0, 32.0, 0.5, 3),
                                                     (0.0, 36.0, 0.5, 3),
                                                     (0.0, 3.99, 0.05, 3),
                                                     ]):
+
+            param_value = getattr(self.parent.mgr.cameras[self.idx], label)
+
             f = tk.Frame(lf)
             f.pack(side='top', fill='y', expand=True)
 
@@ -827,150 +820,78 @@ class VideoWindowMain(VideoWindowBase):
                                state='normal')
             v.set(1)
             b.pack(side="top", fill="y", expand=True)
-            self._apply_all_vars[label.lower()] = v
+            self._apply_all_vars[label] = v
 
             s = tk.Scale(f,
                          from_=slider_params[0], to=slider_params[1], resolution=slider_params[2],
                          digits=slider_params[3],
                          orient='horizontal', width=6, sliderlength=10, length=80)
-            s.set(val)
-            s.bind("<ButtonRelease-1>", func)
+            s.set(param_value)
+            s.bind("<ButtonRelease-1>", partial(self._update_param_all, label))
             s.pack(padx=3, side='right', fill='y', expand=True)
 
-            key = label.split('(')[0].strip().lower()  # Get the simplified label (= wihtout spaces and units)
-            self.camera_controls_sliders[key] = s
+            self.camera_controls_sliders[label] = s
 
-            l = tk.Label(f, text=f'{label} :',
+            l = tk.Label(f, text=f'{label.title()} :',
                          anchor='se', justify='right', width=12,
                          font=self.parent.font_regular)
             l.pack(side='right', fill='both', expand=True)
 
-            ## Right Frame: Specific buttons
-            f_buttons_controls = tk.Frame(self.RIGHT_FRAME, padx=5)
-            f_buttons_controls.pack(ipadx=2, side='top', fill='y', expand=False)
+        ## Right Frame: Specific buttons
+        f_buttons_controls = tk.Frame(self.RIGHT_FRAME, padx=5)
+        f_buttons_controls.pack(ipadx=2, side='top', fill='y', expand=False)
 
-            self.show_focus_button = tk.Button(f_buttons_controls, text="Focus",
-                                               width=8,
-                                               highlightthickness=2, highlightbackground=self._window_bg_colour,
-                                               font=self.parent.font_regular,
-                                               command=self._toggle_focus_display)
-            self.show_focus_button.grid(row=0, column=0)
+        self.show_focus_button = tk.Button(f_buttons_controls, text="Focus",
+                                           width=8,
+                                           highlightthickness=2, highlightbackground=self._window_bg_colour,
+                                           font=self.parent.font_regular,
+                                           command=self._toggle_focus_display)
+        self.show_focus_button.grid(row=0, column=0)
 
-            self.show_mag_button = tk.Button(f_buttons_controls, text="Magnifier",
-                                             width=10,
-                                             highlightthickness=2, highlightbackground=self.parent.col_yellow,
-                                             font=self.parent.font_regular,
-                                             command=self._toggle_mag_display)
-            self.show_mag_button.grid(row=0, column=1)
+        self.show_mag_button = tk.Button(f_buttons_controls, text="Magnifier",
+                                         width=10,
+                                         highlightthickness=2, highlightbackground=self.parent.col_yellow,
+                                         font=self.parent.font_regular,
+                                         command=self._toggle_mag_display)
+        self.show_mag_button.grid(row=0, column=1)
 
-            self.slider_magn = tk.Scale(f_buttons_controls, variable=self.magn_zoom,
-                                        from_=1, to=5, resolution=0.1, orient='horizontal',
-                                        width=10, sliderlength=10, length=80)
-            self.slider_magn.grid(row=1, column=1, padx=(0, 0))
+        self.slider_magn = tk.Scale(f_buttons_controls, variable=self.magn_zoom,
+                                    from_=1, to=5, resolution=0.1, orient='horizontal',
+                                    width=10, sliderlength=10, length=80)
+        self.slider_magn.grid(row=1, column=1, padx=(0, 0))
 
-    # === TODO - merge these functions below ===
-    def update_framerate(self, event=None):
-        slider = self.camera_controls_sliders['framerate']
+    def update_param(self, param):
+        import time
+        slider = self.camera_controls_sliders[param]
         new_val = slider.get()
-        self.parent.mgr.cameras[self.idx].framerate = new_val
+        setattr(self.parent.mgr.cameras[self.idx], param, new_val)
 
-        # The actual maximum framerate depends on the exposure, so it might not be what the user requested
-        # Thus we need to update the slider value to the actual framerate
-        applied_fps = self.parent.mgr.cameras[self.idx].framerate
-        slider.set(applied_fps)
+        # And update the slider to the actual new value (can be different from the one requested)
+        slider.set(getattr(self.parent.mgr.cameras[self.idx], param))
 
-        # Keep a local copy to warn user if read framerate is too different from wanted fps
-        self._applied_fps = applied_fps
+        if param == 'exposure':
+            # # We also need to update the framerate slider to current resulting fps after exposure change
+            self.update_param('framerate')
 
-        # Refresh fps counters for the UI
-        self.parent._capture_clock = datetime.now()
-        self.parent.start_indices[:] = self.parent.mgr.indices
+            # Refresh exposure value for UI display
+            self.txtvar_exposure.set(f"{self.parent.mgr.cameras[self.idx].exposure} µs")
 
-    def update_exposure(self, event=None):
-        slider = self.camera_controls_sliders['exposure']
-        new_val = slider.get()
-        self.parent.mgr.cameras[self.idx].exposure = new_val
+        elif param == 'framerate':
+            # Keep a local copy to warn user if actual framerate is too different from requested fps
+            self._applied_fps = self.camera_controls_sliders[param].get()
 
-        # And update the slider to the actual new value (can be different than the one requested)
-        slider.set(self.parent.mgr.cameras[self.idx].exposure)
+            # Refresh framerate counters for UI display
+            self.parent._capture_clock = datetime.now()
+            self.parent.start_indices[:] = self.parent.mgr.indices
 
-        # We also need to update the framerate slider to current resulting fps after exposure change
-        slider_framerate = self.camera_controls_sliders['framerate']
-        slider_framerate.set(self.parent.mgr.cameras[self.idx].framerate)
-
-        self.txtvar_exposure.set(f"{self.parent.mgr.cameras[self.idx].exposure} µs")
-
-        # And callback to the update framerate function because the new exposure time might cap the framerate out
-        self.update_framerate(event)
-
-    def update_blacks(self, event=None):
-        slider = self.camera_controls_sliders['blacks']
-        new_val = slider.get()
-        self.parent.mgr.cameras[self.idx].blacks = new_val
-
-        # And update the slider to the actual new value (can be different than the one requested)
-        slider.set(self.parent.mgr.cameras[self.idx].blacks)
-
-    def update_gain(self, event=None):
-        slider = self.camera_controls_sliders['gain']
-        new_val = slider.get()
-        self.parent.mgr.cameras[self.idx].gain = new_val
-
-        # And update the slider to the actual new value (can be different than the one requested)
-        slider.set(self.parent.mgr.cameras[self.idx].gain)
-
-    def update_gamma(self, event=None):
-        slider = self.camera_controls_sliders['gamma']
-        new_val = slider.get()
-        self.parent.mgr.cameras[self.idx].gamma = new_val
-
-        # And update the slider to the actual new value (can be different than the one requested)
-        slider.set(self.parent.mgr.cameras[self.idx].gamma)
-
-    def _update_fps_all_cams(self, event=None):
-        self.update_framerate()
+    def _update_param_all(self, param, event=None):
+        self.update_param(param)
         for window in self.parent.child_windows:
-            if window is not self and bool(window._apply_all_vars['framerate'].get()):
-                slider = self.camera_controls_sliders['framerate']
+            if window is not self and bool(window._apply_all_vars[param].get()):
+                slider = self.camera_controls_sliders[param]
                 new_val = slider.get()
-                window.camera_controls_sliders['framerate'].set(new_val)
-                window.update_framerate()
-
-    def _update_exp_all_cams(self, event=None):
-        self.update_exposure()
-        for window in self.parent.child_windows:
-            if window is not self and bool(window._apply_all_vars['exposure'].get()):
-                slider = self.camera_controls_sliders['exposure']
-                new_val = slider.get()
-                window.camera_controls_sliders['exposure'].set(new_val)
-                window.update_exposure()
-
-    def _update_blacks_all_cams(self, event=None):
-        self.update_blacks()
-        for window in self.parent.child_windows:
-            if window is not self and bool(window._apply_all_vars['blacks'].get()):
-                slider = self.camera_controls_sliders['blacks']
-                new_val = slider.get()
-                window.camera_controls_sliders['blacks'].set(new_val)
-                window.update_blacks()
-
-    def _update_gain_all_cams(self, event=None):
-        self.update_gain()
-        for window in self.parent.child_windows:
-            if window is not self and bool(window._apply_all_vars['gain'].get()):
-                slider = self.camera_controls_sliders['gain']
-                new_val = slider.get()
-                window.camera_controls_sliders['gain'].set(new_val)
-                window.update_gain()
-
-    def _update_gamma_all_cams(self, event=None):
-        self.update_gamma()
-        for window in self.parent.child_windows:
-            if window is not self and bool(window._apply_all_vars['gamma'].get()):
-                slider = self.camera_controls_sliders['gamma']
-                new_val = slider.get()
-                window.camera_controls_sliders['gamma'].set(new_val)
-                window.update_gamma()
+                window.camera_controls_sliders[param].set(new_val)
+                window.update_param(param)
 
     def _toggle_focus_display(self):
         if self._show_focus.is_set():
@@ -989,8 +910,6 @@ class VideoWindowMain(VideoWindowBase):
             self._magnification.set()
             self.show_mag_button.configure(highlightbackground=self.parent.col_yellow)
             self.slider_magn.config(state='active')
-
-    # === end TODO ===
 
     def _update_txtvars(self):
 
@@ -1202,10 +1121,8 @@ class GUI:
 
         self._start_child_windows()
 
-        ##
-
-        self.update()  # Called once to init
-
+        ## Start the main thread
+        self.update()  # called once to init
         self.root.attributes("-topmost", True)
         self.root.mainloop()
 
@@ -1403,7 +1320,10 @@ class GUI:
             w.should_stop.set()
 
         for w in self.child_windows:
-            w.window.destroy()
+            try:
+                w.window.destroy()
+            except tk.TclError:
+                pass
 
         self.child_windows = []
         self.child_threads = []
@@ -1661,11 +1581,10 @@ class GUI:
 
             self._now_indices[:] = self.mgr.indices
 
-            with warnings.catch_warnings():
-                try:
-                    self._capture_fps[:] = (self._now_indices - self.start_indices) / capture_dt
-                except Warning:
-                    self._capture_fps.fill(0)
+            if capture_dt == 0:
+                capture_dt = 0.0001
+
+            self._capture_fps[:] = (self._now_indices - self.start_indices) / capture_dt
 
             self._current_buffers = self.mgr.get_current_framebuffer()
 
