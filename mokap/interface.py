@@ -132,7 +132,7 @@ class VideoWindowBase:
         self.VIDEO_PANEL = tk.Label(self.panes_container, compound='center', bg=self.parent.col_black)
         self.INFO_PANEL = tk.Frame(self.panes_container)
 
-        self.panes_container.add(self.VIDEO_PANEL)
+        self.panes_container.add(self.VIDEO_PANEL, stretch='never')
         self.panes_container.add(self.INFO_PANEL)
         self.panes_container.paneconfig(self.VIDEO_PANEL)
         self.panes_container.paneconfig(self.INFO_PANEL, height=self.INFO_PANEL_MINSIZE_H, minsize=self.INFO_PANEL_MINSIZE_H)
@@ -937,7 +937,6 @@ class VideoWindowMain(VideoWindowBase):
         ## Get new coordinates
         h, w = self.videofeed_shape
 
-        print(h, w)
         x_centre, y_centre = w // 2, h // 2
         x_north, y_north = w // 2, 0
         x_south, y_south = w // 2, h
