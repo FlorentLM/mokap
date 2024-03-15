@@ -61,7 +61,7 @@ def compute_windows_size(source_dims, screen_dims):
 class VideoWindowBase:
 
     INFO_PANEL_MINSIZE_H = 180
-    INFO_PANEL_DEFAULT_H = 200
+    INFO_PANEL_DEFAULT_H = 210
 
     VIDEO_PANEL_MINSIZE_H = 50  # haha
     WINDOW_MIN_W = 630
@@ -126,7 +126,7 @@ class VideoWindowBase:
         self.panes_container.pack(side="top", fill="both", expand=True)
 
         # Where the video will be displayed
-        self.VIDEO_PANEL = tk.Label(self.panes_container, compound='center')
+        self.VIDEO_PANEL = tk.Label(self.panes_container, compound='center', bg=self.parent.col_black)
         self.INFO_PANEL = tk.Frame(self.panes_container)
 
         self.panes_container.add(self.VIDEO_PANEL)
@@ -146,17 +146,14 @@ class VideoWindowBase:
                             fg=self.colour_2, bg=self.colour, font=self.parent.font_bold)
         name_bar.pack(side='top', fill='x')
 
-        self.LEFT_FRAME = tk.LabelFrame(self.INFO_PANEL, text="Left",
-                                        bg=self.parent.col_green)
-        self.LEFT_FRAME.pack(side='left', fill='both', expand=True)
+        self.LEFT_FRAME = tk.LabelFrame(self.INFO_PANEL, text="Left")
+        self.LEFT_FRAME.pack(padx=(3, 0), pady=3, side='left', fill='both', expand=True)
 
-        self.CENTRE_FRAME = tk.LabelFrame(self.INFO_PANEL, text="Centre",
-                                          bg=self.parent.col_blue)
-        self.CENTRE_FRAME.pack(side='left', fill='both', expand=True)
+        self.CENTRE_FRAME = tk.LabelFrame(self.INFO_PANEL, text="Centre")
+        self.CENTRE_FRAME.pack(padx=(3, 3), pady=3, side='left', fill='both', expand=True)
 
-        self.RIGHT_FRAME = tk.LabelFrame(self.INFO_PANEL, text="Right",
-                                         bg=self.parent.col_red)
-        self.RIGHT_FRAME.pack(side='left', fill='both', expand=True)
+        self.RIGHT_FRAME = tk.LabelFrame(self.INFO_PANEL, text="Right")
+        self.RIGHT_FRAME.pack(padx=(0, 3), pady=3, side='left', fill='both', expand=True)
 
         ## Left frame: Information block
         self.LEFT_FRAME.config(text='Information')
@@ -176,30 +173,28 @@ class VideoWindowBase:
             l = tk.Label(f_labels, text=f"{label} :",
                          anchor='ne', justify='right',
                          fg=self.parent.col_darkgray,
-                         bg=self.parent.col_red,
                          font=self.parent.font_bold)
             l.pack(side='top', fill='both', expand=True)
 
             v = tk.Label(f_values, textvariable=var,
                          anchor='nw', justify='left',
-                         font=self.parent.font_regular,
-                         bg=self.parent.col_orange)
+                         font=self.parent.font_regular)
             v.pack(pady=(1, 0), side='top', fill='both', expand=True)
 
         ## Right frame: View controls block
         self.RIGHT_FRAME.config(text='View')
 
         f_windowsnap = tk.Frame(self.RIGHT_FRAME)
-        f_windowsnap.pack(side='top', fill='y')
+        f_windowsnap.pack(side='top', fill='both', expand=True)
 
-        l_windowsnap = tk.Label(f_windowsnap, text=f"Snap window to:",
-                                anchor='w', justify='left',
-                                font=self.parent.font_regular,
-                                padx=5, pady=10)
+        l_windowsnap = tk.Label(f_windowsnap, text=f"Window snap : ",
+                                anchor='e', justify='right',
+                                font=self.parent.font_bold,
+                                fg=self.parent.col_darkgray)
         l_windowsnap.pack(side='left', fill='y')
 
-        f_buttons_windowsnap = tk.Frame(f_windowsnap, padx=5, pady=10)
-        f_buttons_windowsnap.pack(side='left', fill='both', expand=True)
+        f_buttons_windowsnap = tk.Frame(f_windowsnap)
+        f_buttons_windowsnap.pack(side='left', fill='x', expand=True)
 
         self.positions = np.array([['nw', 'n', 'ne'],
                                    ['w', 'c', 'e'],
@@ -432,39 +427,53 @@ class VideoWindowCalib(VideoWindowBase):
         self.CENTRE_FRAME.config(text="Calibration")
 
         f_snapshots = tk.Frame(self.CENTRE_FRAME)
-        f_snapshots.pack(side="top", fill="x", expand=True)
+        f_snapshots.pack(side="top", fill="both", expand=True)
 
-        self.snap_button = tk.Button(f_snapshots, text="Snapshot", font=self.parent.font_bold,
+        self.snap_button = tk.Button(f_snapshots, text="Take Snapshot",
+                                     font=self.parent.font_regular,
                                      command=self._toggle_snapshot)
-        self.snap_button.pack(padx=5, pady=5, side="left", fill="both", expand=False)
+        self.snap_button.pack(padx=(5, 0), side="left", fill="both", expand=False)
+
+        rf = tk.Frame(f_snapshots)
+        rf.pack(padx=5, side="left", fill="both", expand=True)
 
         self.autosnap_var = tk.IntVar(value=0)
-        autosnap_button = tk.Checkbutton(f_snapshots, text="Auto snapshot", variable=self.autosnap_var, font=self.parent.font_regular)
-        autosnap_button.pack(padx=5, pady=5, side="top", fill="both", expand=False)
+        autosnap_button = tk.Checkbutton(rf, text="Auto snapshot", variable=self.autosnap_var, anchor='w',
+                                         font=self.parent.font_regular)
+        autosnap_button.pack(side="top", fill="both", expand=True)
 
-        self.reset_coverage_button = tk.Button(f_snapshots, text="Clear snapshots", font=self.parent.font_regular,
+        self.reset_coverage_button = tk.Button(rf, text="Clear snapshots",
+                                               font=self.parent.font_regular,
                                      command=self._reset_coverage)
+        self.reset_coverage_button.pack(side="top", fill="both", expand=False)
 
-        self.reset_coverage_button.pack(padx=5, pady=5, side="top", fill="both", expand=False)
+        f_calibrate = tk.Frame(self.CENTRE_FRAME)
+        f_calibrate.pack(side="top", fill="both", expand=True)
 
-        self.calibrate_button = tk.Button(self.CENTRE_FRAME, text="Compute calibration",
+        separator = ttk.Separator(f_calibrate, orient='horizontal')
+        separator.pack(ipadx=5, side="top", fill="x", expand=True)
+
+        self.calibrate_button = tk.Button(f_calibrate, text="Calibrate",
                                          highlightthickness=2, highlightbackground=self.parent.col_red,
                                          font=self.parent.font_bold,
                                          command=self._perform_calibration)
 
-        self.calibrate_button.pack(padx=5, pady=5, side="left", fill="both", expand=False)
+        self.calibrate_button.pack(padx=(5, 0), pady=(0, 5), side="left", fill="both", expand=False)
 
-        f_saveload = tk.Frame(self.CENTRE_FRAME)
-        f_saveload.pack(padx=5, pady=5, side="top", fill="x", expand=True)
+        f_saveload = tk.Frame(f_calibrate)
+        f_saveload.pack(padx=(5, 5), pady=(0, 5), side="left", fill="both", expand=True)
 
-        self.load_button = tk.Button(f_saveload, text="Load", font=self.parent.font_regular, command=self.load_calibration)
-        self.load_button.pack(side="left", fill="both", expand=False)
+        f_saveload_buttons = tk.Frame(f_saveload)
+        f_saveload_buttons.pack(side="top", fill="both", expand=True)
 
-        self.save_button = tk.Button(f_saveload, text="Save", font=self.parent.font_regular, command=self.save_calibration)
+        self.load_button = tk.Button(f_saveload_buttons, text="Load", font=self.parent.font_regular, command=self.load_calibration)
+        self.load_button.pack(padx=(0, 3), side="left", fill="both", expand=False)
+
+        self.save_button = tk.Button(f_saveload_buttons, text="Save", font=self.parent.font_regular, command=self.save_calibration)
         self.save_button.pack(side="left", fill="both", expand=False)
 
-        self.saved_label = tk.Label(self.CENTRE_FRAME, text='', anchor='w', justify='left', font=self.parent.font_regular)
-        self.saved_label.pack(side='left', fill='y')
+        self.saved_label = tk.Label(f_saveload, text='wedfweferfgerfgerfg', anchor='w', justify='left', font=self.parent.font_regular)
+        self.saved_label.pack(side='bottom', fill='x')
 
     def _toggle_snapshot(self):
         self._manual_snapshot = True
@@ -792,76 +801,97 @@ class VideoWindowMain(VideoWindowBase):
         ## Centre Frame: Camera controls block
         self.CENTRE_FRAME.config(text='Controls')
 
-        lf = tk.Frame(self.CENTRE_FRAME)
-        lf.pack(ipady=3, side='left', fill='y', expand=True)
-
         self.camera_controls_sliders = {}
         self._apply_all_vars = {}
 
-        rf = tk.LabelFrame(self.CENTRE_FRAME, text='Sync',
-                           width=1, font=self.parent.font_mini)
-        rf.pack(side='right', fill='both', expand=True)
+        lf = tk.Frame(self.CENTRE_FRAME)
+        lf.pack(pady=(15, 0), side='left', fill='both', expand=True)
+
+        rf = tk.LabelFrame(self.CENTRE_FRAME, text='Sync', font=self.parent.font_mini)
+        rf.pack(side='right', fill='y', expand=True)
+
+        f_labels = tk.Frame(lf)
+        f_labels.pack(side='left', fill='y', expand=True)
+
+        f_values = tk.Frame(lf)
+        f_values.pack(side='left', fill='both', expand=True)
 
         for label, slider_params in zip(['framerate', 'exposure', 'blacks', 'gain', 'gamma'],
-                                                   [(1, 220, 1, 1),
-                                                    (21, 1e5, 5, 1),  # in microseconds - 1e5 ~ 10 fps
-                                                    (0.0, 32.0, 0.5, 3),
-                                                    (0.0, 36.0, 0.5, 3),
-                                                    (0.0, 3.99, 0.05, 3),
+                                                   [(int, 1, 220, 1, 1),
+                                                    (int, 21, 1e5, 5, 1),  # in microseconds - 1e5 ~ 10 fps
+                                                    (float, 0.0, 32.0, 0.5, 3),
+                                                    (float, 0.0, 36.0, 0.5, 3),
+                                                    (float, 0.0, 3.99, 0.05, 3)
                                                     ]):
 
             param_value = getattr(self.parent.mgr.cameras[self.idx], label)
 
-            f = tk.Frame(lf)
-            f.pack(side='top', fill='y', expand=True)
-
             v = tk.IntVar()
-            b = tk.Checkbutton(rf, variable=v,
-                               state='normal')
+            b = tk.Checkbutton(rf, variable=v, state='normal')
             v.set(1)
-            b.pack(side="top", fill="y", expand=True)
+            b.pack(side="top", fill="x", expand=True)
             self._apply_all_vars[label] = v
 
-            s = tk.Scale(f,
-                         from_=slider_params[0], to=slider_params[1], resolution=slider_params[2],
-                         digits=slider_params[3],
-                         orient='horizontal', width=6, sliderlength=10, length=80)
+            scale_frame = tk.Frame(f_values)
+            scale_frame.pack(side='top', fill='x', expand=True)
+
+            if slider_params[0] == int:
+                var = tk.IntVar()
+            elif slider_params[0] == float:
+                var = tk.DoubleVar()
+
+            s = tk.Scale(scale_frame,
+                         from_=slider_params[1], to=slider_params[2], resolution=slider_params[3],
+                         digits=slider_params[4],
+                         font=self.parent.font_mini,
+                         variable=var,
+                         showvalue=False,
+                         orient='horizontal', width=15, sliderlength=10)
             s.set(param_value)
             s.bind("<ButtonRelease-1>", partial(self._update_param_all, label))
-            s.pack(padx=3, side='right', fill='y', expand=True)
+            s.pack(side='left', anchor='w', fill='both', expand=True)
+
+            scale_val = tk.Label(scale_frame, textvariable=var,
+                       anchor='w', justify='left', width=6,
+                       font=self.parent.font_regular)
+            scale_val.pack(side='left', anchor='w', fill='both', expand=False)
 
             self.camera_controls_sliders[label] = s
 
-            l = tk.Label(f, text=f'{label.title()} :',
-                         anchor='se', justify='right', width=12,
-                         font=self.parent.font_regular)
-            l.pack(side='right', fill='both', expand=True)
+            l = tk.Label(f_labels, text=f'{label.title()} :',
+                         anchor='e', justify='right',
+                         font=self.parent.font_bold,
+                         fg=self.parent.col_darkgray)
+            l.pack(side='top', fill='x', expand=True)
 
         ## Right Frame: Specific buttons
-        f_buttons_controls = tk.Frame(self.RIGHT_FRAME, padx=5)
-        f_buttons_controls.pack(ipadx=2, side='top', fill='y', expand=False)
+        f_buttons_controls = tk.LabelFrame(self.RIGHT_FRAME, text='Visualisations')
+        f_buttons_controls.pack(padx=3, pady=3, side='top', fill='both', expand=True)
 
-        self.show_focus_button = tk.Button(f_buttons_controls, text="Focus",
-                                           width=8,
+        f = tk.Frame(f_buttons_controls)
+        f.pack(pady=(5, 0), side='left', fill='y', expand=True)
+
+        self.show_focus_button = tk.Button(f, text="Focus zone",
                                            highlightthickness=2, highlightbackground=self._window_bg_colour,
                                            font=self.parent.font_regular,
                                            command=self._toggle_focus_display)
-        self.show_focus_button.grid(row=0, column=0)
+        self.show_focus_button.pack(side='top', fill='both', expand=False)
 
-        self.show_mag_button = tk.Button(f_buttons_controls, text="Magnifier",
-                                         width=10,
+        f = tk.Frame(f_buttons_controls)
+        f.pack(pady=(5, 0), side='left', fill='y', expand=True)
+
+        self.show_mag_button = tk.Button(f, text="Magnifier",
                                          highlightthickness=2, highlightbackground=self.parent.col_yellow,
                                          font=self.parent.font_regular,
                                          command=self._toggle_mag_display)
-        self.show_mag_button.grid(row=0, column=1)
+        self.show_mag_button.pack(side='top', fill='x', expand=False)
 
-        self.slider_magn = tk.Scale(f_buttons_controls, variable=self.magn_zoom,
+        self.slider_magn = tk.Scale(f, variable=self.magn_zoom,
                                     from_=1, to=5, resolution=0.1, orient='horizontal',
-                                    width=10, sliderlength=10, length=80)
-        self.slider_magn.grid(row=1, column=1, padx=(0, 0))
+                                    width=10, sliderlength=10)
+        self.slider_magn.pack(side='top', fill='x', expand=False)
 
     def update_param(self, param):
-        import time
         slider = self.camera_controls_sliders[param]
         new_val = slider.get()
         setattr(self.parent.mgr.cameras[self.idx], param, new_val)
@@ -1078,7 +1108,7 @@ class GUI:
         # Set up fonts
         self.font_bold = font.Font(weight='bold', size=10)
         self.font_regular = font.Font(size=9)
-        self.font_mini = font.Font(size=7)
+        self.font_mini = font.Font(size=8)
 
         # Init default things
         self.mgr = mgr
