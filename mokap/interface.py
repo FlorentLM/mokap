@@ -251,6 +251,10 @@ class VideoWindowBase:
         h, w = self.VIDEO_PANEL.winfo_height(), self.VIDEO_PANEL.winfo_width()
         if h <= 1 or w <= 1:
             return self.source_shape
+        if w / h > self.aspect_ratio:
+            w = int(h * self.aspect_ratio)
+        else:
+            h = int(w / self.aspect_ratio)
         return h, w
 
     def auto_size(self, apply=True):
@@ -356,11 +360,6 @@ class VideoWindowBase:
 
         # Get window size and set new videofeed size, preserving aspect ratio
         h, w = self.videofeed_shape
-
-        if w / h > self.aspect_ratio:
-            w = int(h * self.aspect_ratio)
-        else:
-            h = int(w / self.aspect_ratio)
 
         img_pillow_resized = image.resize((w, h))
 
@@ -932,16 +931,18 @@ class VideoWindowMain(VideoWindowBase):
 
     def _update_visualisations(self):
 
-        # # Get new coordinates
+        image = self._full_frame_processing()
+        image = self._resize_videofeed_image(image)
+
+        ## Get new coordinates
         h, w = self.videofeed_shape
+
+        print(h, w)
         x_centre, y_centre = w // 2, h // 2
         x_north, y_north = w // 2, 0
         x_south, y_south = w // 2, h
         x_east, y_east = w, h // 2
         x_west, y_west = 0, h // 2
-
-        image = self._full_frame_processing()
-        image = self._resize_videofeed_image(image)
 
         d = ImageDraw.Draw(image)
         # Draw crosshair
@@ -1002,7 +1003,7 @@ class VideoWindowMain(VideoWindowBase):
             a = Image.fromarray(blur * 127, mode='L')
 
             overlay = Image.merge('RGBA', (r, g, b, a))
-            image = Image.alpha_composite(image, overlay)
+            image = Image.alpha_composite(image.convert('RGBA'), overlay)
 
         return image
 
