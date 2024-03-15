@@ -60,7 +60,7 @@ def compute_windows_size(source_dims, screen_dims):
 
 class VideoWindowBase:
 
-    INFO_PANEL_MINSIZE_H = 180
+    INFO_PANEL_MINSIZE_H = 200
     INFO_PANEL_DEFAULT_H = 210
 
     VIDEO_PANEL_MINSIZE_H = 50  # haha
@@ -122,7 +122,7 @@ class VideoWindowBase:
         self.txtvar_exposure.set(f"{self.parent.mgr.cameras[self.idx].exposure} µs")
 
         ## Initialise main video frame
-        self.panes_container = tk.PanedWindow(self.window, orient='vertical')
+        self.panes_container = tk.PanedWindow(self.window, orient='vertical', opaqueresize=False)
         self.panes_container.pack(side="top", fill="both", expand=True)
 
         # Where the video will be displayed
@@ -472,7 +472,7 @@ class VideoWindowCalib(VideoWindowBase):
         self.save_button = tk.Button(f_saveload_buttons, text="Save", font=self.parent.font_regular, command=self.save_calibration)
         self.save_button.pack(side="left", fill="both", expand=False)
 
-        self.saved_label = tk.Label(f_saveload, text='wedfweferfgerfgerfg', anchor='w', justify='left', font=self.parent.font_regular)
+        self.saved_label = tk.Label(f_saveload, text='', anchor='w', justify='left', font=self.parent.font_regular)
         self.saved_label.pack(side='bottom', fill='x')
 
     def _toggle_snapshot(self):
@@ -808,7 +808,7 @@ class VideoWindowMain(VideoWindowBase):
         lf.pack(pady=(15, 0), side='left', fill='both', expand=True)
 
         rf = tk.LabelFrame(self.CENTRE_FRAME, text='Sync', font=self.parent.font_mini)
-        rf.pack(side='right', fill='y', expand=True)
+        rf.pack(padx=3, pady=(0, 3), side='right', fill='y', expand=True)
 
         f_labels = tk.Frame(lf)
         f_labels.pack(side='left', fill='y', expand=True)
