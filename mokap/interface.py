@@ -784,6 +784,17 @@ class VideoWindowMain(VideoWindowBase):
         self._create_common_controls()
         self._create_specific_controls()
 
+        self.VIDEO_PANEL.bind('<Button-1>', self._get_magn_pos)
+        self.VIDEO_PANEL.bind("<B1-Motion>", self._get_magn_pos)
+
+        self.magn_pos_x = self.magn_size[1] + 10
+        self.magn_pos_y = self.magn_size[0] + 10
+
+    def _get_magn_pos(self, event):
+        if self._magnification.is_set():
+            self.magn_pos_x = event.x - (self.VIDEO_PANEL.winfo_width() - self.videofeed_shape[1])//2
+            self.magn_pos_y = event.y - (self.VIDEO_PANEL.winfo_height() - self.videofeed_shape[0])//2
+
     def _create_specific_controls(self):
 
         ## Centre Frame: Camera controls block
@@ -969,7 +980,7 @@ class VideoWindowMain(VideoWindowBase):
                 (int(magn_img.width * self.magn_zoom.get()), int(magn_img.height * self.magn_zoom.get())))
 
             # Position of the top left corner of magnification window in the whole videofeed
-            magn_pos = w - magn_img.width - 10, h - magn_img.height - 10  # small margin of 10 px
+            magn_pos = self.magn_pos_x - magn_img.width // 2, self.magn_pos_y - magn_img.height // 2
 
             # Add frame around the magnified area
             d.rectangle([(x_centre - self.magn_size[1] // 2, y_centre - self.magn_size[0] // 2),
@@ -979,7 +990,7 @@ class VideoWindowMain(VideoWindowBase):
             image.paste(magn_img, magn_pos)
 
             # Add frame around the magnification
-            d.rectangle([magn_pos, (w - 10, h - 10)], outline=col, width=1)
+            d.rectangle([magn_pos, (self.magn_pos_x + magn_img.width//2, self.magn_pos_y + magn_img.height//2)], outline=col, width=1)
 
             # Add a small + in the centre
             c = magn_pos[0] + magn_img.width // 2, magn_pos[1] + magn_img.height // 2
