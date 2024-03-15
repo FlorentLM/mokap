@@ -444,11 +444,30 @@ class Camera:
     @exposure.setter
     def exposure(self, value: float) -> None:
         if self._connected:
-            if not self._is_virtual:
-                self.ptr.ExposureTime = value
-            else:
-                self.ptr.ExposureTimeAbs = value
-                self.ptr.ExposureTimeRaw = value
+            try:
+                if not self._is_virtual:
+                    self.ptr.ExposureTime = value
+                else:
+                    self.ptr.ExposureTimeAbs = int(value)
+                    self.ptr.ExposureTimeRaw = int(value)
+            except py.OutOfRangeException as e:
+                exception_message = e.args[0]
+                if 'must be smaller than or equal ' in exception_message:
+                    value = math.floor(100 * float(
+                        exception_message.split('must be smaller than or equal ')[1].split(
+                            '. : OutOfRangeException')[
+                            0])) / 100.0
+                elif 'must be greater than or equal ' in exception_message:
+                    value = math.ceil(100 * float(
+                        exception_message.split('must be greater than or equal ')[1].split(
+                            '. : OutOfRangeException')[
+                            0])) / 100.0
+
+                if not self._is_virtual:
+                    self.ptr.ExposureTime = value
+                else:
+                    self.ptr.ExposureTimeAbs = int(value)
+                    self.ptr.ExposureTimeRaw = int(value)
 
         # And keep a local value to avoid querying the camera every time we read it
         self._exposure = value
