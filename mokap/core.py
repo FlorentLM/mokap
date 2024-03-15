@@ -251,6 +251,7 @@ class Manager:
 
     @exposure.setter
     def exposure(self, value: int) -> None:
+        print('bonjour')
         for i, cam in enumerate(self._cameras_list):
             cam.exposure = value
             self._exposure = cam.exposure
