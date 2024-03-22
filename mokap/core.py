@@ -73,6 +73,7 @@ class Manager:
         self._framerate: int = framerate
         self._gain: float = 1.0
         self._gamma: float = 1.0
+        self._blacks: float = 0.0
         self._triggered: bool = triggered
 
         default_base_folder = Path('./')
@@ -264,6 +265,16 @@ class Manager:
         for i, cam in enumerate(self._cameras_list):
             cam.gain = value
             self._gain = value
+
+    @property
+    def blacks(self) -> float:
+        return self._blacks
+
+    @blacks.setter
+    def blacks(self, value: float) -> None:
+        for i, cam in enumerate(self._cameras_list):
+            cam.blacks = value
+            self._blacks = value
 
     @property
     def gamma(self) -> float:
