@@ -1555,7 +1555,7 @@ class GUI:
 
             self.button_acquisition.config(text="Acquiring", image=self.icon_capture)
             self.button_snapshot.config(state="normal")
-            if not self._is_calibrating:
+            if not self._is_calibrating.is_set():
                 self.button_recpause.config(state="normal")
 
     def quit(self):
