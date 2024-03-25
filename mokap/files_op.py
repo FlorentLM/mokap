@@ -186,10 +186,10 @@ def videos_from_frames(dirpath, cams=None, format=None, force=False):
 
         print(stats)
 
-        with open(outfolder / (f'{c.stem}_stats.txt'), 'w') as st:
-            st.write(stats)
+        savepath = outfolder / (f'{dirpath.stem}_{c.stem}.{conv_settings["ftype"]}')
 
-        savepath = outfolder / (f'{c.stem}.{conv_settings["ftype"]}')
+        with open(outfolder / (f'{savepath.stem}_stats.txt'), 'w') as st:
+            st.write(stats)
 
         in_fmt = (c / files[0].name).suffix
 
@@ -211,9 +211,9 @@ def videos_from_frames(dirpath, cams=None, format=None, force=False):
         if savepath.exists():
             (c / 'converted').touch()
 
-            print(f'Done creating {c.stem + conv_settings["ftype"]}.')
+            print(f'Done creating {savepath.name}.')
         else:
-            print(f'Error creating {c.stem + conv_settings["ftype"]}!')
+            print(f'Error creating {savepath.name}!')
 
 
 
