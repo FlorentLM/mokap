@@ -13,7 +13,6 @@ from mokap.hardware import SSHTrigger, Camera, setup_ulimit, get_basler_devices
 from mokap import utils
 from PIL import Image
 import platform
-import configparser
 import random
 
 ##
@@ -54,12 +53,7 @@ class Manager:
                  triggered=False,   # TODO - support hardware and software trigger modes
                  silent=True):
 
-        self.confparser = configparser.ConfigParser()
-        try:
-            self.confparser.read(config)
-        except FileNotFoundError:
-            print('[WARN] Config file not found. Defaulting to example config')
-            self.confparser.read('example_config.conf')
+        self.config_dict = files_op.read_config(config)
 
         if 'Linux' in platform.system():
             setup_ulimit(silent=silent)
@@ -77,15 +71,15 @@ class Manager:
         self._triggered: bool = triggered
 
         default_base_folder = Path('./')
-        if 'GENERAL' in self.confparser.sections():
-             self._base_folder = Path(self.confparser['GENERAL'].get('base_folder', default_base_folder.as_posix()).strip("'").strip('"')) / 'MokapRecordings'
+        if 'GENERAL' in self.config_dict.sections():
+             self._base_folder = Path(self.config_dict['GENERAL'].get('base_folder', default_base_folder.as_posix()).strip("'").strip('"')) / 'MokapRecordings'
         else:
             self._base_folder = default_base_folder / 'MokapRecordings'
         if self._base_folder.parent == self._base_folder.name:
             self._base_folder = self._base_folder.parent
         self._base_folder.mkdir(parents=True, exist_ok=True)
         self._session_name: str = ''
-        self._saving_ext = self.confparser['GENERAL'].get('save_format', 'bmp').lower().lstrip('.').strip("'").strip('"')
+        self._saving_ext = self.config_dict['GENERAL'].get('save_format', 'bmp').lower().lstrip('.').strip("'").strip('"')
 
         self._executor: Union[ThreadPoolExecutor, None] = None
 
@@ -137,9 +131,9 @@ class Manager:
 
         default_max_cams = 99
         default_allow_virtual = False
-        if 'GENERAL' in self.confparser.sections():
-            max_cams = self.confparser['GENERAL'].getint('max_cams', default_max_cams)
-            allow_virtual = self.confparser['GENERAL'].getboolean('allow_virtual', default_allow_virtual)
+        if 'GENERAL' in self.config_dict.sections():
+            max_cams = self.config_dict['GENERAL'].getint('max_cams', default_max_cams)
+            allow_virtual = self.config_dict['GENERAL'].getboolean('allow_virtual', default_allow_virtual)
         else:
             max_cams = default_max_cams
             allow_virtual = default_allow_virtual
@@ -154,11 +148,11 @@ class Manager:
 
     def connect(self, specific_cams=None):
 
-        allow_all = self.confparser['GENERAL'].getboolean('allow_all', True)
+        allow_all = self.config_dict['GENERAL'].getboolean('allow_all', True)
 
         connected_cams = self.list_devices()
 
-        cams_in_config_file = list(self.confparser.sections())
+        cams_in_config_file = list(self.config_dict.sections())
         cams_in_config_file.remove('GENERAL')
 
         if specific_cams is not None:
@@ -170,7 +164,7 @@ class Manager:
             devices = [d for d in connected_cams if d.GetSerialNumber() in specific_cams]
         else:
             if not allow_all:
-                allowed_serials = [self.confparser[k]['serial'] for k in cams_in_config_file]
+                allowed_serials = [self.config_dict[k]['serial'] for k in cams_in_config_file]
 
                 devices = [d for d in connected_cams if d.GetSerialNumber() in allowed_serials]
             else:
@@ -203,9 +197,9 @@ class Manager:
 
                 # Grab name and colour from config file if they're in there
                 for entry in cams_in_config_file:
-                    if cam.serial == self.confparser[entry]['serial']:
-                        cam_name = self.confparser[entry].get('name', cam_name)
-                        cam_col = f'#{self.confparser[entry].get("color", cam_col).lstrip("#")}'
+                    if cam.serial == self.config_dict[entry]['serial']:
+                        cam_name = self.config_dict[entry].get('name', cam_name)
+                        cam_col = f'#{self.config_dict[entry].get("color", cam_col).lstrip("#")}'
 
                 cam.name = cam_name
                 self._cameras_colours[cam.name] = cam_col

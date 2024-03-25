@@ -3,6 +3,9 @@ import subprocess as sp
 from pathlib import Path
 import shutil
 import shlex
+import configparser
+import json
+import os
 
 ##
 
@@ -22,6 +25,16 @@ DEFAULT_FMT = COMPRESSED
 
 
 ##
+def read_config(config_file='config.conf'):
+    confparser = configparser.ConfigParser()
+    try:
+        confparser.read(config_file)
+    except FileNotFoundError:
+        print('[WARN] Config file not found. Defaulting to example config.')
+        confparser.read('example_config.conf')
+
+    return confparser
+
 
 def exists_check(path):
     """ Checks if a file or folder of the given name exists. If so, create a suffixed version of the name
@@ -113,6 +126,92 @@ def natural_sort_key(s):
     return [int(text) if text.isdigit() else text.lower()
             for text in re.split(_nsre, s)]
 
+def videos_from_frames(dirpath, cams=None, format=None, force=False):
+    dirpath = Path(dirpath).resolve()
+
+    if not dirpath.exists():
+        return
+    if (dirpath / 'recording').exists() and not force:
+        return
+    if (dirpath / 'converted').exists() and not force:
+        return
+
+    print(f"Converting {dirpath.stem}...")
+
+    cam_folders = [d for d in dirpath.glob('cam*') if d.is_dir()]
+    nb_cams = len(cam_folders)
+
+    if cams is not None:
+        if type(cams) is int:
+            cams = {cams}
+        else:
+            cams = set(cams)
+    else:
+        cams = set(range(nb_cams))
+
+    if format is not None:
+        if 'compr' in str(format):
+            conv_settings = COMPRESSED
+        elif '1' in str(format):
+            conv_settings = LOSSLESS_1
+        elif '2' in str(format):
+            conv_settings = LOSSLESS_2
+        else:
+            conv_settings = DEFAULT_FMT
+    else:
+        conv_settings = DEFAULT_FMT
+
+    outfolder = dirpath / 'videos'
+    if not outfolder.exists():
+        outfolder.mkdir(parents=True, exist_ok=False)
+
+    with open(dirpath / 'metadata.json', 'r') as f:
+        metadata = json.load(f)
+
+    for c in cam_folders:
+        files = [f for f in os.scandir(c) if f.name != 'converted']    # scandir is the fastest method for that
+        nb_frames = len(files)
+
+        fps_raw = metadata['framerate']
+        total_time_ns = files[-1].stat().st_ctime_ns - files[0].stat().st_ctime_ns
+
+        fps_calc = nb_frames / (total_time_ns / 1e9)
+
+        stats = f"\nFramerate:\n" \
+                f"---------\n" \
+                f"Theoretical:\n  {fps_raw:.2f} fps\n" \
+                f"Actual (mean):\n  {fps_calc:.2f} fps\n" \
+                f"--> Error = {(1 - (fps_calc / fps_raw)) * 100:.2f}%"
+
+        print(stats)
+
+        with open(outfolder / (f'{c.stem}_stats.txt'), 'w') as st:
+            st.write(stats)
+
+        savepath = outfolder / (f'{c.stem}.{conv_settings["ftype"]}')
+
+        in_fmt = (c / files[0].name).suffix
+        process = sp.Popen(shlex.split(
+            f'ffmpeg '
+            # f'-s {w}x{h} '                # set frame size
+            f"-pattern_type glob -i '*{in_fmt}' "   # input is globed
+            f'-f rawvideo '                 # force format
+            f'-r {fps_raw:.2f} '           # framerate
+            f'-c:v {conv_settings["codec"]} {conv_settings["params"]} '     # video codec
+            f'-pix_fmt gray '               # pixel format
+            f'-an '                         # no audio
+            f'-vsync 2 '                    # avoid having duplicate frames
+            f'{savepath.as_posix()}'),      # output
+        cwd=c)
+
+        process.wait()
+        process.terminate()
+
+        (c / 'converted').touch()
+
+        print(f'Done creating {c.stem + conv_settings["ftype"]}.')
+
+
 
 def videos_from_zarr(filepath, cams=None, format=None, force=False):
     import zarr
@@ -186,11 +285,15 @@ def videos_from_zarr(filepath, cams=None, format=None, force=False):
         savepath = outfolder / (outname + conv_settings["ftype"])
 
         process = sp.Popen(shlex.split(
-            f'ffmpeg -y -s {w}x{h}'
-            f'-pix_fmt gray -f rawvideo'
-            f'-r {fps_calc:.2f} -i pipe:'
-            f'-c:v {conv_settings["codec"]} {conv_settings["params"]}'
-            f'-pix_fmt gray -an {savepath.as_posix()}'),
+            f'ffmpeg '
+            f'-s {w}x{h} '                  # set frame size
+            f'-f rawvideo '                 # force format
+            f'-r {fps_calc:.2f} '           # framerate
+            f'-i pipe: '                    # input is piped
+            f'-c:v {conv_settings["codec"]} {conv_settings["params"]} '     # video codec
+            f'-pix_fmt gray '               # pixel format
+            f'-an '                         # no audio
+            f'{savepath.as_posix()}'),      # output
             stdin=sp.PIPE)
 
         for i in range(nb_frames):
