@@ -133,8 +133,6 @@ def videos_from_frames(dirpath, cams=None, format=None, force=False):
         return
     if (dirpath / 'recording').exists() and not force:
         return
-    if (dirpath / 'converted').exists() and not force:
-        return
 
     print(f"Converting {dirpath.stem}...")
 
@@ -169,6 +167,9 @@ def videos_from_frames(dirpath, cams=None, format=None, force=False):
         metadata = json.load(f)
 
     for c in cam_folders:
+        if (c / 'converted').exists() and not force:
+            return
+
         files = [f for f in os.scandir(c) if f.name != 'converted']    # scandir is the fastest method for that
         nb_frames = len(files)
 
@@ -191,25 +192,28 @@ def videos_from_frames(dirpath, cams=None, format=None, force=False):
         savepath = outfolder / (f'{c.stem}.{conv_settings["ftype"]}')
 
         in_fmt = (c / files[0].name).suffix
+
         process = sp.Popen(shlex.split(
             f'ffmpeg '
-            # f'-s {w}x{h} '                # set frame size
-            f"-pattern_type glob -i '*{in_fmt}' "   # input is globed
-            f'-f rawvideo '                 # force format
-            f'-r {fps_raw:.2f} '           # framerate
+            f'-framerate {fps_raw:.2f} '                                    # framerate
+            f"-pattern_type glob -i '*{in_fmt}' "                           # glob input
+            f'-r {fps_raw:.2f} '                                            # framerate (again)
             f'-c:v {conv_settings["codec"]} {conv_settings["params"]} '     # video codec
-            f'-pix_fmt gray '               # pixel format
-            f'-an '                         # no audio
-            f'-vsync 2 '                    # avoid having duplicate frames
-            f'{savepath.as_posix()}'),      # output
+            f'-pix_fmt gray '                                               # pixel format
+            f'-an '                                                         # no audio
+            f'-fps_mode vfr '                                               # avoid having duplicate frames
+            f'{savepath.as_posix()}'),                                      # output
         cwd=c)
 
         process.wait()
         process.terminate()
 
-        (c / 'converted').touch()
+        if savepath.exists():
+            (c / 'converted').touch()
 
-        print(f'Done creating {c.stem + conv_settings["ftype"]}.')
+            print(f'Done creating {c.stem + conv_settings["ftype"]}.')
+        else:
+            print(f'Error creating {c.stem + conv_settings["ftype"]}!')
 
 
 
