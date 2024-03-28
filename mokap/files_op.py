@@ -59,6 +59,7 @@ def exists_check(path):
         i += 1
     return path
 
+
 def rm_if_empty_zarr(path):
 
     path = Path(path)
@@ -129,7 +130,7 @@ def natural_sort_key(s):
             for text in re.split(_nsre, s)]
 
 
-def videos_from_frames(input_folder, output_folder=None, force=False):
+def videos_from_frames(input_folder, output_folder=None, delete_source=False, force=False):
     input_folder = Path(input_folder).resolve()
 
     if not input_folder.exists():
@@ -143,6 +144,7 @@ def videos_from_frames(input_folder, output_folder=None, force=False):
         metadata = json.load(f)
 
     cameras = metadata['sessions'][0]['cameras']
+    converted_ok = [False] * len(cameras)
 
     if output_folder is not None:
         output_folder = Path(output_folder).resolve()
@@ -199,13 +201,22 @@ def videos_from_frames(input_folder, output_folder=None, force=False):
         process.wait()
         process.terminate()
 
-        if savepath.exists():
+        if savepath.is_file() and savepath.stat().st_size > 0:
             (cam_folder / 'converted').touch()
-
+            converted_ok[c] = True
             print(f'Done creating {savepath.name}.')
+
+            if delete_source:
+                shutil.rmtree(cam_folder)
         else:
             print(f'Error creating {savepath.name}!')
 
+    shutil.copy(input_folder / 'metadata.json', output_folder / 'metadata.json')
+
+    if delete_source and all(converted_ok) and (output_folder / 'metadata.json').is_file():
+        shutil.rmtree(input_folder)
+
+    print(f'Finished creating videos for record {input_folder.stem}.')
 
 def reencode_videos(path, name_filter='*', delete_source=False, force=False):
     path = Path(path).resolve()
@@ -244,8 +255,14 @@ def reencode_videos(path, name_filter='*', delete_source=False, force=False):
         process.wait()
         process.terminate()
 
-        if delete_source:
-            if savepath.is_file() and savepath.stat().st_size > 0:
-                f.unlink(missing_ok=True)
+        if savepath.is_file() and savepath.stat().st_size > 0:
+            print(f'Done reencoding {path.name} {ftype}.')
 
-    print(f'Done converting {path.name} {ftype}.')
+            if delete_source:
+                f.unlink(missing_ok=True)
+        else:
+            print(f'Error reencoding {path.name} {ftype}!')
+
+
+
+
