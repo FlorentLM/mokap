@@ -97,11 +97,11 @@ def videos_from_frames(input_folder, output_folder=None, delete_source=False, fo
     input_folder = Path(input_folder).resolve()
 
     if not input_folder.exists():
+        print(f"{input_folder.stem} not found, skipping.")
         return
-    if (input_folder / 'recording').exists() and not force:
+    if (input_folder / 'recording').exists():
+        print(f"Skipping {input_folder.stem} (still recording).")
         return
-
-    print(f"Converting {input_folder.stem}...")
 
     with open(input_folder / 'metadata.json', 'r') as f:
         metadata = json.load(f)
@@ -124,6 +124,7 @@ def videos_from_frames(input_folder, output_folder=None, delete_source=False, fo
         assert cam_folder.is_dir()
 
         if (cam_folder / 'converted').exists() and not force:
+            print(f"Skipping {input_folder.stem} (already converted).")
             return
 
         files = [f for f in os.scandir(cam_folder) if f.name != 'converted']    # scandir is the fastest method for that
@@ -142,8 +143,8 @@ def videos_from_frames(input_folder, output_folder=None, delete_source=False, fo
                 "\n\n" \
                 f"Duration:\n" \
                 f"---------\n" \
-                f" Total (seconds):\n  {total_time_sec:.2f}\n" \
-                f" Sessions:\n  {len(metadata['sessions'])}"
+                f" Sessions:\n  {len(metadata['sessions'])}\n" \
+                f" Total seconds:\n  {total_time_sec:.2f}"
 
         print(stats)
 
