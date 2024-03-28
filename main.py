@@ -7,18 +7,22 @@ mgr.connect()
 
 # Set exposure for all cameras (in µs)
 # (maximum exposure time for maximum framerate is 4318 µs)
-mgr.exposure = 15000
+# mgr.exposure = 15000
+mgr.exposure = 4500
 
 # Enable binning
 mgr.binning = 1
 mgr.binning_mode = 'avg'
 
 # Set framerate in images per second
-mgr.framerate = 60
+# mgr.framerate = 60
+mgr.framerate = 210
 
 mgr.gamma = 0.35
-mgr.blacks = 1.5
-mgr.gain = 8.5
+# mgr.blacks = 1.5
+mgr.blacks = 0.5
+# mgr.gain = 8.5
+mgr.gain = 13.0
 
 if __name__ == '__main__':
     if mgr.nb_cameras == 0:

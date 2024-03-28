@@ -396,16 +396,18 @@ class Manager:
     def record(self) -> None:
 
         if not self._recording.is_set():
+            if self._metadata['framerate'] is None:
+                self._metadata['framerate'] = self.framerate
+            else:
+                if self.framerate != self._metadata['framerate']:
+                    print(
+                        f"[WARNING] Framerate is different from previous session{'s' if len(self._metadata['sessions']) > 1 else ''}!! Creating a new record...")
 
-            if self.framerate != self._metadata['framerate']:
-                print(
-                    f"[WARNING] Framerate is different from previous session{'s' if len(self._metadata['sessions']) > 1 else ''}!! Creating a new record...")
+                    print(f"old: {self.full_path}")
+                    self.off()
+                    self.on()
 
-                print(f"old: {self.full_path}")
-                self.off()
-                self.on()
-
-                print(f"Created {self.full_path}")
+                    print(f"Created {self.full_path}")
 
             (self.full_path / 'recording').touch(exist_ok=True)
 
@@ -444,7 +446,11 @@ class Manager:
 
             self._metadata['sessions'][-1]['end'] = datetime.now().timestamp()
             for i, cam in enumerate(self.cameras):
-                self._metadata['sessions'][-1]['cameras'][i]['frames'] = self._saved_frames_counter[i]
+                if len(self._metadata['sessions']) > 1:
+                    prev = self._metadata['sessions'][-2]['cameras'][i]['frames']
+                else:
+                    prev = 0
+                self._metadata['sessions'][-1]['cameras'][i]['frames'] = self._saved_frames_counter[i] - prev
 
             with open(self.full_path / 'metadata.json', 'w', encoding='utf-8') as f:
                 json.dump(self._metadata, f, ensure_ascii=False, indent=4)
