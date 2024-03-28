@@ -235,62 +235,63 @@ class Manager:
         self._finished_saving = [Event()] * self._nb_cams
 
     @property
-    def framerate(self) -> int:
-        return self._framerate
+    def framerate(self) -> Union[float, None]:
+        if all([c.framerate == self._cameras_list[0].framerate for c in self._cameras_list]):
+            return self._cameras_list[0].framerate
+        else:
+            return None
 
     @framerate.setter
     def framerate(self, value: int) -> None:
         for i, cam in enumerate(self._cameras_list):
             cam.framerate = value
-            self._framerate = cam.framerate     # Query it back so we know the actual framerate
 
     @property
-    def exposure(self) -> int:
-        return self._exposure
+    def exposure(self) -> List[float]:
+        return [c.exposure for c in self._cameras_list]
 
     @exposure.setter
-    def exposure(self, value: int) -> None:
+    def exposure(self, value: float) -> None:
         for i, cam in enumerate(self._cameras_list):
             cam.exposure = value
-            self._exposure = cam.exposure
 
     @property
-    def gain(self) -> float:
-        return self._gain
+    def gain(self) -> List[float]:
+        return [c.gain for c in self._cameras_list]
 
     @gain.setter
     def gain(self, value: float) -> None:
         for i, cam in enumerate(self._cameras_list):
             cam.gain = value
-            self._gain = cam.gain
 
     @property
-    def blacks(self) -> float:
-        return self._blacks
+    def blacks(self) -> List[float]:
+        return [c.blacks for c in self._cameras_list]
 
     @blacks.setter
     def blacks(self, value: float) -> None:
         for i, cam in enumerate(self._cameras_list):
             cam.blacks = value
-            self._blacks = cam.blacks
 
     @property
-    def gamma(self) -> float:
-        return self._gamma
+    def gamma(self) -> List[float]:
+        return [c.gamma for c in self._cameras_list]
 
     @gamma.setter
     def gamma(self, value: float) -> None:
         for i, cam in enumerate(self._cameras_list):
             cam.gamma = value
-            self._gamma = cam.gamma
 
     @property
-    def binning(self) -> int:
-        return self._binning
+    def binning(self) -> List[int]:
+        return [c.binning for c in self._cameras_list]
 
     @property
-    def binning_mode(self) -> str:
-        return self._binning_mode
+    def binning_mode(self) -> Union[str, None]:
+        if all([c.binning_mode == self._cameras_list[0].binning_mode for c in self._cameras_list]):
+            return self._cameras_list[0].binning_mode
+        else:
+            return None
 
     @binning.setter
     def binning(self, value: int) -> None:
@@ -396,29 +397,28 @@ class Manager:
 
         if not self._recording.is_set():
 
+            if self.framerate != self._metadata['framerate']:
+                print(
+                    f"[WARNING] Framerate is different from previous session{'s' if len(self._metadata['sessions']) > 1 else ''}!! Creating a new record...")
+
+                print(f"old: {self.full_path}")
+                self.off()
+                self.on()
+
+                print(f"Created {self.full_path}")
+
             (self.full_path / 'recording').touch(exist_ok=True)
 
             for c in self.cameras:
                 (self.full_path / f'cam{c.idx}_{c.name}').mkdir(parents=True, exist_ok=True)
-
-            if self._metadata['framerate'] is None:
-                self._metadata['framerate'] = self.framerate
-            else:
-                if self.framerate != self._metadata['framerate']:
-                    print(
-                        f"[WARNING] Framerate is different from previous session{'s' if len(self._metadata['sessions']) > 1 else ''}!! Creating a new record...")
-
-                    print(f"old: {self.full_path}")
-                    self.off()
-                    self.on()
-
-                    print(f"Created {self.full_path}")
 
             session_metadata = {'start': datetime.now().timestamp(),
                                 'end': 0.0,
                                 'cameras': [{
                                     'idx': c.idx,
                                     'name': c.name,
+                                    'width': c.width,
+                                    'height': c.height,
                                     'exposure': c.exposure,
                                     'gain': c.gain,
                                     'gamma': c.gamma,
@@ -467,6 +467,9 @@ class Manager:
                 self.trigger.start(self._framerate, 250000)
                 time.sleep(0.5)
 
+            if self._metadata['framerate'] is None:
+                self._metadata['framerate'] = self.framerate
+
             self._acquiring.set()
 
             self._executor = ThreadPoolExecutor(max_workers=20)
@@ -495,8 +498,8 @@ class Manager:
             files_op.rm_if_empty(self._base_folder / self._session_name)
             self._session_name = ''
 
-            self._start_times = []
-            self._stop_times = []
+            self._metadata['framerate'] = None
+            self._metadata['sessions'] = []
 
             self._grabbed_frames_counter = RawArray('I', self._nb_cams)
             self._displayed_frames_counter = RawArray('I', self._nb_cams)
