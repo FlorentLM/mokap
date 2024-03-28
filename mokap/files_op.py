@@ -134,17 +134,22 @@ def videos_from_frames(input_folder, output_folder=None, delete_source=False, fo
 
         fps_calc = nb_frames / total_time_sec
 
-        stats = f"\nFramerate:\n" \
+        stats = f"Framerate:\n" \
                 f"---------\n" \
-                f"Theoretical:\n  {fps_raw:.2f} fps\n" \
-                f"Actual (mean):\n  {fps_calc:.2f} fps\n" \
-                f"--> Error = {(1 - (fps_calc / fps_raw)) * 100:.2f}%"
+                f" Theoretical:\n  {fps_raw:.2f} fps\n" \
+                f" Actual (mean):\n  {fps_calc:.2f} fps\n" \
+                f" --> Error = {(1 - (fps_calc / fps_raw)) * 100:.2f}%" \
+                "\n\n" \
+                f"Duration:\n" \
+                f"---------\n" \
+                f" Total (seconds):\n  {total_time_sec:.2f}\n" \
+                f" Sessions:\n  {len(metadata['sessions'])}"
 
         print(stats)
 
-        savepath = output_folder / (f'{input_folder.stem}_{cam_folder.stem}.{ENCODE_FORMAT["ftype"]}')
+        savepath = output_folder / f'{input_folder.stem}_{cam_folder.stem}.{ENCODE_FORMAT["ftype"]}'
 
-        with open(output_folder / (f'{savepath.stem}_stats.txt'), 'w') as st:
+        with open(output_folder / f'{savepath.stem}_stats.txt', 'w') as st:
             st.write(stats)
 
         in_fmt = (cam_folder / files[0].name).suffix
