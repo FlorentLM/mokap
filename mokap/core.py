@@ -14,6 +14,7 @@ from mokap import utils
 from PIL import Image
 import platform
 import random
+import json
 
 ##
 
@@ -96,6 +97,9 @@ class Manager:
         self._cameras_list: List[Camera] = []
         self._cameras_dict = {}
         self._cameras_colours = {}
+
+        self._metadata = {'framerate': None,
+                          'sessions': []}
 
         self.trigger: Union[SSHTrigger, None] = None
         self.ICarray: Union[py.InstantCameraArray, None] = None
@@ -323,7 +327,7 @@ class Manager:
         h = self._cameras_list[cam_idx].height
         w = self._cameras_list[cam_idx].width
 
-        folder = self.full_path / f"cam{cam_idx}"
+        folder = self.full_path / f"cam{cam_idx}_{self._cameras_list[cam_idx].name}"
         handler = self._frames_handlers_list[cam_idx]
         saving_started = False
 
@@ -395,7 +399,33 @@ class Manager:
             (self.full_path / 'recording').touch(exist_ok=True)
 
             for c in self.cameras:
-                (self.full_path / f'cam{c.idx}').mkdir(parents=True, exist_ok=True)
+                (self.full_path / f'cam{c.idx}_{c.name}').mkdir(parents=True, exist_ok=True)
+
+            if self._metadata['framerate'] is None:
+                self._metadata['framerate'] = self.framerate
+            else:
+                if self.framerate != self._metadata['framerate']:
+                    print(
+                        f"[WARNING] Framerate is different from previous session{'s' if len(self._metadata['sessions']) > 1 else ''}!! Creating a new record...")
+
+                    print(f"old: {self.full_path}")
+                    self.off()
+                    self.on()
+
+                    print(f"Created {self.full_path}")
+
+            session_metadata = {'start': datetime.now().timestamp(),
+                                'end': 0.0,
+                                'cameras': [{
+                                    'idx': c.idx,
+                                    'name': c.name,
+                                    'exposure': c.exposure,
+                                    'gain': c.gain,
+                                    'black_level': c.blacks} for c in self.cameras]}
+
+            self._metadata['sessions'].append(session_metadata)
+            with open(self.full_path / 'metadata.json', 'w', encoding='utf-8') as f:
+                json.dump(self._metadata, f, ensure_ascii=False, indent=4)
 
             self._recording.set()
 
@@ -410,6 +440,13 @@ class Manager:
             if not self._silent:
                 print('[INFO] Finishing saving...')
             [e.wait() for e in self._finished_saving]
+
+            self._metadata['sessions'][-1]['end'] = datetime.now().timestamp()
+            for i, cam in enumerate(self.cameras):
+                self._metadata['sessions'][-1]['cameras'][i]['frames'] = self._saved_frames_counter[i]
+
+            with open(self.full_path / 'metadata.json', 'w', encoding='utf-8') as f:
+                json.dump(self._metadata, f, ensure_ascii=False, indent=4)
 
             (self.full_path / 'recording').unlink(missing_ok=True)
 
