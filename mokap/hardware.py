@@ -557,7 +557,7 @@ class Camera:
 
                 else:
                     self.ptr.AcquisitionFrameRateAbs = 220
-                    f = math.floor(self.ptr.AcquisitionFrameRate.GetValue() * 100) / 100.0
+                    f = math.floor(self.ptr.AcquisitionFrameRateAbs.GetValue() * 100) / 100.0
                     new_framerate = min(value, f)
 
                     self.ptr.AcquisitionFrameRateAbs = new_framerate
