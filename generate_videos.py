@@ -4,9 +4,10 @@ from mokap.files_op import *
 
 ##
 
-dirpath = Path('/mnt/data/MokapRecordings')
+input_folder = Path('/mnt/data/MokapRecordings')
+output_folder = Path('/mnt/data/MokapVideos')
 
 if __name__ == '__main__':
-    for folder in dirpath.iterdir():
+    for folder in input_folder.iterdir():
         print(f'Generating video for {folder}...')
-        videos_from_frames(folder)
+        videos_from_frames(folder, output_folder=output_folder)
