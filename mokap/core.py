@@ -242,7 +242,7 @@ class Manager:
     def framerate(self, value: int) -> None:
         for i, cam in enumerate(self._cameras_list):
             cam.framerate = value
-            self._framerate =  self._framerate
+            self._framerate = cam.framerate     # Query it back so we know the actual framerate
 
     @property
     def exposure(self) -> int:
@@ -262,7 +262,7 @@ class Manager:
     def gain(self, value: float) -> None:
         for i, cam in enumerate(self._cameras_list):
             cam.gain = value
-            self._gain = value
+            self._gain = cam.gain
 
     @property
     def blacks(self) -> float:
@@ -272,7 +272,7 @@ class Manager:
     def blacks(self, value: float) -> None:
         for i, cam in enumerate(self._cameras_list):
             cam.blacks = value
-            self._blacks = value
+            self._blacks = cam.blacks
 
     @property
     def gamma(self) -> float:
@@ -421,6 +421,7 @@ class Manager:
                                     'name': c.name,
                                     'exposure': c.exposure,
                                     'gain': c.gain,
+                                    'gamma': c.gamma,
                                     'black_level': c.blacks} for c in self.cameras]}
 
             self._metadata['sessions'].append(session_metadata)
