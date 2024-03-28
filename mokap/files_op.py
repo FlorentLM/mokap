@@ -126,7 +126,7 @@ def natural_sort_key(s):
     return [int(text) if text.isdigit() else text.lower()
             for text in re.split(_nsre, s)]
 
-def videos_from_frames(dirpath, cams=None, format=None, force=False):
+def videos_from_frames(dirpath, format=None, force=False):
     dirpath = Path(dirpath).resolve()
 
     if not dirpath.exists():
@@ -136,16 +136,11 @@ def videos_from_frames(dirpath, cams=None, format=None, force=False):
 
     print(f"Converting {dirpath.stem}...")
 
-    cam_folders = [d for d in dirpath.glob('cam*') if d.is_dir()]
-    nb_cams = len(cam_folders)
+    with open(dirpath / 'metadata.json', 'r') as f:
+        metadata = json.load(f)
 
-    if cams is not None:
-        if type(cams) is int:
-            cams = {cams}
-        else:
-            cams = set(cams)
-    else:
-        cams = set(range(nb_cams))
+    cameras = metadata['sessions'][0]['cameras']
+    nb_cams = len(cameras)
 
     if format is not None:
         if 'compr' in str(format):
@@ -163,20 +158,20 @@ def videos_from_frames(dirpath, cams=None, format=None, force=False):
     if not outfolder.exists():
         outfolder.mkdir(parents=True, exist_ok=False)
 
-    with open(dirpath / 'metadata.json', 'r') as f:
-        metadata = json.load(f)
+    for c, cam in enumerate(cameras):
+        cam_folder = dirpath / f"cam{cam['idx']}_{cam['name']}"
+        assert cam_folder.is_dir()
 
-    for c in cam_folders:
-        if (c / 'converted').exists() and not force:
+        if (cam_folder / 'converted').exists() and not force:
             return
 
-        files = [f for f in os.scandir(c) if f.name != 'converted']    # scandir is the fastest method for that
+        files = [f for f in os.scandir(cam_folder) if f.name != 'converted']    # scandir is the fastest method for that
         nb_frames = len(files)
 
         fps_raw = metadata['framerate']
-        total_time_ns = files[-1].stat().st_ctime_ns - files[0].stat().st_ctime_ns
+        total_time_sec = sum([session['end'] - session['start'] for session in metadata['sessions']])
 
-        fps_calc = nb_frames / (total_time_ns / 1e9)
+        fps_calc = nb_frames / total_time_sec
 
         stats = f"\nFramerate:\n" \
                 f"---------\n" \
@@ -186,30 +181,30 @@ def videos_from_frames(dirpath, cams=None, format=None, force=False):
 
         print(stats)
 
-        savepath = outfolder / (f'{dirpath.stem}_{c.stem}.{conv_settings["ftype"]}')
+        savepath = outfolder / (f'{dirpath.stem}_{cam_folder.stem}.{conv_settings["ftype"]}')
 
         with open(outfolder / (f'{savepath.stem}_stats.txt'), 'w') as st:
             st.write(stats)
 
-        in_fmt = (c / files[0].name).suffix
+        in_fmt = (cam_folder / files[0].name).suffix
 
         process = sp.Popen(shlex.split(
             f'ffmpeg '
-            f'-framerate {fps_raw:.2f} '                                    # framerate
+            f'-framerate {fps_calc:.2f} '                                   # framerate
             f"-pattern_type glob -i '*{in_fmt}' "                           # glob input
-            f'-r {fps_raw:.2f} '                                            # framerate (again)
+            f'-r {fps_calc:.2f} '                                           # framerate (again)
             f'-c:v {conv_settings["codec"]} {conv_settings["params"]} '     # video codec
             f'-pix_fmt gray '                                               # pixel format
             f'-an '                                                         # no audio
             f'-fps_mode vfr '                                               # avoid having duplicate frames
             f'{savepath.as_posix()}'),                                      # output
-        cwd=c)
+        cwd=cam_folder)
 
         process.wait()
         process.terminate()
 
         if savepath.exists():
-            (c / 'converted').touch()
+            (cam_folder / 'converted').touch()
 
             print(f'Done creating {savepath.name}.')
         else:
