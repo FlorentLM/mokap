@@ -60,43 +60,6 @@ def exists_check(path):
     return path
 
 
-def rm_if_empty_zarr(path):
-
-    path = Path(path)
-
-    if not path.exists():
-        # if it doesn't exist, nothing to do.
-        return
-    else:
-        # if it exists
-        if not any(path.iterdir()):
-            # ...and already empty, delete it, done.
-            path.rmdir()
-
-        # if not empty, check if there is more than one file
-        else:
-            generator = path.glob('*')
-            first_child = next(generator)
-            try:
-                second_child = next(generator)
-                # if more than the zarr, stop
-                return
-            except StopIteration:
-                second_child = None
-            # if only one thing, and this file is a .zarr, check if it is empty
-            if second_child is None and first_child.suffix == '.zarr':
-                generator_2 = (first_child / 'frames').glob('*')
-                first_child_2 = next(generator_2)  # This should be the .zarray hidden file
-                try:
-                    second_child_2 = next(generator)
-                    # if more than the .zarray, stop
-                    return
-                except StopIteration:
-                    second_child_2 = None
-                    if second_child_2 is None and first_child_2.stem == '.zarray':
-                        shutil.rmtree(path)
-
-
 def rm_if_empty(path):
 
     path = Path(path)
@@ -217,6 +180,7 @@ def videos_from_frames(input_folder, output_folder=None, delete_source=False, fo
         shutil.rmtree(input_folder)
 
     print(f'Finished creating videos for record {input_folder.stem}.')
+
 
 def reencode_videos(path, name_filter='*', delete_source=False, force=False):
     path = Path(path).resolve()
