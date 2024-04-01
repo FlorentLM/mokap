@@ -181,6 +181,13 @@ class Manager:
         nb_cams = len(devices)
         self.ICarray = py.InstantCameraArray(nb_cams)
 
+        rng = np.random.default_rng()
+        hues = rng.integers(low=0, high=359, size=nb_cams)
+        luminance = rng.integers(low=45, high=60, size=nb_cams)
+
+        while any(hues[1:] - hues[:-1].copy() < 65):
+            hues = rng.integers(low=0, high=359, size=nb_cams)
+
         # Create the cameras and put them in auto-sorting CamList
         for i in range(nb_cams):
             dptr, cptr = devices[i], self.ICarray[i]
@@ -195,9 +202,9 @@ class Manager:
             if cam.connected:
 
                 cam_name = 'unnamed'
-                cam_col = '#' + utils.hls_to_hex(random.randint(0, 360),    # Sample whole Hue range
-                                                 random.randint(45, 60),    # Keep somewhate narrow band luminance
-                                                 85)                           # Fixed saturation
+                cam_col = '#' + utils.hls_to_hex(hues[i],    # Sample whole Hue range
+                                                 luminance[i],    # Keep somewhate narrow band luminance
+                                                 85)              # Fixed saturation
 
                 # Grab name and colour from config file if they're in there
                 for entry in cams_in_config_file:
