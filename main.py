@@ -15,8 +15,8 @@ mgr.binning = 1
 mgr.binning_mode = 'avg'
 
 # Set framerate in images per second
-# mgr.framerate = 60git pu
-mgr.framerate = 210
+# mgr.framerate = 60
+mgr.framerate = 200
 
 mgr.gamma = 0.35
 # mgr.blacks = 1.5

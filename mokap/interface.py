@@ -17,7 +17,6 @@ import subprocess
 from mokap import utils
 from functools import partial
 from collections import deque
-import warnings
 np.set_printoptions(precision=4, suppress=True)
 
 
@@ -779,7 +778,7 @@ class VideoWindowMain(VideoWindowBase):
             [0, 0, 0]], dtype=np.uint8)
 
         # Other specific stuff
-        self._imgfnt = ImageFont.load_default()
+        self._imgfnt = ImageFont.load_default(30)
 
         self._create_common_controls()
         self._create_specific_controls()
@@ -960,12 +959,12 @@ class VideoWindowMain(VideoWindowBase):
         d.line((x_north, y_north, x_south, y_south), fill=self.parent.col_white_rgb, width=1)  # Vertical
 
         # Position the 'Recording' indicator
-        d.text((x_centre, (y_south - y_centre / 2)), self.parent.txtvar_recording.get(),
+        d.text((x_centre, y_south - y_centre/2.0), self.parent.txtvar_recording.get(),
                anchor="ms", font=self._imgfnt,
                fill=self.parent.col_red)
 
         if self._warning.is_set():
-            d.text((x_centre, y_centre / 2), self.txtvar_warning.get(),
+            d.text((x_centre, y_north + y_centre/2.0), self.txtvar_warning.get(),
                    anchor="ms", font=self._imgfnt,
                    fill=self.parent.col_orange)
 
