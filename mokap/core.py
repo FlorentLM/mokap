@@ -59,7 +59,10 @@ class Manager:
         if 'Linux' in platform.system():
             setup_ulimit(silent=silent)
 
-        self._display_framerate = 60
+        self._display_framerate = 30
+        self._display_wait_time_s = 1.0/self._display_framerate
+        self._display_wait_time_us = self._display_wait_time_s * 1e6
+
         self._silent: bool = silent
 
         self._binning: int = 1
@@ -342,9 +345,11 @@ class Manager:
         handler = self._frames_handlers_list[cam_idx]
         saving_started = False
 
+        retry = 0
+        max_retry = 5
         while self._acquiring.is_set():
 
-            if self._recording.is_set():
+            if self._recording.is_set() or saving_started:
                 if not saving_started:
                     saving_started = True
 
@@ -352,6 +357,7 @@ class Manager:
                 data, handler.frames = handler.frames, deque()
 
                 if len(data) > 0:
+                    retry = 0
                     for frame in data:
                         img = Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1)
                         if self._saving_ext == 'bmp':
@@ -368,27 +374,31 @@ class Manager:
                         else:
                             img.save(folder / f"{str(self._saved_frames_counter[cam_idx]).zfill(9)}.bmp")
                         self._saved_frames_counter[cam_idx] += 1
-            else:
-                if not saving_started:
-                    self._recording.wait()
                 else:
-                    self._finished_saving[cam_idx].set()
+                    retry += 1
+                    if retry > max_retry:
+                        saving_started = False
+                        self._finished_saving[cam_idx].set()
+                    continue
+            else:
+                self._recording.wait()
 
     def _update_display_buffers(self, cam_idx: int) -> NoReturn:
 
         handler = self._frames_handlers_list[cam_idx]
-        tick = time.time()
+        tic = datetime.now()
 
         while self._acquiring.is_set():
-            tock = time.time()
-            if tock - tick >= (1 / self._display_framerate):
+            toc = datetime.now()
+            elapsed = (toc - tic).microseconds
+            if elapsed >= self._display_wait_time_us:
                 self._lastframe_buffers_list[cam_idx] = handler.latest
                 self._displayed_frames_counter[cam_idx] += 1
                 self._grabbed_frames_counter[cam_idx] = handler.indice
-                tick = tock
             else:
-                time.sleep(1 / self._display_framerate)
-                tick = tock
+                time.sleep(self._display_wait_time_s)
+
+            tic = toc
 
     def _grab_frames(self, cam_idx: int) -> NoReturn:
 
