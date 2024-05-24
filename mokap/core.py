@@ -118,7 +118,7 @@ class Manager:
     @triggered.setter
     def triggered(self, value: bool):
         if not self._triggered and value is True:
-            external_trigger = SSHTrigger()
+            external_trigger = SSHTrigger(silent=self._silent)
             if external_trigger.connected:
                 self.trigger = external_trigger
                 self._triggered = True

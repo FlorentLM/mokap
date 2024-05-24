@@ -130,9 +130,10 @@ def ping(host: str) -> bool:
 class SSHTrigger:
     """ Class to communicate with the hardware Trigger via SSH """
 
-    def __init__(self):
+    def __init__(self, silent=False):
 
         self._connected = False
+        self._silent = silent
 
         self.PWM_GPIO_PIN = 18  # Should be true for all Raspberry Pis
 
@@ -154,7 +155,8 @@ class SSHTrigger:
 
             if self.client:
                 self._connected = True
-                print('[INFO] Trigger connected')
+                if not self._silent:
+                    print('[INFO] Trigger connected')
         else:
             print('[WARN] Trigger unreachable')
 
@@ -170,13 +172,15 @@ class SSHTrigger:
 
         if self.client is not None:
             self.client.exec_command(f'pigs hp {self.PWM_GPIO_PIN} {frq} {pct}')
-            print(f"\n[INFO] Trigger started at {frequency} Hz")
+            if not self._silent:
+                print(f"[INFO] Trigger started at {frequency} Hz")
 
     def stop(self) -> None:
         if self.client:
             self.client.exec_command(f'pigs hp {self.PWM_GPIO_PIN} 0 0 && pigs w {self.PWM_GPIO_PIN} 0')
         time.sleep(0.1)
-        print(f"\n[INFO] Trigger stopped")
+        if not self._silent:
+            print(f"[INFO] Trigger stopped")
 
     def disconnect(self) -> None:
         if self.client:
