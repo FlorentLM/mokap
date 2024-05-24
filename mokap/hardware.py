@@ -305,7 +305,7 @@ class Camera:
                 self.ptr.TriggerSelector = "FrameStart"
                 self.ptr.TriggerMode = "On"
                 self.ptr.TriggerSource = "Line4"
-                self.ptr.TriggerActivation.Value = 'FallingEdge'
+                self.ptr.TriggerActivation.Value = 'RisingEdge'
                 self.ptr.AcquisitionFrameRateEnable.SetValue(False)
             else:
                 self.ptr.TriggerSelector = "FrameStart"
@@ -551,9 +551,10 @@ class Camera:
     def framerate(self, value: float) -> None:
         if self._connected:
             if self.triggered:
-                print(f'[WARN] Trying to set framerate on a hardware-triggered camera ([{self._name}])')
+                # print(f'[WARN] Trying to set framerate on a hardware-triggered camera ([{self._name}])')
                 self.ptr.AcquisitionFrameRateEnable.SetValue(False)
-                self._framerate = self.ptr.ResultingFrameRate.GetValue()
+                # self._framerate = self.ptr.ResultingFrameRate.GetValue()
+                self._framerate = np.floor(value)
             else:
                 if not self._is_virtual:
                     self.ptr.AcquisitionFrameRateEnable.SetValue(True)

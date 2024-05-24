@@ -69,7 +69,10 @@ class Manager:
         self._gain: float = 1.0
         self._gamma: float = 1.0
         self._blacks: float = 0.0
-        self._triggered: bool = triggered
+
+        self.trigger: Union[SSHTrigger, None] = None
+        self._triggered = False
+        self.triggered = triggered
 
         default_base_folder = Path('./')
         if 'GENERAL' in self.config_dict.sections():
@@ -101,7 +104,6 @@ class Manager:
         self._metadata = {'framerate': None,
                           'sessions': []}
 
-        self.trigger: Union[SSHTrigger, None] = None
         self.ICarray: Union[py.InstantCameraArray, None] = None
 
         self._finished_saving: List[Event] = []
@@ -252,6 +254,7 @@ class Manager:
     def framerate(self, value: int) -> None:
         for i, cam in enumerate(self._cameras_list):
             cam.framerate = value
+        self._framerate = value
 
     @property
     def exposure(self) -> List[float]:
@@ -375,9 +378,9 @@ class Manager:
 
         handler = self._frames_handlers_list[cam_idx]
         tick = time.time()
-        tock = time.time()
 
         while self._acquiring.is_set():
+            tock = time.time()
             if tock - tick >= (1 / self._display_framerate):
                 self._lastframe_buffers_list[cam_idx] = handler.latest
                 self._displayed_frames_counter[cam_idx] += 1
@@ -385,15 +388,16 @@ class Manager:
                 tick = tock
             else:
                 time.sleep(1 / self._display_framerate)
-            tock = time.time()
+                tick = tock
 
     def _grab_frames(self, cam_idx: int) -> NoReturn:
 
         cam = self._cameras_list[cam_idx]
 
-        cam.ptr.RegisterConfiguration(py.SoftwareTriggerConfiguration(),
-                                      py.RegistrationMode_ReplaceAll,
-                                      py.Cleanup_Delete)
+        if not cam.triggered:
+            cam.ptr.RegisterConfiguration(py.SoftwareTriggerConfiguration(),
+                                          py.RegistrationMode_ReplaceAll,
+                                          py.Cleanup_Delete)
 
         cam.ptr.RegisterImageEventHandler(self._frames_handlers_list[cam_idx],
                                           py.RegistrationMode_Append,
@@ -477,7 +481,7 @@ class Manager:
 
             if self._triggered:
                 # Start trigger thread on the RPi
-                self.trigger.start(self._framerate, 250000)
+                self.trigger.start(self._framerate)
                 time.sleep(0.5)
 
             if self._metadata['framerate'] is None:
