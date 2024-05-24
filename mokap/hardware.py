@@ -183,6 +183,9 @@ class SSHTrigger:
             self.client.close()
             self.client = False
 
+    def __del__(self):
+        self.disconnect()
+
 
 ##
 
