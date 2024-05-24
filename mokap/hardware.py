@@ -116,10 +116,13 @@ def get_webcam_devices():
     return working_ports
 
 
-def ping(ip: str) -> None:
-    r = subprocess.Popen(["ping", "-c", "1", ip], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if r.returncode == 1:
-        raise ConnectionError(f'{ip} is unreachable :(\nCheck Wireguard status!')
+def ping(host: str) -> bool:
+    pop = subprocess.Popen(["ping", "-W", "1", "-c", "1", host], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    pop.wait()
+    if pop.returncode == 1:
+        raise ConnectionError(f'{host} is unreachable :(\nCheck Wireguard status!')
+    elif pop.returncode == 0:
+        return True
 
 
 ##
@@ -128,51 +131,57 @@ class SSHTrigger:
     """ Class to communicate with the hardware Trigger via SSH """
 
     def __init__(self):
+
         self._connected = False
+
+        self.PWM_GPIO_PIN = 18  # Should be true for all Raspberry Pis
 
         load_dotenv()
 
-        env_ip = os.getenv('ANTBOOTH_IP')
-        env_user = os.getenv('ANTBOOTH_USER')
-        env_pass = os.getenv('ANTBOOTH_PASS')
+        env_ip = os.getenv('TRIGGER_HOST')
+        env_user = os.getenv('TRIGGER_USER')
+        env_pass = os.getenv('TRIGGER_PASS')
 
         if None in (env_ip, env_user, env_pass):
             raise EnvironmentError(f'Missing {sum([v is None for v in (env_ip, env_user, env_pass)])} variables.')
 
-        ping(env_ip)
+        if ping(env_ip):
 
-        # Open the connection to the Raspberry Pi
-        self.client = paramiko.SSHClient()
-        self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        self.client.connect(env_ip, username=env_user, password=env_pass, look_for_keys=False)
+            # Open the connection to the Raspberry Pi
+            self.client = paramiko.SSHClient()
+            self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            self.client.connect(env_ip, username=env_user, password=env_pass, look_for_keys=False)
 
-        self._connected = True
-
-        print('[INFO] Trigger connected.')
+            if self.client:
+                self._connected = True
+                print('[INFO] Trigger connected')
+        else:
+            print('[WARN] Trigger unreachable')
 
     @property
     def connected(self) -> bool:
         return self._connected
 
-    def start(self, frequency: float, duration: float, highs_pct=50) -> None:
+    def start(self, frequency: float, highs_pct=50) -> None:
         """ Starts the trigger loop on the RPi """
-        interval, count = utils.to_ticks(frequency, duration + 1)
 
-        interval_micros = interval * 1e6
+        pct = int(np.floor(highs_pct * 1e4))
+        frq = int(np.floor(frequency))
 
-        high = int(interval_micros * (highs_pct / 100))  # in microseconds
-        low = int(interval_micros * ((100 - highs_pct) / 100))  # in microseconds
-        cycles = int(count)
-
-        self.client.exec_command(f'~/CameraArray/trigger.sh {cycles} {high} {low}')
-        print(f"\n[INFO] Trigger started for {duration} seconds at {frequency} Hz")
+        if self.client is not None:
+            self.client.exec_command(f'pigs hp {self.PWM_GPIO_PIN} {frq} {pct}')
+            print(f"\n[INFO] Trigger started at {frequency} Hz")
 
     def stop(self) -> None:
-        self.client.exec_command(f'sudo killall pigpiod')
-        time.sleep(0.25)
-        self.client.exec_command(f'~/CameraArray/zero.sh')
-        time.sleep(0.25)
-        self.client.exec_command(f'sudo killall pigpiod')
+        if self.client:
+            self.client.exec_command(f'pigs hp {self.PWM_GPIO_PIN} 0 0 && pigs w {self.PWM_GPIO_PIN} 0')
+        time.sleep(0.1)
+        print(f"\n[INFO] Trigger stopped")
+
+    def disconnect(self) -> None:
+        if self.client:
+            self.client.close()
+            self.client = False
 
 
 ##

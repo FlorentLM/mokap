@@ -11,11 +11,11 @@ mgr.connect()
 mgr.exposure = 4500
 
 # Enable binning
-mgr.binning = 1
+mgr.binning = 2
 mgr.binning_mode = 'avg'
 
 # Set framerate in images per second
-# mgr.framerate = 60
+# mgr.framerate = 60git pu
 mgr.framerate = 200
 
 mgr.gamma = 0.35
