@@ -896,7 +896,7 @@ class VideoWindowMain(VideoWindowBase):
 
     def update_param(self, param):
 
-        if param == 'framerate' and self.parent.mgr.triggered:
+        if param == 'framerate' and self.parent.mgr.triggered and self.parent.mgr.acquiring:
             return
 
         slider = self.camera_controls_sliders[param]
@@ -918,7 +918,7 @@ class VideoWindowMain(VideoWindowBase):
             # Keep a local copy to warn user if actual framerate is too different from requested fps
             self._applied_fps = self.camera_controls_sliders[param].get()
 
-            self.parent.mgr.framerate = new_val
+            self.parent.mgr.framerate = self._applied_fps
 
             # Refresh framerate counters for UI display
             self.parent._capture_clock = datetime.now()

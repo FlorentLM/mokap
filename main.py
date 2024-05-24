@@ -2,7 +2,7 @@
 from mokap.interface import GUI
 from mokap.core import Manager
 
-mgr = Manager(config='./config.conf', triggered=True)
+mgr = Manager(config='./config.conf', triggered=True, silent=False)
 mgr.connect()
 
 # Set exposure for all cameras (in µs)
