@@ -2,13 +2,13 @@
 from mokap.interface import GUI
 from mokap.core import Manager
 
-mgr = Manager(config='./config.conf', triggered=True, silent=False)
+mgr = Manager(config='./config.conf', triggered=True, silent=True)
 mgr.connect()
 
 # Set exposure for all cameras (in µs)
 # (maximum exposure time for maximum framerate is 4318 µs)
 # mgr.exposure = 15000
-mgr.exposure = 2200
+mgr.exposure = 4300
 
 # Enable binning
 mgr.binning = 1
