@@ -57,8 +57,8 @@ io_data = np.empty(nb_samples,
                    })
 
 
-# Start the trigger on the RPi for 30 seconds at 10 pulses per second
-trigger.start(10, 30)
+# Start the trigger on the RPi at 10 pulses per second
+trigger.start(10, 50)
 
 time.sleep(0.5)
 
@@ -72,6 +72,8 @@ while cam.IsGrabbing():
         io_data[i] = (linestatus_chunk, timestamp_chunk)
         i += 1
 cam.StopGrabbing()
+
+trigger.stop()
 
 ##
 
