@@ -553,7 +553,6 @@ class Camera:
             if self.triggered:
                 # print(f'[WARN] Trying to set framerate on a hardware-triggered camera ([{self._name}])')
                 self.ptr.AcquisitionFrameRateEnable.SetValue(False)
-                # self._framerate = self.ptr.ResultingFrameRate.GetValue()
                 self._framerate = np.floor(value)
             else:
                 if not self._is_virtual:

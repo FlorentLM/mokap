@@ -780,6 +780,8 @@ class VideoWindowMain(VideoWindowBase):
         # Other specific stuff
         self._imgfnt = ImageFont.load_default(30)
 
+        self.col_default = None
+
         self._create_common_controls()
         self._create_specific_controls()
 
@@ -849,6 +851,9 @@ class VideoWindowMain(VideoWindowBase):
             s.bind("<ButtonRelease-1>", partial(self._update_param_all, label))
             s.pack(side='left', anchor='w', fill='both', expand=True)
 
+            if self.col_default is None:
+                self.col_default = s.cget('trough')
+
             scale_val = tk.Label(scale_frame, textvariable=var,
                        anchor='w', justify='left', width=6,
                        font=self.parent.font_regular)
@@ -890,15 +895,20 @@ class VideoWindowMain(VideoWindowBase):
         self.slider_magn.pack(side='top', fill='x', expand=False)
 
     def update_param(self, param):
+
+        if param == 'framerate' and self.parent.mgr.triggered:
+            return
+
         slider = self.camera_controls_sliders[param]
         new_val = slider.get()
+
         setattr(self.parent.mgr.cameras[self.idx], param, new_val)
 
         # And update the slider to the actual new value (can be different from the one requested)
         slider.set(getattr(self.parent.mgr.cameras[self.idx], param))
 
         if param == 'exposure':
-            # # We also need to update the framerate slider to current resulting fps after exposure change
+            # We also need to update the framerate slider to current resulting fps after exposure change
             self.update_param('framerate')
 
             # Refresh exposure value for UI display
@@ -907,6 +917,8 @@ class VideoWindowMain(VideoWindowBase):
         elif param == 'framerate':
             # Keep a local copy to warn user if actual framerate is too different from requested fps
             self._applied_fps = self.camera_controls_sliders[param].get()
+
+            self.parent.mgr._framerate = new_val
 
             # Refresh framerate counters for UI display
             self.parent._capture_clock = datetime.now()
@@ -1544,8 +1556,15 @@ class GUI:
             self.button_snapshot.config(state="disabled")
             self.button_recpause.config(state="disabled")
 
+            if self.mgr.triggered:
+                for w in self.child_windows:
+                    w.camera_controls_sliders['framerate'].config(state='normal', troughcolor=w.col_default)
+
         else:
             self.mgr.on()
+
+            for w in self.child_windows:
+                w.camera_controls_sliders['framerate'].config(state='disabled', troughcolor=self.col_lightgray)
 
             self.txtvar_applied_name.set(f'{self.mgr.full_path.resolve()}')
 
@@ -1554,8 +1573,9 @@ class GUI:
 
             self.button_acquisition.config(text="Acquiring", image=self.icon_capture)
             self.button_snapshot.config(state="normal")
-            if not self._is_calibrating.is_set():
-                self.button_recpause.config(state="normal")
+            if self.mgr.triggered:
+                if not self._is_calibrating.is_set():
+                    self.button_recpause.config(state="normal")
 
     def quit(self):
         for w in self.child_windows:
