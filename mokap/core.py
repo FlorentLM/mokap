@@ -106,8 +106,6 @@ class Manager:
         self._metadata = {'framerate': None,
                           'sessions': []}
 
-        self.ICarray: Union[py.InstantCameraArray, None] = None
-
         self._finished_saving: List[Event] = []
 
         ##
@@ -185,14 +183,12 @@ class Manager:
         avail_basler_devices = enumerate_basler_devices(virtual_cams=nb_basler_virtuals)
         nb_basler_devices = len(avail_basler_devices)
 
-        self.ICarray = py.InstantCameraArray(nb_basler_devices)
-
         hues, saturation, luminance = utils.get_random_colors(nb_basler_devices)
 
         # Create the cameras and put them in auto-sorting CamList
         for i in range(nb_basler_devices):
-            dptr, cptr = avail_basler_devices[i], self.ICarray[i]
-            cptr.Attach(py.TlFactory.GetInstance().CreateDevice(dptr))
+            dptr = py.TlFactory.GetInstance().CreateDevice(avail_basler_devices[i])
+            cptr = py.InstantCamera(dptr)
 
             source = BaslerCamera(framerate=self._framerate,
                                exposure=self._exposure,
@@ -300,12 +296,12 @@ class Manager:
             cam.binning_mode = value
 
     def disconnect(self) -> None:
-        self.ICarray.Close()
+
         for cam in self._sources_list:
             cam.disconnect()
 
         self._sources_list = []
-        self.ICarray = None
+
         if not self._silent:
             print(f"[INFO] Disconnected {self._nb_cams} camera{'s' if self._nb_cams > 1 else ''}.")
         self._nb_cams = 0
@@ -489,7 +485,6 @@ class Manager:
             self.pause()
             self._acquiring.clear()
 
-            self.ICarray.StopGrabbing()
             for cam in self._sources_list:
                 cam.stop_grabbing()
 
