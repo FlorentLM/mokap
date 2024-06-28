@@ -787,7 +787,11 @@ class VideoWindowMain(VideoWindowBase):
             [0, 0, 0]], dtype=np.uint8)
 
         # Other specific stuff
-        self._imgfnt = ImageFont.load_default(30)
+        try:
+            self._imgfnt = ImageFont.load_default(30)
+        except TypeError:
+            print('[INFO] Mokap works better with Pillow version 10.1.0 or more!')
+            self._imgfnt = ImageFont.load_default()
 
         self.col_default = None
 
