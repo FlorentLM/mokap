@@ -15,7 +15,7 @@ import numpy as np
 import pypylon.pylon as py
 import mokap.files_op as files_op
 from collections import deque
-from mokap.hardware import SSHTrigger, Camera, setup_ulimit, get_basler_devices
+from mokap.hardware import SSHTrigger, BaslerCamera, setup_ulimit, enumerate_basler_devices
 from mokap.utils import ensure_list
 import platform
 
@@ -198,7 +198,7 @@ class ManagerOld:
         self._recording: Event = Event()
 
         self._nb_cams: int = 0
-        self._cameras_list: List[Camera] = []
+        self._cameras_list: List[BaslerCamera] = []
         self._cameras_dict = {}
         self._attributes = {}
 
@@ -236,7 +236,7 @@ class ManagerOld:
 
     def list_devices(self):
 
-        real_cams, virtual_cams = get_basler_devices()
+        real_cams, virtual_cams = enumerate_basler_devices()
         devices = real_cams + virtual_cams
         if not self._silent:
             print(f"[INFO] Found {len(devices)} camera{'s' if self._nb_cams > 1 else ''} connected "
@@ -263,10 +263,10 @@ class ManagerOld:
         for i in range(nb_cams):
             dptr, cptr = devices[i], self.ICarray[i]
             cptr.Attach(py.TlFactory.GetInstance().CreateDevice(dptr))
-            cam = Camera(framerate=self._framerate,
-                         exposure=self._exposure,
-                         triggered=self._triggered,
-                         binning=self._binning)
+            cam = BaslerCamera(framerate=self._framerate,
+                               exposure=self._exposure,
+                               triggered=self._triggered,
+                               binning=self._binning)
             cam.connect(cptr)
             self._cameras_list.append(cam)
             self._cameras_dict[cam.name] = cam
@@ -597,7 +597,7 @@ class ManagerOld:
 
 
     @property
-    def cameras(self) -> list[Camera]:
+    def cameras(self) -> list[BaslerCamera]:
         return self._cameras_list
 
     def get_current_framebuffer(self, i: int = None) -> Union[bytearray, list[bytearray]]:

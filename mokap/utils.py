@@ -50,6 +50,21 @@ def hls_to_hex(*hls):
     return new_hex
 
 
+def get_random_colors(count):
+    # TODO - improve ths thing
+
+    rng = np.random.default_rng()
+    hues = rng.integers(low=0, high=359, size=count)
+    luminance = rng.integers(low=45, high=60, size=count)
+
+    while any(hues[1:] - hues[:-1].copy() < 65):
+        hues = rng.integers(low=0, high=359, size=count)
+
+    saturation = [85] * count
+
+    return hues, saturation, luminance
+
+
 def randframe(w=1440, h=1080):
     return np.random.randint(0, 255, (w, h), dtype='<u1')
 
@@ -138,45 +153,56 @@ def pretty_size(value: int, verbose=False, decimal=False) -> str:
     return f"{int(amount)} {unit}" if amount.is_integer() else f"{amount:.2f} {unit}"
 
 
-def generate_board(board_rows, board_cols, aruco_sq_l, physical_l, dpi_out=1200, save=True):
-    A4 = 210, 297
+def generate_charuco(board_rows, board_cols, square_length=None, marker_length=None, marker_bits=4, dict_size=100, save_svg=True):
 
-    ratio = 2  # chessboard squares are twice as big as aruco markers
-    aruco_padding = 1  # There is a 1 aruco-grid wide margin around the aruco symbol
+    if square_length is None:
+        square_length = 8
+    if marker_length is None:
+        marker_length = 6
 
-    marker_sq_px = (aruco_padding + aruco_sq_l + aruco_padding)
-    chessboard_sq_px = marker_sq_px * ratio
+    dict_name = f'DICT_{marker_bits}X{marker_bits}_{dict_size}'
 
-    chessboard_sq_mm = physical_l / board_cols
-    marker_sq_mm = chessboard_sq_mm / ratio
-
-    board_w_px = chessboard_sq_px * board_cols
-    board_h_px = chessboard_sq_px * board_rows
-
-    board_w_mm = chessboard_sq_mm * board_cols
-    board_h_mm = chessboard_sq_mm * board_rows
-
-    aruco_dict = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, f'DICT_{aruco_sq_l}X{aruco_sq_l}_50'))
-    board = cv2.aruco.CharucoBoard((board_cols, board_rows),  # number of chessboard squares in x and y directions
-                                   chessboard_sq_mm,  # chessboard square side length (normally in meters)
-                                   marker_sq_mm,  # marker side length (same unit than squareLength)
+    aruco_dict = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, dict_name))
+    board = cv2.aruco.CharucoBoard((board_cols, board_rows),   # number of chessboard squares in x and y directions
+                                   square_length,                     # chessboard square side length (normally in meters)
+                                   marker_length,                     # marker side length (same unit than squareLength)
                                    aruco_dict)
 
-    ppm = board_w_px / board_w_mm
+    if save_svg:
+        image_size = (board_cols * square_length, board_rows * square_length)
+        array = ~board.generateImage(image_size, None, 0, 1).astype(bool)
 
-    array = board.generateImage((board_w_px, board_h_px), None, 0, aruco_padding)
-    img = Image.fromarray(array, 'L')
+        chessboard_arrays = array[::square_length, ::square_length]
+        chessboard_mask = chessboard_arrays.repeat(square_length, axis=0).repeat(square_length, axis=1)
 
-    doc_size_px = (int(round(A4[0] * ppm)), int(round(A4[1] * ppm)))
+        svg_lines = [f'<svg version="1.1" width="100%" height="100%" viewBox="0 0 {image_size[0]} {image_size[1]}" xmlns="http://www.w3.org/2000/svg">']
 
-    padded = Image.new('L', doc_size_px, 255)
-    padded.paste(img, ((doc_size_px[0] - board_w_px) // 2, (doc_size_px[1] - board_h_px) // 2))
+        svg_lines.append('  <g id="charuco">')
+        svg_lines.append('    <g id="chessboard">')
 
-    doc_size_inches = (A4[0] / 25.4, A4[1] / 25.4)
+        for r in range(board_rows):
+            for c in range(board_cols):
+                if chessboard_arrays[r, c]:
+                    svg_lines.append(f'      <rect x="{c * square_length}" y="{r * square_length}" width="{square_length}" height="{square_length}" fill="#000000"/>')
 
-    doc_size_px_final = int(round(doc_size_inches[0] * dpi_out)), int(round(doc_size_inches[1] * dpi_out))
-    out = padded.resize(doc_size_px_final, resample=Image.Resampling.NEAREST)
+        svg_lines.append('    </g>')
+        svg_lines.append('    <g id="aruco_markers">')
 
-    if save:
-        out.save(f'{board_rows}X{board_cols}_{board_w_mm}mm_{dpi_out}dpi.bmp', dpi=(dpi_out, dpi_out))
+        array[chessboard_mask] = False
+        for r in range(image_size[1]):
+            for c in range(image_size[0]):
+                if array[r, c]:
+                    svg_lines.append(f'      <rect x="{c}" y="{r}" width="1" height="1" fill="#000000"/>')
+
+        svg_lines.append('    </g>')
+        svg_lines.append('  </g>')
+        svg_lines.append('</svg>')
+
+        with open(f'Charuco_{board_rows}x{board_cols}_{dict_name}.svg', 'w') as f:
+            f.write('\n'.join(svg_lines))
+
     return aruco_dict, board
+
+
+##
+

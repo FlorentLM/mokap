@@ -425,12 +425,20 @@ class VideoWindowCalib(VideoWindowBase):
         self._current_coverage_area = np.zeros(self.source_shape, dtype=np.uint8)
 
         ## ChAruco board variables
-        BOARD_ROWS = 5      # Total rows in the board (chessboard)
-        BOARD_COLS = 4      # Total cols in the board
-        ARUCO_SQ_L = 4      # Side length of each individual aruco markers
-        PHYSICAL_L = 15     # Length of the small side of the board in real life units (i.e. mm)
+        BOARD_COLS = 7              # Total rows in the board (chessboard)
+        BOARD_ROWS = 10             # Total cols in the board
+        SQUARE_LENGTH = 3.2         # Length of one chessboard square in real life units (i.e. mm)
+        MARKER_LENGTH = 2.4
+        MARKER_BITS = 4
+        DICT_SIZE = 1000
+        # TODO - Load these from the config file
 
-        self._aruco_dict, self._charuco_board = utils.generate_board(BOARD_ROWS, BOARD_COLS, ARUCO_SQ_L, PHYSICAL_L)
+        self._aruco_dict, self._charuco_board = utils.generate_charuco(BOARD_ROWS, BOARD_COLS,
+                                                                       square_length=SQUARE_LENGTH,
+                                                                       marker_length=MARKER_LENGTH,
+                                                                       marker_bits=MARKER_BITS,
+                                                                       dict_size=DICT_SIZE,
+                                                                       save_svg=False)
 
         detector_params = cv2.aruco.DetectorParameters()
         self.detector = cv2.aruco.ArucoDetector(self._aruco_dict, detector_params)
@@ -454,6 +462,7 @@ class VideoWindowCalib(VideoWindowBase):
 
         self._create_common_controls()
         self._create_specific_controls()
+
 
     def _create_specific_controls(self):
 

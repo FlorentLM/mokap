@@ -3,9 +3,9 @@ import subprocess as sp
 from pathlib import Path
 import shutil
 import shlex
-import configparser
 import json
 import os
+import yaml
 
 ##
 
@@ -25,15 +25,27 @@ ENCODE_FORMAT = COMPRESSED
 
 
 ##
-def read_config(config_file='config.conf'):
-    confparser = configparser.ConfigParser()
-    try:
-        confparser.read(config_file)
-    except FileNotFoundError:
-        print('[WARN] Config file not found. Defaulting to example config.')
-        confparser.read('example_config.conf')
+# def read_config(config_file='config.conf'):
+#     confparser = configparser.ConfigParser()
+#     try:
+#         confparser.read(config_file)
+#     except FileNotFoundError:
+#         print('[WARN] Config file not found. Defaulting to example config.')
+#         confparser.read('example_config.conf')
+#
+#     return confparser
 
-    return confparser
+def read_config(config_file='config.yaml'):
+    config_file = Path(config_file)
+
+    if not config_file.exists():
+        print('[WARN] Config file not found. Defaulting to example config.')
+        config_file = Path('example_config.yaml')
+
+    with open(config_file, 'r') as f:
+        config_content = yaml.safe_load(f)
+
+    return config_content
 
 
 def exists_check(path):

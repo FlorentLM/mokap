@@ -5,11 +5,15 @@ import mokap.utils as utils
 import os
 from dotenv import load_dotenv
 import pypylon.pylon as py
+import PySpin
+os.environ['SPINNAKER_GENTL64_CTI'] = '/Applications/Spinnaker/lib/spinnaker-gentl/Spinnaker_GenTL.cti'
+
 import platform
 import subprocess
 import cv2
 import warnings
 from cryptography.utils import CryptographyDeprecationWarning
+from pathlib import Path
 
 with warnings.catch_warnings():
     warnings.filterwarnings('ignore', category=CryptographyDeprecationWarning)
@@ -55,10 +59,7 @@ def disable_usb(hub_number):
         ret = out.read()
 
 
-def get_basler_devices(max_cams=None, allow_virtual=False) -> tuple[list[py.DeviceInfo], list[py.DeviceInfo]]:
-
-    if max_cams is None:
-        max_cams = 99
+def enumerate_basler_devices(virtual_cams=0) -> list[py.DeviceInfo]:
 
     instance = py.TlFactory.GetInstance()
 
@@ -66,31 +67,39 @@ def get_basler_devices(max_cams=None, allow_virtual=False) -> tuple[list[py.Devi
     dev_filter = py.DeviceInfo()
 
     dev_filter.SetDeviceClass("BaslerUsb")
-    real_devices = instance.EnumerateDevices([dev_filter, ])
-    nb_real = len(real_devices)
+    basler_devices = list(instance.EnumerateDevices([dev_filter, ]))
 
-    if allow_virtual and nb_real < max_cams:
-        os.environ["PYLON_CAMEMU"] = f"{max_cams - nb_real}"
+    if virtual_cams > 0:
+        os.environ["PYLON_CAMEMU"] = f"{virtual_cams}"
         dev_filter.SetDeviceClass("BaslerCamEmu")
-        virtual_devices = instance.EnumerateDevices([dev_filter, ])
+        basler_devices += list(instance.EnumerateDevices([dev_filter, ]))
 
-    else:
-        os.environ.pop("PYLON_CAMEMU", None)
-        virtual_devices = []
-        real_devices = real_devices[:max_cams]
-
-    return [r for r in real_devices], [v for v in virtual_devices]
+    return basler_devices
 
 
-def get_webcam_devices():
-    if platform == "linux" or platform == "linux2":
+def enumerate_flir_devices(virtual_cams=0):
+    # TODO
+    return []
+
+
+def enumarate_webcam_devices():
+    pltfm = platform.system().lower()
+
+    if pltfm == "linux" or pltfm == "linux2":
         result = subprocess.run(["ls", "/dev/"],
                                 stdout=subprocess.PIPE,
                                 text=True)
         devices = [int(v.replace('video', '')) for v in result.stdout.split() if 'video' in v]
-    elif platform == "darwin":
-        raise OSError('macOS is not yet supported, sorry!')
-    elif platform == "win32":
+    elif pltfm == "darwin":
+        # disgusting code block
+        command = ['ffmpeg', '-f', 'avfoundation', '-list_devices', 'true', '-i', '""']
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        lines = result.stderr.splitlines()
+        s = np.argwhere(['AVFoundation video devices:' in l for l in lines])[0][0]
+        e = np.argwhere(['AVFoundation audio devices:' in l for l in lines])[0][0]
+        devices = [int(l.split('[')[2][0]) for l in lines[s+1:e] if 'Capture screen' not in l]
+
+    elif pltfm == "win32":
         result = subprocess.run(['pnputil', '/enum-devices', '/class', 'Camera', '/connected'],
                                 stdout=subprocess.PIPE,
                                 text=True)
@@ -111,6 +120,7 @@ def get_webcam_devices():
             ret, frame = cap.read()
             if ret:
                 working_ports.append(dev)
+            cap.release()
 
     cv2.setLogLevel(prev_log_level)
     return working_ports
@@ -193,8 +203,7 @@ class SSHTrigger:
 
 ##
 
-
-class Camera:
+class BaslerCamera:
     instancied_cams = []
 
     def __init__(self,
@@ -257,10 +266,10 @@ class Camera:
 
     def connect(self, cam_ptr=None) -> None:
 
-        available_idx = len(Camera.instancied_cams)
+        available_idx = len(BaslerCamera.instancied_cams)
 
         if cam_ptr is None:
-            real_cams, virtual_cams = get_basler_devices()
+            real_cams, virtual_cams = enumerate_basler_devices()
             devices = real_cams + virtual_cams
             if available_idx <= len(devices):
                 self._ptr = py.InstantCamera(py.TlFactory.GetInstance().CreateDevice(devices[available_idx]))
@@ -278,12 +287,12 @@ class Camera:
         if '0815-0' in self.serial:
             self._is_virtual = True
             self._idx = int(self.serial[-1])
-            assert self._idx == available_idx   # This is probably useless
+            # assert self._idx == available_idx   # This is probably useless
         else:
             self._is_virtual = False
             self._idx = available_idx
 
-        if self._name in Camera.instancied_cams:
+        if self._name in BaslerCamera.instancied_cams:
             self._name += f"_{self._idx}"
 
         self.ptr.UserSetSelector.SetValue("Default")
@@ -327,7 +336,7 @@ class Camera:
         self.gain = self._gain
         self.gamma = self._gamma
 
-        Camera.instancied_cams.append(self._name)
+        BaslerCamera.instancied_cams.append(self._name)
         self._connected = True
 
     def disconnect(self) -> None:
@@ -386,14 +395,14 @@ class Camera:
 
         if new_name == self._name or self._name == f"{new_name}_{self._idx}":
             return
-        if new_name not in Camera.instancied_cams and f"{new_name}_{self._idx}" not in Camera.instancied_cams:
-            Camera.instancied_cams[Camera.instancied_cams.index(self._name)] = new_name
+        if new_name not in BaslerCamera.instancied_cams and f"{new_name}_{self._idx}" not in BaslerCamera.instancied_cams:
+            BaslerCamera.instancied_cams[BaslerCamera.instancied_cams.index(self._name)] = new_name
             self._name = new_name
-        elif f"{self._name}_{self._idx}" not in Camera.instancied_cams:
-            Camera.instancied_cams[Camera.instancied_cams.index(self._name)] = f"{self._name}_{self._idx}"
+        elif f"{self._name}_{self._idx}" not in BaslerCamera.instancied_cams:
+            BaslerCamera.instancied_cams[BaslerCamera.instancied_cams.index(self._name)] = f"{self._name}_{self._idx}"
             self._name = f"{self._name}_{self._idx}"
         else:
-            existing = Camera.instancied_cams.index(new_name)
+            existing = BaslerCamera.instancied_cams.index(new_name)
             raise ValueError(f"A camera with the name {new_name} already exists: {existing}")    # TODO - handle this case nicely
 
     @property
@@ -596,3 +605,575 @@ class Camera:
             if t < 400:
                 degs = t
         return degs
+
+
+class FlirCamera:
+    instancied_cams = []
+
+    def __init__(self,
+                 name='unnamed',
+                 framerate=60,
+                 exposure=5000,
+                 triggered=True,
+                 binning=1,
+                 binning_mode='sum'):
+
+        self._ptr = None
+        self._dptr = None
+        self._is_virtual = False
+
+        self._serial = ''
+        self._name = name
+
+        self._width = 0
+        self._height = 0
+
+        self._framerate = framerate
+        self._exposure = exposure
+        self._blacks = 0.0
+        self._gain = 1.0
+        self._gamma = 1.0
+        self._triggered = triggered
+        self._binning = binning
+        self._binning_mode = binning_mode
+
+        self._idx = -1
+
+        self._connected = False
+        self._is_grabbing = False
+
+    def __repr__(self):
+        if self._connected:
+            v = 'Virtual ' if self._is_virtual else ''
+            return f"{v}Camera [S/N {self.serial}] (id={self._idx}, name={self._name})"
+        else:
+            return f"Camera disconnected"
+
+    def _set_roi(self):
+        nodemap = camera.GetNodeMap()
+
+        if not self._is_virtual:
+            self._width = PySpin.CIntegerPtr(nodemap.GetNode("Width")).GetMax()
+            self._height = PySpin.CIntegerPtr(nodemap.GetNode("Height")).GetMax()
+
+            # Apply the dimensions to the ROI
+            self.ptr.Width = self._width
+            self.ptr.Height = self._height
+            self.ptr.CenterX = True
+            self.ptr.CenterY = True
+
+        else:
+            # We hardcode these for virtual cameras, because the virtual sensor is otherwise 4096x4096 px...
+            self._width = 1440
+            self._height = 1080
+            self.ptr.Width = self._width
+            self.ptr.Height = self._height
+
+    def connect(self, cam_ptr=None) -> None:
+
+        available_idx = len(FlirCamera.instancied_cams)
+
+        if cam_ptr is None:
+            flir_devices = enumerate_flir_devices()
+            if available_idx <= len(flir_devices):
+                self._ptr = py.InstantCamera(py.TlFactory.GetInstance().CreateDevice(devices[available_idx]))
+            else:
+                raise RuntimeError("Not enough cameras detected!")
+        else:
+            self._ptr = cam_ptr
+
+        self._dptr = self.ptr.DeviceInfo
+
+        self.ptr.GrabCameraEvents = False
+        self.ptr.Open()
+        self._serial = self.dptr.GetSerialNumber()
+
+        if '0815-0' in self.serial:
+            self._is_virtual = True
+            self._idx = int(self.serial[-1])
+            # assert self._idx == available_idx   # This is probably useless
+        else:
+            self._is_virtual = False
+            self._idx = available_idx
+
+        if self._name in BaslerCamera.instancied_cams:
+            self._name += f"_{self._idx}"
+
+        self.ptr.UserSetSelector.SetValue("Default")
+        self.ptr.UserSetLoad.Execute()
+        self.ptr.AcquisitionMode.Value = 'Continuous'
+        self.ptr.ExposureMode = 'Timed'
+
+        self.ptr.DeviceLinkThroughputLimitMode.SetValue('On')
+        self.ptr.DeviceLinkThroughputLimit.SetValue(342000000)
+
+        if not self._is_virtual:
+
+            self.ptr.ExposureTimeMode.SetValue('Standard')
+            self.ptr.ExposureAuto = 'Off'
+            self.ptr.GainAuto = 'Off'
+            self.ptr.TriggerDelay.Value = 0.0
+            self.ptr.LineDebouncerTime.Value = 5.0
+            self.ptr.MaxNumBuffer = 20
+
+            if self.triggered:
+                self.ptr.LineSelector = "Line4"
+                self.ptr.LineMode = "Input"
+                self.ptr.TriggerSelector = "FrameStart"
+                self.ptr.TriggerMode = "On"
+                self.ptr.TriggerSource = "Line4"
+                self.ptr.TriggerActivation.Value = 'RisingEdge'
+                self.ptr.AcquisitionFrameRateEnable.SetValue(False)
+            else:
+                self.ptr.TriggerSelector = "FrameStart"
+                self.ptr.TriggerMode = "Off"
+                self.ptr.AcquisitionFrameRateEnable.SetValue(True)
+
+        self._set_roi()
+
+        self.binning = self._binning
+        self.binning_mode = self._binning_mode
+
+        self.framerate = self._framerate
+        self.exposure = self._exposure
+        self.blacks = self._blacks
+        self.gain = self._gain
+        self.gamma = self._gamma
+
+        BaslerCamera.instancied_cams.append(self._name)
+        self._connected = True
+
+    def disconnect(self) -> None:
+        if self._connected:
+            if self._is_grabbing:
+                self.stop_grabbing()
+
+            self.ptr.Close()
+            self._ptr = None
+            self._dptr = None
+            self._connected = False
+            self._serial = ''
+            self._name = 'unnamed'
+            self._width = 0
+            self._height = 0
+
+        self._connected = False
+
+    def start_grabbing(self) -> None:
+        if self._connected:
+            # self.ptr.StartGrabbing(py.GrabStrategy_OneByOne, py.GrabLoop_ProvidedByUser)
+            self.ptr.StartGrabbing(py.GrabStrategy_OneByOne, py.GrabLoop_ProvidedByInstantCamera)
+            self._is_grabbing = True
+        else:
+            print(f"{self.name.title()} camera is not connected.")
+
+    def stop_grabbing(self) -> None:
+        if self._connected:
+            self.ptr.StopGrabbing()
+            self._is_grabbing = False
+        else:
+            print(f"{self.name.title()} camera is not connected.")
+
+    @property
+    def ptr(self) -> py.InstantCamera:
+        return self._ptr
+
+    @property
+    def dptr(self) -> py.DeviceInfo:
+        return self._dptr
+
+    @property
+    def idx(self) -> int:
+        return self._idx
+
+    @property
+    def serial(self) -> str:
+        return self._serial
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @name.setter
+    def name(self, new_name : str) -> None:
+
+        if new_name == self._name or self._name == f"{new_name}_{self._idx}":
+            return
+        if new_name not in BaslerCamera.instancied_cams and f"{new_name}_{self._idx}" not in BaslerCamera.instancied_cams:
+            BaslerCamera.instancied_cams[BaslerCamera.instancied_cams.index(self._name)] = new_name
+            self._name = new_name
+        elif f"{self._name}_{self._idx}" not in BaslerCamera.instancied_cams:
+            BaslerCamera.instancied_cams[BaslerCamera.instancied_cams.index(self._name)] = f"{self._name}_{self._idx}"
+            self._name = f"{self._name}_{self._idx}"
+        else:
+            existing = BaslerCamera.instancied_cams.index(new_name)
+            raise ValueError(f"A camera with the name {new_name} already exists: {existing}")    # TODO - handle this case nicely
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
+
+    @property
+    def triggered(self) -> bool:
+        return self._triggered
+
+    @property
+    def exposure(self) -> int:
+        return self._exposure
+
+    @property
+    def blacks(self) -> float:
+        return self._blacks
+
+    @property
+    def gain(self) -> float:
+        return self._gain
+
+    @property
+    def gamma(self) -> float:
+        return self._gamma
+
+    @property
+    def binning(self) -> int:
+        return self._binning
+
+    @property
+    def binning_mode(self) -> str:
+        return self._binning_mode
+
+    @binning.setter
+    def binning(self, value: int) -> None:
+        assert value in [1, 2, 3, 4]
+        # And keep a local value to avoid querying the camera every time we read it
+        self._binning = value
+
+        if self._connected:
+            self.ptr.BinningVertical.SetValue(value)
+            self.ptr.BinningHorizontal.SetValue(value)
+
+        self._set_roi()
+
+    @binning_mode.setter
+    def binning_mode(self, value: str) -> None:
+        if value.lower() in ['s', 'sum', 'add', 'addition', 'summation']:
+            value = 'Sum'
+        elif value.lower() in ['a', 'm', 'avg', 'average', 'mean']:
+            value = 'Average'
+        else:
+            value = 'Sum'
+
+        if self._connected:
+            if not self._is_virtual:
+                self.ptr.BinningVerticalMode.SetValue(value)
+                self.ptr.BinningHorizontalMode.SetValue(value)
+
+        # And keep a local value to avoid querying the camera every time we read it
+        self._binning_mode = value
+
+    @exposure.setter
+    def exposure(self, value: float) -> None:
+        if self._connected:
+            try:
+                if not self._is_virtual:
+                    self.ptr.ExposureTime = value
+                else:
+                    self.ptr.ExposureTimeAbs = int(value)
+                    self.ptr.ExposureTimeRaw = int(value)
+            except py.OutOfRangeException as e:
+                exception_message = e.args[0]
+                if 'must be smaller than or equal ' in exception_message:
+                    value = math.floor(100 * float(
+                        exception_message.split('must be smaller than or equal ')[1].split(
+                            '. : OutOfRangeException')[
+                            0])) / 100.0
+                elif 'must be greater than or equal ' in exception_message:
+                    value = math.ceil(100 * float(
+                        exception_message.split('must be greater than or equal ')[1].split(
+                            '. : OutOfRangeException')[
+                            0])) / 100.0
+
+                if not self._is_virtual:
+                    self.ptr.ExposureTime = value
+                else:
+                    self.ptr.ExposureTimeAbs = int(value)
+                    self.ptr.ExposureTimeRaw = int(value)
+
+        # And keep a local value to avoid querying the camera every time we read it
+        self._exposure = value
+
+    @blacks.setter
+    def blacks(self, value: float) -> None:
+        if self._connected:
+            try:
+                self.ptr.BlackLevel.SetValue(value)
+            except py.OutOfRangeException as e:
+                exception_message = e.args[0]
+                if 'must be smaller than or equal ' in exception_message:
+                    value = math.floor(100 * float(
+                        exception_message.split('must be smaller than or equal ')[1].split('. : OutOfRangeException')[
+                            0])) / 100.0
+                elif 'must be greater than or equal ' in exception_message:
+                    value = math.ceil(100 * float(
+                        exception_message.split('must be greater than or equal ')[1].split('. : OutOfRangeException')[
+                            0])) / 100.0
+                self.ptr.BlackLevel.SetValue(value)
+        # And keep a local value to avoid querying the camera every time we read it
+        self._blacks = value
+
+    @gain.setter
+    def gain(self, value: float) -> None:
+        if self._connected:
+            try:
+                self.ptr.Gain.SetValue(value)
+            except py.OutOfRangeException as e:
+                exception_message = e.args[0]
+                if 'must be smaller than or equal ' in exception_message:
+                    value = math.floor(100 * float(
+                        exception_message.split('must be smaller than or equal ')[1].split('. : OutOfRangeException')[
+                            0])) / 100.0
+                elif 'must be greater than or equal ' in exception_message:
+                    value = math.ceil(100 * float(
+                        exception_message.split('must be greater than or equal ')[1].split('. : OutOfRangeException')[
+                            0])) / 100.0
+                self.ptr.Gain.SetValue(value)
+        # And keep a local value to avoid querying the camera every time we read it
+        self._gain = value
+
+    @gamma.setter
+    def gamma(self, value: float) -> None:
+        if self._connected:
+            try:
+                self.ptr.Gamma.SetValue(value)
+            except py.OutOfRangeException as e:
+                exception_message = e.args[0]
+                if 'must be smaller than or equal ' in exception_message:
+                    value = math.floor(100 * float(
+                        exception_message.split('must be smaller than or equal ')[1].split('. : OutOfRangeException')[
+                            0])) / 100.0
+                elif 'must be greater than or equal ' in exception_message:
+                    value = math.ceil(100 * float(
+                        exception_message.split('must be greater than or equal ')[1].split('. : OutOfRangeException')[
+                            0])) / 100.0
+                self.ptr.Gamma.SetValue(value)
+
+        # And keep a local value to avoid querying the camera every time we read it
+
+        self._gamma = value
+
+    @property
+    def framerate(self) -> float:
+        return self._framerate
+
+    @framerate.setter
+    def framerate(self, value: float) -> None:
+        if self._connected:
+            if self.triggered:
+                # print(f'[WARN] Trying to set framerate on a hardware-triggered camera ([{self._name}])')
+                self.ptr.AcquisitionFrameRateEnable.SetValue(False)
+                self._framerate = np.floor(value)
+            else:
+                if not self._is_virtual:
+                    self.ptr.AcquisitionFrameRateEnable.SetValue(True)
+                    self.ptr.AcquisitionFrameRate.SetValue(220.0)
+
+                    # custom floor with decimals
+                    f = math.floor(self.ptr.ResultingFrameRate.GetValue() * 100) / 100.0
+
+                    new_framerate = min(value, f)
+
+                    self.ptr.AcquisitionFrameRateEnable.SetValue(True)
+                    self.ptr.AcquisitionFrameRate.SetValue(new_framerate)
+
+                else:
+                    self.ptr.AcquisitionFrameRateAbs = 220
+                    f = math.floor(self.ptr.AcquisitionFrameRateAbs.GetValue() * 100) / 100.0
+                    new_framerate = min(value, f)
+
+                    self.ptr.AcquisitionFrameRateAbs = new_framerate
+
+                self._framerate = new_framerate
+
+    @property
+    def width(self) -> int:
+        return self._width
+
+    @property
+    def height(self) -> int:
+        return self._height
+
+    @property
+    def temperature(self) -> float:
+        degs = None
+        if self._connected:
+            t = self.ptr.DeviceTemperature.Value
+            if t < 400:
+                degs = t
+        return degs
+
+
+class VideoFile:
+    opened_files = []
+
+    def __init__(self, path):
+
+        self._idx = -1
+
+        self._connected = False
+
+        self._video_path = Path(path)
+        self._name = self._video_path.name
+
+        self._capture_object = cv2.VideoCapture(self._video_path.as_posix())
+
+        self._width = self._capture_object.get(cv2.CAP_PROP_FRAME_WIDTH)
+        self._height = self._capture_object.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        self._framerate = self._capture_object.get(cv2.CAP_PROP_FPS)
+
+    def __repr__(self):
+        if self._video_path.exists():
+            return f"Video File (id={self._idx}, name={self._name})"
+        else:
+            return f"Video closed"
+
+    def _set_roi(self):
+        pass
+
+    def connect(self, cam_ptr=None) -> None:
+
+        available_idx = len(VideoFile.opened_files)
+        self._idx = available_idx
+
+        if self._name in VideoFile.opened_files:
+            self._name += f"_{self._idx}"
+
+        VideoFile.opened_files.append(self._name)
+        self._connected = True
+
+    def disconnect(self) -> None:
+        if self._connected:
+            self._capture_object.release()
+            self._connected = False
+            self._name = 'unnamed'
+            self._width = 0
+            self._height = 0
+
+        self._connected = False
+
+    def start_grabbing(self) -> None:
+        pass
+
+    def stop_grabbing(self) -> None:
+        pass
+
+    @property
+    def ptr(self) -> None:
+        return None
+
+    @property
+    def dptr(self) -> None:
+        return None
+
+    @property
+    def idx(self) -> int:
+        return self._idx
+
+    @property
+    def serial(self) -> str:
+        return self._name
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @name.setter
+    def name(self, new_name : str) -> None:
+
+        if new_name == self._name or self._name == f"{new_name}_{self._idx}":
+            return
+        if new_name not in VideoFile.opened_files and f"{new_name}_{self._idx}" not in VideoFile.opened_files:
+            VideoFile.opened_files[VideoFile.opened_files.index(self._name)] = new_name
+            self._name = new_name
+        elif f"{self._name}_{self._idx}" not in VideoFile.opened_files:
+            VideoFile.opened_files[VideoFile.opened_files.index(self._name)] = f"{self._name}_{self._idx}"
+            self._name = f"{self._name}_{self._idx}"
+        else:
+            existing = VideoFile.opened_files.index(new_name)
+            raise ValueError(f"A video with the name {new_name} already exists: {existing}")    # TODO - handle this case nicely
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
+
+    @property
+    def triggered(self) -> bool:
+        return False
+
+    @property
+    def exposure(self) -> int:
+        return 0
+
+    @property
+    def blacks(self) -> float:
+        return 0
+
+    @property
+    def gain(self) -> float:
+        return 0
+
+    @property
+    def gamma(self) -> float:
+        return 0
+
+    @property
+    def binning(self) -> int:
+        return 1
+
+    @property
+    def binning_mode(self) -> str:
+        return 'none'
+
+    @binning.setter
+    def binning(self, value: int) -> None:
+        pass
+
+    @binning_mode.setter
+    def binning_mode(self, value: str) -> None:
+        pass
+
+    @exposure.setter
+    def exposure(self, value: float) -> None:
+        pass
+
+    @blacks.setter
+    def blacks(self, value: float) -> None:
+        pass
+
+    @gain.setter
+    def gain(self, value: float) -> None:
+        pass
+
+    @gamma.setter
+    def gamma(self, value: float) -> None:
+       pass
+
+    @property
+    def framerate(self) -> float:
+        return self._framerate
+
+    @framerate.setter
+    def framerate(self, value: float) -> None:
+        pass
+
+    @property
+    def width(self) -> int:
+        return self._width
+
+    @property
+    def height(self) -> int:
+        return self._height
+
+    @property
+    def temperature(self) -> float:
+        return 0
+
+

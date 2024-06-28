@@ -9,12 +9,14 @@ import numpy as np
 import pypylon.pylon as py
 import mokap.files_op as files_op
 from collections import deque
-from mokap.hardware import SSHTrigger, Camera, setup_ulimit, get_basler_devices
+from mokap.hardware import SSHTrigger, BaslerCamera, setup_ulimit, enumerate_basler_devices, enumerate_flir_devices
 from mokap import utils
 from PIL import Image
 import platform
 import random
 import json
+
+
 
 ##
 
@@ -48,7 +50,7 @@ class FrameHandler(py.ImageEventHandler):
 class Manager:
 
     def __init__(self,
-                 config='config.conf',
+                 config='config.yaml',
                  framerate=220,
                  exposure=4318,
                  triggered=False,   # TODO - support hardware and software trigger modes
@@ -77,16 +79,13 @@ class Manager:
         self._triggered = False
         self.triggered = triggered
 
-        default_base_folder = Path('./')
-        if 'GENERAL' in self.config_dict.sections():
-             self._base_folder = Path(self.config_dict['GENERAL'].get('base_folder', default_base_folder.as_posix()).strip("'").strip('"')) / 'MokapRecordings'
-        else:
-            self._base_folder = default_base_folder / 'MokapRecordings'
+        self._base_folder = Path(self.config_dict.get('base_path', './')) / 'MokapRecordings'
         if self._base_folder.parent == self._base_folder.name:
             self._base_folder = self._base_folder.parent
         self._base_folder.mkdir(parents=True, exist_ok=True)
+
         self._session_name: str = ''
-        self._saving_ext = self.config_dict['GENERAL'].get('save_format', 'bmp').lower().lstrip('.').strip("'").strip('"')
+        self._saving_ext = self.config_dict.get('save_format', 'bmp').lower()
 
         self._executor: Union[ThreadPoolExecutor, None] = None
 
@@ -100,8 +99,8 @@ class Manager:
         self._saved_frames_counter: Union[RawArray, None] = None
 
         self._nb_cams: int = 0
-        self._cameras_list: List[Camera] = []
-        self._cameras_dict = {}
+        self._sources_list: List[BaslerCamera] = []
+        self._sources_dict = {}
         self._cameras_colours = {}
 
         self._metadata = {'framerate': None,
@@ -111,131 +110,22 @@ class Manager:
 
         self._finished_saving: List[Event] = []
 
-    @property
-    def triggered(self) -> bool:
-        return self._triggered
+        ##
 
-    @triggered.setter
-    def triggered(self, value: bool):
-        if not self._triggered and value is True:
-            external_trigger = SSHTrigger(silent=self._silent)
-            if external_trigger.connected:
-                self.trigger = external_trigger
-                self._triggered = True
-                if not self._silent:
-                    print('[INFO] Trigger mode enabled.')
-            else:
-                print("[ERROR] Connection problem with the trigger. Trigger mode can't be enabled.")
-                self.trigger = None
-                self._triggered = False
-        elif self._triggered and value is False:
-            self.trigger = None
-            self._triggered = False
-            if not self._silent:
-                print('[INFO] Trigger mode disabled.')
+        self.connect_basler_devices()
 
-        # TODO - Refresh cameras on trigger mode change
+        ##
 
-    def list_devices(self):
-
-        default_max_cams = 99
-        default_allow_virtual = False
-        if 'GENERAL' in self.config_dict.sections():
-            max_cams = self.config_dict['GENERAL'].getint('max_cams', default_max_cams)
-            allow_virtual = self.config_dict['GENERAL'].getboolean('allow_virtual', default_allow_virtual)
-        else:
-            max_cams = default_max_cams
-            allow_virtual = default_allow_virtual
-
-        real_cams, virtual_cams = get_basler_devices(max_cams=max_cams, allow_virtual=allow_virtual)
-        devices = real_cams + virtual_cams
-        if not self._silent:
-            print(f"[INFO] Found {len(devices)} camera{'s' if len(devices) > 1 else ''} connected "
-                  f"({len(real_cams)} physical, {len(virtual_cams)} virtual).")
-
-        return devices
-
-    def connect(self, specific_cams=None):
-
-        allow_all = self.config_dict['GENERAL'].getboolean('allow_all', True)
-
-        connected_cams = self.list_devices()
-
-        cams_in_config_file = list(self.config_dict.sections())
-        cams_in_config_file.remove('GENERAL')
-
-        if specific_cams is not None:
-            specific_cams = utils.ensure_list(specific_cams)
-
-            if allow_all and not self._silent:
-                print(f"[WARN] All cameras allowed in config file, but user-provided list is used instead.")
-
-            devices = [d for d in connected_cams if d.GetSerialNumber() in specific_cams]
-        else:
-            if not allow_all:
-                allowed_serials = [self.config_dict[k]['serial'] for k in cams_in_config_file]
-
-                devices = [d for d in connected_cams if d.GetSerialNumber() in allowed_serials]
-            else:
-                devices = connected_cams
-
-        nb_ignored = len(connected_cams) - len(devices)
-        if nb_ignored > 0 and not self._silent:
-            print(f"[INFO] Ignoring {nb_ignored} camera{'s' if nb_ignored > 1 else ''}.")
-
-        nb_cams = len(devices)
-        self.ICarray = py.InstantCameraArray(nb_cams)
-
-        rng = np.random.default_rng()
-        hues = rng.integers(low=0, high=359, size=nb_cams)
-        luminance = rng.integers(low=45, high=60, size=nb_cams)
-
-        while any(hues[1:] - hues[:-1].copy() < 65):
-            hues = rng.integers(low=0, high=359, size=nb_cams)
-
-        # Create the cameras and put them in auto-sorting CamList
-        for i in range(nb_cams):
-            dptr, cptr = devices[i], self.ICarray[i]
-            cptr.Attach(py.TlFactory.GetInstance().CreateDevice(dptr))
-
-            cam = Camera(framerate=self._framerate,
-                         exposure=self._exposure,
-                         triggered=self._triggered,
-                         binning=self._binning)
-            cam.connect(cptr)
-
-            if cam.connected:
-
-                cam_name = 'unnamed'
-                cam_col = '#' + utils.hls_to_hex(hues[i],    # Sample whole Hue range
-                                                 luminance[i],    # Keep somewhate narrow band luminance
-                                                 85)              # Fixed saturation
-
-                # Grab name and colour from config file if they're in there
-                for entry in cams_in_config_file:
-                    if cam.serial == self.config_dict[entry]['serial']:
-                        cam_name = self.config_dict[entry].get('name', cam_name)
-                        cam_col = f'#{self.config_dict[entry].get("color", cam_col).lstrip("#")}'
-
-                cam.name = cam_name
-                self._cameras_colours[cam.name] = cam_col
-                # keep local reference of cameras as list and dict for easy access
-                self._cameras_list.append(cam)
-                self._cameras_dict[cam.name] = cam
-
-                if not self._silent:
-                    print(f"[INFO] Attached {cam}.")
-
-        self._cameras_list.sort(key=lambda x: x.idx)
+        self._sources_list.sort(key=lambda x: x.idx)
 
         # Once again for the buffers, this time using the sorted list
         self._frames_handlers_list = []
         self._lastframe_buffers_list = []
-        for cam in self._cameras_list:
+        for cam in self._sources_list:
             self._frames_handlers_list.append(FrameHandler(self._recording))
             self._lastframe_buffers_list.append(RawArray('B', cam.height * cam.width))
 
-        self._nb_cams = len(self._cameras_list)
+        self._nb_cams = len(self._sources_list)
 
         self._grabbed_frames_counter = RawArray('I', self._nb_cams)
         self._displayed_frames_counter = RawArray('I', self._nb_cams)
@@ -246,69 +136,153 @@ class Manager:
 
         self._finished_saving = [Event()] * self._nb_cams
 
+
+    @property
+    def triggered(self) -> bool:
+        return self._triggered
+
+    @triggered.setter
+    def triggered(self, new_val: bool):
+        if not self._triggered and new_val:
+            external_trigger = SSHTrigger(silent=self._silent)
+            if external_trigger.connected:
+                self.trigger = external_trigger
+                self._triggered = True
+                if not self._silent:
+                    print('[INFO] Trigger mode enabled.')
+            else:
+                print("[ERROR] Connection problem with the trigger. Trigger mode can't be enabled.")
+                self.trigger = None
+                self._triggered = False
+        elif self._triggered and not new_val:
+            self.trigger = None
+            self._triggered = False
+            if not self._silent:
+                print('[INFO] Trigger mode disabled.')
+
+        # TODO - Refresh cameras on trigger mode change
+
+    # def connect(self):
+
+        # nb_flir_virtuals = sum([t & v for t, v in zip([(t == 'flir' or t == 'teledyne') for t in source_types], virtual_sources)])
+        # flir_devices = enumerate_flir_devices(virtual_cams=nb_flir_virtuals)
+
+        # if specific_cams is not None:
+        #     specific_cams = utils.ensure_list(specific_cams)
+        #     devices = [d for d in connected_cams if d.GetSerialNumber() in specific_cams]
+        # else:
+        #     allowed_serials = [self.config_dict[k]['serial'] for k in sources_in_config_file]
+        #     devices = [d for d in connected_cams if d.GetSerialNumber() in allowed_serials]
+
+    def connect_basler_devices(self):
+
+        sources_names = list(self.config_dict['sources'].keys())
+        source_types = [self.config_dict['sources'][n].get('type').lower() for n in sources_names]
+
+        virtual_sources = [self.config_dict['sources'][n].get('virtual', False) for n in sources_names]
+        nb_basler_virtuals = sum([t & v for t, v in zip([t == 'basler' for t in source_types], virtual_sources)])
+
+        avail_basler_devices = enumerate_basler_devices(virtual_cams=nb_basler_virtuals)
+        nb_basler_devices = len(avail_basler_devices)
+
+        self.ICarray = py.InstantCameraArray(nb_basler_devices)
+
+        hues, saturation, luminance = utils.get_random_colors(nb_basler_devices)
+
+        # Create the cameras and put them in auto-sorting CamList
+        for i in range(nb_basler_devices):
+            dptr, cptr = avail_basler_devices[i], self.ICarray[i]
+            cptr.Attach(py.TlFactory.GetInstance().CreateDevice(dptr))
+
+            source = BaslerCamera(framerate=self._framerate,
+                               exposure=self._exposure,
+                               triggered=self._triggered,
+                               binning=self._binning)
+            source.connect(cptr)
+
+            if source.connected:
+
+                source_name = 'unnamed'
+                source_col = '#' + utils.hls_to_hex(hues[i], luminance[i], saturation[i])
+
+                # Grab name and colour from config file if they're in there
+                for n in sources_names:
+                    if source.serial == self.config_dict['sources'][n].get('serial', 'virtual'):
+                        source_name = self.config_dict['sources'][n].get('name', source_name)
+                        source_col = f"#{self.config_dict['sources'][n].get('color', source_col).lstrip('#')}"
+
+                source.name = source_name
+                self._cameras_colours[source.name] = source_col
+                # keep local reference of cameras as list and dict for easy access
+                self._sources_list.append(source)
+                self._sources_dict[source.name] = source
+
+                if not self._silent:
+                    print(f"[INFO] Attached Basler camera {source}.")
+
     @property
     def framerate(self) -> Union[float, None]:
-        if all([c.framerate == self._cameras_list[0].framerate for c in self._cameras_list]):
-            return self._cameras_list[0].framerate
+        if all([c.framerate == self._sources_list[0].framerate for c in self._sources_list]):
+            return self._sources_list[0].framerate
         else:
             return None
 
     @framerate.setter
     def framerate(self, value: int) -> None:
-        for i, cam in enumerate(self._cameras_list):
+        for i, cam in enumerate(self._sources_list):
             cam.framerate = value
         self._framerate = value
 
     @property
     def exposure(self) -> List[float]:
-        return [c.exposure for c in self._cameras_list]
+        return [c.exposure for c in self._sources_list]
 
     @exposure.setter
     def exposure(self, value: float) -> None:
-        for i, cam in enumerate(self._cameras_list):
+        for i, cam in enumerate(self._sources_list):
             cam.exposure = value
 
     @property
     def gain(self) -> List[float]:
-        return [c.gain for c in self._cameras_list]
+        return [c.gain for c in self._sources_list]
 
     @gain.setter
     def gain(self, value: float) -> None:
-        for i, cam in enumerate(self._cameras_list):
+        for i, cam in enumerate(self._sources_list):
             cam.gain = value
 
     @property
     def blacks(self) -> List[float]:
-        return [c.blacks for c in self._cameras_list]
+        return [c.blacks for c in self._sources_list]
 
     @blacks.setter
     def blacks(self, value: float) -> None:
-        for i, cam in enumerate(self._cameras_list):
+        for i, cam in enumerate(self._sources_list):
             cam.blacks = value
 
     @property
     def gamma(self) -> List[float]:
-        return [c.gamma for c in self._cameras_list]
+        return [c.gamma for c in self._sources_list]
 
     @gamma.setter
     def gamma(self, value: float) -> None:
-        for i, cam in enumerate(self._cameras_list):
+        for i, cam in enumerate(self._sources_list):
             cam.gamma = value
 
     @property
     def binning(self) -> List[int]:
-        return [c.binning for c in self._cameras_list]
+        return [c.binning for c in self._sources_list]
 
     @property
     def binning_mode(self) -> Union[str, None]:
-        if all([c.binning_mode == self._cameras_list[0].binning_mode for c in self._cameras_list]):
-            return self._cameras_list[0].binning_mode
+        if all([c.binning_mode == self._sources_list[0].binning_mode for c in self._sources_list]):
+            return self._sources_list[0].binning_mode
         else:
             return None
 
     @binning.setter
     def binning(self, value: int) -> None:
-        for i, cam in enumerate(self._cameras_list):
+        for i, cam in enumerate(self._sources_list):
             cam.binning = value
             self._binning = cam.binning
             # And update the buffer to the new size
@@ -322,15 +296,15 @@ class Manager:
             self._binning_mode = 'avg'
         else:
             self._binning_mode = 'sum'
-        for i, cam in enumerate(self._cameras_list):
+        for i, cam in enumerate(self._sources_list):
             cam.binning_mode = value
 
     def disconnect(self) -> None:
         self.ICarray.Close()
-        for cam in self._cameras_list:
+        for cam in self._sources_list:
             cam.disconnect()
 
-        self._cameras_list = []
+        self._sources_list = []
         self.ICarray = None
         if not self._silent:
             print(f"[INFO] Disconnected {self._nb_cams} camera{'s' if self._nb_cams > 1 else ''}.")
@@ -338,10 +312,10 @@ class Manager:
 
     def _writer_frames(self, cam_idx: int) -> NoReturn:
 
-        h = self._cameras_list[cam_idx].height
-        w = self._cameras_list[cam_idx].width
+        h = self._sources_list[cam_idx].height
+        w = self._sources_list[cam_idx].width
 
-        folder = self.full_path / f"cam{cam_idx}_{self._cameras_list[cam_idx].name}"
+        folder = self.full_path / f"cam{cam_idx}_{self._sources_list[cam_idx].name}"
         handler = self._frames_handlers_list[cam_idx]
         saving_started = False
 
@@ -402,7 +376,7 @@ class Manager:
 
     def _grab_frames(self, cam_idx: int) -> NoReturn:
 
-        cam = self._cameras_list[cam_idx]
+        cam = self._sources_list[cam_idx]
 
         if not cam.triggered:
             cam.ptr.RegisterConfiguration(py.SoftwareTriggerConfiguration(),
@@ -501,7 +475,7 @@ class Manager:
 
             self._executor = ThreadPoolExecutor(max_workers=20)
 
-            for i, cam in enumerate(self._cameras_list):
+            for i, cam in enumerate(self._sources_list):
                 self._executor.submit(self._grab_frames, i)
                 self._executor.submit(self._writer_frames, i)
                 self._executor.submit(self._update_display_buffers, i)
@@ -516,7 +490,7 @@ class Manager:
             self._acquiring.clear()
 
             self.ICarray.StopGrabbing()
-            for cam in self._cameras_list:
+            for cam in self._sources_list:
                 cam.stop_grabbing()
 
             if self._triggered:
@@ -600,8 +574,8 @@ class Manager:
         return np.frombuffer(self._grabbed_frames_counter, dtype=np.uint32)
 
     @property
-    def cameras(self) -> list[Camera]:
-        return self._cameras_list
+    def cameras(self) -> list[BaslerCamera]:
+        return self._sources_list
 
     @property
     def colours(self) -> dict:
@@ -635,7 +609,7 @@ class Manager:
 
     def get_current_framearray(self, i: Union[str, int]) -> np.array:
         if type(i) is str:
-            c = self._cameras_dict[i]
+            c = self._sources_dict[i]
         else:
-            c = self._cameras_list[i]
+            c = self._sources_list[i]
         return np.frombuffer(self._lastframe_buffers_list[i], dtype=np.uint8).reshape(c.height, c.width)
