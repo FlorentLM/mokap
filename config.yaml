@@ -27,11 +27,6 @@ sources:
     purple:
         type: basler
         color: F47FFD
-        virtual: true
-    othervirt:
-        type: basler
-        color: fd421c
-        virtual: true
     vid_0:
         type: file
         path: /path/to/video_0

@@ -405,6 +405,21 @@ class BaslerCamera:
             existing = BaslerCamera.instancied_cams.index(new_name)
             raise ValueError(f"A camera with the name {new_name} already exists: {existing}")    # TODO - handle this case nicely
 
+    @staticmethod
+    def pylon_exception_parser(exception):
+        exception_message = exception.args[0]
+        if 'must be smaller than or equal ' in exception_message:
+            value = math.floor(100 * float(
+                exception_message.split('must be smaller than or equal ')[1].split('. : OutOfRangeException')[
+                    0])) / 100.0
+        elif 'must be greater than or equal ' in exception_message:
+            value = math.ceil(100 * float(
+                exception_message.split('must be greater than or equal ')[1].split('. : OutOfRangeException')[
+                    0])) / 100.0
+        else:
+            raise ValueError(f'[WARN] Unknown exception: {exception_message}')
+        return value
+
     @property
     def connected(self) -> bool:
         return self._connected
@@ -476,17 +491,7 @@ class BaslerCamera:
                     self.ptr.ExposureTimeAbs = int(value)
                     self.ptr.ExposureTimeRaw = int(value)
             except py.OutOfRangeException as e:
-                exception_message = e.args[0]
-                if 'must be smaller than or equal ' in exception_message:
-                    value = math.floor(100 * float(
-                        exception_message.split('must be smaller than or equal ')[1].split(
-                            '. : OutOfRangeException')[
-                            0])) / 100.0
-                elif 'must be greater than or equal ' in exception_message:
-                    value = math.ceil(100 * float(
-                        exception_message.split('must be greater than or equal ')[1].split(
-                            '. : OutOfRangeException')[
-                            0])) / 100.0
+                value = self.pylon_exception_parser(e)
 
                 if not self._is_virtual:
                     self.ptr.ExposureTime = value
@@ -503,15 +508,7 @@ class BaslerCamera:
             try:
                 self.ptr.BlackLevel.SetValue(value)
             except py.OutOfRangeException as e:
-                exception_message = e.args[0]
-                if 'must be smaller than or equal ' in exception_message:
-                    value = math.floor(100 * float(
-                        exception_message.split('must be smaller than or equal ')[1].split('. : OutOfRangeException')[
-                            0])) / 100.0
-                elif 'must be greater than or equal ' in exception_message:
-                    value = math.ceil(100 * float(
-                        exception_message.split('must be greater than or equal ')[1].split('. : OutOfRangeException')[
-                            0])) / 100.0
+                value = self.pylon_exception_parser(e)
                 self.ptr.BlackLevel.SetValue(value)
         # And keep a local value to avoid querying the camera every time we read it
         self._blacks = value
@@ -522,15 +519,7 @@ class BaslerCamera:
             try:
                 self.ptr.Gain.SetValue(value)
             except py.OutOfRangeException as e:
-                exception_message = e.args[0]
-                if 'must be smaller than or equal ' in exception_message:
-                    value = math.floor(100 * float(
-                        exception_message.split('must be smaller than or equal ')[1].split('. : OutOfRangeException')[
-                            0])) / 100.0
-                elif 'must be greater than or equal ' in exception_message:
-                    value = math.ceil(100 * float(
-                        exception_message.split('must be greater than or equal ')[1].split('. : OutOfRangeException')[
-                            0])) / 100.0
+                value = self.pylon_exception_parser(e)
                 self.ptr.Gain.SetValue(value)
         # And keep a local value to avoid querying the camera every time we read it
         self._gain = value
@@ -541,19 +530,10 @@ class BaslerCamera:
             try:
                 self.ptr.Gamma.SetValue(value)
             except py.OutOfRangeException as e:
-                exception_message = e.args[0]
-                if 'must be smaller than or equal ' in exception_message:
-                    value = math.floor(100 * float(
-                        exception_message.split('must be smaller than or equal ')[1].split('. : OutOfRangeException')[
-                            0])) / 100.0
-                elif 'must be greater than or equal ' in exception_message:
-                    value = math.ceil(100 * float(
-                        exception_message.split('must be greater than or equal ')[1].split('. : OutOfRangeException')[
-                            0])) / 100.0
+                value = self.pylon_exception_parser(e)
                 self.ptr.Gamma.SetValue(value)
 
         # And keep a local value to avoid querying the camera every time we read it
-
         self._gamma = value
 
     @property

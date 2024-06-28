@@ -16,7 +16,7 @@ mgr.binning_mode = 'avg'
 
 # Set framerate in images per second
 # mgr.framerate = 60
-mgr.framerate = 200
+mgr.framerate = 80
 
 mgr.gamma = 0.35
 # mgr.blacks = 1.5
