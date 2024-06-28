@@ -284,7 +284,7 @@ class BaslerCamera:
 
         self._dptr = self.ptr.DeviceInfo
 
-        self.ptr.GrabCameraEvents = False
+        self.ptr.GrabCameraEvents = True
         self.ptr.Open()
         self._serial = self.dptr.GetSerialNumber()
 

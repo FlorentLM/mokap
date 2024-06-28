@@ -1,6 +1,6 @@
 # Where the recordings will be stored
 base_path: ./recordings
-save_format: 'bmp'
+save_format: 'jpg'
 
 # Add your sources below
 sources:

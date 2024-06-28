@@ -15,7 +15,7 @@ from PIL import Image
 import platform
 import random
 import json
-
+from imageio_ffmpeg import write_frames
 
 
 ##
@@ -26,25 +26,21 @@ class FrameHandler(py.ImageEventHandler):
         self._is_recording = event
         self.indice = 0
         self.frames = deque()
-        self.latest = None
-        self.rec = False
+        self.latest = deque(maxlen=2)
         super().__init__(*args)
-
-    def OnImageEventHandlerRegistered(self, camera):
-        siz = camera.Width.GetValue() * camera.Height.GetValue()
-        if self.latest is None:
-            self.latest = bytearray(siz)
 
     def OnImagesSkipped(self, camera, nb_skipped):
         print(f"[WARN] Skipped {nb_skipped} images!")
 
     def OnImageGrabbed(self, camera, res):
+        img_nb = res.ImageNumber
+        frame = res.GetArray()
+
+        self.indice = img_nb
         if res.GrabSucceeded():
-            self.indice = 0 + res.ImageNumber
-            buf = res.GetBuffer()
-            self.latest[:] = buf
             if self._is_recording.is_set():
-                self.frames.append(buf)
+                self.frames.append((res.ImageNumber, frame))
+            self.latest.append(frame)
 
 
 class Manager:
@@ -92,12 +88,6 @@ class Manager:
         self._acquiring: Event = Event()
         self._recording: Event = Event()
 
-        self._frames_handlers_list: List[FrameHandler] = []
-        self._lastframe_buffers_list: List[RawArray] = []
-        self._grabbed_frames_counter: Union[RawArray, None] = None
-        self._displayed_frames_counter: Union[RawArray, None] = None
-        self._saved_frames_counter: Union[RawArray, None] = None
-
         self._nb_cams: int = 0
         self._sources_list: List[BaslerCamera] = []
         self._sources_dict = {}
@@ -105,8 +95,6 @@ class Manager:
 
         self._metadata = {'framerate': None,
                           'sessions': []}
-
-        self._finished_saving: List[Event] = []
 
         ##
 
@@ -116,24 +104,22 @@ class Manager:
 
         self._sources_list.sort(key=lambda x: x.idx)
 
-        # Once again for the buffers, this time using the sorted list
-        self._frames_handlers_list = []
-        self._lastframe_buffers_list = []
+        # Initialise buffers and arrays
+        self._frames_handlers_list: List[FrameHandler] = []
+        self._lastframe_buffers_list: List[RawArray] = []
+
         for cam in self._sources_list:
             self._frames_handlers_list.append(FrameHandler(self._recording))
             self._lastframe_buffers_list.append(RawArray('B', cam.height * cam.width))
 
         self._nb_cams = len(self._sources_list)
 
+        self._finished_saving: List[Event] = [Event()] * self._nb_cams
+
+        # Init frames counters
         self._grabbed_frames_counter = RawArray('I', self._nb_cams)
         self._displayed_frames_counter = RawArray('I', self._nb_cams)
         self._saved_frames_counter = RawArray('I', self._nb_cams)
-        self._grabbed_frames_counter[:] = [0] * self._nb_cams
-        self._displayed_frames_counter[:] = [0] * self._nb_cams
-        self._saved_frames_counter[:] = [0] * self._nb_cams
-
-        self._finished_saving = [Event()] * self._nb_cams
-
 
     @property
     def triggered(self) -> bool:
@@ -313,45 +299,37 @@ class Manager:
 
         folder = self.full_path / f"cam{cam_idx}_{self._sources_list[cam_idx].name}"
         handler = self._frames_handlers_list[cam_idx]
-        saving_started = False
 
-        retry = 0
-        max_retry = 5
         while self._acquiring.is_set():
 
-            if self._recording.is_set() or saving_started:
-                if not saving_started:
-                    saving_started = True
+            if self._recording.is_set():
 
-                # Swap frames buffers
-                data, handler.frames = handler.frames, deque()
+                if handler.frames:
+                    frame_nb, frame = handler.frames.popleft()
+                    img = Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1)
 
-                if len(data) > 0:
-                    retry = 0
-                    for frame in data:
-                        img = Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1)
-                        if self._saving_ext == 'bmp':
-                            img.save(folder / f"{str(self._saved_frames_counter[cam_idx]).zfill(9)}.{self._saving_ext}")
-                        elif self._saving_ext == 'jpg' or self._saving_ext == 'jpeg':
-                            img.save(folder / f"{str(self._saved_frames_counter[cam_idx]).zfill(9)}.{self._saving_ext}",
-                                     quality=100, keep_rgb=True)
-                        elif self._saving_ext == 'png':
-                            img.save(folder / f"{str(self._saved_frames_counter[cam_idx]).zfill(9)}.{self._saving_ext}",
-                                     compress_level=1)
-                        elif self._saving_ext == 'tif' or self._saving_ext == 'tiff':
-                            img.save(folder / f"{str(self._saved_frames_counter[cam_idx]).zfill(9)}.{self._saving_ext}",
-                                     quality=100)
-                        else:
-                            img.save(folder / f"{str(self._saved_frames_counter[cam_idx]).zfill(9)}.bmp")
-                        self._saved_frames_counter[cam_idx] += 1
+                    if self._saving_ext == 'bmp':
+                        img.save(folder / f"{str(frame_nb).zfill(9)}.{self._saving_ext}")
+                    elif self._saving_ext == 'jpg' or self._saving_ext == 'jpeg':
+                        img.save(folder / f"{str(frame_nb).zfill(9)}.{self._saving_ext}",
+                                 quality=100, keep_rgb=True)
+                    elif self._saving_ext == 'png':
+                        img.save(folder / f"{str(frame_nb).zfill(9)}.{self._saving_ext}",
+                                 compress_level=1)
+                    elif self._saving_ext == 'tif' or self._saving_ext == 'tiff':
+                        img.save(folder / f"{str(frame_nb).zfill(9)}.{self._saving_ext}",
+                                 quality=100)
+                    else:
+                        img.save(folder / f"{str(frame_nb).zfill(9)}.bmp")
+
+                    self._saved_frames_counter[cam_idx] += 1
                 else:
-                    retry += 1
-                    if retry > max_retry:
-                        saving_started = False
-                        self._finished_saving[cam_idx].set()
-                    continue
+                    self._finished_saving[cam_idx].set()
+
             else:
                 self._recording.wait()
+
+
 
     def _update_display_buffers(self, cam_idx: int) -> NoReturn:
 
@@ -362,9 +340,7 @@ class Manager:
             toc = datetime.now()
             elapsed = (toc - tic).microseconds
             if elapsed >= self._display_wait_time_us:
-                self._lastframe_buffers_list[cam_idx] = handler.latest
-                self._displayed_frames_counter[cam_idx] += 1
-                self._grabbed_frames_counter[cam_idx] = handler.indice
+                self._lastframe_buffers_list[cam_idx] = handler.latest.popleft()
             else:
                 time.sleep(self._display_wait_time_s)
 
@@ -373,11 +349,6 @@ class Manager:
     def _grab_frames(self, cam_idx: int) -> NoReturn:
 
         cam = self._sources_list[cam_idx]
-
-        # if not cam.triggered:
-        #     cam.ptr.RegisterConfiguration(py.SoftwareTriggerConfiguration(),
-        #                                   py.RegistrationMode_ReplaceAll,
-        #                                   py.Cleanup_Delete)
 
         cam.ptr.RegisterImageEventHandler(self._frames_handlers_list[cam_idx],
                                           py.RegistrationMode_ReplaceAll,
@@ -460,7 +431,6 @@ class Manager:
                 self.session_name = ''
 
             if self._triggered:
-                # Start trigger thread on the RPi
                 self.trigger.start(self._framerate)
                 time.sleep(0.5)
 
@@ -473,7 +443,8 @@ class Manager:
 
             for i, cam in enumerate(self._sources_list):
                 self._executor.submit(self._grab_frames, i)
-                self._executor.submit(self._writer_frames, i)
+                # self._executor.submit(self._writer_frames, i)
+                self._executor.submit(self._writer_video, i)
                 self._executor.submit(self._update_display_buffers, i)
 
             if not self._silent:
@@ -607,4 +578,4 @@ class Manager:
             c = self._sources_dict[i]
         else:
             c = self._sources_list[i]
-        return np.frombuffer(self._lastframe_buffers_list[i], dtype=np.uint8).reshape(c.height, c.width)
+        return self._lastframe_buffers_list[i]

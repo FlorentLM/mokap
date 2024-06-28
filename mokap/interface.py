@@ -48,7 +48,7 @@ class GUILogger:
         pass
 
 # Create this immediately to capture everything
-gui_logger = GUILogger()
+# gui_logger = GUILogger()
 
 
 def whxy(what):
@@ -1339,12 +1339,12 @@ class GUI:
         self.autotile_button.pack(padx=6, pady=6, side="bottom", fill="both", expand=True)
 
         # LOG PANEL
-        lf = tk.Frame(content_panels)
-        log_text_area = tk.Text(lf, font=("consolas", "8", "normal"))
-        log_text_area.pack(side="bottom", fill="both", expand=True)
-        content_panels.add(lf)
-
-        gui_logger.register_text_area(log_text_area)
+        # lf = tk.Frame(content_panels)
+        # log_text_area = tk.Text(lf, font=("consolas", "8", "normal"))
+        # log_text_area.pack(side="bottom", fill="both", expand=True)
+        # content_panels.add(lf)
+        #
+        # gui_logger.register_text_area(log_text_area)
 
 
     def _update_child_windows_list(self):
