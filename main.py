@@ -3,7 +3,7 @@ from mokap.interface import GUI
 from mokap.core import Manager
 import time
 
-mgr = Manager(config='./config.yaml', triggered=False, silent=True)
+mgr = Manager(config='./config.yaml', triggered=True, silent=False)
 
 # Set exposure for all cameras (in µs)
 # (maximum exposure time for maximum framerate is 4318 µs)

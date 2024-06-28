@@ -127,7 +127,11 @@ def enumarate_webcam_devices():
 
 
 def ping(host: str) -> bool:
-    pop = subprocess.Popen(["ping", "-W", "1", "-c", "1", host], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    if 'Windows' in platform.system():
+        pop = subprocess.Popen(["ping", "-w", "1", "-n", "1", host], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    else:
+        pop = subprocess.Popen(["ping", "-W", "1", "-c", "1", host], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     pop.wait()
     if pop.returncode == 1:
         raise ConnectionError(f'{host} is unreachable :(\nCheck Wireguard status!')
@@ -313,6 +317,10 @@ class BaslerCamera:
             self.ptr.MaxNumBuffer = 20
 
             if self.triggered:
+                # self.ptr.RegisterConfiguration(py.ActionTriggerConfiguration(),
+                #                                py.RegistrationMode_ReplaceAll,
+                #                                py.Cleanup_Delete)
+
                 self.ptr.LineSelector = "Line4"
                 self.ptr.LineMode = "Input"
                 self.ptr.TriggerSelector = "FrameStart"
@@ -321,6 +329,10 @@ class BaslerCamera:
                 self.ptr.TriggerActivation.Value = 'RisingEdge'
                 self.ptr.AcquisitionFrameRateEnable.SetValue(False)
             else:
+                # self.ptr.RegisterConfiguration(py.SoftwareTriggerConfiguration(),
+                #                                py.RegistrationMode_ReplaceAll,
+                #                                py.Cleanup_Delete)
+
                 self.ptr.TriggerSelector = "FrameStart"
                 self.ptr.TriggerMode = "Off"
                 self.ptr.AcquisitionFrameRateEnable.SetValue(True)
