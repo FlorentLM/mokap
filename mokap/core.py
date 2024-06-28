@@ -374,13 +374,13 @@ class Manager:
 
         cam = self._sources_list[cam_idx]
 
-        if not cam.triggered:
-            cam.ptr.RegisterConfiguration(py.SoftwareTriggerConfiguration(),
-                                          py.RegistrationMode_ReplaceAll,
-                                          py.Cleanup_Delete)
+        # if not cam.triggered:
+        #     cam.ptr.RegisterConfiguration(py.SoftwareTriggerConfiguration(),
+        #                                   py.RegistrationMode_ReplaceAll,
+        #                                   py.Cleanup_Delete)
 
         cam.ptr.RegisterImageEventHandler(self._frames_handlers_list[cam_idx],
-                                          py.RegistrationMode_Append,
+                                          py.RegistrationMode_ReplaceAll,
                                           py.Cleanup_Delete)
         cam.start_grabbing()
 
