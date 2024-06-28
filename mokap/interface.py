@@ -20,6 +20,37 @@ from collections import deque
 np.set_printoptions(precision=4, suppress=True)
 
 
+class GUILogger:
+    def __init__(self):
+        self.text_area = None
+        self._temp_output = ''
+        sys.stdout = self
+        sys.stderr = self
+
+    def register_text_area(self, text_area):
+        self.text_area = text_area
+        self.text_area.configure(state="normal")
+        self.text_area.insert("end", self._temp_output)
+        self.text_area.see("end")
+        self.text_area.configure(state="disabled")
+
+    def write(self, text):
+        if self.text_area is None:
+            # Temporarily capture console output to display later in the log widget
+            self._temp_output += f'{text}'
+        else:
+            self.text_area.configure(state="normal")
+            self.text_area.insert("end", text)
+            self.text_area.see("end")
+            self.text_area.configure(state="disabled")
+
+    def flush(self):
+        pass
+
+# Create this immediately to capture everything
+gui_logger = GUILogger()
+
+
 def whxy(what):
     if isinstance(what, tk.Toplevel):
         dims, x, y = what.geometry().split('+')
@@ -1153,11 +1184,11 @@ class GUI:
 
         toolbar = tk.Frame(self.root, height=38)
         statusbar = tk.Frame(self.root, background="#e3e3e3")
-        maincontent = tk.Frame(self.root)
+        content_panels = tk.PanedWindow(self.root, orient='vertical', relief=tk.GROOVE)
 
         toolbar.pack(side="top", fill="x")
         statusbar.pack(side="bottom", fill="x")
-        maincontent.pack(padx=2, pady=2, side="top", fill="both", expand=True)
+        content_panels.pack(padx=2, pady=2, side="top", fill="both", expand=True)
 
         # Creating Menubar
 
@@ -1183,11 +1214,14 @@ class GUI:
                                          command=self.quit)
         self.button_exit.pack(padx=3, pady=4, side="right", fill="y", expand=False)
 
+        maincontent = tk.Frame(content_panels)
         left_pane = tk.LabelFrame(maincontent, text="Acquisition")
         right_pane = tk.LabelFrame(maincontent, text="Display")
 
         left_pane.pack(padx=3, pady=3, side="left", fill="both", expand=True)
         right_pane.pack(padx=3, pady=3, side="left", fill="both", expand=True)
+
+        content_panels.add(maincontent)
 
         # LEFT HALF
 
@@ -1303,6 +1337,15 @@ class GUI:
                                          text="Auto-tile windows", font=self.font_regular,
                                          command=self.autotile_windows)
         self.autotile_button.pack(padx=6, pady=6, side="bottom", fill="both", expand=True)
+
+        # LOG PANEL
+        lf = tk.Frame(content_panels)
+        log_text_area = tk.Text(lf, font=("consolas", "8", "normal"))
+        log_text_area.pack(side="bottom", fill="both", expand=True)
+        content_panels.add(lf)
+
+        gui_logger.register_text_area(log_text_area)
+
 
     def _update_child_windows_list(self):
 
