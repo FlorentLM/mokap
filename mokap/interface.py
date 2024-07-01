@@ -805,10 +805,10 @@ class VideoWindowMain(VideoWindowBase):
         self.magn_zoom.set(2)
 
         self.magn_size = self.source_shape[0] // magn_portion, self.source_shape[1] // magn_portion
-        magn_half_size = self.magn_size[0] // 2, self.magn_size[1] // 2
+        self.magn_half_size = self.magn_size[0] // 2, self.magn_size[1] // 2
 
-        self.magn_A = self.source_half_shape[0] - magn_half_size[0], self.source_half_shape[1] - magn_half_size[1]
-        self.magn_B = self.source_half_shape[0] + magn_half_size[0], self.source_half_shape[1] + magn_half_size[1]
+        self.magn_cx = self.source_half_shape[1]
+        self.magn_cy = self.source_half_shape[0]
 
         ## Focus view parameters
         # Kernel to use for focus detection
@@ -829,8 +829,11 @@ class VideoWindowMain(VideoWindowBase):
         self._create_common_controls()
         self._create_specific_controls()
 
-        self.VIDEO_PANEL.bind('<Button-1>', self._get_magn_pos)
-        self.VIDEO_PANEL.bind("<B1-Motion>", self._get_magn_pos)
+        self.VIDEO_PANEL.bind('<Button-3>', self._get_magn_pos)
+        self.VIDEO_PANEL.bind("<B3-Motion>", self._get_magn_pos)
+
+        self.VIDEO_PANEL.bind('<Button-1>', self._get_magn_target)
+        self.VIDEO_PANEL.bind("<B1-Motion>", self._get_magn_target)
 
         self.magn_pos_x = self.magn_size[1] + 10
         self.magn_pos_y = self.magn_size[0] + 10
@@ -839,6 +842,11 @@ class VideoWindowMain(VideoWindowBase):
         if self._magnification.is_set():
             self.magn_pos_x = event.x - (self.VIDEO_PANEL.winfo_width() - self.videofeed_shape[1])//2
             self.magn_pos_y = event.y - (self.VIDEO_PANEL.winfo_height() - self.videofeed_shape[0])//2
+
+    def _get_magn_target(self, event):
+        if self._magnification.is_set():
+            self.magn_cx = event.x - (self.VIDEO_PANEL.winfo_width() - self.videofeed_shape[1])//2
+            self.magn_cy = event.y - (self.VIDEO_PANEL.winfo_height() - self.videofeed_shape[0])//2
 
     def _create_specific_controls(self):
 
@@ -1028,9 +1036,14 @@ class VideoWindowMain(VideoWindowBase):
 
             col = self.parent.col_yellow_rgb
 
+            extent_h = self.magn_cx / self.videofeed_shape[0] * self.source_shape[0]
+            extent_v = self.magn_cy / self.videofeed_shape[1] * self.source_shape[1]
+
+            start_end_h = int(np.round(extent_h - self.magn_half_size[1])), int(np.round(extent_h + self.magn_half_size[1]))
+            start_end_v = int(np.round(extent_v - self.magn_half_size[0])), int(np.round(extent_v + self.magn_half_size[0]))
+
             # Slice directly from the framebuffer and make a (then zoomed) image
-            magn_img = Image.fromarray(self._frame_buffer[self.magn_A[0]:self.magn_B[0],
-                                       self.magn_A[1]:self.magn_B[1]]).convert('RGB')
+            magn_img = Image.fromarray(self._frame_buffer[start_end_v[0]:start_end_v[1], start_end_h[0]:start_end_h[1]]).convert('RGB')
             magn_img = magn_img.resize(
                 (int(magn_img.width * self.magn_zoom.get()), int(magn_img.height * self.magn_zoom.get())))
 
@@ -1038,8 +1051,8 @@ class VideoWindowMain(VideoWindowBase):
             magn_pos = self.magn_pos_x - magn_img.width // 2, self.magn_pos_y - magn_img.height // 2
 
             # Add frame around the magnified area
-            d.rectangle([(x_centre - self.magn_size[1] // 2, y_centre - self.magn_size[0] // 2),
-                         (x_centre + self.magn_size[1] // 2, y_centre + self.magn_size[0] // 2)],
+            d.rectangle([(self.magn_cx - self.magn_size[1] // 2, self.magn_cy - self.magn_size[0] // 2),
+                         (self.magn_cx + self.magn_size[1] // 2, self.magn_cy + self.magn_size[0] // 2)],
                         outline=col, width=1)
 
             image.paste(magn_img, magn_pos)
