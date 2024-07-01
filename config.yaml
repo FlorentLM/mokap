@@ -1,41 +1,26 @@
 # Where the recordings will be stored
-base_path: ./recordings
+base_path: D:/
 save_format: 'jpg'
 
 # Add your sources below
 sources:
-#    red:
-#        type: basler
-#        serial: xxxxxxxx
-#        color: e03228
-#    green:
-#        type: basler
-#        serial: xxxxxxxx
-#        color: 15ab79
-#    yellow:
-#        type: basler
-#        serial: xxxxxxxx
-#        color: fff139
-#    blue:
-#        type: basler
-#        serial: xxxxxxxx
-#        color: 435fc4
-#    white:
-#        type: basler
-#        serial: xxxxxxxx
-#        color: fdfdfd
-    purple:
+    red:
         type: basler
-        color: F47FFD
-    vid_0:
-        type: file
-        path: /path/to/video_0
+        serial: xxxxxx
+        color: e03228
+    green:
+        type: basler
+        serial: xxxxxx
+        color: 15ab79
+    yellow:
+        type: basler
+        serial: xxxxxx
         color: fff139
-    vid_1:
-        type: file
-        path: /path/to/video_1
+    blue:
+        type: basler
+        serial: xxxxxx
         color: 435fc4
-    vid_2:
-        type: file
-        path: /path/to/video_2
+    white:
+        type: basler
+        serial: xxxxxx
         color: fdfdfd
