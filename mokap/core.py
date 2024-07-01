@@ -185,15 +185,14 @@ class Manager:
             if source.connected:
 
                 source_name = 'unnamed'
-                source_col = '#' + utils.hls_to_hex(hues[i], luminance[i], saturation[i])
+                source_col = utils.hls_to_hex(hues[i], luminance[i], saturation[i])
 
                 # Grab name and colour from config file if they're in there
                 for n in sources_names:
-                    if source.serial == self.config_dict['sources'][n].get('serial', 'virtual'):
-                        source_name = self.config_dict['sources'][n].get('name', source_name)
+                    if source.serial == str(self.config_dict['sources'][n].get('serial', 'virtual')):
+                        source.name = n
                         source_col = f"#{self.config_dict['sources'][n].get('color', source_col).lstrip('#')}"
 
-                source.name = source_name
                 self._cameras_colours[source.name] = source_col
                 # keep local reference of cameras as list and dict for easy access
                 self._sources_list.append(source)
@@ -300,9 +299,12 @@ class Manager:
         folder = self.full_path / f"cam{cam_idx}_{self._sources_list[cam_idx].name}"
         handler = self._frames_handlers_list[cam_idx]
 
+        started_saving = False
         while self._acquiring.is_set():
 
             if self._recording.is_set():
+                if not started_saving:
+                    started_saving = True
 
                 if handler.frames:
                     frame_nb, frame = handler.frames.popleft()
@@ -323,13 +325,72 @@ class Manager:
                         img.save(folder / f"{str(frame_nb).zfill(9)}.bmp")
 
                     self._saved_frames_counter[cam_idx] += 1
-                else:
-                    self._finished_saving[cam_idx].set()
 
             else:
-                self._recording.wait()
+                if started_saving:
+                    break
+                else:
+                    self._recording.wait()
+        print('[INFO] Finishing saving...')
+        self._finished_saving[cam_idx].set()
 
+    def _writer_video(self, cam_idx: int) -> NoReturn:
 
+        h = self._sources_list[cam_idx].height
+        w = self._sources_list[cam_idx].width
+
+        folder = self.full_path / f"cam{cam_idx}_{self._sources_list[cam_idx].name}"
+        file_name = folder / f"cam{cam_idx}.mp4"
+
+        handler = self._frames_handlers_list[cam_idx]
+
+        # additional_params = ["-r:v", str(self.framerate),
+        #               "-preset", 'superfast',
+        #               "-tune", "fastdecode",
+        #               "-crf", str(18),
+        #               "-bufsize", "20M",
+        #               "-maxrate", "10M",
+        #               "-bf:v", "4",]
+
+        additional_params = ["-tune", "zerolatency",
+                      # "-x264opts", "opencl",
+                      "-profile:v", "high",
+                      "-framerate", str(self.framerate),
+                      # "-preset", 'fast',
+                      "-crf", str(10),]
+
+        writer = write_frames(
+            file_name.as_posix(),
+            (w, h),
+            fps=self.framerate,
+            codec='libx264',
+            pix_fmt_in='gray',  # "bayer_bggr8", "gray", "rgb24", "bgr0", "yuv420p"
+            pix_fmt_out="yuv420p",
+            ffmpeg_log_level='warning',  # "warning", "quiet", "info"
+            input_params=["-an"],
+            output_params=additional_params,
+            macro_block_size=8
+        )
+        writer.send(None)
+
+        started_saving = False
+        while self._acquiring.is_set():
+
+            if self._recording.is_set():
+                if not started_saving:
+                    started_saving = True
+
+                if handler.frames:
+                    writer.send(np.frombuffer(handler.frames.popleft()[1], dtype=np.uint8).reshape(h, w))
+                    self._saved_frames_counter[cam_idx] += 1
+            else:
+                if started_saving:
+                    break
+                else:
+                    self._recording.wait()
+        print('[INFO] Closing video writers...')
+        writer.close()
+        self._finished_saving[cam_idx].set()
 
     def _update_display_buffers(self, cam_idx: int) -> NoReturn:
 
