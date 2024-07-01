@@ -381,18 +381,26 @@ class Manager:
         writer.send(None)
 
         started_saving = False
+        finishing = False
         while self._acquiring.is_set():
 
             if self._recording.is_set():
                 if not started_saving:
                     started_saving = True
 
-                if handler.frames:
+                if bool(handler.frames):
                     writer.send(np.frombuffer(handler.frames.popleft()[1], dtype=np.uint8).reshape(h, w))
                     self._saved_frames_counter[cam_idx] += 1
             else:
                 if started_saving:
-                    break
+                    if not finishing:
+                        print('[INFO] Finishing saving...')
+                        finishing = True
+                    if bool(handler.frames):
+                        writer.send(np.frombuffer(handler.frames.popleft()[1], dtype=np.uint8).reshape(h, w))
+                        self._saved_frames_counter[cam_idx] += 1
+                    else:
+                        break
                 else:
                     self._recording.wait()
         print('[INFO] Closing video writers...')
