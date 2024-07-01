@@ -293,6 +293,24 @@ class Manager:
 
     def _writer_frames(self, cam_idx: int) -> NoReturn:
 
+        def save_frame():
+            frame_nb, frame = handler.frames.popleft()
+            img = Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1)
+
+            if self._saving_ext == 'bmp':
+                img.save(folder / f"{str(frame_nb).zfill(9)}.{self._saving_ext}")
+            elif self._saving_ext == 'jpg' or self._saving_ext == 'jpeg':
+                img.save(folder / f"{str(frame_nb).zfill(9)}.{self._saving_ext}",
+                         quality=100, keep_rgb=True)
+            elif self._saving_ext == 'png':
+                img.save(folder / f"{str(frame_nb).zfill(9)}.{self._saving_ext}",
+                         compress_level=1)
+            elif self._saving_ext == 'tif' or self._saving_ext == 'tiff':
+                img.save(folder / f"{str(frame_nb).zfill(9)}.{self._saving_ext}", quality=100)
+            else:
+                img.save(folder / f"{str(frame_nb).zfill(9)}.bmp")
+            self._saved_frames_counter[cam_idx] += 1
+
         h = self._sources_list[cam_idx].height
         w = self._sources_list[cam_idx].width
 
@@ -300,38 +318,27 @@ class Manager:
         handler = self._frames_handlers_list[cam_idx]
 
         started_saving = False
+        finishing = False
         while self._acquiring.is_set():
 
             if self._recording.is_set():
                 if not started_saving:
                     started_saving = True
 
-                if handler.frames:
-                    frame_nb, frame = handler.frames.popleft()
-                    img = Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1)
-
-                    if self._saving_ext == 'bmp':
-                        img.save(folder / f"{str(frame_nb).zfill(9)}.{self._saving_ext}")
-                    elif self._saving_ext == 'jpg' or self._saving_ext == 'jpeg':
-                        img.save(folder / f"{str(frame_nb).zfill(9)}.{self._saving_ext}",
-                                 quality=100, keep_rgb=True)
-                    elif self._saving_ext == 'png':
-                        img.save(folder / f"{str(frame_nb).zfill(9)}.{self._saving_ext}",
-                                 compress_level=1)
-                    elif self._saving_ext == 'tif' or self._saving_ext == 'tiff':
-                        img.save(folder / f"{str(frame_nb).zfill(9)}.{self._saving_ext}",
-                                 quality=100)
-                    else:
-                        img.save(folder / f"{str(frame_nb).zfill(9)}.bmp")
-
-                    self._saved_frames_counter[cam_idx] += 1
+                if bool(handler.frames):
+                    save_frame()
 
             else:
                 if started_saving:
-                    break
+                    if not finishing:
+                        print('[INFO] Finishing saving...')
+                        finishing = True
+                    if bool(handler.frames):
+                        save_frame()
+                    else:
+                        break
                 else:
                     self._recording.wait()
-        print('[INFO] Finishing saving...')
         self._finished_saving[cam_idx].set()
 
     def _writer_video(self, cam_idx: int) -> NoReturn:
@@ -504,8 +511,8 @@ class Manager:
 
             for i, cam in enumerate(self._sources_list):
                 self._executor.submit(self._grab_frames, i)
-                # self._executor.submit(self._writer_frames, i)
-                self._executor.submit(self._writer_video, i)
+                self._executor.submit(self._writer_frames, i)
+                # self._executor.submit(self._writer_video, i)
                 self._executor.submit(self._update_display_buffers, i)
 
             if not self._silent:
