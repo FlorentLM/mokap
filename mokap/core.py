@@ -18,6 +18,7 @@ from imageio_ffmpeg import write_frames
 import os
 import fnmatch
 
+
 ##
 
 class FrameHandler(py.ImageEventHandler):
@@ -318,20 +319,19 @@ class Manager:
             # TODO - This will be a proper method that does either images or videos once the videowriter is working fine
 
             frame_nb, frame = handler.frames.popleft()
-            img = Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1)
 
             filepath = folder / f"{str(frame_nb).zfill(9)}.{self._saving_ext}"
 
             if self._saving_ext == 'bmp':
-                img.save(filepath)
+                Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath)
             elif self._saving_ext == 'jpg' or self._saving_ext == 'jpeg':
-                img.save(filepath, quality=80, keep_rgb=False)
+                Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath, quality=80, keep_rgb=True)
             elif self._saving_ext == 'png':
-                img.save(filepath, compress_level=1)
+                Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath, compress_level=1)
             elif self._saving_ext == 'tif' or self._saving_ext == 'tiff':
-                img.save(filepath, quality=100)
+                Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath, quality=100)
             else:
-                img.save(filepath)
+                Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath)
 
             # The following is a RawArray, so the count is not atomic!
             # But it is fine as this is only for a rough estimation

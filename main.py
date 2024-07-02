@@ -12,7 +12,7 @@ mgr.binning = 1
 mgr.binning_mode = 'avg'
 
 # Set framerate in images per second
-mgr.framerate = 80
+mgr.framerate = 200
 
 mgr.gamma = 1.0
 mgr.blacks = 1.0
@@ -22,3 +22,4 @@ if __name__ == '__main__':
     if mgr.nb_cameras == 0:
         exit()
     GUI(mgr)
+    exit()
