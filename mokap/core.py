@@ -515,7 +515,7 @@ class Manager:
 
             self._acquiring.set()
 
-            self._executor = ThreadPoolExecutor(max_workers=20)
+            self._executor = ThreadPoolExecutor(max_workers=3 * self._nb_cams)
 
             for i, cam in enumerate(self._sources_list):
                 self._executor.submit(self._grab_frames, i)
@@ -626,6 +626,14 @@ class Manager:
     @property
     def colors(self) -> dict:
         return self.colours
+
+    @property
+    def temperature(self) -> float:
+        return np.mean([c.temperature for c in self._sources_list if c.temperature not in [0.0, 421.0]])
+
+    @property
+    def temperature_state(self) -> list[str]:
+        return [c.temperature_state for c in self._sources_list]
 
     @property
     def saved_buf(self) -> RawArray:

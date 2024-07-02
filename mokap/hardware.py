@@ -580,3 +580,12 @@ class BaslerCamera:
     @property
     def height(self) -> int:
         return self._height
+
+    @property
+    def temperature(self) -> int:
+        return self.ptr.DeviceTemperature.Value
+
+    @property
+    def temperature_state(self) -> int:
+        return self.ptr.TemperatureState.Value
+

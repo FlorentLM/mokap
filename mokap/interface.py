@@ -1087,7 +1087,7 @@ class VideoWindowMain(VideoWindowBase):
 
 class GUI:
     CONTROLS_MIN_WIDTH = 600
-    CONTROLS_MIN_HEIGHT = 300
+    CONTROLS_MIN_HEIGHT = 350
 
     def __init__(self, mgr):
 
@@ -1152,6 +1152,8 @@ class GUI:
         self.editing_disabled = True
 
         self._capture_clock = datetime.now()
+        self._display_clock = datetime.now()
+
         self._capture_fps = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
         self._now_indices = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
         self.start_indices = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
@@ -1163,6 +1165,7 @@ class GUI:
         self.txtvar_userentry = tk.StringVar()
         self.txtvar_applied_name = tk.StringVar()
         self.txtvar_frames_saved = tk.StringVar()
+        self.txtvar_temperature = tk.StringVar()
 
         self.txtvar_recording.set('')
         self.txtvar_userentry.set('')
@@ -1301,6 +1304,11 @@ class GUI:
                                          state='disabled')
         self.button_recpause.pack(padx=3, pady=3, side="top", fill="both", expand=True)
 
+        temperature_label = tk.Label(statusbar, text='Temperature: ', anchor=tk.NW)
+        temperature_label.pack(side="left", expand=False)
+        self.temperature_value = tk.Label(statusbar, textvariable=self.txtvar_temperature, anchor=tk.NW)
+        self.temperature_value.pack(side="left", fill="both", expand=True)
+
         frames_saved_label = tk.Label(statusbar, textvariable=self.txtvar_frames_saved, anchor=tk.NE)
         frames_saved_label.pack(side="right", fill="both", expand=True)
 
@@ -1337,7 +1345,7 @@ class GUI:
         monitors_label = tk.Label(monitors_frame, text='Active monitor:', anchor=tk.W)
         monitors_label.pack(side="top", fill="x", expand=False)
 
-        m_canvas_y_size = max([m.y + m.height for m in self._monitors]) // 50 + 2 * 10
+        m_canvas_y_size = max([m.y + m.height for m in self._monitors]) // 70 + 2 * 10
 
         self.monitors_buttons = tk.Canvas(monitors_frame, height=m_canvas_y_size)
         self.update_monitors_buttons()
@@ -1662,8 +1670,11 @@ class GUI:
 
     def update(self):
 
+        now = datetime.now()
+        display_dt = (now - self._display_clock).total_seconds()
+
         if self.mgr.acquiring:
-            now = datetime.now()
+
             capture_dt = (now - self._capture_clock).total_seconds()
 
             self._now_indices[:] = self.mgr.indices
@@ -1679,5 +1690,11 @@ class GUI:
             self.txtvar_frames_saved.set(
                 f'Saved {sum(self._saved_frames)} frames total ({utils.pretty_size(sum(self._frame_sizes_bytes * self._saved_frames))})')
 
+        if int(display_dt) % 2 == 0:
+            self.txtvar_temperature.set(f'{self.mgr.temperature:.1f}°C')
+            if all([v == 'Ok' for v in self.mgr.temperature_state]):
+                self.temperature_value.config(fg="green")
+            else:
+                self.temperature_value.config(fg="orange")
         self._counter += 1
         self.root.after(100, self.update)
