@@ -1,16 +1,17 @@
 name: mokap
 channels:
   - defaults
-  - conda-forge
 dependencies:
-  - python=3.9
-  - pip=23.3.1
   - numpy=1.26.0
-  - pillow=10.0.1
-  - python-dotenv=0.21.0
   - paramiko=2.8.1
-  - scipy
-  - opencv
+  - pillow=10.3.0
+  - pip=23.3
+  - scipy=1.11.3
+  - toml=0.10.2
+  - python=3.10.13
+  - python-dotenv=0.21.0
   - pip:
+      - opencv-contrib-python==4.8.1.78
       - pypylon==2.3.0
+      - scikit-image==0.24.0
       - screeninfo==0.8.1
