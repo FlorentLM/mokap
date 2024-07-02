@@ -1692,7 +1692,7 @@ class GUI:
 
         if int(display_dt) % 2 == 0:
             self.txtvar_temperature.set(f'{self.mgr.temperature:.1f}°C')
-            if all([v == 'Ok' for v in self.mgr.temperature_state]):
+            if all([v == 'Ok' for v in self.mgr.temperature_states]):
                 self.temperature_value.config(fg="green")
             else:
                 self.temperature_value.config(fg="orange")

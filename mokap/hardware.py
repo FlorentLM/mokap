@@ -5,16 +5,17 @@ import mokap.utils as utils
 import os
 from dotenv import load_dotenv
 import pypylon.pylon as py
+from typing import NoReturn, Union, List
+
 import PySpin
 os.environ['SPINNAKER_GENTL64_CTI'] = '/Applications/Spinnaker/lib/spinnaker-gentl/Spinnaker_GenTL.cti'
 
 import platform
 import subprocess
 import cv2
+
 import warnings
 from cryptography.utils import CryptographyDeprecationWarning
-from pathlib import Path
-
 with warnings.catch_warnings():
     warnings.filterwarnings('ignore', category=CryptographyDeprecationWarning)
     import paramiko
@@ -23,8 +24,8 @@ with warnings.catch_warnings():
 
 def setup_ulimit(wanted_value=8192, silent=True):
     """
-    Sets up the maximum number of open file descriptors for nofile processes.
-    It is required to run multiple (i.e. more than 4) Basler cameras at a time.
+        Sets up the maximum number of open file descriptors for nofile processes
+        It is required to run multiple (i.e. more than 4) Basler cameras at a time
     """
     out = os.popen('ulimit')
     ret = out.read().strip('\n')
@@ -48,12 +49,19 @@ def setup_ulimit(wanted_value=8192, silent=True):
 
 
 def enable_usb(hub_number):
+    """
+        Uses uhubctl on Linux to enable the USB bus
+    """
     if 'Linux' in platform.system():
         out = os.popen(f'uhubctl -l {hub_number} -a 1')
         ret = out.read()
 
 
 def disable_usb(hub_number):
+    """
+        Uses uhubctl on Linux to disable the USB bus (effectively switches off the cameras connected to it
+        so they don't overheat, without having to be physically unplugged)
+    """
     if 'Linux' in platform.system():
         out = os.popen(f'uhubctl -l {hub_number} -a 0')
         ret = out.read()
@@ -134,7 +142,7 @@ def ping(host: str) -> bool:
         pop = subprocess.Popen(["ping", "-W", "1", "-c", "1", host], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     pop.wait()
     if pop.returncode == 1:
-        raise ConnectionError(f'{host} is unreachable :(\nCheck Wireguard status!')
+        raise ConnectionError(f'{host} is unreachable :(')
     elif pop.returncode == 0:
         return True
 
@@ -142,7 +150,10 @@ def ping(host: str) -> bool:
 ##
 
 class SSHTrigger:
-    """ Class to communicate with the hardware Trigger via SSH """
+    """
+        Class to communicate with the hardware Trigger via SSH
+        It uses the environment variables to load the host address and login info
+    """
 
     def __init__(self, silent=False):
 
@@ -178,8 +189,10 @@ class SSHTrigger:
     def connected(self) -> bool:
         return self._connected
 
-    def start(self, frequency: float, highs_pct=50) -> None:
-        """ Starts the trigger loop on the RPi """
+    def start(self, frequency: float, highs_pct=50) -> NoReturn:
+        """
+            Starts the trigger loop on a Raspberry Pi
+        """
 
         pct = int(np.floor(highs_pct * 1e4))
         frq = int(np.floor(frequency))
@@ -189,14 +202,14 @@ class SSHTrigger:
             if not self._silent:
                 print(f"[INFO] Trigger started at {frequency} Hz")
 
-    def stop(self) -> None:
+    def stop(self) -> NoReturn:
         if self.client:
             self.client.exec_command(f'pigs hp {self.PWM_GPIO_PIN} 0 0 && pigs w {self.PWM_GPIO_PIN} 0')
         time.sleep(0.1)
         if not self._silent:
             print(f"[INFO] Trigger stopped")
 
-    def disconnect(self) -> None:
+    def disconnect(self) -> NoReturn:
         if self.client:
             self.client.close()
             self.client = False
@@ -249,7 +262,7 @@ class BaslerCamera:
         else:
             return f"Camera disconnected"
 
-    def _set_roi(self):
+    def _set_roi(self) -> NoReturn:
         if not self._is_virtual:
             self._width = self.ptr.WidthMax.GetValue() - (16 // self._binning)
             self._height = self.ptr.HeightMax.GetValue() - (8 // self._binning)
@@ -261,14 +274,14 @@ class BaslerCamera:
             self.ptr.CenterY = True
 
         else:
-            # We hardcode these for virtual cameras, because the virtual sensor is otherwise 4096x4096 px...
+            # We hardcode these for virtual Basler cameras, because the virtual sensor is otherwise 4096x4096 px...
+            # TODO - Check if that can be controlled
             self._width = 1440
             self._height = 1080
             self.ptr.Width = self._width
             self.ptr.Height = self._height
 
-
-    def connect(self, cam_ptr=None) -> None:
+    def connect(self, cam_ptr=None) -> NoReturn:
 
         available_idx = len(BaslerCamera.instancied_cams)
 
@@ -305,6 +318,7 @@ class BaslerCamera:
         self.ptr.ExposureMode = 'Timed'
 
         self.ptr.DeviceLinkThroughputLimitMode.SetValue('On')
+        # 342 Mbps is a bit less than the maximum, but things are more stable like this
         self.ptr.DeviceLinkThroughputLimit.SetValue(342000000)
 
         if not self._is_virtual:
@@ -343,7 +357,7 @@ class BaslerCamera:
         BaslerCamera.instancied_cams.append(self._name)
         self._connected = True
 
-    def disconnect(self) -> None:
+    def disconnect(self) -> NoReturn:
         if self._connected:
             if self._is_grabbing:
                 self.stop_grabbing()
@@ -359,15 +373,14 @@ class BaslerCamera:
 
         self._connected = False
 
-    def start_grabbing(self) -> None:
+    def start_grabbing(self) -> NoReturn:
         if self._connected:
-            # self.ptr.StartGrabbing(py.GrabStrategy_OneByOne, py.GrabLoop_ProvidedByUser)
             self.ptr.StartGrabbing(py.GrabStrategy_OneByOne, py.GrabLoop_ProvidedByInstantCamera)
             self._is_grabbing = True
         else:
             print(f"{self.name.title()} camera is not connected.")
 
-    def stop_grabbing(self) -> None:
+    def stop_grabbing(self) -> NoReturn:
         if self._connected:
             self.ptr.StopGrabbing()
             self._is_grabbing = False
@@ -395,7 +408,7 @@ class BaslerCamera:
         return self._name
 
     @name.setter
-    def name(self, new_name : str) -> None:
+    def name(self, new_name: str) -> NoReturn:
 
         if new_name == self._name or self._name == f"{new_name}_{self._idx}":
             return
@@ -410,7 +423,19 @@ class BaslerCamera:
             raise ValueError(f"A camera with the name {new_name} already exists: {existing}")    # TODO - handle this case nicely
 
     @staticmethod
-    def pylon_exception_parser(exception):
+    def pylon_exception_parser(exception) -> float:
+        """
+        Parses a Basler Pylon exception to get the adjusted camera parameter value
+
+        Parameters
+        ----------
+        exception: Exception to parse
+
+        Returns
+        -------
+        float
+        The adjusted value
+        """
         exception_message = exception.args[0]
         if 'must be smaller than or equal ' in exception_message:
             value = math.floor(100 * float(
@@ -457,8 +482,8 @@ class BaslerCamera:
         return self._binning_mode
 
     @binning.setter
-    def binning(self, value: int) -> None:
-        assert value in [1, 2, 3, 4]
+    def binning(self, value: int):
+        assert value in [1, 2, 3, 4]    # This should be all the possible values (for Basler cameras at least)
         # And keep a local value to avoid querying the camera every time we read it
         self._binning = value
 
@@ -469,7 +494,7 @@ class BaslerCamera:
         self._set_roi()
 
     @binning_mode.setter
-    def binning_mode(self, value: str) -> None:
+    def binning_mode(self, value: str):
         if value.lower() in ['s', 'sum', 'add', 'addition', 'summation']:
             value = 'Sum'
         elif value.lower() in ['a', 'm', 'avg', 'average', 'mean']:
@@ -486,7 +511,7 @@ class BaslerCamera:
         self._binning_mode = value
 
     @exposure.setter
-    def exposure(self, value: float) -> None:
+    def exposure(self, value: float):
         if self._connected:
             try:
                 if not self._is_virtual:
@@ -507,7 +532,7 @@ class BaslerCamera:
         self._exposure = value
 
     @blacks.setter
-    def blacks(self, value: float) -> None:
+    def blacks(self, value: float):
         if self._connected:
             try:
                 self.ptr.BlackLevel.SetValue(value)
@@ -518,7 +543,7 @@ class BaslerCamera:
         self._blacks = value
 
     @gain.setter
-    def gain(self, value: float) -> None:
+    def gain(self, value: float):
         if self._connected:
             try:
                 self.ptr.Gain.SetValue(value)
@@ -529,7 +554,7 @@ class BaslerCamera:
         self._gain = value
 
     @gamma.setter
-    def gamma(self, value: float) -> None:
+    def gamma(self, value: float):
         if self._connected:
             try:
                 self.ptr.Gamma.SetValue(value)
@@ -545,10 +570,10 @@ class BaslerCamera:
         return self._framerate
 
     @framerate.setter
-    def framerate(self, value: float) -> None:
+    def framerate(self, value: float):
         if self._connected:
             if self.triggered:
-                # print(f'[WARN] Trying to set framerate on a hardware-triggered camera ([{self._name}])')
+                # print(f'[WARN] Trying to set framerate on a hardware-triggered camera ([{self._name}])') # TODO
                 self.ptr.AcquisitionFrameRateEnable.SetValue(False)
                 self._framerate = np.floor(value)
             else:
@@ -556,7 +581,7 @@ class BaslerCamera:
                     self.ptr.AcquisitionFrameRateEnable.SetValue(True)
                     self.ptr.AcquisitionFrameRate.SetValue(220.0)
 
-                    # custom floor with decimals
+                    # floor with decimals
                     f = math.floor(self.ptr.ResultingFrameRate.GetValue() * 100) / 100.0
 
                     new_framerate = min(value, f)
@@ -582,8 +607,12 @@ class BaslerCamera:
         return self._height
 
     @property
-    def temperature(self) -> int:
-        return self.ptr.DeviceTemperature.Value
+    def temperature(self) -> Union[float, None]:
+        val = self.ptr.DeviceTemperature.Value
+        if val in [0.0, 421.0]:
+            return None
+        else:
+            return val
 
     @property
     def temperature_state(self) -> int:
