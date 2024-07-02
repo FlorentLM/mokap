@@ -77,8 +77,12 @@ class Manager:
         self._gamma: float = 1.0
         self._blacks: float = 0.0
 
-        self.trigger: Union[SSHTrigger, None] = None
         self._triggered = triggered
+
+        if self._triggered:
+            self.trigger = SSHTrigger()
+        else:
+            self.trigger = None
 
         self._base_folder = Path(self.config_dict.get('base_path', './')) / 'MokapRecordings'
         if self._base_folder.parent == self._base_folder.name:
