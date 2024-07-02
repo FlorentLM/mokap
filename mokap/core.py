@@ -103,8 +103,7 @@ class Manager:
         self._sources_dict = {}
         self._cameras_colours = {}
 
-        self._metadata = {'framerate': None,
-                          'sessions': []}
+        self._metadata = {'sessions': []}
 
         ##
 
@@ -372,86 +371,6 @@ class Manager:
                     # Default state of this thread: if cameras are acquiring but we're not recording, just wait
                     self._recording.wait()
 
-    def _video_writer_thread(self, cam_idx: int) -> NoReturn:
-
-        h = self._sources_list[cam_idx].height
-        w = self._sources_list[cam_idx].width
-
-        folder = self.full_path / f"cam{cam_idx}_{self._sources_list[cam_idx].name}"
-        file_name = folder / f"cam{cam_idx}.mp4"
-
-        handler = self._framehandlers[cam_idx]
-
-        # additional_params = ["-r:v", str(self.framerate),
-        #               "-preset", 'superfast',
-        #               "-tune", "fastdecode",
-        #               "-crf", str(18),
-        #               "-bufsize", "20M",
-        #               "-maxrate", "10M",
-        #               "-bf:v", "4",]
-
-        additional_params = ["-tune", "zerolatency",
-                      # "-x264opts", "opencl",
-                      "-profile:v", "high",
-                      "-framerate", str(self.framerate),
-                      # "-preset", 'fast',
-                      "-crf", str(10),]
-
-        writer = write_frames(
-            file_name.as_posix(),
-            (w, h),
-            fps=self.framerate,
-            codec='libx264',
-            pix_fmt_in='gray',  # "bayer_bggr8", "gray", "rgb24", "bgr0", "yuv420p"
-            pix_fmt_out="yuv420p",
-            ffmpeg_log_level='warning',  # "warning", "quiet", "info"
-            input_params=["-an"],
-            output_params=additional_params,
-            macro_block_size=8
-        )
-        writer.send(None)
-
-        def save_frame():
-            writer.send(np.frombuffer(handler.frames.popleft()[1], dtype=np.uint8).reshape(h, w))
-
-            # The following is a RawArray, so the count is not atomic!
-            # But it is fine as this is only for a rough estimation
-            # (the actual number of written files is counted in a safe way when recording stops)
-            self._cnt_saved[cam_idx] += 1
-
-        started_saving = False
-        while self._acquiring.is_set():
-
-            if self._recording.is_set():
-                # Recording is set - do actual work
-
-                # Do this just once at the start of a new recording session
-                if not started_saving:
-                    self._finished_saving[cam_idx].clear()
-                    started_saving = True
-
-                # Main state of this thread: If the queue is not empty, save a new frame
-                if handler.frames:
-                    save_frame()
-            else:
-                # Recording is not set - either it hasn't started, or it has but hasn't finished yet
-                if started_saving:
-                    # Recording has been started, so remaining frames still need to be saved
-                    while handler.frames:
-                        save_frame()
-
-                    # Finished saving, reverting to wait state
-                    self._finished_saving[cam_idx].set()
-                    started_saving = False
-                else:
-                    # Default state of this thread: if cameras are acquiring but we're not recording, just wait
-                    self._recording.wait()
-
-        if not self._silent:
-            print(f'[INFO] Closing video writer {cam_idx}...')
-        writer.close()
-        self._finished_saving[cam_idx].set()
-
     def _display_updater_thread(self, cam_idx: int) -> NoReturn:
         """
             This thread updates the display buffers at a relatively slow pace (not super accurate timing but who cares),
@@ -496,16 +415,6 @@ class Manager:
             Start recording session
         """
         if not self._recording.is_set():
-            if self._metadata['framerate'] is None:
-                self._metadata['framerate'] = self.framerate
-            else:
-                if self.framerate != self._metadata['framerate']:
-                    print(
-                        f"[WARNING] Framerate is different from previous session{'s' if len(self._metadata['sessions']) > 1 else ''}!! Creating a new record...")
-                    self.off()
-                    self.on()
-
-                    print(f"Created {self.full_path}")
 
             (self.full_path / 'recording').touch(exist_ok=True)
 
@@ -514,6 +423,8 @@ class Manager:
 
             session_metadata = {'start': datetime.now().timestamp(),
                                 'end': 0.0,
+                                'duration': 0.0,
+                                'framerate_theoretical': self.framerate,
                                 'cameras': [{
                                     'idx': c.idx,
                                     'name': c.name,
@@ -540,7 +451,12 @@ class Manager:
         """
         if self._recording.is_set():
 
-            self._recording.clear()     # End recording event
+            # Update the metadata with end time and number of saved frames
+            self._metadata['sessions'][-1]['end'] = datetime.now().timestamp()
+            duration = self._metadata['sessions'][-1]['end'] - self._metadata['sessions'][-1]['start']
+            self._metadata['sessions'][-1]['duration'] = duration
+
+            self._recording.clear()  # End recording event
 
             if not self._silent:
                 print('[INFO] Finishing saving...')
@@ -548,16 +464,16 @@ class Manager:
             # Wait for all writer threads to finish saving the current session
             [e.wait() for e in self._finished_saving]
 
-            # And update the metadata with end time and number of saved frames
-            self._metadata['sessions'][-1]['end'] = datetime.now().timestamp()
-
             for i, cam in enumerate(self.cameras):
                 # Read back how many frames were recorded in previous sessions of this acquisition
                 previsouly_saved = sum([self._metadata['sessions'][p]['cameras'][i].get('frames', 0) for p in range(len(self._metadata['sessions']))])
 
                 # Wait for all files to finish being written and write the number of frames for this session
                 saved_frames = self._safe_files_counter(self.full_path / f'cam{i}_{cam.name}')
-                self._metadata['sessions'][-1]['cameras'][i]['frames'] = saved_frames - previsouly_saved
+                saved_frames_curr_sess = saved_frames - previsouly_saved
+
+                self._metadata['sessions'][-1]['cameras'][i]['frames'] = saved_frames_curr_sess
+                self._metadata['sessions'][-1]['cameras'][i]['framerate_actual'] = saved_frames_curr_sess / duration
 
             with open(self.full_path / 'metadata.json', 'w', encoding='utf-8') as f:
                 json.dump(self._metadata, f, ensure_ascii=False, indent=4)
@@ -607,9 +523,6 @@ class Manager:
                 self.trigger.start(self._framerate)
                 time.sleep(0.1)
 
-            if self._metadata['framerate'] is None:
-                self._metadata['framerate'] = self.framerate
-
             self._acquiring.set()   # Start Acquiring event
 
             # Start 3 threads per camera:
@@ -650,7 +563,6 @@ class Manager:
 
             # Reset everything for next acquisition
             self._session_name = ''
-            self._metadata['framerate'] = None
             self._metadata['sessions'] = []
 
             self._cnt_grabbed = RawArray('I', self._nb_cams)

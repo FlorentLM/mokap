@@ -5,7 +5,7 @@ from mokap.core import Manager
 mgr = Manager(config='./config.yaml', triggered=True, silent=False)
 
 # Set exposure for all cameras (in µs)
-mgr.exposure = 5000
+mgr.exposure = 4500
 
 # Enable binning
 mgr.binning = 1
