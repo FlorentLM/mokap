@@ -1,5 +1,5 @@
 from threading import Event
-from multiprocessing import RawArray
+from multiprocessing import RawArray, Lock
 from concurrent.futures import ThreadPoolExecutor
 from typing import NoReturn, Union, List
 from pathlib import Path
@@ -16,7 +16,8 @@ import platform
 import random
 import json
 from imageio_ffmpeg import write_frames
-
+import os
+import fnmatch
 
 ##
 
@@ -87,6 +88,8 @@ class Manager:
 
         self._acquiring: Event = Event()
         self._recording: Event = Event()
+
+        self.tlock: Lock = Lock()
 
         self._nb_cams: int = 0
         self._sources_list: List[BaslerCamera] = []
@@ -297,18 +300,22 @@ class Manager:
             frame_nb, frame = handler.frames.popleft()
             img = Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1)
 
+            filepath = folder / f"{str(frame_nb).zfill(9)}.{self._saving_ext}"
+
             if self._saving_ext == 'bmp':
-                img.save(folder / f"{str(frame_nb).zfill(9)}.{self._saving_ext}")
+                img.save(filepath)
             elif self._saving_ext == 'jpg' or self._saving_ext == 'jpeg':
-                img.save(folder / f"{str(frame_nb).zfill(9)}.{self._saving_ext}",
-                         quality=100, keep_rgb=True)
+                img.save(filepath, quality=80, keep_rgb=False)
             elif self._saving_ext == 'png':
-                img.save(folder / f"{str(frame_nb).zfill(9)}.{self._saving_ext}",
-                         compress_level=1)
+                img.save(filepath, compress_level=1)
             elif self._saving_ext == 'tif' or self._saving_ext == 'tiff':
-                img.save(folder / f"{str(frame_nb).zfill(9)}.{self._saving_ext}", quality=100)
+                img.save(filepath, quality=100)
             else:
-                img.save(folder / f"{str(frame_nb).zfill(9)}.bmp")
+                img.save(filepath)
+
+            # The following is a RawArray, so the count is not atomic!
+            # But it is fine as this is only for a rough estimation
+            # (the actual number of written files is counted in a safe way when recording stops)
             self._saved_frames_counter[cam_idx] += 1
 
         h = self._sources_list[cam_idx].height
@@ -318,28 +325,32 @@ class Manager:
         handler = self._frames_handlers_list[cam_idx]
 
         started_saving = False
-        finishing = False
         while self._acquiring.is_set():
 
             if self._recording.is_set():
+                # Recording is set - do actual work
+
+                # Do this just once at the start of a new recording session
                 if not started_saving:
+                    self._finished_saving[cam_idx].clear()
                     started_saving = True
 
-                if bool(handler.frames):
+                # Main state of this thread: If the queue is not empty, save a new frame
+                if handler.frames:
                     save_frame()
-
             else:
+                # Recording is not set - either it hasn't started, or it has but hasn't finished yet
                 if started_saving:
-                    if not finishing:
-                        print('[INFO] Finishing saving...')
-                        finishing = True
-                    if bool(handler.frames):
+                    # Recording has been started, so remaining frames still need to be saved
+                    while handler.frames:
                         save_frame()
-                    else:
-                        break
+
+                    # Finished saving, reverting to wait state
+                    self._finished_saving[cam_idx].set()
+                    started_saving = False
                 else:
+                    # Default state of this thread: if cameras are acquiring but we're not recording, just wait
                     self._recording.wait()
-        self._finished_saving[cam_idx].set()
 
     def _writer_video(self, cam_idx: int) -> NoReturn:
 
@@ -380,30 +391,44 @@ class Manager:
         )
         writer.send(None)
 
+        def save_frame():
+            writer.send(np.frombuffer(handler.frames.popleft()[1], dtype=np.uint8).reshape(h, w))
+
+            # The following is a RawArray, so the count is not atomic!
+            # But it is fine as this is only for a rough estimation
+            # (the actual number of written files is counted in a safe way when recording stops)
+            self._saved_frames_counter[cam_idx] += 1
+
         started_saving = False
-        finishing = False
         while self._acquiring.is_set():
 
             if self._recording.is_set():
+                # Recording is set - do actual work
+
+                # Do this just once at the start of a new recording session
                 if not started_saving:
+                    self._finished_saving[cam_idx].clear()
                     started_saving = True
 
-                if bool(handler.frames):
-                    writer.send(np.frombuffer(handler.frames.popleft()[1], dtype=np.uint8).reshape(h, w))
-                    self._saved_frames_counter[cam_idx] += 1
+                # Main state of this thread: If the queue is not empty, save a new frame
+                if handler.frames:
+                    save_frame()
             else:
+                # Recording is not set - either it hasn't started, or it has but hasn't finished yet
                 if started_saving:
-                    if not finishing:
-                        print('[INFO] Finishing saving...')
-                        finishing = True
-                    if bool(handler.frames):
-                        writer.send(np.frombuffer(handler.frames.popleft()[1], dtype=np.uint8).reshape(h, w))
-                        self._saved_frames_counter[cam_idx] += 1
-                    else:
-                        break
+                    # Recording has been started, so remaining frames still need to be saved
+                    while handler.frames:
+                        save_frame()
+
+                    # Finished saving, reverting to wait state
+                    self._finished_saving[cam_idx].set()
+                    started_saving = False
                 else:
+                    # Default state of this thread: if cameras are acquiring but we're not recording, just wait
                     self._recording.wait()
-        print('[INFO] Closing video writers...')
+
+        if not self._silent:
+            print(f'[INFO] Closing video writer {cam_idx}...')
         writer.close()
         self._finished_saving[cam_idx].set()
 
@@ -440,8 +465,6 @@ class Manager:
                 if self.framerate != self._metadata['framerate']:
                     print(
                         f"[WARNING] Framerate is different from previous session{'s' if len(self._metadata['sessions']) > 1 else ''}!! Creating a new record...")
-
-                    print(f"old: {self.full_path}")
                     self.off()
                     self.on()
 
@@ -463,7 +486,6 @@ class Manager:
                                     'gain': c.gain,
                                     'gamma': c.gamma,
                                     'black_level': c.blacks} for c in self.cameras]}
-
             self._metadata['sessions'].append(session_metadata)
             with open(self.full_path / 'metadata.json', 'w', encoding='utf-8') as f:
                 json.dump(self._metadata, f, ensure_ascii=False, indent=4)
@@ -476,19 +498,21 @@ class Manager:
     def pause(self) -> None:
         if self._recording.is_set():
 
-            self._recording.clear()
+            self._recording.clear()     # End recording event
 
             if not self._silent:
                 print('[INFO] Finishing saving...')
+
+            # Wait for all writer threads to finish saving the current session
             [e.wait() for e in self._finished_saving]
 
+            # And update the metadata with end time and number of saved frames
             self._metadata['sessions'][-1]['end'] = datetime.now().timestamp()
+
             for i, cam in enumerate(self.cameras):
-                if len(self._metadata['sessions']) > 1:
-                    prev = self._metadata['sessions'][-2]['cameras'][i]['frames']
-                else:
-                    prev = 0
-                self._metadata['sessions'][-1]['cameras'][i]['frames'] = self._saved_frames_counter[i] - prev
+                previsouly_saved = sum([self._metadata['sessions'][p]['cameras'][i].get('frames', 0) for p in range(len(self._metadata['sessions']))])
+                saved_frames = self._safe_files_counter(self.full_path / f'cam{i}_{cam.name}')
+                self._metadata['sessions'][-1]['cameras'][i]['frames'] = saved_frames - previsouly_saved
 
             with open(self.full_path / 'metadata.json', 'w', encoding='utf-8') as f:
                 json.dump(self._metadata, f, ensure_ascii=False, indent=4)
@@ -497,6 +521,19 @@ class Manager:
 
             if not self._silent:
                 print('[INFO] Done saving.')
+
+    def _safe_files_counter(self, path: Union[Path, str]) -> int:
+        """ This counts the number of files in a the given path in a safe manner
+        (i.e. it keeps checking if new files are still being written) """
+
+        saved_frames = 0
+        saved_frames_n = len(fnmatch.filter(os.listdir(path), f'*.{self._saving_ext}'))
+        while saved_frames_n > saved_frames:
+            saved_frames = saved_frames_n
+            time.sleep(0.1)
+            saved_frames_n = len(
+                fnmatch.filter(os.listdir(path), f'*.{self._saving_ext}'))
+        return saved_frames_n
 
     def on(self) -> None:
 
@@ -515,7 +552,8 @@ class Manager:
 
             self._acquiring.set()
 
-            self._executor = ThreadPoolExecutor(max_workers=3 * self._nb_cams)
+            # self._executor = ThreadPoolExecutor(max_workers=3 * self._nb_cams)
+            self._executor = ThreadPoolExecutor()
 
             for i, cam in enumerate(self._sources_list):
                 self._executor.submit(self._grab_frames, i)
@@ -547,9 +585,6 @@ class Manager:
             self._grabbed_frames_counter = RawArray('I', self._nb_cams)
             self._displayed_frames_counter = RawArray('I', self._nb_cams)
             self._saved_frames_counter = RawArray('I', self._nb_cams)
-            self._grabbed_frames_counter[:] = [0] * self._nb_cams
-            self._displayed_frames_counter[:] = [0] * self._nb_cams
-            self._saved_frames_counter[:] = [0] * self._nb_cams
 
             self._executor = None
 
@@ -646,10 +681,10 @@ class Manager:
         return self._saving_ext.lower().lstrip('.').strip("'").strip('"')
 
     @property
-    def saved(self) -> np.array:
+    def saved(self) -> RawArray:
         if self._saved_frames_counter is None:
             print('[ERROR] Please connect at least 1 camera first.')
-        return np.frombuffer(self._saved_frames_counter, dtype=np.uint32)
+        return self._saved_frames_counter
 
     def get_current_framebuffer(self, i: int = None) -> Union[bytearray, list[bytearray]]:
         if i is None:
