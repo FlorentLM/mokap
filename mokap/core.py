@@ -14,7 +14,6 @@ from mokap import utils
 from PIL import Image
 import platform
 import json
-from imageio_ffmpeg import write_frames
 import os
 import fnmatch
 
@@ -92,6 +91,15 @@ class Manager:
 
         self._session_name: str = ''
         self._saving_ext = self.config_dict.get('save_format', 'bmp').lower()
+        saving_qual = float(self.config_dict.get('save_quality').rstrip('%'))
+
+        # new_value = (saving_qual / 100) * (new_max - new_min) + new_min
+
+        match self._saving_ext:
+            case 'jpg' | 'tif' | 'tiff:':   # tiff quality is only for tiff_jpeg compression
+                self._saving_qual = saving_qual
+            case 'png':
+                self._saving_qual = int(((saving_qual / 100) * -9) + 9)
 
         self._executor: Union[ThreadPoolExecutor, None] = None
 
@@ -321,16 +329,20 @@ class Manager:
 
             filepath = folder / f"{str(frame_nb).zfill(9)}.{self._saving_ext}"
 
-            if self._saving_ext == 'bmp':
-                Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath)
-            elif self._saving_ext == 'jpg' or self._saving_ext == 'jpeg':
-                Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath, quality=80, keep_rgb=True)
-            elif self._saving_ext == 'png':
-                Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath, compress_level=1)
-            elif self._saving_ext == 'tif' or self._saving_ext == 'tiff':
-                Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath, quality=100)
-            else:
-                Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath)
+            match self._saving_ext:
+                case 'bmp':
+                    Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath)
+                case 'jpg' | 'jpeg':
+                    Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath, quality=self._saving_qual, subsampling='4:2:0')
+                case 'png':
+                    Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath, compress_level=self._saving_qual, optimize=False)
+                case 'tif' | 'tiff':
+                    if self._saving_qual == 100:
+                        Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath, compression=None)
+                    else:
+                        Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath, compression='jpeg', quality=self._saving_qual)
+                case _:
+                    Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath)
 
             # The following is a RawArray, so the count is not atomic!
             # But it is fine as this is only for a rough estimation
