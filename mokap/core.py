@@ -93,7 +93,7 @@ class Manager:
 
         self._session_name: str = ''
         self._saving_ext = self.config_dict.get('save_format', 'bmp').lower()
-        saving_qual = float(self.config_dict.get('save_quality').rstrip('%'))
+        saving_qual = float(self.config_dict.get('save_quality'))
 
         # new_value = (saving_qual / 100) * (new_max - new_min) + new_min
 
@@ -622,8 +622,8 @@ class Manager:
 
             for i, cam in enumerate(self._sources_list):
                 self._executor.submit(self._grabber_thread, i)
-                self._executor.submit(self._image_writer_thread, i)
-                # self._executor.submit(self._video_writer_thread, i)
+                # self._executor.submit(self._image_writer_thread, i)
+                self._executor.submit(self._video_writer_thread, i)
                 self._executor.submit(self._display_updater_thread, i)
 
             if not self._silent:
