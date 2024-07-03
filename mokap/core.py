@@ -5,6 +5,8 @@ from typing import NoReturn, Union, List
 from pathlib import Path
 import time
 from datetime import datetime
+
+import cv2
 import numpy as np
 import pypylon.pylon as py
 import mokap.files_op as files_op
@@ -526,7 +528,6 @@ class Manager:
             session_metadata = {'start': datetime.now().timestamp(),
                                 'end': 0.0,
                                 'duration': 0.0,
-                                'framerate_theoretical': self.framerate,
                                 'cameras': [{
                                     'idx': c.idx,
                                     'name': c.name,
@@ -570,11 +571,19 @@ class Manager:
                 # Read back how many frames were recorded in previous sessions of this acquisition
                 previsouly_saved = sum([self._metadata['sessions'][p]['cameras'][i].get('frames', 0) for p in range(len(self._metadata['sessions']))])
 
-                # Wait for all files to finish being written and write the number of frames for this session
-                saved_frames = self._safe_files_counter(self.full_path / f'cam{i}_{cam.name}')
+                vid = self.full_path / f"cam{i}_{self._l_sources_list[i].name}_session{len(self._metadata['sessions'])-1}.mp4"
+
+                if vid.is_file(): # TODO - check better, use the self._saving_ext once it's properly implementing videos
+                    cap = cv2.VideoCapture(vid.as_posix())
+                    saved_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                    cap.release()
+                else:
+                    # Wait for all files to finish being written and write the number of frames for this session
+                    saved_frames = self._safe_files_counter(self.full_path / f'cam{i}_{cam.name}')
                 saved_frames_curr_sess = saved_frames - previsouly_saved
 
                 self._metadata['sessions'][-1]['cameras'][i]['frames'] = saved_frames_curr_sess
+                self._metadata['sessions'][-1]['cameras'][i]['framerate_theoretical'] = cam.framerate
                 self._metadata['sessions'][-1]['cameras'][i]['framerate_actual'] = saved_frames_curr_sess / duration
 
             with open(self.full_path / 'metadata.json', 'w', encoding='utf-8') as f:

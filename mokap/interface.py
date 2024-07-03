@@ -1645,8 +1645,9 @@ class GUI:
         else:
             self.mgr.on()
 
-            for w in self.child_windows:
-                w.camera_controls_sliders['framerate'].config(state='disabled', troughcolor=self.col_lightgray)
+            if self.mgr.triggered:
+                for w in self.child_windows:
+                    w.camera_controls_sliders['framerate'].config(state='disabled', troughcolor=self.col_lightgray)
 
             self.txtvar_applied_name.set(f'{self.mgr.full_path.resolve()}')
 
@@ -1655,9 +1656,9 @@ class GUI:
 
             self.button_acquisition.config(text="Acquiring", image=self.icon_capture)
             self.button_snapshot.config(state="normal")
-            if self.mgr.triggered:
-                if not self._is_calibrating.is_set():
-                    self.button_recpause.config(state="normal")
+
+            if not self._is_calibrating.is_set():
+                self.button_recpause.config(state="normal")
 
     def quit(self):
         for w in self.child_windows:

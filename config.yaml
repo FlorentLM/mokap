@@ -1,6 +1,6 @@
 # Where the recordings will be stored
 base_path: D:/
-save_format: 'uu'
+save_format: 'jpg'
 save_quality: 80    # 0 - 100%
 
 # Add your sources below
