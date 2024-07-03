@@ -18,6 +18,7 @@ from mokap import utils
 from functools import partial
 from collections import deque
 np.set_printoptions(precision=4, suppress=True)
+import psutil
 
 
 class GUILogger:
@@ -797,7 +798,7 @@ class VideoWindowMain(VideoWindowBase):
         self._show_focus.clear()
 
         self._magnification = Event()
-        self._magnification.set()
+        self._magnification.clear()
 
         ## Magnification parameters
         magn_portion = 12
@@ -1093,6 +1094,9 @@ class GUI:
 
         # Detect monitors and pick the default one
         self.selected_monitor = None
+        self._mem_baseline = None
+        self._mem_pressure = 0.0
+
         self._monitors = screeninfo.get_monitors()
         self.set_monitor()
 
@@ -1157,7 +1161,6 @@ class GUI:
         self._capture_fps = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
         self._now_indices = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
         self.start_indices = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
-        self._saved_frames = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
 
         self._counter = 0
 
@@ -1170,10 +1173,7 @@ class GUI:
         self.txtvar_recording.set('')
         self.txtvar_userentry.set('')
         self.txtvar_applied_name.set('')
-        self.txtvar_frames_saved.set(f'Saved 0 frames total (0 bytes)')
-
-        # Compute optimal video windows sizes
-        self._frame_sizes_bytes = np.prod(self.source_dims, axis=0)
+        self.txtvar_frames_saved.set(f'Saved frames: {self.mgr.saved} (0 bytes)')
 
         self._reference = None
         self._current_buffers = None
@@ -1308,6 +1308,11 @@ class GUI:
         temperature_label.pack(side="left", expand=False)
         self.temperature_value = tk.Label(statusbar, textvariable=self.txtvar_temperature, anchor=tk.NW)
         self.temperature_value.pack(side="left", fill="both", expand=True)
+
+        mem_pressure_label = tk.Label(statusbar, text='Memory pressure: ', anchor=tk.NW)
+        mem_pressure_label.pack(side="left", expand=False)
+        self.mem_pressure_bar = ttk.Progressbar(statusbar, length=20, maximum=0.9)
+        self.mem_pressure_bar.pack(side="left", fill="both", expand=True)
 
         frames_saved_label = tk.Label(statusbar, textvariable=self.txtvar_frames_saved, anchor=tk.NE)
         frames_saved_label.pack(side="right", fill="both", expand=True)
@@ -1673,6 +1678,9 @@ class GUI:
         now = datetime.now()
         display_dt = (now - self._display_clock).total_seconds()
 
+        if self._mem_baseline is None:
+            self._mem_baseline = psutil.virtual_memory().percent
+
         if self.mgr.acquiring:
 
             capture_dt = (now - self._capture_clock).total_seconds()
@@ -1686,9 +1694,15 @@ class GUI:
 
             self._current_buffers = self.mgr.get_current_framebuffer()
 
-            self._saved_frames = self.mgr.saved
-            self.txtvar_frames_saved.set(
-                f'Saved {sum(self._saved_frames)} frames total ({utils.pretty_size(sum(self._frame_sizes_bytes * self._saved_frames))})')
+            saved_frames = self.mgr.saved
+            if self.mgr._estim_file_size is None:
+                self.txtvar_frames_saved.set(f'Saved frames: {saved_frames} (0 bytes)')
+            elif self.mgr._estim_file_size == -1:
+                size = sum(sum(os.path.getsize(os.path.join(res[0], element))for element in res[2])for res in os.walk(self.mgr.full_path))
+                self.txtvar_frames_saved.set(f'Saved frames: {saved_frames} ({utils.pretty_size(size)})')
+            else:
+                size = sum(self.mgr._estim_file_size * saved_frames)
+                self.txtvar_frames_saved.set(f'Saved frames: {saved_frames} ({utils.pretty_size(size)})')
 
         if int(display_dt) % 2 == 0:
             self.txtvar_temperature.set(f'{self.mgr.temperature:.1f}°C')
@@ -1697,4 +1711,8 @@ class GUI:
             else:
                 self.temperature_value.config(fg="orange")
         self._counter += 1
-        self.root.after(100, self.update)
+        self.root.after(300, self.update)
+
+        self._mem_pressure += (psutil.virtual_memory().percent - self._mem_baseline) / self._mem_baseline
+        self.mem_pressure_bar.config(value=self._mem_pressure)
+        self._mem_baseline = psutil.virtual_memory().percent

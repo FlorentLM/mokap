@@ -6,6 +6,7 @@ dependencies:
   - paramiko=2.8.1
   - pillow=10.3.0
   - pip=23.3
+  - psutil=5.9.0
   - scipy=1.11.3
   - toml=0.10.2
   - python=3.10.13

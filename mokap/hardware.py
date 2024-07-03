@@ -6,7 +6,7 @@ import os
 from dotenv import load_dotenv
 import pypylon.pylon as py
 from typing import NoReturn, Union, List
-
+from subprocess import  check_output
 import PySpin
 os.environ['SPINNAKER_GENTL64_CTI'] = '/Applications/Spinnaker/lib/spinnaker-gentl/Spinnaker_GenTL.cti'
 
@@ -21,6 +21,45 @@ with warnings.catch_warnings():
     import paramiko
 
 ##
+
+def get_encoders(ffmpeg_path='ffmpeg', codec='hevc'):
+    """
+    Get available encoders for the given codec. This is tailored for h264 and hevc (h265)
+    but this may work with others
+
+    Parameters
+    ----------
+    codec: 'h265' or 'h264'
+
+    Returns
+    -------
+    list of available encoders
+
+    """
+    if '265' in codec:
+        codec = 'hevc'
+    elif '264' in codec:
+        codec = 'h264'
+
+    r = check_output([ffmpeg_path, '-codecs'], stderr=False).decode('UTF-8').splitlines()
+    codec_line = list(filter(lambda x: codec in x, r))[0]
+
+    all_encoders = codec_line.split('encoders: ')[1].strip(')').split()
+
+    encoders_names = []
+
+    for encoder in all_encoders:
+        r = check_output([ffmpeg_path, '-h', f'encoder={encoder}'], stderr=False).decode('UTF-8').splitlines()
+        name_line = list(filter(lambda x: f'Encoder {encoder}' in x, r))[0]
+        true_name = name_line.split(f'Encoder {encoder} [')[1][:-2]
+        encoders_names.append(true_name)
+
+    unique_encoders = {}
+    for a, b in zip(all_encoders, encoders_names):
+        if b not in unique_encoders:
+            unique_encoders[b] = a
+    return list(unique_encoders.values())
+
 
 def setup_ulimit(wanted_value=8192, silent=True):
     """
@@ -375,7 +414,7 @@ class BaslerCamera:
 
     def start_grabbing(self) -> NoReturn:
         if self._connected:
-            self.ptr.StartGrabbing(py.GrabStrategy_OneByOne, py.GrabLoop_ProvidedByInstantCamera)
+            self.ptr.StartGrabbing()
             self._is_grabbing = True
         else:
             print(f"{self.name.title()} camera is not connected.")

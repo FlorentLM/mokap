@@ -9,7 +9,7 @@ import numpy as np
 import pypylon.pylon as py
 import mokap.files_op as files_op
 from collections import deque
-from mokap.hardware import SSHTrigger, BaslerCamera, setup_ulimit, enumerate_basler_devices, enumerate_flir_devices
+from mokap.hardware import SSHTrigger, BaslerCamera, setup_ulimit, enumerate_basler_devices, enumerate_flir_devices, get_encoders
 from mokap import utils
 from PIL import Image
 import platform
@@ -18,37 +18,7 @@ import os
 import fnmatch
 from subprocess import Popen, PIPE, STDOUT
 import shlex
-
-
-##
-
-class FrameHandler(py.ImageEventHandler):
-    """
-    This object is responsible for handling frames received from one camera.
-    It puts all the received frames in an unlimited deque, and puts a copy of the latest frame in a short deque.
-    The former is used by the saver thread, and the latter is used by the display thread.
-    """
-    def __init__(self, event, *args):
-        self._is_recording = event      # Refers to the recording event in the Manager class
-
-        self.indice = 0     # Last received frame indice (determined by the camera)
-
-        self.frames = deque()   # Unlimited deque for frames that need saving
-        self.latest = deque(maxlen=2)   # Short deque for the display buffer updater thread
-        super().__init__(*args)
-
-    def OnImagesSkipped(self, camera, nb_skipped):
-        print(f"[WARN] Skipped {nb_skipped} images!")
-
-    def OnImageGrabbed(self, camera, res):
-        img_nb = res.ImageNumber
-        frame = res.GetArray()
-
-        self.indice = img_nb
-        if res.GrabSucceeded():
-            if self._is_recording.is_set():
-                self.frames.append((res.ImageNumber, frame))
-            self.latest.append(frame)
+import sys
 
 
 class Manager:
@@ -61,6 +31,8 @@ class Manager:
                  silent=True):
 
         self.config_dict = files_op.read_config(config)
+
+        self._ffmpeg_path = 'ffmpeg'
 
         if 'Linux' in platform.system():
             setup_ulimit(silent=silent)
@@ -87,7 +59,7 @@ class Manager:
             self.trigger = None
 
         self._base_folder = Path(self.config_dict.get('base_path', './')) / 'MokapRecordings'
-        if self._base_folder.parent == self._base_folder.name:
+        if self._base_folder.parent.name == self._base_folder.name:
             self._base_folder = self._base_folder.parent
         self._base_folder.mkdir(parents=True, exist_ok=True)
 
@@ -99,9 +71,11 @@ class Manager:
 
         match self._saving_ext:
             case 'jpg' | 'tif' | 'tiff:':   # tiff quality is only for tiff_jpeg compression
-                self._saving_qual = saving_qual
+                self._saving_qual = int(saving_qual)
             case 'png':
                 self._saving_qual = int(((saving_qual / 100) * -9) + 9)
+
+        self._estim_file_size = None
 
         self._executor: Union[ThreadPoolExecutor, None] = None
 
@@ -109,32 +83,33 @@ class Manager:
         self._recording: Event = Event()
 
         self._nb_cams: int = 0
-        self._sources_list: List[BaslerCamera] = []
+
         self._sources_dict = {}
         self._cameras_colours = {}
 
         self._metadata = {'sessions': []}
 
-        ##
-
+        # Initialise the list of sources
+        self._l_sources_list: List[BaslerCamera] = []
+        # and populate it    # TODO - Other brands
         self.connect_basler_devices()
 
-        ##
+        # Initialise the other lists (buffers and events)
+        self._l_display_buffers: List[RawArray] = []
+        self._l_finished_saving: List[Event] = []
+        self._l_all_frames: List[deque] = []
+        self._l_latest_frames: List[deque] = []
 
         # Sort the sources according to their idx
-        self._sources_list.sort(key=lambda x: x.idx)
+        self._l_sources_list.sort(key=lambda x: x.idx)
+        self._nb_cams = len(self._l_sources_list)
 
-        # Initialise buffers and arrays
-        self._framehandlers: List[FrameHandler] = []
-        self._display_buffers: List[RawArray] = []
-
-        for cam in self._sources_list:
-            self._framehandlers.append(FrameHandler(self._recording))
-            self._display_buffers.append(RawArray('B', cam.height * cam.width))
-
-        self._nb_cams = len(self._sources_list)
-
-        self._finished_saving: List[Event] = [Event()] * self._nb_cams
+        # and populate the lists
+        for i, cam in enumerate(self._l_sources_list):
+            self._l_display_buffers.append(RawArray('B', cam.height * cam.width))
+            self._l_finished_saving.append(Event())
+            self._l_all_frames.append(deque())
+            self._l_latest_frames.append(deque(maxlen=1))
 
         # Init frames counters
         self._cnt_grabbed = RawArray('I', self._nb_cams)
@@ -215,7 +190,7 @@ class Manager:
                 self._cameras_colours[source.name] = source_col
 
                 # Keep references of cameras as list and as dict for easy access
-                self._sources_list.append(source)
+                self._l_sources_list.append(source)
                 self._sources_dict[source.name] = source
 
                 if not self._silent:
@@ -223,72 +198,72 @@ class Manager:
 
     @property
     def framerate(self) -> Union[float, None]:
-        if all([c.framerate == self._sources_list[0].framerate for c in self._sources_list]):
-            return self._sources_list[0].framerate
+        if all([c.framerate == self._l_sources_list[0].framerate for c in self._l_sources_list]):
+            return self._l_sources_list[0].framerate
         else:
             return None
 
     @framerate.setter
     def framerate(self, value: int) -> None:
-        for i, cam in enumerate(self._sources_list):
+        for i, cam in enumerate(self._l_sources_list):
             cam.framerate = value
         self._framerate = value
 
     @property
     def exposure(self) -> List[float]:
-        return [c.exposure for c in self._sources_list]
+        return [c.exposure for c in self._l_sources_list]
 
     @exposure.setter
     def exposure(self, value: float) -> None:
-        for i, cam in enumerate(self._sources_list):
+        for i, cam in enumerate(self._l_sources_list):
             cam.exposure = value
 
     @property
     def gain(self) -> List[float]:
-        return [c.gain for c in self._sources_list]
+        return [c.gain for c in self._l_sources_list]
 
     @gain.setter
     def gain(self, value: float) -> None:
-        for i, cam in enumerate(self._sources_list):
+        for i, cam in enumerate(self._l_sources_list):
             cam.gain = value
 
     @property
     def blacks(self) -> List[float]:
-        return [c.blacks for c in self._sources_list]
+        return [c.blacks for c in self._l_sources_list]
 
     @blacks.setter
     def blacks(self, value: float) -> None:
-        for i, cam in enumerate(self._sources_list):
+        for i, cam in enumerate(self._l_sources_list):
             cam.blacks = value
 
     @property
     def gamma(self) -> List[float]:
-        return [c.gamma for c in self._sources_list]
+        return [c.gamma for c in self._l_sources_list]
 
     @gamma.setter
     def gamma(self, value: float) -> None:
-        for i, cam in enumerate(self._sources_list):
+        for i, cam in enumerate(self._l_sources_list):
             cam.gamma = value
 
     @property
     def binning(self) -> List[int]:
-        return [c.binning for c in self._sources_list]
+        return [c.binning for c in self._l_sources_list]
 
     @property
     def binning_mode(self) -> Union[str, None]:
-        if all([c.binning_mode == self._sources_list[0].binning_mode for c in self._sources_list]):
-            return self._sources_list[0].binning_mode
+        if all([c.binning_mode == self._l_sources_list[0].binning_mode for c in self._l_sources_list]):
+            return self._l_sources_list[0].binning_mode
         else:
             return None
 
     @binning.setter
     def binning(self, value: int) -> None:
-        for i, cam in enumerate(self._sources_list):
+        for i, cam in enumerate(self._l_sources_list):
             cam.binning = value
             self._binning = cam.binning
 
             # Need to update the display buffers to the new frame size
-            self._display_buffers[i] = RawArray('B', cam.height * cam.width)
+            self._l_display_buffers[i] = RawArray('B', cam.height * cam.width)
 
     @binning_mode.setter
     def binning_mode(self, value: str) -> None:
@@ -298,15 +273,15 @@ class Manager:
             self._binning_mode = 'avg'
         else:
             self._binning_mode = 'sum'
-        for i, cam in enumerate(self._sources_list):
+        for i, cam in enumerate(self._l_sources_list):
             cam.binning_mode = value
 
     def disconnect(self) -> None:
 
-        for cam in self._sources_list:
+        for cam in self._l_sources_list:
             cam.disconnect()
 
-        self._sources_list = []
+        self._l_sources_list = []
 
         if not self._silent:
             print(f"[INFO] Disconnected {self._nb_cams} camera{'s' if self._nb_cams > 1 else ''}.")
@@ -321,15 +296,18 @@ class Manager:
             cam_idx: the index of the camera this threads belongs to
         """
 
-        def save_frame():
+        h = self._l_sources_list[cam_idx].height
+        w = self._l_sources_list[cam_idx].width
+        folder = self.full_path / f"cam{cam_idx}_{self._l_sources_list[cam_idx].name}"
+        queue = self._l_all_frames[cam_idx]
+
+        def save_frame(frame, number):
             """
                 Saves one frame and updates the saved frames counter
             """
             # TODO - This will be a proper method that does either images or videos once the videowriter is working fine
 
-            frame_nb, frame = handler.frames.popleft()
-
-            filepath = folder / f"{str(frame_nb).zfill(9)}.{self._saving_ext}"
+            filepath = folder / f"{str(number).zfill(9)}.{self._saving_ext}"
 
             match self._saving_ext:
                 case 'bmp':
@@ -343,19 +321,20 @@ class Manager:
                         Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath, compression=None)
                     else:
                         Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath, compression='jpeg', quality=self._saving_qual)
-                case _:
-                    Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath)
 
             # The following is a RawArray, so the count is not atomic!
             # But it is fine as this is only for a rough estimation
             # (the actual number of written files is counted in a safe way when recording stops)
             self._cnt_saved[cam_idx] += 1
 
-        h = self._sources_list[cam_idx].height
-        w = self._sources_list[cam_idx].width
+            # Do this just once after one file has been written
+            if self._estim_file_size is None:
+                try:
+                    self._estim_file_size = os.path.getsize(filepath)
+                except:
+                    pass
 
-        folder = self.full_path / f"cam{cam_idx}_{self._sources_list[cam_idx].name}"
-        handler = self._framehandlers[cam_idx]
+        ##
 
         started_saving = False
         while self._acquiring.is_set():
@@ -365,22 +344,27 @@ class Manager:
 
                 # Do this just once at the start of a new recording session
                 if not started_saving:
-                    self._finished_saving[cam_idx].clear()
+                    self._l_finished_saving[cam_idx].clear()
                     started_saving = True
 
                 # Main state of this thread: If the queue is not empty, save a new frame
-                if handler.frames:
-                    save_frame()
+                if queue:
+                    frame_nb, frame = queue.popleft()
+                    save_frame(frame, frame_nb)
+                # If we're writing fast enough, this thread should wait a bit
+                else:
+                    time.sleep(0.01)
             else:
                 # Recording is not set - either it hasn't started, or it has but hasn't finished yet
                 if started_saving:
                     # Recording has been started, so remaining frames still need to be saved
-                    while handler.frames:
-                        save_frame()
-
-                    # Finished saving, reverting to wait state
-                    self._finished_saving[cam_idx].set()
-                    started_saving = False
+                    if queue:
+                        frame_nb, frame = queue.popleft()
+                        save_frame(frame, frame_nb)
+                    else:
+                        # Finished saving, reverting to wait state
+                        self._l_finished_saving[cam_idx].set()
+                        started_saving = False
                 else:
                     # Default state of this thread: if cameras are acquiring but we're not recording, just wait
                     self._recording.wait()
@@ -394,32 +378,40 @@ class Manager:
             cam_idx: the index of the camera this threads belongs to
         """
 
-        h = self._sources_list[cam_idx].height
-        w = self._sources_list[cam_idx].width
-        fps = self._sources_list[cam_idx].framerate
+        h = self._l_sources_list[cam_idx].height
+        w = self._l_sources_list[cam_idx].width
+        fps = self._l_sources_list[cam_idx].framerate
 
-        filepath = self.full_path / f"cam{cam_idx}_{self._sources_list[cam_idx].name}.mp4"
-        handler = self._framehandlers[cam_idx]
+        filepath = self.full_path / f"cam{cam_idx}_{self._l_sources_list[cam_idx].name}_session{len(self._metadata['sessions'])}.mp4"
+        queue = self._l_all_frames[cam_idx]
 
         # macOS commands:
-        command = f'ffmpeg -threads 1 -y -s {w}x{h} -f rawvideo -framerate {fps} -pix_fmt gray8 -i pipe:0 -an -c:v hevc_videotoolbox -realtime 1 -q:v 100 -tag:v hvc1 -pix_fmt yuv420p -r:v {fps} {filepath.as_posix()}'
+        # command = f'ffmpeg -threads 1 -y -s {w}x{h} -f rawvideo -framerate {fps} -pix_fmt gray8 -i pipe:0 -an -c:v hevc_videotoolbox -realtime 1 -q:v 100 -tag:v hvc1 -pix_fmt yuv420p -r:v {fps} {filepath.as_posix()}'
         # command = f'ffmpeg -threads 1 -y -s {w}x{h} -f rawvideo -framerate {fps} -pix_fmt gray8 -i pipe:0 -an -c:v h264_videotoolbox -realtime 1 -q:v 100 -pix_fmt yuv420p -r:v {fps} {filepath.as_posix()}'
 
         # Windows commands:
+        command = f'ffmpeg -threads 1 -y -s {w}x{h} -f rawvideo -framerate {fps} -pix_fmt gray8 -i pipe:0 -an -c:v hevc_nvenc -preset llhp -zerolatency 1 -2pass 0 -rc cbr_ld_hq -pix_fmt yuv420p -r:v {fps} {filepath.as_posix()}'
+        # command = f'ffmpeg -threads 1 -y -s {w}x{h} -f rawvideo -framerate {fps} -pix_fmt gray8 -i pipe:0 -an -c:v hevc -preset veryfast -crf 18 -pix_fmt yuv420p -r:v {fps} {filepath.as_posix()}'
+        # command = f'ffmpeg -threads 1 -y -s {w}x{h} -f rawvideo -framerate {fps} -pix_fmt gray8 -i pipe:0 -an -c:v h264_nvenc -realtime 1 -q:v 100 -pix_fmt yuv420p -r:v {fps} {filepath.as_posix()}'
+
         # TODO
 
         # Linux commands:
         # TODO
 
-        process = Popen(shlex.split(command), stdin=PIPE, stdout=PIPE, stderr=STDOUT)
+        # process = Popen(shlex.split(command), stdin=PIPE, stdout=PIPE, stderr=STDOUT, bufsize=1, close_fds=ON_POSIX, universal_newlines=True)
+        # process = Popen(shlex.split(command), stdin=PIPE, bufsize=1, close_fds=ON_POSIX, universal_newlines=True)
 
-        def save_frame():
+        ON_POSIX = 'posix' in sys.builtin_module_names
+        process = Popen(shlex.split(command), stdin=PIPE, stdout=False, stderr=False, close_fds=ON_POSIX)
+        # process = Popen(shlex.split(command), stdin=PIPE)
+
+        def save_frame(frame, number):
             """
                 Saves one frame and updates the saved frames counter
             """
             # TODO - This will be a proper method that does either images or videos once the videowriter is working fine
 
-            frame_nb, frame = handler.frames.popleft()
             process.stdin.write(frame.tobytes())
 
             # The following is a RawArray, so the count is not atomic!
@@ -427,8 +419,12 @@ class Manager:
             # (the actual number of written files is counted in a safe way when recording stops)
             self._cnt_saved[cam_idx] += 1
 
+            # Do this just once after one file has been written
+            if self._estim_file_size is None:
+                self._estim_file_size = -1      # In case of video files, return -1 so the GUI knows what to do
 
         started_saving = False
+        initialised = False
         while self._acquiring.is_set():
 
             if self._recording.is_set():
@@ -436,26 +432,33 @@ class Manager:
 
                 # Do this just once at the start of a new recording session
                 if not started_saving:
-                    self._finished_saving[cam_idx].clear()
+                    self._l_finished_saving[cam_idx].clear()
                     started_saving = True
 
                 # Main state of this thread: If the queue is not empty, save a new frame
-                if handler.frames:
-                    save_frame()
+                if queue:
+                    frame_nb, frame = queue.popleft()
+                    save_frame(frame, frame_nb)
+                    if not initialised:
+                        time.sleep(2)       # If we don't wait for the writer to initialise, it'll never catch up :(
+                        initialised = True
+                # If we're writing fast enough, this thread should wait a bit
+                else:
+                    time.sleep(0.01)
             else:
                 # Recording is not set - either it hasn't started, or it has but hasn't finished yet
                 if started_saving:
                     # Recording has been started, so remaining frames still need to be saved
-                    while handler.frames:
-                        save_frame()
+                    if queue:
+                        frame_nb, frame = queue.popleft()
+                        save_frame(frame, frame_nb)
+                    else:
+                        # Finished saving, reverting to wait state
+                        process.stdin.close()
+                        process.wait()
 
-                    # Finished saving, reverting to wait state
-
-                    process.stdin.close()
-                    process.wait()
-
-                    self._finished_saving[cam_idx].set()
-                    started_saving = False
+                        self._l_finished_saving[cam_idx].set()
+                        started_saving = False
                 else:
                     # Default state of this thread: if cameras are acquiring but we're not recording, just wait
                     self._recording.wait()
@@ -472,32 +475,42 @@ class Manager:
 
         # TODO - Rewrite this in a more elegant way
 
-        handler = self._framehandlers[cam_idx]
-        tic = datetime.now()
+        queue = self._l_latest_frames[cam_idx]
 
+        tick = datetime.now()
         while self._acquiring.is_set():
-            toc = datetime.now()
-            elapsed = (toc - tic).microseconds
+            tock = datetime.now()
+            elapsed = (tock - tick).microseconds
+
             if elapsed >= self._display_wait_time_us:
-                self._display_buffers[cam_idx] = handler.latest.popleft()
+                if queue:
+                    self._l_display_buffers[cam_idx] = queue.popleft()
             else:
                 time.sleep(self._display_wait_time_s)
-
-            tic = toc
+            tick = tock
 
     def _grabber_thread(self, cam_idx: int) -> NoReturn:
         """
-            This thread's loop is under control of the camera thanks to the FrameHandler object
+            This grabs frames from the camera and puts them in two buffers (one for displaying and one for saving)
+
             Parameters
             ----------
             cam_idx: the index of the camera this threads belongs to
         """
-        cam = self._sources_list[cam_idx]
+        cam = self._l_sources_list[cam_idx]
+        queue_latest = self._l_latest_frames[cam_idx]
+        queue_all = self._l_all_frames[cam_idx]
 
-        cam.ptr.RegisterImageEventHandler(self._framehandlers[cam_idx],
-                                          py.RegistrationMode_ReplaceAll,
-                                          py.Cleanup_Delete)
         cam.start_grabbing()
+
+        while self._acquiring.is_set():
+            with cam.ptr.RetrieveResult(500, py.TimeoutHandling_Return) as res:
+                if res.GrabSucceeded():
+                    img_nb = res.ImageNumber
+                    frame = res.GetArray()
+                    if self._recording.is_set():
+                        queue_all.append((img_nb, frame))
+                    queue_latest.append(frame)
 
     def record(self) -> None:
         """
@@ -551,7 +564,7 @@ class Manager:
                 print('[INFO] Finishing saving...')
 
             # Wait for all writer threads to finish saving the current session
-            [e.wait() for e in self._finished_saving]
+            [e.wait() for e in self._l_finished_saving]
 
             for i, cam in enumerate(self.cameras):
                 # Read back how many frames were recorded in previous sessions of this acquisition
@@ -620,10 +633,10 @@ class Manager:
             #   - One that (less frequently) updates local buffers for displaying
             self._executor = ThreadPoolExecutor()
 
-            for i, cam in enumerate(self._sources_list):
+            for i, cam in enumerate(self._l_sources_list):
                 self._executor.submit(self._grabber_thread, i)
-                # self._executor.submit(self._image_writer_thread, i)
-                self._executor.submit(self._video_writer_thread, i)
+                self._executor.submit(self._image_writer_thread, i)
+                # self._executor.submit(self._video_writer_thread, i)
                 self._executor.submit(self._display_updater_thread, i)
 
             if not self._silent:
@@ -641,7 +654,7 @@ class Manager:
 
             self._acquiring.clear()     # End Acquisition event
 
-            for cam in self._sources_list:
+            for cam in self._l_sources_list:
                 cam.stop_grabbing()     # Ask the cameras to stop grabbing (they control the thread execution loop)
 
             if self._triggered:
@@ -731,7 +744,7 @@ class Manager:
 
     @property
     def cameras(self) -> list[BaslerCamera]:
-        return self._sources_list
+        return self._l_sources_list
 
     @property
     def colours(self) -> dict:
@@ -741,11 +754,11 @@ class Manager:
 
     @property
     def temperature(self) -> float:
-        return np.mean([c.temperature for c in self._sources_list if c.temperature is not None])
+        return np.mean([c.temperature for c in self._l_sources_list if c.temperature is not None])
 
     @property
     def temperature_states(self) -> list[str]:
-        return [c.temperature_state for c in self._sources_list]
+        return [c.temperature_state for c in self._l_sources_list]
 
     @property
     def saving_ext(self):
@@ -776,6 +789,6 @@ class Manager:
             RawArray, or list of RawArray - each RawArray is a buffer of length (width * height)
         """
         if i is None:
-            return self._display_buffers
+            return self._l_display_buffers
         else:
-            return self._display_buffers[i]
+            return self._l_display_buffers[i]
