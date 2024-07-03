@@ -16,6 +16,8 @@ import platform
 import json
 import os
 import fnmatch
+from subprocess import Popen, PIPE, STDOUT
+import shlex
 
 
 ##
@@ -377,6 +379,81 @@ class Manager:
                         save_frame()
 
                     # Finished saving, reverting to wait state
+                    self._finished_saving[cam_idx].set()
+                    started_saving = False
+                else:
+                    # Default state of this thread: if cameras are acquiring but we're not recording, just wait
+                    self._recording.wait()
+
+    def _video_writer_thread(self, cam_idx: int) -> NoReturn:
+        """
+            This thread writes videos to the disk
+
+            Parameters
+            ----------
+            cam_idx: the index of the camera this threads belongs to
+        """
+
+        h = self._sources_list[cam_idx].height
+        w = self._sources_list[cam_idx].width
+        fps = self._sources_list[cam_idx].framerate
+
+        filepath = self.full_path / f"cam{cam_idx}_{self._sources_list[cam_idx].name}.mp4"
+        handler = self._framehandlers[cam_idx]
+
+        # macOS commands:
+        command = f'ffmpeg -threads 1 -y -s {w}x{h} -f rawvideo -framerate {fps} -pix_fmt gray8 -i pipe:0 -an -c:v hevc_videotoolbox -realtime 1 -q:v 100 -tag:v hvc1 -pix_fmt yuv420p -r:v {fps} {filepath.as_posix()}'
+        # command = f'ffmpeg -threads 1 -y -s {w}x{h} -f rawvideo -framerate {fps} -pix_fmt gray8 -i pipe:0 -an -c:v h264_videotoolbox -realtime 1 -q:v 100 -pix_fmt yuv420p -r:v {fps} {filepath.as_posix()}'
+
+        # Windows commands:
+        # TODO
+
+        # Linux commands:
+        # TODO
+
+        process = Popen(shlex.split(command), stdin=PIPE, stdout=PIPE, stderr=STDOUT)
+
+        def save_frame():
+            """
+                Saves one frame and updates the saved frames counter
+            """
+            # TODO - This will be a proper method that does either images or videos once the videowriter is working fine
+
+            frame_nb, frame = handler.frames.popleft()
+            process.stdin.write(frame.tobytes())
+
+            # The following is a RawArray, so the count is not atomic!
+            # But it is fine as this is only for a rough estimation
+            # (the actual number of written files is counted in a safe way when recording stops)
+            self._cnt_saved[cam_idx] += 1
+
+
+        started_saving = False
+        while self._acquiring.is_set():
+
+            if self._recording.is_set():
+                # Recording is set - do actual work
+
+                # Do this just once at the start of a new recording session
+                if not started_saving:
+                    self._finished_saving[cam_idx].clear()
+                    started_saving = True
+
+                # Main state of this thread: If the queue is not empty, save a new frame
+                if handler.frames:
+                    save_frame()
+            else:
+                # Recording is not set - either it hasn't started, or it has but hasn't finished yet
+                if started_saving:
+                    # Recording has been started, so remaining frames still need to be saved
+                    while handler.frames:
+                        save_frame()
+
+                    # Finished saving, reverting to wait state
+
+                    process.stdin.close()
+                    process.wait()
+
                     self._finished_saving[cam_idx].set()
                     started_saving = False
                 else:
