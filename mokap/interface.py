@@ -1093,7 +1093,7 @@ class VideoWindowMain(VideoWindowBase):
 
 class GUI:
     CONTROLS_MIN_WIDTH = 600
-    CONTROLS_MIN_HEIGHT = 350
+    CONTROLS_MIN_HEIGHT = 360
 
     def __init__(self, mgr):
 
@@ -1107,6 +1107,7 @@ class GUI:
 
         # Set up root window
         self.root = tk.Tk()
+        self.root.minsize(GUI.CONTROLS_MIN_WIDTH, GUI.CONTROLS_MIN_HEIGHT)
 
         resources_path = [p for p in Path().cwd().glob('**/*') if p.is_dir() and p.name == 'icons'][0]
 
@@ -1371,10 +1372,15 @@ class GUI:
         self.autotile_button.pack(padx=6, pady=6, side="bottom", fill="both", expand=True)
 
         # LOG PANEL
-        lf = tk.Frame(content_panels)
-        log_text_area = tk.Text(lf, font=("consolas", "8", "normal"))
-        log_text_area.pack(side="bottom", fill="both", expand=True)
-        content_panels.add(lf)
+        log_label_frame = tk.Frame(content_panels)
+        log_label = tk.Label(log_label_frame, text='↓ Log ↓', anchor=tk.S, font=('Arial', 8))
+        log_label.pack(side="top", fill="x", expand=True)
+
+        log_frame = tk.Frame(content_panels)
+        log_text_area = tk.Text(log_frame, font=("consolas", "8", "normal"))
+        log_text_area.pack(side="top", fill="both", expand=True)
+        content_panels.add(log_label_frame)
+        content_panels.add(log_frame)
 
         gui_logger.register_text_area(log_text_area)
 
