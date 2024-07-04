@@ -487,6 +487,7 @@ class Manager:
             if elapsed >= self._display_wait_time_us:
                 if queue:
                     self._l_display_buffers[cam_idx] = queue.popleft()
+                    self._cnt_displayed[cam_idx] += 1
             else:
                 time.sleep(self._display_wait_time_s)
             tick = tock
@@ -513,6 +514,7 @@ class Manager:
                     if self._recording.is_set():
                         queue_all.append((img_nb, frame))
                     queue_latest.append(frame)
+                    self._cnt_grabbed[cam_idx] += 1
 
     def record(self) -> None:
         """

@@ -49,7 +49,7 @@ class GUILogger:
         pass
 
 # Create this immediately to capture everything
-# gui_logger = GUILogger()
+gui_logger = GUILogger()
 
 
 def whxy(what):
@@ -306,8 +306,13 @@ class VideoWindowBase:
         return w, h
 
     def auto_move(self):
-        # First corners and monitor centre, and then edge centres
-        positions = np.hstack((self.positions.ravel()[::2], self.positions.ravel()[1::2]))
+        if self.parent.selected_monitor.height < self.parent.selected_monitor.width:
+            # First corners, then left right, then top and bottom,  and finally centre
+            positions = ['nw', 'sw', 'ne', 'se', 'n', 's', 'w', 'e', 'c']
+        else:
+            # First corners, then top and bottom, then left right, and finally centre
+            positions = ['nw', 'sw', 'ne', 'se', 'w', 'e', 'n', 's', 'c']
+
         nb_positions = len(positions)
 
         if self.idx <= nb_positions:
@@ -1158,8 +1163,9 @@ class GUI:
         self._capture_clock = datetime.now()
         self._display_clock = datetime.now()
 
-        self._capture_fps = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
-        self._now_indices = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
+        self._capture_fps = np.zeros(self.mgr.nb_cameras, dtype=np.float32)
+        self._nb_grabbed_frames = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
+        self._nb_saved_frames = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
         self.start_indices = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
 
         self._counter = 0
@@ -1172,7 +1178,7 @@ class GUI:
 
         self.txtvar_recording.set('')
         self.txtvar_userentry.set('')
-        self.txtvar_applied_name.set('')
+        self.txtvar_applied_name.set(self.mgr.full_path.resolve())
         self.txtvar_frames_saved.set(f'Saved frames: {self.mgr.saved} (0 bytes)')
 
         self._reference = None
@@ -1262,7 +1268,7 @@ class GUI:
         info_name_frame = tk.Frame(name_frame)
         info_name_frame.pack(side="top", fill="x", expand=True)
 
-        save_dir_label = tk.Label(info_name_frame, text='Saves to:', anchor=tk.W)
+        save_dir_label = tk.Label(info_name_frame, text='Saves to: ', anchor=tk.W)
         save_dir_label.pack(side="top", fill="both", expand=False)
 
         save_dir_current = tk.Label(info_name_frame, textvariable=self.txtvar_applied_name, anchor=tk.W, fg=self.col_darkgray)
@@ -1365,12 +1371,12 @@ class GUI:
         self.autotile_button.pack(padx=6, pady=6, side="bottom", fill="both", expand=True)
 
         # LOG PANEL
-        # lf = tk.Frame(content_panels)
-        # log_text_area = tk.Text(lf, font=("consolas", "8", "normal"))
-        # log_text_area.pack(side="bottom", fill="both", expand=True)
-        # content_panels.add(lf)
-        #
-        # gui_logger.register_text_area(log_text_area)
+        lf = tk.Frame(content_panels)
+        log_text_area = tk.Text(lf, font=("consolas", "8", "normal"))
+        log_text_area.pack(side="bottom", fill="both", expand=True)
+        content_panels.add(lf)
+
+        gui_logger.register_text_area(log_text_area)
 
 
     def _update_child_windows_list(self):
@@ -1452,6 +1458,9 @@ class GUI:
     def open_session_folder(self):
         path = Path(self.txtvar_applied_name.get()).resolve()
 
+        if self.txtvar_applied_name.get() == "":
+            path = self.mgr.full_path
+
         if 'Linux' in platform.system():
             subprocess.Popen(['xdg-open', path])
         elif 'Windows' in platform.system():
@@ -1530,17 +1539,24 @@ class GUI:
 
         self.root.event_generate('<Motion>', warp=True, x=movement_x + rel_mouse_x, y=movement_y + rel_mouse_y)
 
+    def auto_size(self):
+        pass
+
+    def auto_move(self):
+        pass
+
     def autotile_windows(self):
-        for w in self.visible_windows(include_main=False):
+        """
+            Automatically arranges and resizes the windows
+        """
+        for w in self.visible_windows(include_main=True):
             w.auto_size()
             w.auto_move()
 
     def _handle_keypress(self, event):
         if self.editing_disabled:
-            # if event.keycode == 9:  # Esc
             if event.keycode == 27:  # Esc
                 self.quit()
-            # elif event.keycode == 65:  # Space
             elif event.keycode == 32:  # Space
                 self._toggle_recording()
             else:
@@ -1550,6 +1566,9 @@ class GUI:
                 self._toggle_text_editing(True)
 
     def _take_snapshot(self):
+        """
+            Takes an instantaneous snapshot from all cameras
+        """
 
         dims = self.source_dims.T
         ext = self.mgr.saving_ext
@@ -1563,6 +1582,8 @@ class GUI:
                 img.save(self.mgr.full_path.resolve() / f"snapshot_{now}_{self.mgr.cameras[a].name}.{ext}")
 
     def _toggle_text_editing(self, tf=None):
+
+        # This is so we can also use the current function in a force-on or force-off way
         if tf is None:
             tf = not self.editing_disabled
 
@@ -1578,10 +1599,14 @@ class GUI:
             self.editing_disabled = True
             self.txtvar_applied_name.set(f'{self.mgr.full_path.resolve()}')
         else:
+            # If force-on and already editing, or force-off and not editing, do nothing
             pass
 
     def _toggle_recording(self, tf=None):
+        # If we're currently recording, then we should stop
         if self.mgr.acquiring:
+
+            # This is so we can also use the current function in a force-on or force-off way
             if tf is None:
                 tf = not self.mgr.recording
 
@@ -1589,13 +1614,12 @@ class GUI:
                 self.mgr.pause()
                 self.txtvar_recording.set('')
                 self.button_recpause.config(text="Not recording (Space to toggle)", image=self.icon_rec_bw)
-
             elif not self.mgr.recording and tf is True:
                 self.mgr.record()
                 self.txtvar_recording.set('[ Recording... ]')
                 self.button_recpause.config(text="Recording... (Space to toggle)", image=self.icon_rec_on)
-
             else:
+                # If force-on and already recording, or force-off and not recording, do nothing
                 pass
 
     def _toggle_calibrate(self, *events):
@@ -1625,12 +1649,16 @@ class GUI:
 
     def _toggle_acquisition(self):
 
+        # If we're currently acquiring, then we should stop
         if self.mgr.acquiring:
+
             self._toggle_recording(False)
             self.mgr.off()
 
+            # Reset capture fps for next acquisition
             self._capture_fps = np.zeros(self.mgr.nb_cameras, dtype=np.uintc)
 
+            # Reset Acquisition folder name
             self.txtvar_userentry.set('')
             self.txtvar_applied_name.set('')
 
@@ -1638,6 +1666,7 @@ class GUI:
             self.button_snapshot.config(state="disabled")
             self.button_recpause.config(state="disabled")
 
+            # Re-enable the framerate sliders (only in case of hardware-triggered cameras)
             if self.mgr.triggered:
                 for w in self.child_windows:
                     w.camera_controls_sliders['framerate'].config(state='normal', troughcolor=w.col_default)
@@ -1661,21 +1690,26 @@ class GUI:
                 self.button_recpause.config(state="normal")
 
     def quit(self):
+
+        # Close the child windows and stop their threads
         for w in self.child_windows:
             w.visible.clear()
             w.should_stop.set()
 
+        # Stop camera acquisition
         if self.mgr.acquiring:
             self.mgr.off()
 
         self.mgr.disconnect()
 
+        # Close main window and exit Python program
         self.root.quit()
         self.root.destroy()
         sys.exit()
 
     def update(self):
 
+        # Update real time counter and determine display fps
         now = datetime.now()
         display_dt = (now - self._display_clock).total_seconds()
 
@@ -1684,36 +1718,39 @@ class GUI:
 
         if self.mgr.acquiring:
 
+            # Copy counters values in local array to aviod assigning a new one every refresh
+            self._nb_grabbed_frames[:] = self.mgr.indices
+            self._nb_saved_frames[:] = self.mgr.saved
+
+            # Determine capture fps
             capture_dt = (now - self._capture_clock).total_seconds()
+            self._capture_fps[:] = np.round((self._nb_grabbed_frames - self.start_indices) / capture_dt, decimals=2)
 
-            self._now_indices[:] = self.mgr.indices
-
-            if capture_dt == 0:
-                capture_dt = 0.0001
-
-            self._capture_fps[:] = (self._now_indices - self.start_indices) / capture_dt
-
+            # Grab the latest frames for displaying
             self._current_buffers = self.mgr.get_current_framebuffer()
 
-            saved_frames = self.mgr.saved
+            # Get an estimation of the saved data size
             if self.mgr._estim_file_size is None:
-                self.txtvar_frames_saved.set(f'Saved frames: {saved_frames} (0 bytes)')
+                self.txtvar_frames_saved.set(f'Saved frames: {self._nb_saved_frames} (0 bytes)')
             elif self.mgr._estim_file_size == -1:
                 size = sum(sum(os.path.getsize(os.path.join(res[0], element))for element in res[2])for res in os.walk(self.mgr.full_path))
-                self.txtvar_frames_saved.set(f'Saved frames: {saved_frames} ({utils.pretty_size(size)})')
+                self.txtvar_frames_saved.set(f'Saved frames: {self._nb_saved_frames} ({utils.pretty_size(size)})')
             else:
-                size = sum(self.mgr._estim_file_size * saved_frames)
-                self.txtvar_frames_saved.set(f'Saved frames: {saved_frames} ({utils.pretty_size(size)})')
+                size = sum(self.mgr._estim_file_size * self._nb_saved_frames)
+                self.txtvar_frames_saved.set(f'Saved frames: {self._nb_saved_frames} ({utils.pretty_size(size)})')
 
+        # Update cameras temperature display
         if int(display_dt) % 2 == 0:
             self.txtvar_temperature.set(f'{self.mgr.temperature:.1f}°C')
-            if all([v == 'Ok' for v in self.mgr.temperature_states]):
+            if all([v == 'Ok' for v in self.mgr.temperature_states]):  # TODO - This is Basler-specific - needs changing
                 self.temperature_value.config(fg="green")
             else:
                 self.temperature_value.config(fg="orange")
-        self._counter += 1
-        self.root.after(300, self.update)
 
+        # Update memory pressure estimation
         self._mem_pressure += (psutil.virtual_memory().percent - self._mem_baseline) / self._mem_baseline
         self.mem_pressure_bar.config(value=self._mem_pressure)
         self._mem_baseline = psutil.virtual_memory().percent
+
+        self._counter += 1
+        self.root.after(300, self.update)
