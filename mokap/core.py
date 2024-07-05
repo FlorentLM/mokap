@@ -372,8 +372,11 @@ class Manager:
 
         h = self._l_sources_list[cam_idx].height
         w = self._l_sources_list[cam_idx].width
-
         folder = self.full_path / f"cam{cam_idx}_{self._l_sources_list[cam_idx].name}"
+
+        if 'mp4' not in self._saving_ext:
+            folder = self.full_path / f"cam{cam_idx}_{self._l_sources_list[cam_idx].name}"
+            folder.mkdir(parents=True, exist_ok=True)
 
         def save_frame(frame, number):
             """
@@ -506,9 +509,6 @@ class Manager:
         if not self._recording.is_set():
 
             (self.full_path / 'recording').touch(exist_ok=True)
-
-            for c in self.cameras:
-                (self.full_path / f'cam{c.idx}_{c.name}').mkdir(parents=True, exist_ok=True)
 
             session_metadata = {'start': datetime.now().timestamp(),
                                 'end': 0.0,
