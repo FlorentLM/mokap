@@ -165,8 +165,10 @@ class VideoWindowBase:
         self.panes_container = tk.PanedWindow(self.window, orient='vertical', opaqueresize=False)
         self.panes_container.pack(side="top", fill="both", expand=True)
 
-        # Where the video will be displayed
-        self.VIDEO_PANEL = tk.Label(self.panes_container, compound='center', bg=self.parent.col_black)
+        # Initialise where the video will be displayed
+        self.imagetk = ImageTk.PhotoImage(Image.fromarray(self._frame_buffer, mode='L').convert('RGBA'))
+        self.VIDEO_PANEL = tk.Label(self.panes_container, compound='center', bg=self.parent.col_black, image=self.imagetk)
+
         self.INFO_PANEL = tk.Frame(self.panes_container)
 
         self.panes_container.add(self.VIDEO_PANEL, stretch='never')
@@ -174,9 +176,7 @@ class VideoWindowBase:
         self.panes_container.paneconfig(self.VIDEO_PANEL)
         self.panes_container.paneconfig(self.INFO_PANEL, height=self.INFO_PANEL_MINSIZE_H, minsize=self.INFO_PANEL_MINSIZE_H)
 
-        # Finally initialise the window by resize it and starting the video feed
         self.auto_size()
-        self._refresh_videofeed(Image.fromarray(self._frame_buffer, mode='L').convert('RGBA'))
 
     def _create_common_controls(self):
 
@@ -280,7 +280,10 @@ class VideoWindowBase:
 
     @property
     def videofeed_shape(self):
-        h, w = self.VIDEO_PANEL.winfo_height(), self.VIDEO_PANEL.winfo_width()
+        try:
+            h, w = self.VIDEO_PANEL.winfo_height(), self.VIDEO_PANEL.winfo_width()
+        except tk.TclError:
+            h, w = 0, 0
         if h <= 1 or w <= 1:
             return self.source_shape
         if w / h > self.aspect_ratio:
@@ -382,10 +385,13 @@ class VideoWindowBase:
                 self._frame_buffer[:] = np.frombuffer(buf, dtype=np.uint8).reshape(self._source_shape)
 
     def _refresh_videofeed(self, image: Image):
-        imagetk = ImageTk.PhotoImage(image=image)
         try:
-            self.VIDEO_PANEL.configure(image=imagetk)
-            self.imagetk = imagetk
+            if self.imagetk.width() != image.width or self.imagetk.height() != image.height:
+                self.imagetk = ImageTk.PhotoImage(image)
+                self.VIDEO_PANEL.configure(image=self.imagetk)
+            else:
+                self.imagetk.paste(image)
+
         except Exception:
             # If new image is garbage collected too early, do nothing - this prevents the image from flashing
             pass
@@ -397,7 +403,6 @@ class VideoWindowBase:
 
         # Get window size and set new videofeed size, preserving aspect ratio
         h, w = self.videofeed_shape
-
         img_pillow_resized = image.resize((w, h))
 
         return img_pillow_resized
@@ -428,16 +433,19 @@ class VideoWindowBase:
             self.txtvar_capture_fps.set("Off")
             self.txtvar_brightness.set("-")
 
-        if self._camera.temperature is not None:
-            self.txtvar_temperature.set(f'{self._camera.temperature:.1f}°C')
-        if self._camera.temperature_state == 'Ok':
-            self.temperature_value.config(fg="green")
-        elif self._camera.temperature_state == 'Critical':
-            self.temperature_value.config(fg="orange")
-        elif self._camera.temperature_state == 'Error':
-            self.temperature_value.config(fg="red")
-        else:
-            self.temperature_value.config(fg="yellow")
+        try:
+            if self._camera.temperature is not None:
+                self.txtvar_temperature.set(f'{self._camera.temperature:.1f}°C')
+            if self._camera.temperature_state == 'Ok':
+                self.temperature_value.config(fg="green")
+            elif self._camera.temperature_state == 'Critical':
+                self.temperature_value.config(fg="orange")
+            elif self._camera.temperature_state == 'Error':
+                self.temperature_value.config(fg="red")
+            else:
+                self.temperature_value.config(fg="yellow")
+        except tk.TclError:
+            pass
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=RuntimeWarning)
@@ -447,7 +455,7 @@ class VideoWindowBase:
         if self.macos_trick:
             self.window.resizable(True, True)
 
-        while not self.should_stop.is_set():
+        while not self.should_stop.wait(1/60.0):
             if self.visible.is_set():
 
                 self._update_txtvars()
@@ -1441,7 +1449,7 @@ class GUI:
                 w = VideoWindowCalib(parent=self, idx=c.idx)
                 self.child_windows.append(w)
 
-                t = Thread(target=w.update, args=(), daemon=False)
+                t = Thread(target=w.update, args=(), daemon=True)
                 t.start()
                 self.child_threads.append(t)
 
@@ -1449,7 +1457,7 @@ class GUI:
                 w = VideoWindowMain(parent=self, idx=c.idx)
                 self.child_windows.append(w)
 
-                t = Thread(target=w.update, args=(), daemon=False)
+                t = Thread(target=w.update, args=(), daemon=True)
                 t.start()
                 self.child_threads.append(t)
 
@@ -1462,7 +1470,7 @@ class GUI:
         for w in self.child_windows:
             try:
                 w.window.destroy()
-            except tk.TclError:
+            except:
                 pass
 
         self.child_windows = []
