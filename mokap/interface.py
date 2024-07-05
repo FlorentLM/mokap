@@ -1428,7 +1428,6 @@ class GUI:
 
             gui_logger.register_text_area(log_text_area)
 
-
     def _update_child_windows_list(self):
 
         for w, window in enumerate(self.child_windows):
@@ -1483,10 +1482,6 @@ class GUI:
     @property
     def capture_fps(self):
         return self._capture_fps
-
-    # @property
-    # def count(self):
-    #     return self._counter
 
     @property
     def source_dims(self):
@@ -1811,7 +1806,6 @@ class GUI:
 
         # Update real time counter and determine display fps
         now = datetime.now()
-        dt = (now - self._clock).total_seconds()
 
         if self._mem_baseline is None:
             self._mem_baseline = psutil.virtual_memory().percent
@@ -1845,4 +1839,4 @@ class GUI:
         self._mem_baseline = psutil.virtual_memory().percent
 
         self._clock = now
-        self.root.after(1000, self.update)
+        self.root.after(200, self.update)
