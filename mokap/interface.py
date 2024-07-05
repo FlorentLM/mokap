@@ -55,6 +55,7 @@ class GUILogger:
 
 # Create this immediately to capture everything
 # gui_logger = GUILogger()
+gui_logger = False
 
 
 def whxy(what):
@@ -113,15 +114,15 @@ class VideoWindowBase:
         else:
             self.macos_trick = False
 
-        self._source_shape = (self.parent.mgr.cameras[self.idx].height, self.parent.mgr.cameras[self.idx].width)
-        self._cam_name = self.parent.mgr.cameras[self.idx].name
+        self._camera = self.parent.mgr.cameras[self.idx]
+        self._source_shape = (self._camera.height, self._camera.width)
 
         self.window.minsize(self.WINDOW_MIN_W, self.INFO_PANEL_MINSIZE_H + self.VIDEO_PANEL_MINSIZE_H)
         self.window.protocol("WM_DELETE_WINDOW", self.toggle_visibility)
         h, w = self._source_shape
         self.window.geometry(f"{w}x{h}")  # This will be bound by the WINDOW_MIN_W value and the update video function
 
-        self._bg_colour = f'#{self.parent.mgr.colours[self._cam_name].lstrip("#")}'
+        self._bg_colour = f'#{self.parent.mgr.colours[self._camera.name].lstrip("#")}'
         self._fg_colour = self.parent.col_white if utils.hex_to_hls(self._bg_colour)[1] < 60 else self.parent.col_black
         self._window_bg_colour = self.window.cget('background')
 
@@ -131,7 +132,7 @@ class VideoWindowBase:
         ## Init state
         self._clock = datetime.now()
         self._fps = deque(maxlen=100)
-        self._wanted_fps = self.parent.mgr.cameras[self.idx].framerate
+        self._wanted_fps = self._camera.framerate
 
         ## Set thread-safe events
         self.visible = Event()
@@ -151,12 +152,14 @@ class VideoWindowBase:
         self.txtvar_capture_fps = tk.StringVar()
         self.txtvar_brightness = tk.StringVar()
         self.txtvar_display_fps = tk.StringVar()
+        self.txtvar_temperature = tk.StringVar()
 
         self.txtvar_camera_name = tk.StringVar()
-        self.txtvar_camera_name.set(f'{self._cam_name.title()} camera')
+        self.txtvar_camera_name.set(f'{self._camera.name.title()} camera')
         self.window.title(self.txtvar_camera_name.get())
-        self.txtvar_resolution.set(f"{self.parent.mgr.cameras[self.idx].width}×{self.parent.mgr.cameras[self.idx].height} px")
-        self.txtvar_exposure.set(f"{self.parent.mgr.cameras[self.idx].exposure} µs")
+        self.txtvar_resolution.set(f"{self._camera.width}×{self._camera.height} px")
+        self.txtvar_exposure.set(f"{self._camera.exposure} µs")
+        self.txtvar_temperature.set(f"{self._camera.temperature}°C" if self._camera.temperature is not None else '-')
 
         ## Initialise main video frame
         self.panes_container = tk.PanedWindow(self.window, orient='vertical', opaqueresize=False)
@@ -201,12 +204,13 @@ class VideoWindowBase:
         f_values = tk.Frame(self.LEFT_FRAME)
         f_values.pack(side='left', fill='both', expand=True)
 
-        for label, var in zip(['Resolution', 'Capture', 'Exposure', 'Brightness', 'Display'],
+        for label, var in zip(['Resolution', 'Capture', 'Exposure', 'Brightness', 'Display', 'Temperature'],
                               [self.txtvar_resolution,
                                self.txtvar_capture_fps,
                                self.txtvar_exposure,
                                self.txtvar_brightness,
-                               self.txtvar_display_fps]):
+                               self.txtvar_display_fps,
+                               self.txtvar_temperature]):
             l = tk.Label(f_labels, text=f"{label} :",
                          anchor='ne', justify='right',
                          fg=self.parent.col_darkgray,
@@ -217,6 +221,9 @@ class VideoWindowBase:
                          anchor='nw', justify='left',
                          font=self.parent.font_regular)
             v.pack(pady=(1, 0), side='top', fill='both', expand=True)
+
+            if label == 'Temperature':  # So we can update its colour later
+                self.temperature_value = v
 
         ## Right frame: View controls block
         self.RIGHT_FRAME.config(text='View')
@@ -251,30 +258,21 @@ class VideoWindowBase:
 
     @property
     def name(self) -> str:
-        return self._cam_name
+        return self._camera.name
 
     @property
     def colour(self) -> str:
         return f'#{self._bg_colour.lstrip("#")}'
+    color = colour
 
     @property
     def colour_2(self) -> str:
         return f'#{self._fg_colour.lstrip("#")}'
-
-    def color(self) -> str:
-        return self.colour
-
-    @property
-    def color_2(self) -> str:
-        return self.colour_2
+    color_2 = colour_2
 
     @property
     def source_shape(self):
         return self._source_shape
-
-    @property
-    def source_half_shape(self):
-        return self._source_shape[0] // 2, self._source_shape[1] // 2
 
     @property
     def aspect_ratio(self):
@@ -429,6 +427,17 @@ class VideoWindowBase:
         else:
             self.txtvar_capture_fps.set("Off")
             self.txtvar_brightness.set("-")
+
+        if self._camera.temperature is not None:
+            self.txtvar_temperature.set(f'{self._camera.temperature:.1f}°C')
+        if self._camera.temperature_state == 'Ok':
+            self.temperature_value.config(fg="green")
+        elif self._camera.temperature_state == 'Critical':
+            self.temperature_value.config(fg="orange")
+        elif self._camera.temperature_state == 'Error':
+            self.temperature_value.config(fg="red")
+        else:
+            self.temperature_value.config(fg="yellow")
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=RuntimeWarning)
@@ -670,7 +679,7 @@ class VideoWindowCalib(VideoWindowBase):
         self._coverage_pct = 0
 
     def save_calibration(self):
-        cam_name = self._cam_name.lower()
+        cam_name = self._camera.name.lower()
 
         save_folder = self.parent.mgr.full_path.parent / 'calibrations' / self.parent.mgr.full_path.name / cam_name.lower()
         save_folder.mkdir(exist_ok=True, parents=True)
@@ -690,7 +699,7 @@ class VideoWindowCalib(VideoWindowBase):
         if load_path.is_file():
             load_path = load_path.parent
 
-        cam_name = self._cam_name.lower()
+        cam_name = self._camera.name.lower()
 
         if cam_name not in load_path.name and (load_path / cam_name).exists():
             load_path = load_path / f'cam{self.idx}'
@@ -811,15 +820,16 @@ class VideoWindowMain(VideoWindowBase):
         self._magnification.clear()
 
         ## Magnification parameters
-        magn_portion = 12
         self.magn_zoom = tk.DoubleVar()
-        self.magn_zoom.set(2)
+        self.magn_zoom.set(1)
 
-        self.magn_size = self.source_shape[0] // magn_portion, self.source_shape[1] // magn_portion
-        self.magn_half_size = self.magn_size[0] // 2, self.magn_size[1] // 2
+        self.magn_window_w = 100
+        self.magn_window_h = 100
+        self.magn_window_x = 10 + self.magn_window_w//2     # Initialise in the corner
+        self.magn_window_y = 10 + self.magn_window_h//2
 
-        self.magn_cx = self.source_half_shape[1]
-        self.magn_cy = self.source_half_shape[0]
+        self.magn_target_cx = self.source_shape[1] // 2
+        self.magn_target_cy = self.source_shape[0] // 2
 
         ## Focus view parameters
         # Kernel to use for focus detection
@@ -846,18 +856,21 @@ class VideoWindowMain(VideoWindowBase):
         self.VIDEO_PANEL.bind('<Button-1>', self._get_magn_target)
         self.VIDEO_PANEL.bind("<B1-Motion>", self._get_magn_target)
 
-        self.magn_pos_x = self.magn_size[1] + 10
-        self.magn_pos_y = self.magn_size[0] + 10
-
     def _get_magn_pos(self, event):
         if self._magnification.is_set():
-            self.magn_pos_x = event.x - (self.VIDEO_PANEL.winfo_width() - self.videofeed_shape[1])//2
-            self.magn_pos_y = event.y - (self.VIDEO_PANEL.winfo_height() - self.videofeed_shape[0])//2
+            margin_horiz = (self.VIDEO_PANEL.winfo_width() - self.videofeed_shape[1]) // 2
+            margin_vert = (self.VIDEO_PANEL.winfo_height() - self.videofeed_shape[0]) // 2
+
+            self.magn_window_x = event.x - margin_horiz - self.magn_window_w // 2
+            self.magn_window_y = event.y - margin_vert - self.magn_window_h // 2
 
     def _get_magn_target(self, event):
         if self._magnification.is_set():
-            self.magn_cx = event.x - (self.VIDEO_PANEL.winfo_width() - self.videofeed_shape[1])//2
-            self.magn_cy = event.y - (self.VIDEO_PANEL.winfo_height() - self.videofeed_shape[0])//2
+            margin_horiz = (self.VIDEO_PANEL.winfo_width() - self.videofeed_shape[1]) // 2
+            margin_vert = (self.VIDEO_PANEL.winfo_height() - self.videofeed_shape[0]) // 2
+
+            self.magn_target_cx = int(round((event.x - margin_horiz) * self.source_shape[1] / self.videofeed_shape[1]))
+            self.magn_target_cy = int(round((event.y - margin_vert) * self.source_shape[0] / self.videofeed_shape[0]))
 
     def _create_specific_controls(self):
 
@@ -1050,32 +1063,52 @@ class VideoWindowMain(VideoWindowBase):
 
             col = self.parent.col_yellow_rgb
 
-            extent_h = self.magn_cx / self.videofeed_shape[0] * self.source_shape[0]
-            extent_v = self.magn_cy / self.videofeed_shape[1] * self.source_shape[1]
+            ratio_w = self.videofeed_shape[0] / self.source_shape[0]
+            ratio_h = self.videofeed_shape[1] / self.source_shape[1]
 
-            start_end_h = int(np.round(extent_h - self.magn_half_size[1])), int(np.round(extent_h + self.magn_half_size[1]))
-            start_end_v = int(np.round(extent_v - self.magn_half_size[0])), int(np.round(extent_v + self.magn_half_size[0]))
+            # Size of the slice to extract from the source
+            slice_w = self.magn_window_w
+            slice_h = self.magn_window_h
+
+            # Position of the slice in source pixels coordinates
+            slice_cx = self.magn_target_cx
+            slice_cy = self.magn_target_cy
+
+            slice_x1 = max(0, slice_cx - slice_w//2)
+            slice_y1 = max(0, slice_cy - slice_h//2)
+            slice_x2 = slice_x1 + slice_w
+            slice_y2 = slice_y1 + slice_h
+
+            if slice_x2 > self.source_shape[1]:
+                slice_x1 = self.source_shape[1] - slice_w
+                slice_x2 = self.source_shape[1]
+
+            if slice_y2 > self.source_shape[0]:
+                slice_y1 = self.source_shape[0] - slice_h
+                slice_y2 = self.source_shape[0]
 
             # Slice directly from the framebuffer and make a (then zoomed) image
-            magn_img = Image.fromarray(self._frame_buffer[start_end_v[0]:start_end_v[1], start_end_h[0]:start_end_h[1]]).convert('RGB')
+            magn_img = Image.fromarray(self._frame_buffer[slice_y1:slice_y2, slice_x1:slice_x2]).convert('RGB')
             magn_img = magn_img.resize(
                 (int(magn_img.width * self.magn_zoom.get()), int(magn_img.height * self.magn_zoom.get())))
 
-            # Position of the top left corner of magnification window in the whole videofeed
-            magn_pos = self.magn_pos_x - magn_img.width // 2, self.magn_pos_y - magn_img.height // 2
+            image.paste(magn_img, (self.magn_window_x, self.magn_window_y))
 
             # Add frame around the magnified area
-            d.rectangle([(self.magn_cx - self.magn_size[1] // 2, self.magn_cy - self.magn_size[0] // 2),
-                         (self.magn_cx + self.magn_size[1] // 2, self.magn_cy + self.magn_size[0] // 2)],
+            tgt_x1 = int(slice_x1 * ratio_w)
+            tgt_x2 = int(slice_x2 * ratio_w)
+            tgt_y1 = int(slice_y1 * ratio_h)
+            tgt_y2 = int(slice_y2 * ratio_h)
+            d.rectangle([(tgt_x1, tgt_y1), (tgt_x2, tgt_y2)],
                         outline=col, width=1)
 
-            image.paste(magn_img, magn_pos)
-
             # Add frame around the magnification
-            d.rectangle([magn_pos, (self.magn_pos_x + magn_img.width//2, self.magn_pos_y + magn_img.height//2)], outline=col, width=1)
+            d.rectangle([(self.magn_window_x, self.magn_window_y),
+                         (self.magn_window_x + magn_img.width,
+                          self.magn_window_y + magn_img.height)], outline=col, width=1)
 
             # Add a small + in the centre
-            c = magn_pos[0] + magn_img.width // 2, magn_pos[1] + magn_img.height // 2
+            c = self.magn_window_x + magn_img.width // 2, self.magn_window_y + magn_img.height // 2
             d.line((c[0] - 5, c[1], c[0] + 5, c[1]), fill=col, width=1)  # Horizontal
             d.line((c[0], c[1] - 5, c[0], c[1] + 5), fill=col, width=1)  # Vertical
 
@@ -1181,7 +1214,6 @@ class GUI:
         self.txtvar_userentry = tk.StringVar()
         self.txtvar_applied_name = tk.StringVar()
         self.txtvar_frames_saved = tk.StringVar()
-        self.txtvar_temperature = tk.StringVar()
 
         self.txtvar_recording.set('')
         self.txtvar_userentry.set('')
@@ -1216,7 +1248,7 @@ class GUI:
         content_panels = tk.PanedWindow(self.root, orient='vertical', relief=tk.GROOVE)
 
         toolbar.pack(side="top", fill="x")
-        statusbar.pack(side="bottom", fill="x")
+        statusbar.pack(side="bottom", fill="both", pady=2)
         content_panels.pack(padx=2, pady=2, side="top", fill="both", expand=True)
 
         # Creating Menubar
@@ -1317,11 +1349,6 @@ class GUI:
                                          state='disabled')
         self.button_recpause.pack(padx=3, pady=3, side="top", fill="both", expand=True)
 
-        temperature_label = tk.Label(statusbar, text='Temperature: ', anchor=tk.NW)
-        temperature_label.pack(side="left", expand=False)
-        self.temperature_value = tk.Label(statusbar, textvariable=self.txtvar_temperature, anchor=tk.NW)
-        self.temperature_value.pack(side="left", fill="both", expand=True)
-
         mem_pressure_label = tk.Label(statusbar, text='Memory pressure: ', anchor=tk.NW)
         mem_pressure_label.pack(side="left", expand=False)
         self.mem_pressure_bar = ttk.Progressbar(statusbar, length=20, maximum=0.9)
@@ -1378,17 +1405,18 @@ class GUI:
         self.autotile_button.pack(padx=6, pady=6, side="bottom", fill="both", expand=True)
 
         # LOG PANEL
-        # log_label_frame = tk.Frame(content_panels)
-        # log_label = tk.Label(log_label_frame, text='↓ pull for log ↓', anchor=tk.S, font=('Arial', 6))
-        # log_label.pack(side="top", fill="x", expand=True)
-        #
-        # log_frame = tk.Frame(content_panels)
-        # log_text_area = tk.Text(log_frame, font=("consolas", "8", "normal"))
-        # log_text_area.pack(side="top", fill="both", expand=True)
-        # content_panels.add(log_label_frame)
-        # content_panels.add(log_frame)
-        #
-        # gui_logger.register_text_area(log_text_area)
+        if gui_logger:
+            log_label_frame = tk.Frame(content_panels)
+            log_label = tk.Label(log_label_frame, text='↓ pull for log ↓', anchor=tk.S, font=('Arial', 6))
+            log_label.pack(side="top", fill="x", expand=True)
+
+            log_frame = tk.Frame(content_panels)
+            log_text_area = tk.Text(log_frame, font=("consolas", "9", "normal"))
+            log_text_area.pack(side="top", fill="both", expand=True)
+            content_panels.add(log_label_frame)
+            content_panels.add(log_frame)
+
+            gui_logger.register_text_area(log_text_area)
 
 
     def _update_child_windows_list(self):
@@ -1800,15 +1828,6 @@ class GUI:
             else:
                 size = sum(self.mgr._estim_file_size * self._nb_saved_frames)
                 self.txtvar_frames_saved.set(f'Saved frames: {self._nb_saved_frames} ({utils.pretty_size(size)})')
-
-        # Update cameras temperature display
-        # if int(display_dt) % 2 == 0:
-        if int(dt) % 2 == 0:
-            self.txtvar_temperature.set(f'{self.mgr.temperature:.1f}°C')
-            if all([v == 'Ok' for v in self.mgr.temperature_states]):  # TODO - This is Basler-specific - needs changing
-                self.temperature_value.config(fg="green")
-            else:
-                self.temperature_value.config(fg="orange")
 
         # Update memory pressure estimation
         self._mem_pressure += (psutil.virtual_memory().percent - self._mem_baseline) / self._mem_baseline

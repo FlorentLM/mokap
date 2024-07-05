@@ -217,7 +217,6 @@ class Manager:
                         source.name = n
                         source_col = f"#{self.config_dict['sources'][n].get('color', source_col).lstrip('#')}"
 
-                source.color = source_col
                 self._cameras_colours[source.name] = source_col
 
                 # Keep references of cameras as list and as dict for easy access
@@ -788,14 +787,6 @@ class Manager:
         return self._cameras_colours
 
     colors = colours    # An alias for our US American friends :p
-
-    @property
-    def temperature(self) -> float:
-        return np.mean([c.temperature for c in self._l_sources_list if c.temperature is not None])
-
-    @property
-    def temperature_states(self) -> list[str]:
-        return [c.temperature_state for c in self._l_sources_list]
 
     @property
     def saving_ext(self):
