@@ -21,6 +21,9 @@ np.set_printoptions(precision=4, suppress=True)
 import psutil
 import warnings
 
+if 'Windows' in platform.system():
+    import win32api
+
 
 class GUILogger:
     def __init__(self):
@@ -327,7 +330,7 @@ class VideoWindowBase:
         w_scr, h_scr, x_scr, y_scr = whxy(self.parent.selected_monitor)
         arbitrary_taskbar_h = 80
 
-        w, h = self.auto_size(apply=False)
+        w, h, _, _ = whxy(self)
 
         if pos == 'nw':
             self.window.geometry(f"{w}x{h}+{x_scr}+{y_scr}")
@@ -1507,21 +1510,27 @@ class GUI:
 
     def screen_update(self, val):
 
-        old_monitor_x, old_monitor_y = self.selected_monitor.x, self.selected_monitor.y
+        # Get current monitor coordinates - this is the origin
+        prev_monitor_x, prev_monitor_y = self.selected_monitor.x, self.selected_monitor.y
 
-        old_root_x = self.root.winfo_rootx()
-        old_root_y = self.root.winfo_rooty()
-        rel_mouse_x = self.root.winfo_pointerx() - old_root_x
-        rel_mouse_y = self.root.winfo_pointery() - old_root_y
+        # Get current window position in relation to origin
+        prev_root_x = self.root.winfo_rootx()
+        prev_root_y = self.root.winfo_rooty()
 
+        # Get current mouse cursor position in relation to origin
+        rel_mouse_x = self.root.winfo_pointerx() - prev_root_x
+        rel_mouse_y = self.root.winfo_pointery() - prev_root_y
+
+        # Set new monitor
         self.set_monitor(val)
         self.update_monitors_buttons()
 
+        # Move windows by the difference
         for window_to_move in self.visible_windows(include_main=True):
             w, h, x, y = whxy(window_to_move)
 
-            d_x = x - old_monitor_x
-            d_y = y - old_monitor_y
+            d_x = x - prev_monitor_x
+            d_y = y - prev_monitor_y
 
             new_x = self.selected_monitor.x + d_x
             new_y = self.selected_monitor.y + d_y
@@ -1543,16 +1552,60 @@ class GUI:
             else:
                 window_to_move.window.geometry(f'{w}x{h}+{new_x}+{new_y}')
 
-        movement_x = self.root.winfo_rootx() - old_root_x
-        movement_y = self.root.winfo_rooty() - old_root_y
-
-        self.root.event_generate('<Motion>', warp=True, x=movement_x + rel_mouse_x, y=movement_y + rel_mouse_y)
+        if 'Windows' in platform.system():
+            win32api.SetCursorPos((new_x + rel_mouse_x, new_y + rel_mouse_y))
+        elif 'Linux' in platform.system():
+            self.root.event_generate('<Motion>', warp=False, x=new_x + rel_mouse_x, y=new_y + rel_mouse_y)
+        #TODO - macOS
 
     def auto_size(self):
         pass
 
+    def move_to(self, pos):
+
+        w_scr, h_scr, x_scr, y_scr = whxy(self.selected_monitor)
+        arbitrary_taskbar_h = 80
+
+        w, h, _, _ = whxy(self)
+
+        if pos == 'nw':
+            self.root.geometry(f"{w}x{h}+{x_scr}+{y_scr}")
+        elif pos == 'n':
+            self.root.geometry(f"{w}x{h}+{x_scr + w_scr // 2 - w // 2}+{y_scr}")
+        elif pos == 'ne':
+            self.root.geometry(f"{w}x{h}+{x_scr + w_scr - w - 1}+{y_scr}")
+
+        elif pos == 'w':
+            self.root.geometry(f"{w}x{h}+{x_scr}+{y_scr + h_scr // 2 - h // 2}")
+        elif pos == 'c':
+            self.root.geometry(f"{w}x{h}+{x_scr + w_scr // 2 - w // 2}+{y_scr + h_scr // 2 - h // 2}")
+        elif pos == 'e':
+            self.root.geometry(f"{w}x{h}+{x_scr + w_scr - w - 1}+{y_scr + h_scr // 2 - h // 2}")
+
+        elif pos == 'sw':
+            self.root.geometry(f"{w}x{h}+{x_scr}+{y_scr + h_scr - h - arbitrary_taskbar_h}")
+        elif pos == 's':
+            self.root.geometry(f"{w}x{h}+{x_scr + w_scr // 2 - w // 2}+{y_scr + h_scr - h - arbitrary_taskbar_h}")
+        elif pos == 'se':
+            self.root.geometry(f"{w}x{h}+{x_scr + w_scr - w - 1}+{y_scr + h_scr - h - arbitrary_taskbar_h}")
+
     def auto_move(self):
-        pass
+        if self.selected_monitor.height < self.selected_monitor.width:
+            # First corners, then left right, then top and bottom,  and finally centre
+            positions = ['nw', 'sw', 'ne', 'se', 'n', 's', 'w', 'e', 'c']
+        else:
+            # First corners, then top and bottom, then left right, and finally centre
+            positions = ['nw', 'sw', 'ne', 'se', 'w', 'e', 'n', 's', 'c']
+
+        nb_positions = len(positions)
+
+        idx = len(self.child_windows)
+        if idx <= nb_positions:
+            pos = positions[idx]
+        else:  # Start over to first position
+            pos = positions[idx % nb_positions]
+
+        self.move_to(pos)
 
     def autotile_windows(self):
         """
