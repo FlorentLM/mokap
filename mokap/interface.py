@@ -878,7 +878,7 @@ class VideoWindowMain(VideoWindowBase):
         self.CENTRE_FRAME.config(text='Controls')
 
         self.camera_controls_sliders = {}
-        self._apply_all_vars = {}
+        self._val_in_sync = {}
 
         lf = tk.Frame(self.CENTRE_FRAME)
         lf.pack(pady=(15, 0), side='left', fill='both', expand=True)
@@ -907,7 +907,7 @@ class VideoWindowMain(VideoWindowBase):
             b = tk.Checkbutton(rf, variable=v, state='normal')
             v.set(1)
             b.pack(side="top", fill="x", expand=True)
-            self._apply_all_vars[label] = v
+            self._val_in_sync[label] = v
 
             scale_frame = tk.Frame(f_values)
             scale_frame.pack(side='top', fill='x', expand=True)
@@ -1005,12 +1005,14 @@ class VideoWindowMain(VideoWindowBase):
 
     def _update_param_all(self, param, event=None):
         self.update_param(param)
-        for window in self.parent.child_windows:
-            if window is not self and bool(window._apply_all_vars[param].get()):
-                slider = self.camera_controls_sliders[param]
-                new_val = slider.get()
-                window.camera_controls_sliders[param].set(new_val)
-                window.update_param(param)
+        should_apply = bool(self._val_in_sync[param].get())
+        if should_apply:
+            for window in self.parent.child_windows:
+                if window is not self and bool(window._val_in_sync[param].get()):
+                    slider = self.camera_controls_sliders[param]
+                    new_val = slider.get()
+                    window.camera_controls_sliders[param].set(new_val)
+                    window.update_param(param)
 
     def _toggle_focus_display(self):
         if self._show_focus.is_set():
