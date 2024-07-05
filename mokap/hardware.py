@@ -621,9 +621,9 @@ class BaslerCamera:
         if self._connected:
             if self.triggered:
                 self.ptr.AcquisitionFrameRateEnable.SetValue(False)
-                self._framerate = np.round(value, decimals=2)
+                self._framerate = round(value, 2)
             else:
-                new_framerate = min(value, self.max_framerate)
+                new_framerate = round(min(value, self.max_framerate), 2)
 
                 if self._is_virtual:
                     self.ptr.AcquisitionFrameRateAbs.SetValue(new_framerate)

@@ -1,3 +1,4 @@
+import subprocess
 from threading import Event
 from multiprocessing import RawArray
 from concurrent.futures import ThreadPoolExecutor
@@ -73,7 +74,7 @@ class Manager:
         self._binning: int = 1
         self._binning_mode: str = 'sum'
         self._exposure: int = exposure
-        self._framerate: int = framerate
+        self._framerate: float = framerate
         self._gain: float = 1.0
         self._gamma: float = 1.0
         self._blacks: float = 0.0
@@ -128,6 +129,9 @@ class Manager:
         self._l_all_frames: List[deque] = []
         self._l_latest_frames: List[deque] = []
 
+        # Initialise a list of subprocesses
+        self._videowriters: List[Union[False, subprocess.Popen]] = []
+
         # Sort the sources according to their idx
         self._l_sources_list.sort(key=lambda x: x.idx)
         self._nb_cams = len(self._l_sources_list)
@@ -138,6 +142,7 @@ class Manager:
             self._l_finished_saving.append(Event())
             self._l_all_frames.append(deque())
             self._l_latest_frames.append(deque(maxlen=1))
+            self._videowriters.append(False)
 
         # Init frames counters
         self._cnt_grabbed = RawArray('I', self._nb_cams)
@@ -314,10 +319,47 @@ class Manager:
         self._l_sources_list = []
 
         if not self._silent:
-            print(f"[INFO] Disconnected {self._nb_cams} camera{'s' if self._nb_cams > 1 else ''}.")
+            print(f"[INFO] Disconnected {self._nb_cams} camera{'s' if self._nb_cams > 1 else ''}")
         self._nb_cams = 0
 
-    def _image_writer_thread(self, cam_idx: int) -> NoReturn:
+    def _init_videowriter(self, cam_idx: int):
+        if self._saving_ext == 'mp4':
+            cam = self._l_sources_list[cam_idx]
+
+            if not self._videowriters[cam_idx]:
+                dummy_frame = np.zeros((cam.height, cam.width), dtype=np.uint8)
+                filepath = self.full_path / f"cam{cam.idx}_{cam.name}_session{len(self._metadata['sessions'])-1}.mp4"
+
+                # TODO - Get available hardware-accelerated encoders on user's system and choose the best one automatically
+                # TODO - Write a good software-based encoder command for users without GPUs
+                # TODO - h265 only for now, x264 would be nice too
+
+                if 'Linux' in platform.system():
+                    command = f'{self._ffmpeg_path} -threads 1 -y -s {cam.width}x{cam.height} -f rawvideo -framerate {cam.framerate} -pix_fmt gray8 -i pipe:0 -an -c:v hevc_nvenc -preset llhp -zerolatency 1 -2pass 0 -rc cbr_ld_hq -pix_fmt yuv420p -r:v {cam.framerate} {filepath.as_posix()}'
+                elif 'Windows' in platform.system():
+                    command = f'{self._ffmpeg_path} -threads 1 -y -s {cam.width}x{cam.height} -f rawvideo -framerate {cam.framerate} -pix_fmt gray8 -i pipe:0 -an -c:v hevc_nvenc -preset llhp -zerolatency 1 -2pass 0 -rc cbr_ld_hq -pix_fmt yuv420p -r:v {cam.framerate} {filepath.as_posix()}'
+                elif 'Darwin' in platform.system():
+                    command = f'{self._ffmpeg_path} -threads 1 -y -s {cam.width}x{cam.height} -f rawvideo -framerate {cam.framerate} -pix_fmt gray8 -i pipe:0 -an -c:v hevc_videotoolbox -realtime 1 -q:v 100 -tag:v hvc1 -pix_fmt yuv420p -r:v {cam.framerate} {filepath.as_posix()}'
+                    # command = f'{self._ffmpeg_path} -threads 1 -y -s {cam.width}x{cam.height} -f rawvideo -framerate {cam.framerate} -pix_fmt gray8 -i pipe:0 -an -c:v h264_videotoolbox -realtime 1 -q:v 100 -pix_fmt yuv420p -r:v {cam.framerate} {filepath.as_posix()}'
+                else:
+                    raise SystemExit('[ERROR] Unsupported platform')
+
+                ON_POSIX = 'posix' in sys.builtin_module_names
+                # p = Popen(shlex.split(command), stdin=PIPE, close_fds=ON_POSIX) # Debug mode (stderr/stdout on)
+                p = Popen(shlex.split(command), stdin=PIPE, stdout=False, stderr=False, close_fds=ON_POSIX)
+                p.stdin.write(dummy_frame.tobytes())
+                self._videowriters[cam_idx] = p
+        else:
+            self._videowriters[cam_idx] = False
+
+    def _close_videowriter(self, cam_idx: int):
+        if self._saving_ext == 'mp4':
+            if self._videowriters[cam_idx]:
+                self._videowriters[cam_idx].stdin.close()
+                self._videowriters[cam_idx].wait()
+        self._videowriters[cam_idx] = False
+
+    def _writer_thread(self, cam_idx: int) -> NoReturn:
         """
             This thread writes frames to the disk
 
@@ -326,53 +368,62 @@ class Manager:
             cam_idx: the index of the camera this threads belongs to
         """
 
+        queue = self._l_all_frames[cam_idx]
+
         h = self._l_sources_list[cam_idx].height
         w = self._l_sources_list[cam_idx].width
+
         folder = self.full_path / f"cam{cam_idx}_{self._l_sources_list[cam_idx].name}"
-        queue = self._l_all_frames[cam_idx]
 
         def save_frame(frame, number):
             """
                 Saves one frame and updates the saved frames counter
             """
-            # TODO - This will be a proper method that does either images or videos once the videowriter is working fine
 
-            filepath = folder / f"{str(number).zfill(9)}.{self._saving_ext}"
+            # If video mode
+            if 'mp4' in self._saving_ext:
+                self._videowriters[cam_idx].stdin.write(frame.tobytes())
+                if self._estim_file_size is None:
+                    self._estim_file_size = -1  # In case of video files, return -1 so the GUI knows what to do
 
-            match self._saving_ext:
-                case 'bmp':
-                    Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath)
-                case 'jpg' | 'jpeg':
-                    Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath, quality=self._saving_qual, subsampling='4:2:0')
-                case 'png':
-                    Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath, compress_level=self._saving_qual, optimize=False)
-                case 'tif' | 'tiff':
-                    if self._saving_qual == 100:
-                        Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath, compression=None)
-                    else:
-                        Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath, compression='jpeg', quality=self._saving_qual)
-                case 'debug':
-                    print('Dummy save')
+            else:
+                # If image mode
+                filepath = folder / f"{str(number).zfill(9)}.{self._saving_ext}"
+
+                match self._saving_ext:
+                    case 'bmp':
+                        Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath)
+                    case 'jpg' | 'jpeg':
+                        Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath, quality=self._saving_qual, subsampling='4:2:0')
+                    case 'png':
+                        Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath, compress_level=self._saving_qual, optimize=False)
+                    case 'tif' | 'tiff':
+                        if self._saving_qual == 100:
+                            Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath, compression=None)
+                        else:
+                            Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath, compression='jpeg', quality=self._saving_qual)
+                    case 'debug':
+                        print('Dummy save')
+
+                # Do this just once after one file has been written
+                if self._estim_file_size is None:
+                    try:
+                        self._estim_file_size = os.path.getsize(filepath)
+                    except:
+                        pass
 
             # The following is a RawArray, so the count is not atomic!
             # But it is fine as this is only for a rough estimation
             # (the actual number of written files is counted in a safe way when recording stops)
             self._cnt_saved[cam_idx] += 1
-
-            # Do this just once after one file has been written
-            if self._estim_file_size is None:
-                try:
-                    self._estim_file_size = os.path.getsize(filepath)
-                except:
-                    pass
 
         ##
 
         started_saving = False
         while self._acquiring.is_set():
-
             if self._recording.is_set():
                 # Recording is set - do actual work
+                self._init_videowriter(cam_idx)     # This does nothing if not in video mode
 
                 # Do this just once at the start of a new recording session
                 if not started_saving:
@@ -383,6 +434,7 @@ class Manager:
                 if queue:
                     frame_nb, frame = queue.popleft()
                     save_frame(frame, frame_nb)
+
                 # If we're writing fast enough, this thread should wait a bit
                 else:
                     time.sleep(0.01)
@@ -394,101 +446,8 @@ class Manager:
                         frame_nb, frame = queue.popleft()
                         save_frame(frame, frame_nb)
                     else:
+                        self._close_videowriter(cam_idx)     # This does nothing if not in video mode
                         # Finished saving, reverting to wait state
-                        self._l_finished_saving[cam_idx].set()
-                        started_saving = False
-                else:
-                    # Default state of this thread: if cameras are acquiring but we're not recording, just wait
-                    self._recording.wait()
-
-    def _video_writer_thread(self, cam_idx: int) -> NoReturn:
-        """
-            This thread writes videos to the disk
-
-            Parameters
-            ----------
-            cam_idx: the index of the camera this threads belongs to
-        """
-
-        h = self._l_sources_list[cam_idx].height
-        w = self._l_sources_list[cam_idx].width
-        fps = self._l_sources_list[cam_idx].framerate
-
-        filepath = self.full_path / f"cam{cam_idx}_{self._l_sources_list[cam_idx].name}_session{len(self._metadata['sessions'])}.mp4"
-        queue = self._l_all_frames[cam_idx]
-
-        # macOS commands:
-        # command = f'ffmpeg -threads 1 -y -s {w}x{h} -f rawvideo -framerate {fps} -pix_fmt gray8 -i pipe:0 -an -c:v hevc_videotoolbox -realtime 1 -q:v 100 -tag:v hvc1 -pix_fmt yuv420p -r:v {fps} {filepath.as_posix()}'
-        # command = f'ffmpeg -threads 1 -y -s {w}x{h} -f rawvideo -framerate {fps} -pix_fmt gray8 -i pipe:0 -an -c:v h264_videotoolbox -realtime 1 -q:v 100 -pix_fmt yuv420p -r:v {fps} {filepath.as_posix()}'
-
-        # Windows commands:
-        command = f'ffmpeg -threads 1 -y -s {w}x{h} -f rawvideo -framerate {fps} -pix_fmt gray8 -i pipe:0 -an -c:v hevc_nvenc -preset llhp -zerolatency 1 -2pass 0 -rc cbr_ld_hq -pix_fmt yuv420p -r:v {fps} {filepath.as_posix()}'
-        # command = f'ffmpeg -threads 1 -y -s {w}x{h} -f rawvideo -framerate {fps} -pix_fmt gray8 -i pipe:0 -an -c:v hevc -preset veryfast -crf 18 -pix_fmt yuv420p -r:v {fps} {filepath.as_posix()}'
-        # command = f'ffmpeg -threads 1 -y -s {w}x{h} -f rawvideo -framerate {fps} -pix_fmt gray8 -i pipe:0 -an -c:v h264_nvenc -realtime 1 -q:v 100 -pix_fmt yuv420p -r:v {fps} {filepath.as_posix()}'
-
-        # TODO
-
-        # Linux commands:
-        # TODO
-
-        # process = Popen(shlex.split(command), stdin=PIPE, stdout=PIPE, stderr=STDOUT, bufsize=1, close_fds=ON_POSIX, universal_newlines=True)
-        # process = Popen(shlex.split(command), stdin=PIPE, bufsize=1, close_fds=ON_POSIX, universal_newlines=True)
-
-        ON_POSIX = 'posix' in sys.builtin_module_names
-        process = Popen(shlex.split(command), stdin=PIPE, stdout=False, stderr=False, close_fds=ON_POSIX)
-        # process = Popen(shlex.split(command), stdin=PIPE)
-
-        def save_frame(frame, number):
-            """
-                Saves one frame and updates the saved frames counter
-            """
-            # TODO - This will be a proper method that does either images or videos once the videowriter is working fine
-
-            process.stdin.write(frame.tobytes())
-
-            # The following is a RawArray, so the count is not atomic!
-            # But it is fine as this is only for a rough estimation
-            # (the actual number of written files is counted in a safe way when recording stops)
-            self._cnt_saved[cam_idx] += 1
-
-            # Do this just once after one file has been written
-            if self._estim_file_size is None:
-                self._estim_file_size = -1      # In case of video files, return -1 so the GUI knows what to do
-
-        started_saving = False
-        initialised = False
-        while self._acquiring.is_set():
-
-            if self._recording.is_set():
-                # Recording is set - do actual work
-
-                # Do this just once at the start of a new recording session
-                if not started_saving:
-                    self._l_finished_saving[cam_idx].clear()
-                    started_saving = True
-
-                # Main state of this thread: If the queue is not empty, save a new frame
-                if queue:
-                    frame_nb, frame = queue.popleft()
-                    save_frame(frame, frame_nb)
-                    if not initialised:
-                        time.sleep(2)       # If we don't wait for the writer to initialise, it'll never catch up :(
-                        initialised = True
-                # If we're writing fast enough, this thread should wait a bit
-                else:
-                    time.sleep(0.01)
-            else:
-                # Recording is not set - either it hasn't started, or it has but hasn't finished yet
-                if started_saving:
-                    # Recording has been started, so remaining frames still need to be saved
-                    if queue:
-                        frame_nb, frame = queue.popleft()
-                        save_frame(frame, frame_nb)
-                    else:
-                        # Finished saving, reverting to wait state
-                        process.stdin.close()
-                        process.wait()
-
                         self._l_finished_saving[cam_idx].set()
                         started_saving = False
                 else:
@@ -594,31 +553,34 @@ class Manager:
             [e.wait() for e in self._l_finished_saving]
 
             for i, cam in enumerate(self.cameras):
-                # Read back how many frames were recorded in previous sessions of this acquisition
-                previsouly_saved = sum([self._metadata['sessions'][p]['cameras'][i].get('frames', 0) for p in range(len(self._metadata['sessions']))])
-
-                vid = self.full_path / f"cam{i}_{self._l_sources_list[i].name}_session{len(self._metadata['sessions'])-1}.mp4"
-
-                if vid.is_file(): # TODO - check better, use the self._saving_ext once it's properly implementing videos
-                    cap = cv2.VideoCapture(vid.as_posix())
-                    saved_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                    cap.release()
+                if 'mp4' in self._saving_ext:
+                    vid = self.full_path / f"cam{i}_{self._l_sources_list[i].name}_session{len(self._metadata['sessions'])-1}.mp4"
+                    if vid.is_file():
+                        cap = cv2.VideoCapture(vid.as_posix())
+                        saved_frames_curr_sess = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                        cap.release()
+                    else:
+                        saved_frames_curr_sess = 0
                 else:
+                    # Read back how many frames were recorded in previous sessions of this acquisition
+                    previsouly_saved = sum([self._metadata['sessions'][p]['cameras'][i].get('frames', 0) for p in
+                                            range(len(self._metadata['sessions']))])
+
                     # Wait for all files to finish being written and write the number of frames for this session
                     saved_frames = self._safe_files_counter(self.full_path / f'cam{i}_{cam.name}')
-                saved_frames_curr_sess = saved_frames - previsouly_saved
+                    saved_frames_curr_sess = saved_frames - previsouly_saved
 
                 self._metadata['sessions'][-1]['cameras'][i]['frames'] = saved_frames_curr_sess
                 self._metadata['sessions'][-1]['cameras'][i]['framerate_theoretical'] = cam.framerate
                 self._metadata['sessions'][-1]['cameras'][i]['framerate_actual'] = saved_frames_curr_sess / duration
 
             with open(self.full_path / 'metadata.json', 'w', encoding='utf-8') as f:
-                json.dump(self._metadata, f, ensure_ascii=False, indent=4)
+                json.dump(self._metadata, f, ensure_ascii=True, indent=4)
 
             (self.full_path / 'recording').unlink(missing_ok=True)
 
             if not self._silent:
-                print('[INFO] Done saving.')
+                print('[INFO] Done saving')
 
     def _safe_files_counter(self, path: Union[Path, str]) -> int:
         """
@@ -670,8 +632,7 @@ class Manager:
 
             for i, cam in enumerate(self._l_sources_list):
                 self._executor.submit(self._grabber_thread, i)
-                self._executor.submit(self._image_writer_thread, i)
-                # self._executor.submit(self._video_writer_thread, i)
+                self._executor.submit(self._writer_thread, i)
                 self._executor.submit(self._display_updater_thread, i)
 
             if not self._silent:
@@ -710,7 +671,7 @@ class Manager:
             self._executor = None
 
             if not self._silent:
-                print(f'[INFO] Grabbing stopped.')
+                print(f'[INFO] Grabbing stopped')
 
     @property
     def session_name(self) -> str:

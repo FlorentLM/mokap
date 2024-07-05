@@ -1003,7 +1003,10 @@ class VideoWindowMain(VideoWindowBase):
             # Keep a local copy to warn user if actual framerate is too different from requested fps
             self._wanted_fps = self.camera_controls_sliders[param].get()
 
-            self.parent.mgr.cameras[self.idx].framerate = self._wanted_fps
+            if self.parent.mgr.triggered:
+                self.parent.mgr.framerate = self._wanted_fps
+            else:
+                self.parent.mgr.cameras[self.idx].framerate = self._wanted_fps
 
             self.camera_controls_sliders['framerate'].config(to=self.parent.mgr.cameras[self.idx].max_framerate)
 

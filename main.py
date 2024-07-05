@@ -2,7 +2,7 @@
 from mokap.interface import GUI
 from mokap.core import Manager
 
-mgr = Manager(config='./config.yaml', triggered=False, silent=False)
+mgr = Manager(config='./config.yaml', triggered=True, silent=False)
 
 # Set exposure for all cameras (in µs)
 mgr.exposure = 4800
@@ -11,8 +11,8 @@ mgr.exposure = 4800
 mgr.binning = 1
 mgr.binning_mode = 'avg'
 
-# Set framerate in images per second
-mgr.framerate = 120
+# Set framerate in images per second for all cameras at once
+mgr.framerate = 100
 
 mgr.gamma = 1.0
 mgr.blacks = 1.0
