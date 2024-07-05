@@ -50,21 +50,6 @@ def hls_to_hex(*hls):
     return new_hex
 
 
-def get_random_colors(count):
-    # TODO - improve ths thing
-
-    rng = np.random.default_rng()
-    hues = rng.integers(low=0, high=359, size=count)
-    luminance = rng.integers(low=45, high=60, size=count)
-
-    while any(hues[1:] - hues[:-1].copy() < 65):
-        hues = rng.integers(low=0, high=359, size=count)
-
-    saturation = [85] * count
-
-    return hues, saturation, luminance
-
-
 def randframe(w=1440, h=1080):
     return np.random.randint(0, 255, (w, h), dtype='<u1')
 

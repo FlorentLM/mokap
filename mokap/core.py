@@ -5,7 +5,7 @@ from typing import NoReturn, Union, List
 from pathlib import Path
 import time
 from datetime import datetime, timedelta
-
+import random
 import cv2
 import numpy as np
 import pypylon.pylon as py
@@ -48,7 +48,8 @@ import sys
 #
 
 class Manager:
-
+    COLOURS = ['#3498db', '#f4d03f', '#27ae60', '#e74c3c', '#9b59b6', '#f39c12', '#1abc9c', '#F5A7D4', '#34495e', '#bdc3c7',
+               '#2471a3', '#d4ac0d', '#186a3b', '#922b21', '#6c3483', '#d35400', '#117a65', '#e699db', '#1c2833', '#707b7c']
     def __init__(self,
                  config='config.yaml',
                  framerate=220,
@@ -182,16 +183,18 @@ class Manager:
 
     def connect_basler_devices(self):
 
-        sources_names = list(self.config_dict['sources'].keys())
-        source_types = [self.config_dict['sources'][n].get('type').lower() for n in sources_names]
+        if self.config_dict['sources'] is not None:
+            config_sources_names = list(self.config_dict['sources'].keys())
+            config_source_types = [self.config_dict['sources'][n].get('type').lower() for n in config_sources_names]
 
-        virtual_sources = [self.config_dict['sources'][n].get('virtual', False) for n in sources_names]
-        nb_basler_virtuals = sum([t & v for t, v in zip([t == 'basler' for t in source_types], virtual_sources)])
+            config_virtual_sources = [self.config_dict['sources'][n].get('virtual', False) for n in config_sources_names]
+            config_nb_basler_virtuals = sum([t & v for t, v in zip([t == 'basler' for t in config_source_types], config_virtual_sources)])
+        else:
+            config_sources_names = []
+            config_nb_basler_virtuals = 0
 
-        avail_basler_devices = enumerate_basler_devices(virtual_cams=nb_basler_virtuals)
+        avail_basler_devices = enumerate_basler_devices(virtual_cams=config_nb_basler_virtuals)
         nb_basler_devices = len(avail_basler_devices)
-
-        hues, saturation, luminance = utils.get_random_colors(nb_basler_devices)
 
         # Instantiate Basler InstantCameras and link them to our BaslerCamera class
         for i in range(nb_basler_devices):
@@ -206,14 +209,15 @@ class Manager:
 
             if source.connected:
 
-                source_col = utils.hls_to_hex(hues[i], luminance[i], saturation[i])
+                source_col = Manager.COLOURS[i]
 
                 # Grab name and colour from config file if they're in there
-                for n in sources_names:
+                for n in config_sources_names:
                     if source.serial == str(self.config_dict['sources'][n].get('serial', 'virtual')):
                         source.name = n
                         source_col = f"#{self.config_dict['sources'][n].get('color', source_col).lstrip('#')}"
 
+                source.color = source_col
                 self._cameras_colours[source.name] = source_col
 
                 # Keep references of cameras as list and as dict for easy access

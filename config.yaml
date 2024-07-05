@@ -5,23 +5,23 @@ save_quality: 80    # 0 - 100%
 
 # Add your sources below
 sources:
-    red:
+    strawberry:
         type: basler
         serial: xxxxxx
-        color: e03228
-    green:
+        color: da141d
+    avocado:
         type: basler
         serial: xxxxxx
-        color: 15ab79
-    yellow:
+        color: 7a9c21
+    banana:
         type: basler
         serial: xxxxxx
-        color: fff139
-    blue:
+        color: f3d586
+    blueberry:
         type: basler
         serial: xxxxxx
-        color: 435fc4
-    white:
+        color: 443e93
+    coconut:
         type: basler
         serial: xxxxxx
-        color: fdfdfd
+        color: efeee7

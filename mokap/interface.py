@@ -1816,4 +1816,4 @@ class GUI:
         self._mem_baseline = psutil.virtual_memory().percent
 
         self._clock = now
-        self.root.after(100, self.update)
+        self.root.after(1000, self.update)
