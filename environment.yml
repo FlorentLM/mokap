@@ -11,6 +11,7 @@ dependencies:
   - toml=0.10.2
   - python=3.10.13
   - python-dotenv=0.21.0
+  - pyyaml=6.0.1
   - pip:
       - opencv-contrib-python==4.8.1.78
       - pypylon==2.3.0

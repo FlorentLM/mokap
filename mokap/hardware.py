@@ -7,8 +7,8 @@ from dotenv import load_dotenv
 import pypylon.pylon as py
 from typing import NoReturn, Union, List
 from subprocess import  check_output
-import PySpin
-os.environ['SPINNAKER_GENTL64_CTI'] = '/Applications/Spinnaker/lib/spinnaker-gentl/Spinnaker_GenTL.cti'
+#import PySpin
+#os.environ['SPINNAKER_GENTL64_CTI'] = '/Applications/Spinnaker/lib/spinnaker-gentl/Spinnaker_GenTL.cti'
 
 import platform
 import subprocess
