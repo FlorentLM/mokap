@@ -19,6 +19,7 @@ from functools import partial
 from collections import deque
 np.set_printoptions(precision=4, suppress=True)
 import psutil
+import warnings
 
 
 class GUILogger:
@@ -48,8 +49,9 @@ class GUILogger:
     def flush(self):
         pass
 
+
 # Create this immediately to capture everything
-gui_logger = GUILogger()
+# gui_logger = GUILogger()
 
 
 def whxy(what):
@@ -124,11 +126,9 @@ class VideoWindowBase:
         self._frame_buffer = np.zeros(self._source_shape, dtype='<u1')
 
         ## Init state
-        self._counter = 0
-        self._counter_start = 0
         self._clock = datetime.now()
-        self._fps = 0
-        self._applied_fps = self.parent.mgr.cameras[self.idx].framerate
+        self._fps = deque(maxlen=100)
+        self._wanted_fps = self.parent.mgr.cameras[self.idx].framerate
 
         ## Set thread-safe events
         self.visible = Event()
@@ -412,7 +412,7 @@ class VideoWindowBase:
             cap_fps = self.parent.capture_fps[self.idx]
 
             if 0 < cap_fps < 1000:  # only makes sense to display real values
-                if abs(cap_fps - self._applied_fps) > 10:
+                if abs(cap_fps - self._wanted_fps) > 10:
                     self.txtvar_warning.set('[ WARNING: Framerate ]')
                     self._warning.set()
                 else:
@@ -427,7 +427,9 @@ class VideoWindowBase:
             self.txtvar_capture_fps.set("Off")
             self.txtvar_brightness.set("-")
 
-        self.txtvar_display_fps.set(f"{self._fps:.2f} fps")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            self.txtvar_display_fps.set(f"{np.nanmean(list(self._fps)):.2f} fps")
 
     def update(self):
         if self.macos_trick:
@@ -436,11 +438,6 @@ class VideoWindowBase:
         while not self.should_stop.is_set():
             if self.visible.is_set():
 
-                # Update display fps counter
-                now = datetime.now()
-                dt = (now - self._clock).total_seconds()
-                self._fps = (self._counter - self._counter_start) / dt
-
                 self._update_txtvars()
                 self._refresh_framebuffer()
 
@@ -448,7 +445,12 @@ class VideoWindowBase:
 
                 self._refresh_videofeed(image_with_vis)
 
-                self._counter += 1
+                # Update display fps counter
+                now = datetime.now()
+                dt = (now - self._clock).total_seconds()
+                self._fps.append((1.0 / dt))
+
+                self._clock = now
             else:
                 self.visible.wait()
 
@@ -875,7 +877,8 @@ class VideoWindowMain(VideoWindowBase):
         f_values.pack(side='left', fill='both', expand=True)
 
         for label, slider_params in zip(['framerate', 'exposure', 'blacks', 'gain', 'gamma'],
-                                                   [(int, 1, 220, 1, 1),
+                                                    # type, from, to, resolution, digits
+                                                   [(int, 1, self.parent.mgr.cameras[self.idx].max_framerate, 1, 1),
                                                     (int, 21, 1e5, 5, 1),  # in microseconds - 1e5 ~ 10 fps
                                                     (float, 0.0, 32.0, 0.5, 3),
                                                     (float, 0.0, 36.0, 0.5, 3),
@@ -966,17 +969,19 @@ class VideoWindowMain(VideoWindowBase):
         slider.set(getattr(self.parent.mgr.cameras[self.idx], param))
 
         if param == 'exposure':
-            # We also need to update the framerate slider to current resulting fps after exposure change
-            self.update_param('framerate')
-
             # Refresh exposure value for UI display
             self.txtvar_exposure.set(f"{self.parent.mgr.cameras[self.idx].exposure} µs")
 
+            # We also need to update the framerate slider to current resulting fps after exposure change
+            self.update_param('framerate')
+
         elif param == 'framerate':
             # Keep a local copy to warn user if actual framerate is too different from requested fps
-            self._applied_fps = self.camera_controls_sliders[param].get()
+            self._wanted_fps = self.camera_controls_sliders[param].get()
 
-            self.parent.mgr.framerate = self._applied_fps
+            self.parent.mgr.cameras[self.idx].framerate = self._wanted_fps
+
+            self.camera_controls_sliders['framerate'].config(to=self.parent.mgr.cameras[self.idx].max_framerate)
 
             # Refresh framerate counters for UI display
             self.parent._capture_clock = datetime.now()
@@ -1093,7 +1098,7 @@ class VideoWindowMain(VideoWindowBase):
 
 class GUI:
     CONTROLS_MIN_WIDTH = 600
-    CONTROLS_MIN_HEIGHT = 360
+    CONTROLS_MIN_HEIGHT = 370
 
     def __init__(self, mgr):
 
@@ -1162,14 +1167,12 @@ class GUI:
         self.editing_disabled = True
 
         self._capture_clock = datetime.now()
-        self._display_clock = datetime.now()
+        self._clock = datetime.now()
 
         self._capture_fps = np.zeros(self.mgr.nb_cameras, dtype=np.float32)
         self._nb_grabbed_frames = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
         self._nb_saved_frames = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
         self.start_indices = np.zeros(self.mgr.nb_cameras, dtype=np.uint32)
-
-        self._counter = 0
 
         self.txtvar_recording = tk.StringVar()
         self.txtvar_userentry = tk.StringVar()
@@ -1372,17 +1375,17 @@ class GUI:
         self.autotile_button.pack(padx=6, pady=6, side="bottom", fill="both", expand=True)
 
         # LOG PANEL
-        log_label_frame = tk.Frame(content_panels)
-        log_label = tk.Label(log_label_frame, text='↓ Log ↓', anchor=tk.S, font=('Arial', 8))
-        log_label.pack(side="top", fill="x", expand=True)
-
-        log_frame = tk.Frame(content_panels)
-        log_text_area = tk.Text(log_frame, font=("consolas", "8", "normal"))
-        log_text_area.pack(side="top", fill="both", expand=True)
-        content_panels.add(log_label_frame)
-        content_panels.add(log_frame)
-
-        gui_logger.register_text_area(log_text_area)
+        # log_label_frame = tk.Frame(content_panels)
+        # log_label = tk.Label(log_label_frame, text='↓ pull for log ↓', anchor=tk.S, font=('Arial', 6))
+        # log_label.pack(side="top", fill="x", expand=True)
+        #
+        # log_frame = tk.Frame(content_panels)
+        # log_text_area = tk.Text(log_frame, font=("consolas", "8", "normal"))
+        # log_text_area.pack(side="top", fill="both", expand=True)
+        # content_panels.add(log_label_frame)
+        # content_panels.add(log_frame)
+        #
+        # gui_logger.register_text_area(log_text_area)
 
 
     def _update_child_windows_list(self):
@@ -1440,9 +1443,9 @@ class GUI:
     def capture_fps(self):
         return self._capture_fps
 
-    @property
-    def count(self):
-        return self._counter
+    # @property
+    # def count(self):
+    #     return self._counter
 
     @property
     def source_dims(self):
@@ -1717,7 +1720,7 @@ class GUI:
 
         # Update real time counter and determine display fps
         now = datetime.now()
-        display_dt = (now - self._display_clock).total_seconds()
+        dt = (now - self._clock).total_seconds()
 
         if self._mem_baseline is None:
             self._mem_baseline = psutil.virtual_memory().percent
@@ -1746,7 +1749,8 @@ class GUI:
                 self.txtvar_frames_saved.set(f'Saved frames: {self._nb_saved_frames} ({utils.pretty_size(size)})')
 
         # Update cameras temperature display
-        if int(display_dt) % 2 == 0:
+        # if int(display_dt) % 2 == 0:
+        if int(dt) % 2 == 0:
             self.txtvar_temperature.set(f'{self.mgr.temperature:.1f}°C')
             if all([v == 'Ok' for v in self.mgr.temperature_states]):  # TODO - This is Basler-specific - needs changing
                 self.temperature_value.config(fg="green")
@@ -1758,5 +1762,5 @@ class GUI:
         self.mem_pressure_bar.config(value=self._mem_pressure)
         self._mem_baseline = psutil.virtual_memory().percent
 
-        self._counter += 1
-        self.root.after(300, self.update)
+        self._clock = now
+        self.root.after(100, self.update)

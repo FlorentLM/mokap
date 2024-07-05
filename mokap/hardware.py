@@ -297,9 +297,9 @@ class BaslerCamera:
     def __repr__(self):
         if self._connected:
             v = 'Virtual ' if self._is_virtual else ''
-            return f"{v}Camera [S/N {self.serial}] (id={self._idx}, name={self._name})"
+            return f"Basler {v}Camera [S/N {self.serial}] (id={self._idx}, name={self._name})"
         else:
-            return f"Camera disconnected"
+            return f"Basler Camera disconnected"
 
     def _set_roi(self) -> NoReturn:
         if not self._is_virtual:
@@ -608,32 +608,27 @@ class BaslerCamera:
     def framerate(self) -> float:
         return self._framerate
 
+    @property
+    def max_framerate(self) -> float:
+        prev_state = self.ptr.AcquisitionFrameRateEnable.Value
+        self.ptr.AcquisitionFrameRateEnable = False
+        resulting_framerate = self.ptr.ResultingFrameRate.Value
+        self.ptr.AcquisitionFrameRateEnable = prev_state
+        return resulting_framerate
+
     @framerate.setter
     def framerate(self, value: float):
         if self._connected:
             if self.triggered:
-                # print(f'[WARN] Trying to set framerate on a hardware-triggered camera ([{self._name}])') # TODO
                 self.ptr.AcquisitionFrameRateEnable.SetValue(False)
-                self._framerate = np.floor(value)
+                self._framerate = np.round(value, decimals=2)
             else:
-                if not self._is_virtual:
-                    self.ptr.AcquisitionFrameRateEnable.SetValue(True)
-                    self.ptr.AcquisitionFrameRate.SetValue(220.0)
+                new_framerate = min(value, self.max_framerate)
 
-                    # floor with decimals
-                    f = math.floor(self.ptr.ResultingFrameRate.GetValue() * 100) / 100.0
-
-                    new_framerate = min(value, f)
-
-                    self.ptr.AcquisitionFrameRateEnable.SetValue(True)
-                    self.ptr.AcquisitionFrameRate.SetValue(new_framerate)
-
+                if self._is_virtual:
+                    self.ptr.AcquisitionFrameRateAbs.SetValue(new_framerate)
                 else:
-                    self.ptr.AcquisitionFrameRateAbs = 220
-                    f = math.floor(self.ptr.AcquisitionFrameRateAbs.GetValue() * 100) / 100.0
-                    new_framerate = min(value, f)
-
-                    self.ptr.AcquisitionFrameRateAbs = new_framerate
+                    self.ptr.AcquisitionFrameRate.SetValue(new_framerate)
 
                 self._framerate = new_framerate
 

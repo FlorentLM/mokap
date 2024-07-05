@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import NoReturn, Union, List
 from pathlib import Path
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import cv2
 import numpy as np
@@ -22,6 +22,30 @@ from subprocess import Popen, PIPE, STDOUT
 import shlex
 import sys
 
+#
+#
+# now = datetime.now()
+#
+# # Align to the next 30 second event from the current time
+# if now.second >= 30:
+#     next_fire = now.replace(second=30, microsecond=0) + timedelta(seconds=30)
+# else:
+#     next_fire = now.replace(second=0, microsecond=0) + timedelta(seconds=30)
+#
+# sleep = (next_fire - now).seconds - 2
+#
+# while True:
+#     # Sleep for most of the time
+#     time.sleep(sleep)
+#
+#     # Wait until the precise time is reached
+#     while datetime.now() < next_fire:
+#         pass
+#
+#     print("fired at", datetime.now())
+#     next_fire += timedelta(seconds=30)  # Advance 30 seconds
+#     sleep = 28
+#
 
 class Manager:
 
@@ -82,6 +106,7 @@ class Manager:
         self._executor: Union[ThreadPoolExecutor, None] = None
 
         self._acquiring: Event = Event()
+        self.must_stop: Event = Event()
         self._recording: Event = Event()
 
         self._nb_cams: int = 0
@@ -196,7 +221,7 @@ class Manager:
                 self._sources_dict[source.name] = source
 
                 if not self._silent:
-                    print(f"[INFO] Attached Basler camera {source}.")
+                    print(f"[INFO] Attached {source}")
 
     @property
     def framerate(self) -> Union[float, None]:
@@ -323,6 +348,8 @@ class Manager:
                         Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath, compression=None)
                     else:
                         Image.frombuffer("L", (w, h), frame, 'raw', "L", 0, 1).save(filepath, compression='jpeg', quality=self._saving_qual)
+                case 'debug':
+                    print('Dummy save')
 
             # The following is a RawArray, so the count is not atomic!
             # But it is fine as this is only for a rough estimation
@@ -478,19 +505,13 @@ class Manager:
         # TODO - Rewrite this in a more elegant way
 
         queue = self._l_latest_frames[cam_idx]
+        timer = Event()
 
-        tick = datetime.now()
-        while self._acquiring.is_set():
-            tock = datetime.now()
-            elapsed = (tock - tick).microseconds
-
-            if elapsed >= self._display_wait_time_us:
+        if self._acquiring.is_set():
+            while not timer.wait(1.0/60.0):
                 if queue:
                     self._l_display_buffers[cam_idx] = queue.popleft()
                     self._cnt_displayed[cam_idx] += 1
-            else:
-                time.sleep(self._display_wait_time_s)
-            tick = tock
 
     def _grabber_thread(self, cam_idx: int) -> NoReturn:
         """
@@ -664,6 +685,7 @@ class Manager:
             self.pause()
 
             self._acquiring.clear()     # End Acquisition event
+            self.must_stop.set()
 
             for cam in self._l_sources_list:
                 cam.stop_grabbing()     # Ask the cameras to stop grabbing (they control the thread execution loop)
