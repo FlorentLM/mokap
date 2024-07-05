@@ -1585,7 +1585,7 @@ class GUI:
         if 'Windows' in platform.system():
             win32api.SetCursorPos((new_x + rel_mouse_x, new_y + rel_mouse_y))
         elif 'Linux' in platform.system():
-            self.root.event_generate('<Motion>', warp=False, x=new_x + rel_mouse_x, y=new_y + rel_mouse_y)
+            self.root.event_generate('<Motion>', warp=True, x=0 , y=0)
         #TODO - macOS
 
     def auto_size(self):
