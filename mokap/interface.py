@@ -1805,7 +1805,7 @@ class GUI:
         # Close main window and exit Python program
         self.root.quit()
         self.root.destroy()
-        sys.exit()
+        exit()
 
     def update(self):
 
