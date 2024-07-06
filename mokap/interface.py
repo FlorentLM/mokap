@@ -110,9 +110,9 @@ class VideoWindowBase:
         if 'Darwin' in platform.system():
             # Trick to force macOS to open a window and not a tab
             self.window.resizable(False, False)
-            self.macos_trick = True
+            self._macOS_trick = True
         else:
-            self.macos_trick = False
+            self._macOS_trick = False
 
         self._camera = self.parent.mgr.cameras[self.idx]
         self._source_shape = (self._camera.height, self._camera.width)
@@ -364,15 +364,9 @@ class VideoWindowBase:
             self.window.withdraw()
 
         elif not self.visible.is_set() and tf is True:
-            if 'Darwin' in platform.system():
-                # Trick to force macOS to open a window and not a tab
-                self.window.resizable(False, False)
-                self.macos_trick = True
             self.visible.set()
             self.parent.child_windows_visibility_vars[self.idx].set(1)
             self.window.deiconify()
-            if self.macos_trick:
-                self.window.resizable(True, True)
         else:
             pass
 
@@ -452,10 +446,14 @@ class VideoWindowBase:
             self.txtvar_display_fps.set(f"{np.nanmean(list(self._fps)):.2f} fps")
 
     def update(self):
-        if self.macos_trick:
-            self.window.resizable(True, True)
 
-        while not self.should_stop.wait(1/60.0):
+        while not self.should_stop.wait(1/30.0):
+            # Disable the trick if it's on
+            if self._macOS_trick:
+                self.window.resizable(True, True)
+                self._macOS_trick = False
+                Event().wait(0.2)   # This is needed otherwise macOS freaks out and SIGKILLs the thread...
+
             if self.visible.is_set():
 
                 self._update_txtvars()
@@ -471,6 +469,7 @@ class VideoWindowBase:
                 self._fps.append((1.0 / dt))
 
                 self._clock = now
+
             else:
                 self.visible.wait()
 
@@ -1443,23 +1442,20 @@ class GUI:
                                                             activebackground=window.colour,
                                                             activeforeground=window.colour,
                                                             command=window.toggle_visibility)
-
     def _start_child_windows(self):
         for c in self.mgr.cameras:
 
             if self._is_calibrating.is_set():
                 w = VideoWindowCalib(parent=self, idx=c.idx)
                 self.child_windows.append(w)
-
-                t = Thread(target=w.update, args=(), daemon=True)
+                t = Thread(target=w.update, args=(), daemon=False)
                 t.start()
                 self.child_threads.append(t)
 
             else:
                 w = VideoWindowMain(parent=self, idx=c.idx)
                 self.child_windows.append(w)
-
-                t = Thread(target=w.update, args=(), daemon=True)
+                t = Thread(target=w.update, args=(), daemon=False)
                 t.start()
                 self.child_threads.append(t)
 
@@ -1585,14 +1581,15 @@ class GUI:
 
             if window_to_move is self:
                 self.root.geometry(f'{w}x{h}+{new_x}+{new_y}')
+
+                # Move cursor with the root window
+                if 'Windows' in platform.system():
+                    win32api.SetCursorPos((new_x + rel_mouse_x, new_y + rel_mouse_y))
+                elif 'Linux' in platform.system():
+                    self.root.event_generate('<Motion>', warp=True, x=0, y=0)
+                # TODO - macOS
             else:
                 window_to_move.window.geometry(f'{w}x{h}+{new_x}+{new_y}')
-
-        if 'Windows' in platform.system():
-            win32api.SetCursorPos((new_x + rel_mouse_x, new_y + rel_mouse_y))
-        elif 'Linux' in platform.system():
-            self.root.event_generate('<Motion>', warp=True, x=0 , y=0)
-        #TODO - macOS
 
     def auto_size(self):
         pass
@@ -1713,6 +1710,7 @@ class GUI:
                 self.txtvar_recording.set('')
                 self.button_recpause.config(text="Not recording (Space to toggle)", image=self.icon_rec_bw)
             elif not self.mgr.recording and tf is True:
+                self._mem_baseline = psutil.virtual_memory().percent
                 self.mgr.record()
                 self.txtvar_recording.set('[ Recording... ]')
                 self.button_recpause.config(text="Recording... (Space to toggle)", image=self.icon_rec_on)
@@ -1791,7 +1789,6 @@ class GUI:
 
         # Close the child windows and stop their threads
         for w in self.child_windows:
-            w.visible.clear()
             w.should_stop.set()
 
         # Stop camera acquisition

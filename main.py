@@ -12,7 +12,7 @@ mgr.binning = 1
 mgr.binning_mode = 'avg'
 
 # Set framerate in images per second for all cameras at once
-mgr.framerate = 100
+mgr.framerate = 150
 
 mgr.gamma = 1.0
 mgr.blacks = 1.0

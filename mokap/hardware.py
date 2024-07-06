@@ -616,7 +616,7 @@ class BaslerCamera:
             resulting_framerate = self.ptr.ResultingFrameRate.Value
             self.ptr.AcquisitionFrameRateEnable = prev_state
         else:
-            resulting_framerate = self.ptr.AcquisitionFrameRateAbs.Value
+            resulting_framerate = 100.0
         return resulting_framerate
 
     @framerate.setter
@@ -650,7 +650,7 @@ class BaslerCamera:
             if val in [0.0, 421.0]:
                 return None
             else:
-                return val
+                return 10.0
         else:
             return None
 
