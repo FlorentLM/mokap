@@ -249,7 +249,7 @@ class SSHTrigger:
             print(f"[INFO] Trigger stopped")
 
     def disconnect(self) -> NoReturn:
-        if self.client:
+        if hasattr(self, 'client') and self.client:
             self.client.close()
             self.client = False
 
@@ -610,10 +610,13 @@ class BaslerCamera:
 
     @property
     def max_framerate(self) -> float:
-        prev_state = self.ptr.AcquisitionFrameRateEnable.Value
-        self.ptr.AcquisitionFrameRateEnable = False
-        resulting_framerate = self.ptr.ResultingFrameRate.Value
-        self.ptr.AcquisitionFrameRateEnable = prev_state
+        if not self._is_virtual:
+            prev_state = self.ptr.AcquisitionFrameRateEnable.Value
+            self.ptr.AcquisitionFrameRateEnable = False
+            resulting_framerate = self.ptr.ResultingFrameRate.Value
+            self.ptr.AcquisitionFrameRateEnable = prev_state
+        else:
+            resulting_framerate = self.ptr.AcquisitionFrameRateAbs.Value
         return resulting_framerate
 
     @framerate.setter
@@ -642,13 +645,19 @@ class BaslerCamera:
 
     @property
     def temperature(self) -> Union[float, None]:
-        val = self.ptr.DeviceTemperature.Value
-        if val in [0.0, 421.0]:
-            return None
+        if not self._is_virtual:
+            val = self.ptr.DeviceTemperature.Value
+            if val in [0.0, 421.0]:
+                return None
+            else:
+                return val
         else:
-            return val
+            return None
 
     @property
-    def temperature_state(self) -> int:
-        return self.ptr.TemperatureState.Value
+    def temperature_state(self) -> str:
+        if not self._is_virtual:
+            return self.ptr.TemperatureState.Value
+        else:
+            return 'Ok'
 
