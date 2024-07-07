@@ -556,6 +556,7 @@ class Manager:
                 if 'mp4' in self._saving_ext:
                     vid = self.full_path / f"cam{i}_{self._l_sources_list[i].name}_session{len(self._metadata['sessions'])-1}.mp4"
                     if vid.is_file():
+                        # Using cv2 here is much faster than calling ffprobe...
                         cap = cv2.VideoCapture(vid.as_posix())
                         saved_frames_curr_sess = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
                         cap.release()
