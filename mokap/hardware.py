@@ -41,7 +41,7 @@ def get_encoders(ffmpeg_path='ffmpeg', codec='hevc'):
     elif '264' in codec:
         codec = 'h264'
 
-    r = check_output([ffmpeg_path, '-codecs'], stderr=False).decode('UTF-8').splitlines()
+    r = check_output([ffmpeg_path, '-hide_banner', '-codecs'], stderr=False).decode('UTF-8').splitlines()
     codec_line = list(filter(lambda x: codec in x, r))[0]
 
     all_encoders = codec_line.split('encoders: ')[1].strip(')').split()
@@ -49,7 +49,7 @@ def get_encoders(ffmpeg_path='ffmpeg', codec='hevc'):
     encoders_names = []
 
     for encoder in all_encoders:
-        r = check_output([ffmpeg_path, '-h', f'encoder={encoder}'], stderr=False).decode('UTF-8').splitlines()
+        r = check_output([ffmpeg_path, '-hide_banner', '-h', f'encoder={encoder}'], stderr=False).decode('UTF-8').splitlines()
         name_line = list(filter(lambda x: f'Encoder {encoder}' in x, r))[0]
         true_name = name_line.split(f'Encoder {encoder} [')[1][:-2]
         encoders_names.append(true_name)

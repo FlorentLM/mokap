@@ -5,15 +5,13 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import NoReturn, Union, List
 from pathlib import Path
 import time
-from datetime import datetime, timedelta
-import random
+from datetime import datetime
 import cv2
 import numpy as np
 import pypylon.pylon as py
 import mokap.files_op as files_op
 from collections import deque
-from mokap.hardware import SSHTrigger, BaslerCamera, setup_ulimit, enumerate_basler_devices, enumerate_flir_devices, get_encoders
-from mokap import utils
+from mokap.hardware import SSHTrigger, BaslerCamera, setup_ulimit, enumerate_basler_devices, enumerate_flir_devices
 from PIL import Image
 import platform
 import json
@@ -23,30 +21,6 @@ from subprocess import Popen, PIPE, STDOUT
 import shlex
 import sys
 
-#
-#
-# now = datetime.now()
-#
-# # Align to the next 30 second event from the current time
-# if now.second >= 30:
-#     next_fire = now.replace(second=30, microsecond=0) + timedelta(seconds=30)
-# else:
-#     next_fire = now.replace(second=0, microsecond=0) + timedelta(seconds=30)
-#
-# sleep = (next_fire - now).seconds - 2
-#
-# while True:
-#     # Sleep for most of the time
-#     time.sleep(sleep)
-#
-#     # Wait until the precise time is reached
-#     while datetime.now() < next_fire:
-#         pass
-#
-#     print("fired at", datetime.now())
-#     next_fire += timedelta(seconds=30)  # Advance 30 seconds
-#     sleep = 28
-#
 
 class Manager:
     COLOURS = ['#3498db', '#f4d03f', '#27ae60', '#e74c3c', '#9b59b6', '#f39c12', '#1abc9c', '#F5A7D4', '#34495e', '#bdc3c7',
