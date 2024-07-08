@@ -659,7 +659,7 @@ class BaslerCamera:
             if val in [0.0, 421.0]:
                 return None
             else:
-                return 10.0
+                return val
         else:
             return None
 
