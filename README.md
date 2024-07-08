@@ -172,6 +172,10 @@ sources:
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 
+### Remarks
+
+* If you plan on recording high framerate from many cameras, you probably want to use the GPU, as the software encoders and the image encoding are both slower
+
 
 <!-- ROADMAP -->
 ## Roadmap
