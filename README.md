@@ -182,6 +182,7 @@ sources:
 
 - [x] Allow GPU video encoding
 - [ ] Finish calibration mode
+- [ ] Replace Tk with Qt as the GUI framework
 - [ ] Add support for other camera brands (FLIR, etc)
 - [ ] Add support for other kinds of triggers (Master/slaves cameras, Arduino, etc)
 - [ ] Remember settings set with the GUI instead of using hardcoded values in `main.py`
