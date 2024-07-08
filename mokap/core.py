@@ -104,7 +104,7 @@ class Manager:
         self._l_latest_frames: List[deque] = []
 
         # Initialise a list of subprocesses
-        self._videowriters: List[Union[False, subprocess.Popen]] = []
+        self._videowriters: List[Union[bool, subprocess.Popen]] = []
 
         # Sort the sources according to their idx
         self._l_sources_list.sort(key=lambda x: x.idx)
@@ -112,7 +112,7 @@ class Manager:
 
         # and populate the lists
         for i, cam in enumerate(self._l_sources_list):
-            self._l_display_buffers.append(RawArray('B', cam.height * cam.width))
+            self._l_display_buffers.append(RawArray('B', int(np.prod(cam.shape))))
             self._l_finished_saving.append(Event())
             self._l_all_frames.append(deque())
             self._l_latest_frames.append(deque(maxlen=1))
@@ -308,18 +308,24 @@ class Manager:
                 # TODO - Write a good software-based encoder command for users without GPUs
                 # TODO - h265 only for now, x264 would be nice too
 
+                if len(cam.shape) == 2:
+                    fmt = 'gray8'   # TODO - Check if the camera is using 8 or 10 or 12 bits per pixel
+                else:
+                    fmt = 'rgb8'    # TODO - Check if the camera is using another filter
+
                 if 'Linux' in platform.system():
-                    command = f'{self._ffmpeg_path} -threads 1 -y -s {cam.width}x{cam.height} -f rawvideo -framerate {cam.framerate} -pix_fmt gray8 -i pipe:0 -an -c:v hevc_nvenc -preset llhp -zerolatency 1 -2pass 0 -rc cbr_ld_hq -pix_fmt yuv420p -r:v {cam.framerate} {filepath.as_posix()}'
+                    command = f'{self._ffmpeg_path} -hide_banner -threads 1 -y -s {cam.width}x{cam.height} -f rawvideo -framerate {cam.framerate} -pix_fmt {fmt} -i pipe:0 -an -c:v hevc_nvenc -preset llhp -zerolatency 1 -2pass 0 -rc cbr_ld_hq -pix_fmt yuv420p -r:v {cam.framerate} {filepath.as_posix()}'
                 elif 'Windows' in platform.system():
-                    command = f'{self._ffmpeg_path} -threads 1 -y -s {cam.width}x{cam.height} -f rawvideo -framerate {cam.framerate} -pix_fmt gray8 -i pipe:0 -an -c:v hevc_nvenc -preset llhp -zerolatency 1 -2pass 0 -rc cbr_ld_hq -pix_fmt yuv420p -r:v {cam.framerate} {filepath.as_posix()}'
+                    command = f'{self._ffmpeg_path} -hide_banner -threads 1 -y -s {cam.width}x{cam.height} -f rawvideo -framerate {cam.framerate} -pix_fmt {fmt} -i pipe:0 -an -c:v hevc_nvenc -preset llhp -zerolatency 1 -2pass 0 -rc cbr_ld_hq -pix_fmt yuv420p -r:v {cam.framerate} {filepath.as_posix()}'
+                    # command = f'{self._ffmpeg_path} -hide_banner -threads 1 -y -s {cam.width}x{cam.height} -f rawvideo -framerate {cam.framerate} -pix_fmt {fmt} -i pipe:0 -an -c:v libx265 -preset veryfast -tune zerolatency -crf 20 -pix_fmt yuv420p -r:v {cam.framerate} {filepath.as_posix()}'
                 elif 'Darwin' in platform.system():
-                    command = f'{self._ffmpeg_path} -threads 1 -y -s {cam.width}x{cam.height} -f rawvideo -framerate {cam.framerate} -pix_fmt gray8 -i pipe:0 -an -c:v hevc_videotoolbox -realtime 1 -q:v 100 -tag:v hvc1 -pix_fmt yuv420p -r:v {cam.framerate} {filepath.as_posix()}'
-                    # command = f'{self._ffmpeg_path} -threads 1 -y -s {cam.width}x{cam.height} -f rawvideo -framerate {cam.framerate} -pix_fmt gray8 -i pipe:0 -an -c:v h264_videotoolbox -realtime 1 -q:v 100 -pix_fmt yuv420p -r:v {cam.framerate} {filepath.as_posix()}'
+                    command = f'{self._ffmpeg_path} -hide_banner -threads 1 -y -s {cam.width}x{cam.height} -f rawvideo -framerate {cam.framerate} -pix_fmt {fmt} -i pipe:0 -an -c:v hevc_videotoolbox -realtime 1 -q:v 100 -tag:v hvc1 -pix_fmt yuv420p -r:v {cam.framerate} {filepath.as_posix()}'
+                    # command = f'{self._ffmpeg_path} -threads 1 -y -s {cam.width}x{cam.height} -f rawvideo -framerate {cam.framerate} -pix_fmt {fmt} -i pipe:0 -an -c:v h264_videotoolbox -realtime 1 -q:v 100 -pix_fmt yuv420p -r:v {cam.framerate} {filepath.as_posix()}'
                 else:
                     raise SystemExit('[ERROR] Unsupported platform')
 
                 ON_POSIX = 'posix' in sys.builtin_module_names
-                # p = Popen(shlex.split(command), stdin=PIPE, close_fds=ON_POSIX) # Debug mode (stderr/stdout on)
+                # p = Popen(shlex.split(command), stdin=PIPE, close_fds=ON_POSIX)     # Debug mode (stderr/stdout on)
                 p = Popen(shlex.split(command), stdin=PIPE, stdout=False, stderr=False, close_fds=ON_POSIX)
                 p.stdin.write(dummy_frame.tobytes())
                 self._videowriters[cam_idx] = p

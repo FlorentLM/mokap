@@ -115,11 +115,11 @@ class VideoWindowBase:
             self._macOS_trick = False
 
         self._camera = self.parent.mgr.cameras[self.idx]
-        self._source_shape = (self._camera.height, self._camera.width)
+        self._source_shape = self._camera.shape
 
         self.window.minsize(self.WINDOW_MIN_W, self.INFO_PANEL_MINSIZE_H + self.VIDEO_PANEL_MINSIZE_H)
         self.window.protocol("WM_DELETE_WINDOW", self.toggle_visibility)
-        h, w = self._source_shape
+        h, w = self._source_shape[0], self._source_shape[1]
         self.window.geometry(f"{w}x{h}")  # This will be bound by the WINDOW_MIN_W value and the update video function
 
         self._bg_colour = f'#{self.parent.mgr.colours[self._camera.name].lstrip("#")}'
@@ -166,7 +166,7 @@ class VideoWindowBase:
         self.panes_container.pack(side="top", fill="both", expand=True)
 
         # Initialise where the video will be displayed
-        self.imagetk = ImageTk.PhotoImage(Image.fromarray(self._frame_buffer, mode='L').convert('RGBA'))
+        self.imagetk = ImageTk.PhotoImage(Image.fromarray(self._frame_buffer).convert('RGBA'))
         self.VIDEO_PANEL = tk.Label(self.panes_container, compound='center', bg=self.parent.col_black, image=self.imagetk)
 
         self.INFO_PANEL = tk.Frame(self.panes_container)
@@ -376,7 +376,7 @@ class VideoWindowBase:
         if self.parent.mgr.acquiring and self.parent.current_buffers is not None:
             buf = self.parent.current_buffers[self.idx]
             if buf is not None:
-                self._frame_buffer[:] = np.frombuffer(buf, dtype=np.uint8).reshape(self._source_shape)
+                self._frame_buffer[:, :, ...] = np.frombuffer(buf, dtype=np.uint8).reshape(self._source_shape)
 
     def _refresh_videofeed(self, image: Image):
         try:
@@ -391,7 +391,7 @@ class VideoWindowBase:
             pass
 
     def _full_frame_processing(self) -> Image:
-        return Image.fromarray(self._frame_buffer, mode='L').convert('RGB')
+        return Image.fromarray(self._frame_buffer).convert('RGB')
 
     def _resize_videofeed_image(self, image: Image) -> Image:
 
@@ -657,7 +657,7 @@ class VideoWindowCalib(VideoWindowBase):
     def _perform_calibration(self):
 
         self.VIDEO_PANEL.configure(text='Calibrating...', fg='white')
-        self._refresh_videofeed(Image.fromarray(np.zeros_like(self._frame_buffer), mode='L'))
+        self._refresh_videofeed(Image.fromarray(np.zeros_like(self._frame_buffer), mode='RGB'))
 
         retval, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.aruco.calibrateCameraCharuco(charucoCorners=self.detected_charuco_corners,
                                                                                             charucoIds=self.detected_charuco_ids,
@@ -1100,7 +1100,7 @@ class VideoWindowMain(VideoWindowBase):
                 slice_y2 = self.source_shape[0]
 
             # Slice directly from the framebuffer and make a (then zoomed) image
-            magn_img = Image.fromarray(self._frame_buffer[slice_y1:slice_y2, slice_x1:slice_x2]).convert('RGB')
+            magn_img = Image.fromarray(self._frame_buffer[slice_y1:slice_y2, slice_x1:slice_x2], mode='RGB')
             magn_img = magn_img.resize(
                 (int(magn_img.width * self.magn_zoom.get()), int(magn_img.height * self.magn_zoom.get())))
 

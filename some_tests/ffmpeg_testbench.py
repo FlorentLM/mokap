@@ -11,10 +11,11 @@ import time
 import cv2
 import platform
 import sys
+import os
 
 h = 1080
 w = 1440
-framerate = 200
+framerate = 100
 
 folder = Path("./test_output")
 folder.mkdir(exist_ok=True, parents=True)
@@ -28,7 +29,7 @@ nb_streams = 5
 
 image_queues: List[deque] = []
 finished_saving: List[Event] = []
-videowriters: List[Union[False, subprocess.Popen]] = []
+videowriters: List[Union[bool, subprocess.Popen]] = []
 
 for i in range(nb_streams):
     image_queues.append(deque())
@@ -70,19 +71,21 @@ def init_videowriter(i: int):
         # TODO - h265 only for now, x264 would be nice too
 
         if 'Linux' in platform.system():
-            command = f'ffmpeg -threads 1 -y -s {w}x{h} -f rawvideo -framerate {fps} -pix_fmt gray8 -i pipe:0 -an -c:v hevc_nvenc -preset llhp -zerolatency 1 -2pass 0 -rc cbr_ld_hq -pix_fmt yuv420p -r:v {fps} {filepath.as_posix()}'
+            command = f'ffmpeg -hide_banner -threads 1 -y -s {w}x{h} -f rawvideo -framerate {framerate} -pix_fmt gray8 -i pipe:0 -an -c:v hevc_nvenc -preset llhp -zerolatency 1 -2pass 0 -rc cbr_ld_hq -pix_fmt yuv420p -r:v {framerate} {filepath.as_posix()}'
         elif 'Windows' in platform.system():
-            command = f'ffmpeg -threads 1 -y -s {w}x{h} -f rawvideo -framerate {fps} -pix_fmt gray8 -i pipe:0 -an -c:v hevc_nvenc -preset llhp -zerolatency 1 -2pass 0 -rc cbr_ld_hq -pix_fmt yuv420p -r:v {fps} {filepath.as_posix()}'
+            command = f'ffmpeg -hide_banner -threads 1 -y -s {w}x{h} -f rawvideo -framerate {framerate} -pix_fmt gray8 -i pipe:0 -an -c:v hevc_nvenc -preset llhp -zerolatency 1 -2pass 0 -rc cbr_ld_hq -pix_fmt yuv420p -r:v {framerate} {filepath.as_posix()}'
         elif 'Darwin' in platform.system():
-            command = f'ffmpeg -threads 1 -y -s {w}x{h} -f rawvideo -framerate {fps} -pix_fmt gray8 -i pipe:0 -an -c:v hevc_videotoolbox -realtime 1 -q:v 100 -tag:v hvc1 -pix_fmt yuv420p -r:v {fps} {filepath.as_posix()}'
-            # command = f'ffmpeg -threads 1 -y -s {w}x{h} -f rawvideo -framerate {fps} -pix_fmt gray8 -i pipe:0 -an -c:v h264_videotoolbox -realtime 1 -q:v 100 -pix_fmt yuv420p -r:v {fps} {filepath.as_posix()}'
+            command = f'ffmpeg -hide_banner -threads 1 -y -s {w}x{h} -f rawvideo -framerate {framerate} -pix_fmt gray8 -i pipe:0 -an -c:v hevc_videotoolbox -realtime 1 -q:v 100 -tag:v hvc1 -pix_fmt yuv420p -r:v {framerate} {filepath.as_posix()}'
+            # command = f'ffmpeg -threads 1 -y -s {w}x{h} -f rawvideo -framerate {framerate} -pix_fmt gray8 -i pipe:0 -an -c:v h264_videotoolbox -realtime 1 -q:v 100 -pix_fmt yuv420p -r:v {fps} {filepath.as_posix()}'
         else:
             raise SystemExit('[ERROR] Unsupported platform')
 
         ON_POSIX = 'posix' in sys.builtin_module_names
-        # p = Popen(shlex.split(command), stdin=PIPE, close_fds=ON_POSIX)       # Debug mode (stderr/stdout on)
-        p = Popen(shlex.split(command), stdin=PIPE, stdout=False, stderr=False, close_fds=ON_POSIX)
+        p = Popen(shlex.split(command), stdin=PIPE, close_fds=ON_POSIX)       # Debug mode (stderr/stdout on)
+        # p = Popen(shlex.split(command), stdin=PIPE, stdout=False, stderr=False, close_fds=ON_POSIX)
+        # p = Popen(shlex.split(command), stdin=PIPE, stderr=PIPE, close_fds=ON_POSIX)
         p.stdin.write(dummy_frame.tobytes())
+        time.sleep(2.0)
         videowriters[i] = p
 
 

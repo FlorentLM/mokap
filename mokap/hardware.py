@@ -279,6 +279,7 @@ class BaslerCamera:
 
         self._width = 0
         self._height = 0
+        self._probe_frame_shape = None
 
         self._framerate = framerate
         self._exposure = exposure
@@ -286,7 +287,7 @@ class BaslerCamera:
         self._gain = 1.0
         self._gamma = 1.0
         self._triggered = triggered
-        self._binning = binning
+        self._binning_value = binning
         self._binning_mode = binning_mode
 
         self._idx = -1
@@ -303,8 +304,8 @@ class BaslerCamera:
 
     def _set_roi(self) -> NoReturn:
         if not self._is_virtual:
-            self._width = self.ptr.WidthMax.GetValue() - (16 // self._binning)
-            self._height = self.ptr.HeightMax.GetValue() - (8 // self._binning)
+            self._width = self.ptr.WidthMax.GetValue() - (16 // self._binning_value)
+            self._height = self.ptr.HeightMax.GetValue() - (8 // self._binning_value)
 
             # Apply the dimensions to the ROI
             self.ptr.Width = self._width
@@ -360,6 +361,10 @@ class BaslerCamera:
         # 342 Mbps is a bit less than the maximum, but things are more stable like this
         self.ptr.DeviceLinkThroughputLimit.SetValue(342000000)
 
+        if self._probe_frame_shape is None:
+            probe_frame = self.ptr.GrabOne(100)
+            self._probe_frame_shape = np.array(probe_frame.Array.shape, dtype=int)
+
         if not self._is_virtual:
 
             self.ptr.ExposureTimeMode.SetValue('Standard')
@@ -384,7 +389,7 @@ class BaslerCamera:
 
         self._set_roi()
 
-        self.binning = self._binning
+        self.binning = self._binning_value
         self.binning_mode = self._binning_mode
 
         self.framerate = self._framerate
@@ -514,7 +519,7 @@ class BaslerCamera:
 
     @property
     def binning(self) -> int:
-        return self._binning
+        return self._binning_value
 
     @property
     def binning_mode(self) -> str:
@@ -524,7 +529,7 @@ class BaslerCamera:
     def binning(self, value: int):
         assert value in [1, 2, 3, 4]    # This should be all the possible values (for Basler cameras at least)
         # And keep a local value to avoid querying the camera every time we read it
-        self._binning = value
+        self._binning_value = value
 
         if self._connected:
             self.ptr.BinningVertical.SetValue(value)
@@ -642,6 +647,10 @@ class BaslerCamera:
     @property
     def height(self) -> int:
         return self._height
+
+    @property
+    def shape(self) -> np.array:
+        return self._probe_frame_shape
 
     @property
     def temperature(self) -> Union[float, None]:
