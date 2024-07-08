@@ -65,6 +65,7 @@ Mokap is an easy to use multi-camera acquisition software developed for animal b
 * Cross platform (Linux, Windows, macOS)
 * Supports synchronised cameras (only using a Raspberry Pi for now, but other modes will come soon)
 * Supports encoding to individual frames or straight to video (with or without GPU encoding)
+* (Coming soon) Live camera calibration for 3D triangulation 
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
