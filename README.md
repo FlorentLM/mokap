@@ -1,6 +1,102 @@
-# Installation
+<!-- Improved compatibility of back to top link: See: https://github.com/othneildrew/Best-README-Template/pull/73 -->
+<a id="readme-top"></a>
+<!--
+*** Thanks for checking out the Best-README-Template. If you have a suggestion
+*** that would make this better, please fork the repo and create a pull request
+*** or simply open an issue with the tag "enhancement".
+*** Don't forget to give the project a star!
+*** Thanks again! Now go create something AMAZING! :D
+-->
 
-## Basler Pylon SDK
+
+<!-- PROJECT LOGO -->
+<br />
+<div align="center">
+  <a href="https://github.com/github_username/repo_name">
+    <img src="mokap/icons/mokap.png" alt="Logo" width="80" height="80">
+  </a>
+
+<h3 align="center">Mokap</h3>
+
+  <p align="center">
+    An easy to use but powerful multi-camera acquisition software
+    <br />
+    <br />
+    <a href="https://github.com/github_username/repo_name/issues/new?labels=bug&template=bug-report---.md">Report Bug</a>
+    ·
+    <a href="https://github.com/github_username/repo_name/issues/new?labels=enhancement&template=feature-request---.md">Request Feature</a>
+  </p>
+</div>
+
+
+
+<!-- TABLE OF CONTENTS -->
+<details>
+  <summary>Table of Contents</summary>
+  <ol>
+    <li>
+      <a href="#about-the-project">About The Project</a>
+    </li>
+    <li>
+      <a href="#getting-started">Getting Started</a>
+      <ul>
+        <li><a href="#prerequisites">Prerequisites</a></li>
+        <li><a href="#installation">Installation</a></li>
+      </ul>
+    </li>
+    <li><a href="#usage">Usage</a></li>
+    <li><a href="#troubleshooting">Troubleshooting</a></li>
+    <li><a href="#roadmap">Roadmap</a></li>
+    <li><a href="#license">License</a></li>
+    <li><a href="#contact">Contact</a></li>
+  </ol>
+</details>
+
+
+
+<!-- ABOUT THE PROJECT -->
+## About The Project
+
+[![Product Name Screen Shot][product-screenshot]](https://example.com)
+
+Mokap is an easy to use multi-camera acquisition software developed for animal behaviour recording using hardware-triggered (synchronised) machine vision cameras.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+
+<!-- GETTING STARTED -->
+## Getting Started
+
+This is an example of how you may give instructions on setting up your project locally.
+To get a local copy up and running follow these simple example steps.
+
+### Prerequisites
+
+#### ffmpeg (optional)
+If you wish to use straight-to-video encoding, you will need [ffmpeg](https://www.ffmpeg.org/download.html) installed on your machine.
+
+* Linux (most Debian-based distros):
+   ```sh
+   sudo apt install ffmpeg
+   ```
+* Windows:
+   ```sh
+   winget install --id Gyan.FFmpeg
+   ```
+* macOS:
+   ```sh
+   brew install ffmpeg
+   ```
+If you do not want to use ffmpeg, you can still use Mokap in image mode (videos will be written as individual frames)
+
+#### Miniconda:
+
+We recommend using Miniconda to manage Python environments and install Mokap easily.
+* If you don't have Miniconda installed, see [here](https://docs.conda.io/projects/miniconda/en/latest/).
+
+### Installation
+
+#### Basler Pylon SDK
 
 * Download the installer package for your system: https://www2.baslerweb.com/en/downloads/software-downloads/
 
@@ -18,47 +114,86 @@
     
     For instance, EndeavourOS uses systemd-boot: edit `/efi/loader/entries/YOURDISTRO.conf` (replace `YOURDISTRO` by the name of the entry for your system, typically the machine-id in the case of EndeavourOS) and add `usbcore.usbfs_memory_mb=2048` to the `options` line.
 
-## Mokap
+#### Mokap
 
-### Windows, macOS and Linux
+1. Clone this repository:
+   ```sh
+   git clone https://github.com/FlorentLM/mokap.git
+   ```
+2. Create environment:
+   ```sh
+   cd mokap && conda env create --file=environment.yml
+   ```
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
-#### Miniconda:
-* If you don't have Miniconda installed, see [here](https://docs.conda.io/projects/miniconda/en/latest/)
-* Clone this repository `git clone https://github.com/FlorentLM/mokap`
-* Create environment `conda env create --file=environment.yml`
+<!-- USAGE EXAMPLES -->
+## Usage
 
-###### Linux-specific optional dependencies
-  * (Optional) Install [uhubctl](https://github.com/mvp/uhubctl) and follow their [post-install instructions](https://github.com/mvp/uhubctl#linux-usb-permissions).
+1. Customise `config.yml`
 
-###### Notes regarding disk write performance
-In most situations, the bottleneck for acquiring high framerate videos from multiple cameras (in our case 5 cameras filming at 220 fps in 1440x1080 px) was disk IO.
-We got very good performance using BTRFS on Linux, but your experience may vary.
+Starting example for 5 cameras (replace the xxxxx by your cameras' serial numbers):
+```yaml
+# General parameters
+base_path: D:/            # Where the recordings will be saved
+save_format: 'mp4'        # or jpg, bmp, tif, png
+save_quality: 80          # 0 - 100%
+gpu: True                 # Only used by the video encoder (i.e. if you use mp4 in save_format)
 
-On Windows, it is recommended to disable cache writing, otherwise the OS will try to optimise writing by using the available RAM, and it will crash quickly.
-Although there are [BTRFS drivers for Windows](https://github.com/maharmstone/btrfs) that work very well, they do not support no-cache writing (yet?), so it is not recommended to use BTRFS on Windows with Mokap.
+# Add/remove sources below
+sources:
+    strawberry:
+        type: basler
+        serial: 401xxxxx
+        color: da141d
+    avocado:
+        type: basler
+        serial: 401xxxxx
+        color: 7a9c21
+    banana:
+        type: basler
+        serial: 401xxxxx
+        color: f3d586
+    blueberry:
+        type: basler
+        serial: 401xxxxx
+        color: 443e93
+    coconut:
+        type: basler
+        serial: 401xxxxx
+        color: efeee7
+
+```
+
+### Start GUI
+
+1. Activate the conda environment `conda activate mokap`
+2. Run `./main.py`
+
+*Note: There are some default values hardcoded in `main.py`, but they can be changed with the GUI*
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 
-# Usage
 
-* Activate the conda environment `conda activate mokap`
-* (Optional) Customise the example `main.py` file with your favourite text/code editor
-* Run `./main.py`
+<!-- ROADMAP -->
+## Roadmap
 
-# Troubleshooting
+- [x] Allow GPU video encoding
+- [ ] Finish calibration mode
+- [ ] Add support for other camera brands (FLIR, etc)
+- [ ] Remember settings set with the GUI instead of using hardcoded values in `main.py`
+
+See the [open issues](https://github.com/FlorentLM/mokap/issues) for a full list of proposed features (and known issues).
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+## Troubleshooting
 
 ### Linux
 
     permission denied: ./main.py
 
 **Fix**: make the file executable `chmod u+x ./main.py`
-
----
-
-    /bin/sh: 1: uhubctl: not found
-
-**Fix**: Install [uhubctl](https://github.com/mvp/uhubctl)
-
-_Note_: This dependency is optional
 
 ---
 
@@ -84,4 +219,32 @@ or
 
 _Note_: mokap normally does this automatically
 
----
+<!-- LICENSE -->
+## License
+
+Distributed under the MIT License. See `LICENSE.txt` for more information.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+
+<!-- CONTACT -->
+## Contact
+
+Florent Le Moel - [@optic_flo](https://twitter.com/optic_flo)
+
+Project Link: [https://github.com/github_username/mokap](https://github.com/github_username/mokap)
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+
+<!-- MARKDOWN LINKS & IMAGES -->
+<!-- https://www.markdownguide.org/basic-syntax/#reference-style-links -->
+[forks-shield]: https://img.shields.io/github/forks/github_username/repo_name.svg?style=for-the-badge
+[forks-url]: https://github.com/github_username/repo_name/network/members
+[stars-shield]: https://img.shields.io/github/stars/github_username/repo_name.svg?style=for-the-badge
+[stars-url]: https://github.com/github_username/repo_name/stargazers
+[issues-shield]: https://img.shields.io/github/issues/github_username/repo_name.svg?style=for-the-badge
+[issues-url]: https://github.com/github_username/repo_name/issues
+[license-shield]: https://img.shields.io/github/license/github_username/repo_name.svg?style=for-the-badge
+[license-url]: https://github.com/github_username/repo_name/blob/master/LICENSE.txt
+[product-screenshot]: screenshot.png
