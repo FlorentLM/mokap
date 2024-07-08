@@ -69,6 +69,9 @@ class Manager:
         self._saving_ext = self.config_dict.get('save_format', 'bmp').lower()
         saving_qual = float(self.config_dict.get('save_quality'))
 
+        self._config_encoding_params = self.config_dict.get('encoding_parameters', None)
+        self._config_encoding_gpu = self.config_dict.get('gpu', False)
+
         # new_value = (saving_qual / 100) * (new_max - new_min) + new_min
 
         match self._saving_ext:
@@ -305,7 +308,7 @@ class Manager:
                 filepath = self.full_path / f"cam{cam.idx}_{cam.name}_session{len(self._metadata['sessions'])-1}.mp4"
 
                 # TODO - Get available hardware-accelerated encoders on user's system and choose the best one automatically
-                # TODO - Write a good software-based encoder command for users without GPUs
+                # TODO - Why is QSV not working????
                 # TODO - h265 only for now, x264 would be nice too
 
                 if len(cam.shape) == 2:
@@ -313,16 +316,30 @@ class Manager:
                 else:
                     fmt = 'rgb8'    # TODO - Check if the camera is using another filter
 
-                if 'Linux' in platform.system():
-                    command = f'{self._ffmpeg_path} -hide_banner -threads 1 -y -s {cam.width}x{cam.height} -f rawvideo -framerate {cam.framerate} -pix_fmt {fmt} -i pipe:0 -an -c:v hevc_nvenc -preset llhp -zerolatency 1 -2pass 0 -rc cbr_ld_hq -pix_fmt yuv420p -r:v {cam.framerate} {filepath.as_posix()}'
-                elif 'Windows' in platform.system():
-                    command = f'{self._ffmpeg_path} -hide_banner -threads 1 -y -s {cam.width}x{cam.height} -f rawvideo -framerate {cam.framerate} -pix_fmt {fmt} -i pipe:0 -an -c:v hevc_nvenc -preset llhp -zerolatency 1 -2pass 0 -rc cbr_ld_hq -pix_fmt yuv420p -r:v {cam.framerate} {filepath.as_posix()}'
-                    # command = f'{self._ffmpeg_path} -hide_banner -threads 1 -y -s {cam.width}x{cam.height} -f rawvideo -framerate {cam.framerate} -pix_fmt {fmt} -i pipe:0 -an -c:v libx265 -preset veryfast -tune zerolatency -crf 20 -pix_fmt yuv420p -r:v {cam.framerate} {filepath.as_posix()}'
-                elif 'Darwin' in platform.system():
-                    command = f'{self._ffmpeg_path} -hide_banner -threads 1 -y -s {cam.width}x{cam.height} -f rawvideo -framerate {cam.framerate} -pix_fmt {fmt} -i pipe:0 -an -c:v hevc_videotoolbox -realtime 1 -q:v 100 -tag:v hvc1 -pix_fmt yuv420p -r:v {cam.framerate} {filepath.as_posix()}'
-                    # command = f'{self._ffmpeg_path} -threads 1 -y -s {cam.width}x{cam.height} -f rawvideo -framerate {cam.framerate} -pix_fmt {fmt} -i pipe:0 -an -c:v h264_videotoolbox -realtime 1 -q:v 100 -pix_fmt yuv420p -r:v {cam.framerate} {filepath.as_posix()}'
+                input_params = f'{self._ffmpeg_path} -hide_banner -threads 1 -y -s {cam.width}x{cam.height} -f rawvideo -framerate {cam.framerate} -pix_fmt {fmt} -i pipe:0'
+
+                if self._config_encoding_params is not None:
+                    output_params = self._config_encoding_params
                 else:
-                    raise SystemExit('[ERROR] Unsupported platform')
+                    if 'Linux' in platform.system():
+                        if self._config_encoding_gpu:
+                            output_params = f'-an -c:v hevc_nvenc -preset llhp -zerolatency 1 -2pass 0 -rc cbr_ld_hq -pix_fmt yuv420p -r:v {cam.framerate}'
+                        else:
+                            output_params =  f'-an -c:v libx265 -preset veryfast -tune zerolatency -crf 20 -pix_fmt yuv420p -r:v {cam.framerate}'
+                    elif 'Windows' in platform.system():
+                        if self._config_encoding_gpu:
+                            output_params =  f' -an -c:v hevc_nvenc -preset llhp -zerolatency 1 -2pass 0 -rc cbr_ld_hq -pix_fmt yuv420p -r:v {cam.framerate}'
+                        else:
+                            output_params =  f'-an -c:v libx265 -preset veryfast -tune zerolatency -crf 20 -pix_fmt yuv420p -r:v {cam.framerate}'
+                    elif 'Darwin' in platform.system():
+                        if self._config_encoding_gpu:
+                            output_params = f'-an -c:v hevc_videotoolbox -realtime 1 -q:v 100 -tag:v hvc1 -pix_fmt yuv420p -r:v {cam.framerate}'
+                        else:
+                            output_params =  f'-an -c:v libx265 -preset veryfast -tune zerolatency -crf 20 -pix_fmt yuv420p -r:v {cam.framerate}'
+                    else:
+                        raise SystemExit('[ERROR] Unsupported platform')
+
+                command = f'{input_params.strip()} {output_params.strip()} {filepath.as_posix()}'.replace('  ', ' ')
 
                 ON_POSIX = 'posix' in sys.builtin_module_names
                 # p = Popen(shlex.split(command), stdin=PIPE, close_fds=ON_POSIX)     # Debug mode (stderr/stdout on)
@@ -511,6 +528,10 @@ class Manager:
             self._recording.set()       # Start Recording event
 
             if not self._silent:
+                if 'mp4' in self._saving_ext:
+                    print(f'[INFO] Using {"hardware" if self._config_encoding_gpu else "software"} video encoding')
+                else:
+                    print(f'[INFO] Using {self._saving_ext} image encoding')
                 print('[INFO] Recording started...')
 
     def pause(self) -> None:
