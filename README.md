@@ -61,6 +61,11 @@
 
 Mokap is an easy to use multi-camera acquisition software developed for animal behaviour recording using hardware-triggered (synchronised) machine vision cameras.
 
+### Features
+* Cross platform (Linux, Windows, macOS)
+* Supports synchronised cameras (only using a Raspberry Pi for now, but other modes will come soon)
+* Supports encoding to individual frames or straight to video (with or without GPU encoding)
+
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 
@@ -181,6 +186,7 @@ sources:
 - [x] Allow GPU video encoding
 - [ ] Finish calibration mode
 - [ ] Add support for other camera brands (FLIR, etc)
+- [ ] Add support for other kinds of triggers (Master/slaves cameras, Arduino, etc)
 - [ ] Remember settings set with the GUI instead of using hardcoded values in `main.py`
 
 See the [open issues](https://github.com/FlorentLM/mokap/issues) for a full list of proposed features (and known issues).
