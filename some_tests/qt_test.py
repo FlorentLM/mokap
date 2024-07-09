@@ -70,11 +70,13 @@ class DoubleSlider(QSlider):
 
 class VideoWindowBase(QWidget):
     INFO_PANEL_MINSIZE_H = 200
-    VIDEO_PANEL_MINSIZE_H = 50  # haha
-    WINDOW_MIN_W = 630
+    INFO_PANEL_MAXSIZE_H = 300
+
+    WINDOW_MIN_W = 600
 
     def __init__(self, rootwindow, idx):
         super().__init__()
+
         self._parent = rootwindow
         self.idx = idx
 
@@ -85,7 +87,7 @@ class VideoWindowBase(QWidget):
         self._fg_colour = self._parent.col_white if utils.hex_to_hls(self._bg_colour)[1] < 60 else self._parent.col_black
 
         # Where the (full) frame data will be stored
-        self._frame_buffer = np.zeros(self._source_shape, dtype='<u1')
+        self._frame_buffer = np.zeros((self._source_shape[0], self._source_shape[1], 3), dtype='<u1')
 
         # Init clock and counter
         self._clock = datetime.now()
@@ -111,12 +113,11 @@ class VideoWindowBase(QWidget):
                                    ['sw', 's', 'se']])
 
         # Initialize where the video will be displayed
-        self.imagetk = QImage(self._frame_buffer.data,
-                              self._frame_buffer.shape[1], self._frame_buffer.shape[0],
-                              QImage.Format.Format_RGBA8888)
-        self.VIDEO_PANEL = QLabel()
-        self.VIDEO_PANEL.setPixmap(QPixmap.fromImage(self.imagetk))
-        self.VIDEO_PANEL.setStyleSheet("background-color: black;")
+        h, w, ch = self._frame_buffer.shape
+        self.image = QImage(self._frame_buffer.data,  w, h, ch * w, QImage.Format.Format_RGB888)
+
+        # self.VIDEO_PANEL.setPixmap(self.pixmap)
+        # self.VIDEO_PANEL.setStyleSheet("background-color: black;")
 
         self.auto_size()
 
@@ -124,14 +125,27 @@ class VideoWindowBase(QWidget):
 
         v_layout = QVBoxLayout(self)
 
+        self.VIDEO_FEED = QLabel()
+        self.VIDEO_FEED.setMinimumSize(1, 1)
+        self.VIDEO_FEED.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        v_layout.addWidget(self.VIDEO_FEED)
+        self.VIDEO_FEED.setPixmap(QPixmap.fromImage(self.image))
+
         # Camera name bar
         self.camera_name_bar = QLabel()
-        # name_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.camera_name_bar.setMinimumHeight(20)
+        self.camera_name_bar.setMaximumHeight(20)
+        self.camera_name_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.camera_name_bar.setStyleSheet(f"color: {self.colour_2}; background-color: {self.colour}; font: bold;")
         v_layout.addWidget(self.camera_name_bar)
 
-        h_layout = QHBoxLayout()
-        v_layout.addLayout(h_layout)
+        controlsRestrictorWidget = QWidget()
+        layoutHControls = QHBoxLayout()
+        controlsRestrictorWidget.setLayout(layoutHControls)
+        controlsRestrictorWidget.setMaximumHeight(VideoWindowBase.INFO_PANEL_MAXSIZE_H)
+
+        h_layout = layoutHControls
+        v_layout.addWidget(controlsRestrictorWidget)
 
         self.LEFT_FRAME = QGroupBox("Information")
         self.LEFT_FRAME.setStyleSheet("font: bold;")
@@ -233,7 +247,7 @@ class VideoWindowBase(QWidget):
 
     @property
     def videofeed_shape(self):
-        h, w = self.VIDEO_PANEL.height(), self.VIDEO_PANEL.width()
+        h, w = self.VIDEO_FEED.height(), self.VIDEO_FEED.width()
         if h <= 1 or w <= 1:
             return self.source_shape
         if w / h > self.aspect_ratio:
@@ -320,29 +334,14 @@ class VideoWindowBase(QWidget):
     def _refresh_framebuffer(self):
         self._frame_buffer.fill(0)
 
-        if self._parent.mgr.acquiring and self._parent.current_buffers is not None:
-            buf = self._parent.current_buffers[self.idx]
+        if self._parent.mgr.acquiring and self._parent._current_buffers is not None:
+            buf = self._parent._current_buffers[self.idx]
             if buf is not None:
-                self._frame_buffer[:, :, ...] = np.frombuffer(buf, dtype=np.uint8).reshape(self._source_shape)
-
-    def _refresh_videofeed(self, image: Image):
-        pass
-
-    def _full_frame_processing(self) -> Image:
-        return Image.fromarray(self._frame_buffer).convert('RGB')
-
-    def _resize_videofeed_image(self, image: Image) -> Image:
-
-        # Get window size and set new videofeed size, preserving aspect ratio
-        h, w = self.videofeed_shape
-        img_pillow_resized = image.resize((w, h))
-
-        return img_pillow_resized
-
-    def _update_visualisations(self) -> Image:
-        full_size_image = self._full_frame_processing()
-        resized = self._resize_videofeed_image(full_size_image)
-        return resized
+                # camera buffer -> np.array (1 or 3 channels) -> 3 channels array
+                arr = np.frombuffer(buf, dtype=np.uint8).reshape(self._source_shape)
+                self._frame_buffer[:, :, 0] = arr
+                self._frame_buffer[:, :, 1] = arr
+                self._frame_buffer[:, :, 2] = arr
 
     def _update_txtvars(self):
         pass
@@ -383,6 +382,13 @@ class VideoWindowBase(QWidget):
         #     warnings.simplefilter("ignore", category=RuntimeWarning)
         #     self.txtvar_display_fps.set(f"{np.nanmean(list(self._fps)):.2f} fps")
 
+    def update_image(self):
+        if self.image.isNull():
+            return
+        if self.size().width() > 0 and self.size().height() > 0:
+            resized_image = self.image.scaled(self.VIDEO_FEED.size(), Qt.AspectRatioMode.KeepAspectRatio)
+            self.VIDEO_FEED.setPixmap(QPixmap.fromImage(resized_image))
+
     def update(self):
 
         while not self.should_stop.wait(1/30.0):
@@ -392,9 +398,7 @@ class VideoWindowBase(QWidget):
                 self._update_txtvars()
                 self._refresh_framebuffer()
 
-                image_with_vis = self._update_visualisations()
-
-                self._refresh_videofeed(image_with_vis)
+                self.update_image()
 
                 # Update display fps counter
                 now = datetime.now()
@@ -571,7 +575,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         self.setWindowTitle('Controls')
-        self.setGeometry(100, 100, 800, 600)  # todo
+        self.setGeometry(100, 100, MainWindow.WINDOW_MIN_W, MainWindow.INFO_PANEL_MINSIZE_H)  # todo
 
         self.mgr = mgr
 
@@ -993,7 +997,7 @@ class MainWindow(QMainWindow):
             if self._is_calibrating.is_set():
                 w = VideoWindowCalib(rootwindow=self, idx=c.idx)
                 self.child_windows.append(w)
-                t = Thread(target=w.update, args=(), daemon=False)
+                t = Thread(target=w.update, args=(), daemon=True)
                 t.start()
                 self.child_threads.append(t)
                 w.show()
@@ -1001,7 +1005,7 @@ class MainWindow(QMainWindow):
             else:
                 w = VideoWindowMain(rootwindow=self, idx=c.idx)
                 self.child_windows.append(w)
-                t = Thread(target=w.update, args=(), daemon=False)
+                t = Thread(target=w.update, args=(), daemon=True)
                 t.start()
                 self.child_threads.append(t)
                 w.show()
