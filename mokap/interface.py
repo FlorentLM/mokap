@@ -1693,6 +1693,11 @@ class GUI:
             self.mgr.session_name = self.txtvar_userentry.get()
             self.editing_disabled = True
             self.txtvar_applied_name.set(f'{self.mgr.full_path.resolve()}')
+
+            # And refresh acquisition framerate because it might have been turned on and off
+            self._capture_clock = datetime.now()
+            self.start_indices[:] = self.mgr.indices
+
         else:
             # If force-on and already editing, or force-off and not editing, do nothing
             pass
@@ -1776,14 +1781,15 @@ class GUI:
 
             self.txtvar_applied_name.set(f'{self.mgr.full_path.resolve()}')
 
-            self._capture_clock = datetime.now()
-            self.start_indices[:] = self.mgr.indices
-
             self.button_acquisition.config(text="Acquiring", image=self.icon_capture)
             self.button_snapshot.config(state="normal")
 
             if not self._is_calibrating.is_set():
                 self.button_recpause.config(state="normal")
+
+            # Refresh framerate counters for UI display
+            self._capture_clock = datetime.now()
+            self.start_indices[:] = self.mgr.indices
 
     def quit(self):
 

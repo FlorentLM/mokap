@@ -510,6 +510,7 @@ class Manager:
             session_metadata = {'start': datetime.now().timestamp(),
                                 'end': 0.0,
                                 'duration': 0.0,
+                                'hardware_triggered': self.triggered,
                                 'cameras': [{
                                     'idx': c.idx,
                                     'name': c.name,
