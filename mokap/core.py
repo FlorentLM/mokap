@@ -1,5 +1,5 @@
 import subprocess
-from threading import Event
+from threading import Event, get_ident
 from multiprocessing import RawArray
 from concurrent.futures import ThreadPoolExecutor
 from typing import NoReturn, Union, List
@@ -85,7 +85,6 @@ class Manager:
         self._executor: Union[ThreadPoolExecutor, None] = None
 
         self._acquiring: Event = Event()
-        self.must_stop: Event = Event()
         self._recording: Event = Event()
 
         self._nb_cams: int = 0
@@ -355,6 +354,7 @@ class Manager:
                 self._videowriters[cam_idx].stdin.close()
                 self._videowriters[cam_idx].wait()
         self._videowriters[cam_idx] = False
+        print(f'Closing videowriter ({get_ident()})')
 
     def _writer_thread(self, cam_idx: int) -> NoReturn:
         """
@@ -447,9 +447,8 @@ class Manager:
                         save_frame(frame, frame_nb)
                     else:
                         self._close_videowriter(cam_idx)     # This does nothing if not in video mode
-                        # Finished saving, reverting to wait state
                         self._l_finished_saving[cam_idx].set()
-                        started_saving = False
+                        break
                 else:
                     # Default state of this thread: if cameras are acquiring but we're not recording, just wait
                     self._recording.wait()
@@ -464,16 +463,14 @@ class Manager:
             cam_idx: the index of the camera this threads belongs to
         """
 
-        # TODO - Rewrite this in a more elegant way
-
         queue = self._l_latest_frames[cam_idx]
         timer = Event()
 
-        if self._acquiring.is_set():
-            while not timer.wait(1.0/60.0):
-                if queue:
-                    self._l_display_buffers[cam_idx] = queue.popleft()
-                    self._cnt_displayed[cam_idx] += 1
+        while self._acquiring.is_set():
+            timer.wait(1.0/60.0)
+            if queue:
+                self._l_display_buffers[cam_idx] = queue.popleft()
+                self._cnt_displayed[cam_idx] += 1
 
     def _grabber_thread(self, cam_idx: int) -> NoReturn:
         """
@@ -652,7 +649,6 @@ class Manager:
             self.pause()
 
             self._acquiring.clear()     # End Acquisition event
-            self.must_stop.set()
 
             for cam in self._l_sources_list:
                 cam.stop_grabbing()     # Ask the cameras to stop grabbing (they control the thread execution loop)

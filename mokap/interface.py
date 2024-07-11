@@ -116,7 +116,6 @@ class VideoWindowBase:
 
         self._camera = self.parent.mgr.cameras[self.idx]
         self._source_shape = self._camera.shape
-        print(self._camera.shape)
 
         self.window.minsize(self.WINDOW_MIN_W, self.INFO_PANEL_MINSIZE_H + self.VIDEO_PANEL_MINSIZE_H)
         self.window.protocol("WM_DELETE_WINDOW", self.toggle_visibility)
