@@ -275,7 +275,7 @@ class Manager:
             self._binning = cam.binning
 
             # Need to update the display buffers to the new frame size
-            self._l_display_buffers[i] = RawArray('B', cam.height * cam.width)
+            self._l_display_buffers[i] = RawArray('B', int(cam.height * cam.width))
 
     @binning_mode.setter
     def binning_mode(self, value: str) -> None:
