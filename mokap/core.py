@@ -122,9 +122,9 @@ class Manager:
             self._videowriters.append(False)
 
         # Init frames counters
-        self._cnt_grabbed = RawArray('I', self._nb_cams)
-        self._cnt_displayed = RawArray('I', self._nb_cams)
-        self._cnt_saved = RawArray('I', self._nb_cams)
+        self._cnt_grabbed = RawArray('I', int(self._nb_cams))
+        self._cnt_displayed = RawArray('I', int(self._nb_cams))
+        self._cnt_saved = RawArray('I', int(self._nb_cams))
 
     @property
     def triggered(self) -> bool:
@@ -667,9 +667,9 @@ class Manager:
             self._session_name = ''
             self._metadata['sessions'] = []
 
-            self._cnt_grabbed = RawArray('I', self._nb_cams)
-            self._cnt_displayed = RawArray('I', self._nb_cams)
-            self._cnt_saved = RawArray('I', self._nb_cams)
+            self._cnt_grabbed = RawArray('I', int(self._nb_cams))
+            self._cnt_displayed = RawArray('I', int(self._nb_cams))
+            self._cnt_saved = RawArray('I', int(self._nb_cams))
 
             self._executor = None
 
