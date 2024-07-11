@@ -104,7 +104,7 @@ class VideoWindowBase(QWidget):
         # Some other stuff
         self._wanted_fps = self._camera.framerate
 
-        self.setWindowTitle(self._camera.name)
+        self.setWindowTitle(f'{self._camera.name.title()} camera')
 
         self.positions = np.array([['nw', 'n', 'ne'],
                                    ['w', 'c', 'e'],
@@ -806,9 +806,9 @@ class MainWindow(QMainWindow):
         self.mgr.disconnect()
 
         # Close the main window
-        self.close()
+        QWidget.close(self)
         QApplication.instance().quit()
-        exit()
+        sys.exit()
 
     def _toggle_calibrate(self):
         pass
