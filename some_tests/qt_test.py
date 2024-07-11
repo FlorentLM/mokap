@@ -12,6 +12,7 @@ from pathlib import Path
 from threading import Thread, Event
 
 import numpy as np
+from PyQt6.uic.properties import QtGui
 
 from mokap import utils
 
@@ -97,9 +98,6 @@ class VideoWindowBase(QWidget):
         self._last_capture_count = 0
 
         # Init states
-        self.visible = Event()
-        self.visible.set()
-
         self.should_stop = Event()
         self._warning = Event()
 
@@ -305,15 +303,17 @@ class VideoWindowBase(QWidget):
             case 'se':
                 self.move(monitor.x + monitor.width - w - 1, monitor.y + monitor.height - h - VideoWindowBase.TASKBAR_H)
 
+    def closeEvent(self, event):
+        event.ignore()
+        self.toggle_visibility(False)
+
     def toggle_visibility(self, force_on):
 
-        if self.visible.is_set() or not force_on:
-            self.visible.clear()
+        if self.isVisible() or not force_on:
             self._main_window.child_windows_visibility_buttons[self.idx].setChecked(False)
             self.hide()
 
-        elif not self.visible.is_set() or force_on:
-            self.visible.set()
+        elif not self.isVisible() or force_on:
             self._main_window.child_windows_visibility_buttons[self.idx].setChecked(True)
             self.show()
 
@@ -354,17 +354,17 @@ class VideoWindowBase(QWidget):
 
         self.displayfps_value.setText(f"{fps:.2f} fps")
 
-        # Update the temperature label colour
-        if self._camera.temperature is not None:
-            self.temperature_value.setText(f'{self._camera.temperature:.1f}°C')
-        if self._camera.temperature_state == 'Ok':
-            self.temperature_value.setStyleSheet(f"color: {self._main_window.col_green}; font: bold;")
-        elif self._camera.temperature_state == 'Critical':
-            self.temperature_value.setStyleSheet(f"color: {self._main_window.col_orange}; font: bold;")
-        elif self._camera.temperature_state == 'Error':
-            self.temperature_value.setStyleSheet(f"color: {self._main_window.col_red}; font: bold;")
-        else:
-            self.temperature_value.setStyleSheet(f"color: {self._main_window.col_yellow}; font: bold;")
+        # # Update the temperature label colour
+        # if self._camera.temperature is not None:
+        #     self.temperature_value.setText(f'{self._camera.temperature:.1f}°C')
+        # if self._camera.temperature_state == 'Ok':
+        #     self.temperature_value.setStyleSheet(f"color: {self._main_window.col_green}; font: bold;")
+        # elif self._camera.temperature_state == 'Critical':
+        #     self.temperature_value.setStyleSheet(f"color: {self._main_window.col_orange}; font: bold;")
+        # elif self._camera.temperature_state == 'Error':
+        #     self.temperature_value.setStyleSheet(f"color: {self._main_window.col_red}; font: bold;")
+        # else:
+        #     self.temperature_value.setStyleSheet(f"color: {self._main_window.col_yellow}; font: bold;")
 
     def update_image(self):
         if self.image.isNull():
@@ -375,11 +375,8 @@ class VideoWindowBase(QWidget):
 
     def update(self):
 
-        while not self.should_stop.is_set():
-
-            if self.visible.is_set():
-                Event().wait(0.01)
-
+        while not self.should_stop.wait(0.01):
+            if self.isVisible():
                 self._update_txtvars()
                 self._refresh_framebuffer()
                 self.update_image()
@@ -395,10 +392,6 @@ class VideoWindowBase(QWidget):
 
                 self._clock = now
                 self._last_capture_count = ind
-
-            else:
-                self.visible.wait()
-
 
 class VideoWindowMain(VideoWindowBase):
     def __init__(self, main_window_ref, idx):
@@ -798,10 +791,13 @@ class MainWindow(QMainWindow):
         self.frames_saved_label.setText(f'Saved frames: {self.mgr.saved} (0 bytes)')
         statusbar.addPermanentWidget(self.frames_saved_label)
 
+    def closeEvent(self, event):
+        event.ignore()
+        self.quit()
+
     def quit(self):
         # Close the child windows and stop their threads
-        for w in self.child_windows:
-            w.should_stop.set()
+        self._stop_child_windows()
 
         # Stop camera acquisition
         if self.mgr.acquiring:
@@ -1050,7 +1046,7 @@ class MainWindow(QMainWindow):
                 # self.child_windows_visibility_buttons[i].setText(f" {w.name.title()} camera")
                 # self.child_windows_visibility_buttons[i].setStyleSheet(f"color: {w.colour_2}; background-color: {w.colour};")
                 # self.child_windows_visibility_buttons[i].clicked.connect(w.toggle_visibility)
-                # self.child_windows_visibility_buttons[i].setChecked(w.visible.is_set())
+                # self.child_windows_visibility_buttons[i].setChecked(True)
                 #
                 # t = Thread(target=w.update, args=(), daemon=True)
                 # t.start()
@@ -1066,7 +1062,7 @@ class MainWindow(QMainWindow):
                 self.child_windows_visibility_buttons[i].setText(f" {w.name.title()} camera")
                 self.child_windows_visibility_buttons[i].setStyleSheet(f"color: {w.colour_2}; background-color: {w.colour};")
                 self.child_windows_visibility_buttons[i].clicked.connect(w.toggle_visibility)
-                self.child_windows_visibility_buttons[i].setChecked(w.visible.is_set())
+                self.child_windows_visibility_buttons[i].setChecked(True)
 
                 t = Thread(target=w.update, args=(), daemon=True)
                 t.start()
@@ -1079,7 +1075,7 @@ class MainWindow(QMainWindow):
 
         for w in self.child_windows:
             try:
-                w.window.destroy()
+                QWidget.close(w)
             except:
                 pass
 
@@ -1120,7 +1116,7 @@ class MainWindow(QMainWindow):
         self._clock = now
 
     def visible_windows(self, include_main=False):
-        windows = [w for w in self.child_windows if w.visible.is_set()]
+        windows = [w for w in self.child_windows if w.isVisible()]
         if include_main:
             windows += [self]
         return windows

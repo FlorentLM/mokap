@@ -652,11 +652,14 @@ class BaslerCamera:
     @property
     def temperature(self) -> Union[float, None]:
         if not self._is_virtual:
-            val = self.ptr.DeviceTemperature.Value
-            if val in [0.0, 421.0]:
+            try:
+                val = self.ptr.DeviceTemperature.Value
+                if val in [0.0, 421.0]:
+                    return None
+                else:
+                    return val
+            except py.AccessException:
                 return None
-            else:
-                return val
         else:
             return None
 
