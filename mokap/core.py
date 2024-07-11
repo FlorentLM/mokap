@@ -1,7 +1,6 @@
 import subprocess
-from threading import Event, get_ident
+from threading import Thread, Event, get_ident
 from multiprocessing import RawArray
-from concurrent.futures import ThreadPoolExecutor
 from typing import NoReturn, Union, List
 from pathlib import Path
 import time
@@ -82,10 +81,10 @@ class Manager:
 
         self._estim_file_size = None
 
-        self._executor: Union[ThreadPoolExecutor, None] = None
+        # self._executor: Union[ThreadPoolExecutor, None] = None
 
-        self._acquiring: Event = Event()
-        self._recording: Event = Event()
+        self._acquiring: bool = False
+        self._recording: bool = False
 
         self._nb_cams: int = 0
 
@@ -418,10 +417,11 @@ class Manager:
             self._cnt_saved[cam_idx] += 1
 
         ##
+        timer = Event()
 
         started_saving = False
-        while self._acquiring.is_set():
-            if self._recording.is_set():
+        while self._acquiring:
+            if self._recording:
                 # Recording is set - do actual work
                 self._init_videowriter(cam_idx)     # This does nothing if not in video mode
 
@@ -451,7 +451,8 @@ class Manager:
                         break
                 else:
                     # Default state of this thread: if cameras are acquiring but we're not recording, just wait
-                    self._recording.wait()
+                    timer.wait(0.1)
+        # print(f'[DEBUG] Stopped writer thread {get_ident()}')
 
     def _display_updater_thread(self, cam_idx: int) -> NoReturn:
         """
@@ -466,11 +467,13 @@ class Manager:
         queue = self._l_latest_frames[cam_idx]
         timer = Event()
 
-        while self._acquiring.is_set():
-            timer.wait(1.0/60.0)
+        while self._acquiring:
+            timer.wait(0.1)
             if queue:
                 self._l_display_buffers[cam_idx] = queue.popleft()
                 self._cnt_displayed[cam_idx] += 1
+
+        # print(f'[DEBUG] Stopped display thread {get_ident()}')
 
     def _grabber_thread(self, cam_idx: int) -> NoReturn:
         """
@@ -486,21 +489,27 @@ class Manager:
 
         cam.start_grabbing()
 
-        while self._acquiring.is_set():
+        while self._acquiring:
             with cam.ptr.RetrieveResult(500, py.TimeoutHandling_Return) as res:
-                if res.GrabSucceeded():
-                    img_nb = res.ImageNumber
-                    frame = res.GetArray()
-                    if self._recording.is_set():
-                        queue_all.append((img_nb, frame))
-                    queue_latest.append(frame)
-                    self._cnt_grabbed[cam_idx] += 1
+                try:
+                    if res.GrabSucceeded():
+                        img_nb = res.ImageNumber
+                        frame = res.GetArray()
+                        if self._recording:
+                            queue_all.append((img_nb, frame))
+                        queue_latest.append(frame)
+                        self._cnt_grabbed[cam_idx] += 1
+                except py.RuntimeException:     # This might happen if the camera stops grabbing during this loop
+                    pass
+
+        cam.stop_grabbing()
+        # print(f'[DEBUG] Stopped grabber thread {get_ident()}')
 
     def record(self) -> None:
         """
             Start recording session
         """
-        if not self._recording.is_set():
+        if not self._recording:
 
             (self.full_path / 'recording').touch(exist_ok=True)
 
@@ -523,7 +532,7 @@ class Manager:
             with open(self.full_path / 'metadata.json', 'w', encoding='utf-8') as f:
                 json.dump(self._metadata, f, ensure_ascii=False, indent=4)
 
-            self._recording.set()       # Start Recording event
+            self._recording = True
 
             if not self._silent:
                 if 'mp4' in self._saving_ext:
@@ -536,14 +545,14 @@ class Manager:
         """
             Stops the current recording session
         """
-        if self._recording.is_set():
+        if self._recording:
 
             # Update the metadata with end time and number of saved frames
             self._metadata['sessions'][-1]['end'] = datetime.now().timestamp()
             duration = self._metadata['sessions'][-1]['end'] - self._metadata['sessions'][-1]['start']
             self._metadata['sessions'][-1]['duration'] = duration
 
-            self._recording.clear()  # End recording event
+            self._recording = False
 
             if not self._silent:
                 print('[INFO] Finishing saving...')
@@ -612,7 +621,7 @@ class Manager:
             Start acquisition on all cameras
         """
 
-        if not self._acquiring.is_set():
+        if not self._acquiring:
 
             # Just in case...
             if self._session_name == '':
@@ -622,18 +631,24 @@ class Manager:
                 self.trigger.start(self._framerate)
                 time.sleep(0.1)
 
-            self._acquiring.set()   # Start Acquiring event
+            self._acquiring = True
 
             # Start 3 threads per camera:
             #   - One that grabs frames continuously from the camera
             #   - One that writes frames continuously to disk
             #   - One that (less frequently) updates local buffers for displaying
-            self._executor = ThreadPoolExecutor()
 
+            self._threads = []
             for i, cam in enumerate(self._l_sources_list):
-                self._executor.submit(self._grabber_thread, i)
-                self._executor.submit(self._writer_thread, i)
-                self._executor.submit(self._display_updater_thread, i)
+                g = Thread(target=self._grabber_thread, args=(i, ), daemon=True)
+                g.start()
+                self._threads.append(g)
+                d = Thread(target=self._display_updater_thread, args=(i,), daemon=True)
+                d.start()
+                self._threads.append(d)
+                w = Thread(target=self._writer_thread, args=(i,), daemon=True)
+                w.start()
+                self._threads.append(w)
 
             if not self._silent:
                 print(f"[INFO] Grabbing started with {self._nb_cams} camera{'s' if self._nb_cams > 1 else ''}...")
@@ -643,15 +658,15 @@ class Manager:
             Stop acquisition on all cameras
         """
 
-        if self._acquiring.is_set():
+        if self._acquiring:
 
             # If we were recording, gracefully stop it
             self.pause()
 
-            self._acquiring.clear()     # End Acquisition event
+            self._acquiring = False
 
-            for cam in self._l_sources_list:
-                cam.stop_grabbing()     # Ask the cameras to stop grabbing (they control the thread execution loop)
+            # for cam in self._l_sources_list:
+            #     cam.stop_grabbing()             # This should not be necessary here
 
             if self._triggered:
                 self.trigger.stop()
@@ -666,8 +681,6 @@ class Manager:
             self._cnt_grabbed = RawArray('I', int(self._nb_cams))
             self._cnt_displayed = RawArray('I', int(self._nb_cams))
             self._cnt_saved = RawArray('I', int(self._nb_cams))
-
-            self._executor = None
 
             if not self._silent:
                 print(f'[INFO] Grabbing stopped')
@@ -684,7 +697,7 @@ class Manager:
         # TODO = Shouldn't this be called Acquisition instead of session? It's *multiple sessions* per acquisition...
 
         # If we're currently acquiring, temporarily stop in order to rename the session...
-        was_on = self._acquiring.is_set()
+        was_on = self._acquiring
         if was_on:
             self.off()
             was_on = True
@@ -717,11 +730,11 @@ class Manager:
 
     @property
     def acquiring(self) -> bool:
-        return self._acquiring.is_set()
+        return self._acquiring
 
     @property
     def recording(self) -> bool:
-        return self._recording.is_set()
+        return self._recording
 
     @property
     def indices(self) -> np.array:

@@ -304,8 +304,8 @@ class BaslerCamera:
 
     def _set_roi(self) -> NoReturn:
         if not self._is_virtual:
-            self._width = self.ptr.WidthMax.GetValue() - (16 // self._binning_value)
-            self._height = self.ptr.HeightMax.GetValue() - (8 // self._binning_value)
+            self._width = int(self.ptr.WidthMax.GetValue() - (16 // self._binning_value))
+            self._height = int(self.ptr.HeightMax.GetValue() - (8 // self._binning_value))
 
             # Apply the dimensions to the ROI
             self.ptr.Width = self._width
@@ -314,8 +314,8 @@ class BaslerCamera:
             self.ptr.CenterY = True
 
         else:
-            self._width = self._probe_frame_shape[1]
-            self._height = self._probe_frame_shape[0]
+            self._width = int(self._probe_frame_shape[1])
+            self._height = int(self._probe_frame_shape[0])
             # self.ptr.Width = self._width
             # self.ptr.Height = self._height
 
@@ -360,7 +360,7 @@ class BaslerCamera:
 
         if self._probe_frame_shape is None:
             probe_frame = self.ptr.GrabOne(100)
-            self._probe_frame_shape = np.array(probe_frame.Array.shape, dtype=int)
+            self._probe_frame_shape = probe_frame.GetArray().shape
 
         if not self._is_virtual:
 
@@ -416,15 +416,17 @@ class BaslerCamera:
 
     def start_grabbing(self) -> NoReturn:
         if self._connected:
-            self.ptr.StartGrabbing()
-            self._is_grabbing = True
+            if not self._is_grabbing:
+                self.ptr.StartGrabbing()
+                self._is_grabbing = True
         else:
             print(f"{self.name.title()} camera is not connected.")
 
     def stop_grabbing(self) -> NoReturn:
         if self._connected:
-            self.ptr.StopGrabbing()
-            self._is_grabbing = False
+            if self._is_grabbing:
+                self.ptr.StopGrabbing()
+                self._is_grabbing = False
         else:
             print(f"{self.name.title()} camera is not connected.")
 
