@@ -314,12 +314,10 @@ class BaslerCamera:
             self.ptr.CenterY = True
 
         else:
-            # We hardcode these for virtual Basler cameras, because the virtual sensor is otherwise 4096x4096 px...
-            # TODO - Check if that can be controlled
-            self._width = 1440
-            self._height = 1080
-            self.ptr.Width = self._width
-            self.ptr.Height = self._height
+            self._width = self._probe_frame_shape[1]
+            self._height = self._probe_frame_shape[0]
+            # self.ptr.Width = self._width
+            # self.ptr.Height = self._height
 
     def connect(self, cam_ptr=None) -> NoReturn:
 
@@ -343,8 +341,7 @@ class BaslerCamera:
 
         if '0815-0' in self.serial:
             self._is_virtual = True
-            self._idx = int(self.serial[-1])
-            # assert self._idx == available_idx   # This is probably useless
+            self._idx = max(available_idx, int(self.serial[-1]))
         else:
             self._is_virtual = False
             self._idx = available_idx
