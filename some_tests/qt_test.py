@@ -1072,13 +1072,7 @@ class MainWindow(QMainWindow):
     def _stop_child_windows(self):
         for w in self.child_windows:
             w.should_stop.set()
-
-        for w in self.child_windows:
-            try:
-                QWidget.close(w)
-            except:
-                pass
-
+            QWidget.close(w)
         self.child_windows = []
         self.child_threads = []
 
