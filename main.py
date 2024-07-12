@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-from mokap.interface import GUI
+from mokap.interface import MainWindow
 from mokap.core import Manager
 
 mgr = Manager(config='./config.yaml', triggered=False, silent=False)
@@ -21,5 +21,5 @@ mgr.gain = 0.0
 if __name__ == '__main__':
     if mgr.nb_cameras == 0:
         exit()
-    GUI(mgr)
+    MainWindow(mgr)
     exit()

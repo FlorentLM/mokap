@@ -99,7 +99,7 @@ class Manager:
         self.connect_basler_devices()
 
         # Initialise the other lists (buffers and events)
-        self._l_display_buffers: List[RawArray] = []
+        self._l_display_buffers: List[np.array] = []
         self._l_finished_saving: List[Event] = []
         self._l_all_frames: List[deque] = []
         self._l_latest_frames: List[deque] = []
@@ -113,7 +113,7 @@ class Manager:
 
         # and populate the lists
         for i, cam in enumerate(self._l_sources_list):
-            self._l_display_buffers.append(RawArray('B', int(np.prod(cam.shape))))
+            self._l_display_buffers.append(np.zeros(cam.shape, dtype=np.uint8))
             self._l_finished_saving.append(Event())
             self._l_all_frames.append(deque())
             self._l_latest_frames.append(deque(maxlen=1))
@@ -273,7 +273,7 @@ class Manager:
             self._binning = cam.binning
 
             # Need to update the display buffers to the new frame size
-            self._l_display_buffers[i] = RawArray('B', int(cam.height * cam.width))
+            self._l_display_buffers[i] = np.zeros(cam.shape, dtype=np.uint8)
 
     @binning_mode.setter
     def binning_mode(self, value: str) -> None:
@@ -468,9 +468,9 @@ class Manager:
         timer = Event()
 
         while self._acquiring:
-            timer.wait(0.1)
+            timer.wait(0.05)
             if queue:
-                self._l_display_buffers[cam_idx] = queue.popleft()
+                np.copyto(self._l_display_buffers[cam_idx], queue.popleft())
                 self._cnt_displayed[cam_idx] += 1
 
         # print(f'[DEBUG] Stopped display thread {get_ident()}')
@@ -509,87 +509,89 @@ class Manager:
         """
             Start recording session
         """
-        if not self._recording:
+        if self.acquiring:
+            if not self._recording:
 
-            (self.full_path / 'recording').touch(exist_ok=True)
+                (self.full_path / 'recording').touch(exist_ok=True)
 
-            session_metadata = {'start': datetime.now().timestamp(),
-                                'end': 0.0,
-                                'duration': 0.0,
-                                'hardware_triggered': self.triggered,
-                                'cameras': [{
-                                    'idx': c.idx,
-                                    'name': c.name,
-                                    'width': c.width,
-                                    'height': c.height,
-                                    'exposure': c.exposure,
-                                    'gain': c.gain,
-                                    'gamma': c.gamma,
-                                    'black_level': c.blacks} for c in self.cameras]}
+                session_metadata = {'start': datetime.now().timestamp(),
+                                    'end': 0.0,
+                                    'duration': 0.0,
+                                    'hardware_triggered': self.triggered,
+                                    'cameras': [{
+                                        'idx': c.idx,
+                                        'name': c.name,
+                                        'width': c.width,
+                                        'height': c.height,
+                                        'exposure': c.exposure,
+                                        'gain': c.gain,
+                                        'gamma': c.gamma,
+                                        'black_level': c.blacks} for c in self.cameras]}
 
-            self._metadata['sessions'].append(session_metadata)
+                self._metadata['sessions'].append(session_metadata)
 
-            with open(self.full_path / 'metadata.json', 'w', encoding='utf-8') as f:
-                json.dump(self._metadata, f, ensure_ascii=False, indent=4)
+                with open(self.full_path / 'metadata.json', 'w', encoding='utf-8') as f:
+                    json.dump(self._metadata, f, ensure_ascii=False, indent=4)
 
-            self._recording = True
+                self._recording = True
 
-            if not self._silent:
-                if 'mp4' in self._saving_ext:
-                    print(f'[INFO] Using {"hardware" if self._config_encoding_gpu else "software"} video encoding')
-                else:
-                    print(f'[INFO] Using {self._saving_ext} image encoding')
-                print('[INFO] Recording started...')
+                if not self._silent:
+                    if 'mp4' in self._saving_ext:
+                        print(f'[INFO] Using {"hardware" if self._config_encoding_gpu else "software"} video encoding')
+                    else:
+                        print(f'[INFO] Using {self._saving_ext} image encoding')
+                    print('[INFO] Recording started...')
 
     def pause(self) -> None:
         """
             Stops the current recording session
         """
-        if self._recording:
+        if self.acquiring:
+            if self._recording:
 
-            # Update the metadata with end time and number of saved frames
-            self._metadata['sessions'][-1]['end'] = datetime.now().timestamp()
-            duration = self._metadata['sessions'][-1]['end'] - self._metadata['sessions'][-1]['start']
-            self._metadata['sessions'][-1]['duration'] = duration
+                # Update the metadata with end time and number of saved frames
+                self._metadata['sessions'][-1]['end'] = datetime.now().timestamp()
+                duration = self._metadata['sessions'][-1]['end'] - self._metadata['sessions'][-1]['start']
+                self._metadata['sessions'][-1]['duration'] = duration
 
-            self._recording = False
+                self._recording = False
 
-            if not self._silent:
-                print('[INFO] Finishing saving...')
+                if not self._silent:
+                    print('[INFO] Finishing saving...')
 
-            # Wait for all writer threads to finish saving the current session
-            [e.wait() for e in self._l_finished_saving]
+                # Wait for all writer threads to finish saving the current session
+                [e.wait() for e in self._l_finished_saving]
 
-            for i, cam in enumerate(self.cameras):
-                if 'mp4' in self._saving_ext:
-                    vid = self.full_path / f"cam{i}_{self._l_sources_list[i].name}_session{len(self._metadata['sessions'])-1}.mp4"
-                    if vid.is_file():
-                        # Using cv2 here is much faster than calling ffprobe...
-                        cap = cv2.VideoCapture(vid.as_posix())
-                        saved_frames_curr_sess = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                        cap.release()
+                for i, cam in enumerate(self.cameras):
+                    if 'mp4' in self._saving_ext:
+                        vid = self.full_path / f"cam{i}_{self._l_sources_list[i].name}_session{len(self._metadata['sessions'])-1}.mp4"
+                        if vid.is_file():
+                            # Using cv2 here is much faster than calling ffprobe...
+                            cap = cv2.VideoCapture(vid.as_posix())
+                            saved_frames_curr_sess = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                            cap.release()
+                        else:
+                            saved_frames_curr_sess = 0
                     else:
-                        saved_frames_curr_sess = 0
-                else:
-                    # Read back how many frames were recorded in previous sessions of this acquisition
-                    previsouly_saved = sum([self._metadata['sessions'][p]['cameras'][i].get('frames', 0) for p in
-                                            range(len(self._metadata['sessions']))])
+                        # Read back how many frames were recorded in previous sessions of this acquisition
+                        previsouly_saved = sum([self._metadata['sessions'][p]['cameras'][i].get('frames', 0) for p in
+                                                range(len(self._metadata['sessions']))])
 
-                    # Wait for all files to finish being written and write the number of frames for this session
-                    saved_frames = self._safe_files_counter(self.full_path / f'cam{i}_{cam.name}')
-                    saved_frames_curr_sess = saved_frames - previsouly_saved
+                        # Wait for all files to finish being written and write the number of frames for this session
+                        saved_frames = self._safe_files_counter(self.full_path / f'cam{i}_{cam.name}')
+                        saved_frames_curr_sess = saved_frames - previsouly_saved
 
-                self._metadata['sessions'][-1]['cameras'][i]['frames'] = saved_frames_curr_sess
-                self._metadata['sessions'][-1]['cameras'][i]['framerate_theoretical'] = cam.framerate
-                self._metadata['sessions'][-1]['cameras'][i]['framerate_actual'] = saved_frames_curr_sess / duration
+                    self._metadata['sessions'][-1]['cameras'][i]['frames'] = saved_frames_curr_sess
+                    self._metadata['sessions'][-1]['cameras'][i]['framerate_theoretical'] = cam.framerate
+                    self._metadata['sessions'][-1]['cameras'][i]['framerate_actual'] = saved_frames_curr_sess / duration
 
-            with open(self.full_path / 'metadata.json', 'w', encoding='utf-8') as f:
-                json.dump(self._metadata, f, ensure_ascii=True, indent=4)
+                with open(self.full_path / 'metadata.json', 'w', encoding='utf-8') as f:
+                    json.dump(self._metadata, f, ensure_ascii=True, indent=4)
 
-            (self.full_path / 'recording').unlink(missing_ok=True)
+                (self.full_path / 'recording').unlink(missing_ok=True)
 
-            if not self._silent:
-                print('[INFO] Done saving')
+                if not self._silent:
+                    print('[INFO] Done saving')
 
     def _safe_files_counter(self, path: Union[Path, str]) -> int:
         """
@@ -780,7 +782,7 @@ class Manager:
         # The buffer is non-atomic so the counts might be slightly off - they should not be used for anything critical
         return np.frombuffer(self._cnt_saved, dtype=np.uint32)
 
-    def get_current_framebuffer(self, i: int = None) -> Union[bytearray, list[bytearray]]:
+    def get_current_framebuffer(self, i: int = None) -> Union[np.array, list[np.array]]:
         """
             Returns the current display frame buffer(s) for one or all cameras.
             NB: These arrays are not atomically readable - they are just for visualisation.
