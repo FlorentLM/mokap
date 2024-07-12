@@ -16,7 +16,7 @@ from PyQt6.uic.properties import QtGui
 
 from mokap import utils
 
-from PIL import Image
+from PIL import Image, ImageQt
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon, QImage, QPixmap, QCursor, QBrush, QPen, QColor
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QSplitter, QStatusBar, QSlider, QGraphicsView, QGraphicsScene,
@@ -110,10 +110,11 @@ class VideoWindowBase(QWidget):
                                    ['w', 'c', 'e'],
                                    ['sw', 's', 'se']])
 
-        # Initialize where the video will be displayed
-        h, w, ch = self._frame_buffer.shape
-        self.image = QImage(self._frame_buffer.data,  w, h, ch * w, QImage.Format.Format_RGB888)
+        # # Initialize where the video will be displayed
+        # h, w, ch = self._frame_buffer.shape
+        # self.image = QImage(self._frame_buffer.data,  w, h, ch * w, QImage.Format.Format_RGB888)
 
+        self.image = Image.fromarray(self._frame_buffer, mode="RGB")
         self.auto_size()
 
     def init_common_ui(self):
@@ -124,7 +125,7 @@ class VideoWindowBase(QWidget):
         self.VIDEO_FEED.setMinimumSize(1, 1)    # Important! Otherwise it crashes when reducing the size of the window
         self.VIDEO_FEED.setAlignment(Qt.AlignmentFlag.AlignCenter)
         v_layout.addWidget(self.VIDEO_FEED)
-        self.VIDEO_FEED.setPixmap(QPixmap.fromImage(self.image))
+        self.VIDEO_FEED.setPixmap(ImageQt.toqpixmap(self.image))
 
         # Camera name bar
         camera_name_bar = QLabel()
@@ -367,11 +368,9 @@ class VideoWindowBase(QWidget):
         #     self.temperature_value.setStyleSheet(f"color: {self._main_window.col_yellow}; font: bold;")
 
     def update_image(self):
-        if self.image.isNull():
-            return
-        if self.size().width() > 0 and self.size().height() > 0:
-            resized_image = self.image.scaled(self.VIDEO_FEED.size(), Qt.AspectRatioMode.KeepAspectRatio)
-            self.VIDEO_FEED.setPixmap(QPixmap.fromImage(resized_image))
+        self.image = Image.fromarray(self._frame_buffer, mode="RGB")
+        self.image.thumbnail((self.VIDEO_FEED.width(), self.VIDEO_FEED.height()))
+        self.VIDEO_FEED.setPixmap(ImageQt.toqpixmap(self.image))
 
     def update(self):
 
