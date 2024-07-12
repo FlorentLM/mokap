@@ -1,6 +1,7 @@
 import sys
 import cv2
 import tkinter as tk
+from scipy import ndimage
 from tkinter.filedialog import askopenfilename, askdirectory
 import tkinter.font as font
 from tkinter import ttk
@@ -75,7 +76,7 @@ def whxy(what):
 
 class VideoWindowBase:
 
-    INFO_PANEL_H = 300
+    INFO_PANEL_H = 200
     WINDOW_MIN_W = 630
     TASKBAR_H = 80
 
@@ -104,7 +105,6 @@ class VideoWindowBase:
 
         # Where the frame data from the camera will be stored
         self._frame_buffer = np.zeros((*self._source_shape[:2], 3), dtype=np.uint8)
-        self.image = Image.fromarray(self._frame_buffer, mode='RGB')
 
         # Init clock and counter
         self._clock = datetime.now()
@@ -178,15 +178,16 @@ class VideoWindowBase:
         self.var_exposure = tk.StringVar()
         self.var_capture_fps = tk.StringVar()
         self.var_brightness = tk.StringVar()
-        self.var_display_fps = tk.StringVar()
+        # self.var_display_fps = tk.StringVar()
         self.var_temperature = tk.StringVar()
 
-        for label, var in zip(['Resolution', 'Capture', 'Exposure', 'Brightness', 'Display', 'Temperature'],
+        # for label, var in zip(['Resolution', 'Capture', 'Exposure', 'Brightness', 'Display', 'Temperature'],
+        for label, var in zip(['Resolution', 'Capture', 'Exposure', 'Brightness', 'Temperature'],
                               [self.var_resolution,
                                self.var_capture_fps,
                                self.var_exposure,
                                self.var_brightness,
-                               self.var_display_fps,
+                               # self.var_display_fps,
                                self.var_temperature]):
             l = tk.Label(f_labels, text=f"{label} :",
                          anchor='ne', justify='right',
@@ -206,7 +207,7 @@ class VideoWindowBase:
         self.var_exposure.set(f"{self._camera.exposure} µs")
         self.var_capture_fps.set(f"-")
         self.var_brightness.set(f"-")
-        self.var_display_fps.set(f"-")
+        # self.var_display_fps.set(f"-")
         self.var_temperature.set(f"{self._camera.temperature}°C" if self._camera.temperature is not None else '-')
 
         # RIGHT FRAME: View control
@@ -253,37 +254,6 @@ class VideoWindowBase:
     @property
     def aspect_ratio(self):
         return self._source_shape[1] / self._source_shape[0]
-
-    # @property
-    # def videofeed_shape(self):
-    #     try:
-    #         h, w = self.VIDEO_PANEL.winfo_height(), self.VIDEO_PANEL.winfo_width()
-    #     except tk.TclError:
-    #         h, w = 0, 0
-    #     if h <= 1 or w <= 1:
-    #         return self._source_shape
-    #     if w / h > self.aspect_ratio:
-    #         w = int(h * self.aspect_ratio)
-    #     else:
-    #         h = int(w / self.aspect_ratio)
-    #     return h, w
-
-    # def auto_size(self, apply=True):
-    #     arbitrary_taskbar_h = 60
-    #     if self.parent.selected_monitor.height < self.parent.selected_monitor.width:
-    #         h = self.parent.selected_monitor.height // 2 - arbitrary_taskbar_h
-    #         w = int(self.aspect_ratio * (h - self.INFO_PANEL_H))
-    #     else:
-    #         w = self.parent.selected_monitor.width // 2
-    #         h = int(w / self.aspect_ratio) + self.INFO_PANEL_H
-    #
-    #     if w < self.WINDOW_MIN_W:
-    #         w = self.WINDOW_MIN_W
-    #     if h < self.INFO_PANEL_H + self.INFO_PANEL_H:
-    #         h = self.INFO_PANEL_H + self.INFO_PANEL_H
-    #     if apply:
-    #         self.window.geometry(f'{w}x{h}')
-    #     return w, h
 
     def auto_size(self):
 
@@ -389,7 +359,6 @@ class VideoWindowBase:
         if self.imagetk.width() != image_processed_resized.width or self.imagetk.height() != image_processed_resized.height:
             self.imagetk = ImageTk.PhotoImage(image_processed_resized)
             self.VIDEO_PANEL.configure(image=self.imagetk)
-            print('resized')
         else:
             self.imagetk.paste(image_processed_resized)
 
@@ -417,7 +386,7 @@ class VideoWindowBase:
             self.var_capture_fps.set("Off")
             self.var_brightness.set("-")
 
-        self.var_display_fps.set(f"{fps:.2f} fps")
+        # self.var_display_fps.set(f"{fps:.2f} fps")
 
         if self._camera.temperature is not None:
             self.var_temperature.set(f'{self._camera.temperature:.1f}°C')
@@ -460,345 +429,6 @@ class VideoWindowBase:
 
             else:
                 Event().wait(0.1)
-# class VideoWindowCalib(VideoWindowBase):
-#
-#     def __init__(self, parent, idx):
-#         super().__init__(parent, idx)
-#
-#         self._total_coverage_area = np.zeros((*self._source_shape, 3), dtype=np.uint8)
-#         self._current_coverage_area = np.zeros(self._source_shape, dtype=np.uint8)
-#
-#         ## ChAruco board variables
-#         BOARD_COLS = 7              # Total rows in the board (chessboard)
-#         BOARD_ROWS = 10             # Total cols in the board
-#         SQUARE_LENGTH = 3.2         # Length of one chessboard square in real life units (i.e. mm)
-#         MARKER_LENGTH = 2.4
-#         MARKER_BITS = 4
-#         DICT_SIZE = 1000
-#         # TODO - Load these from the config file
-#
-#         self._aruco_dict, self._charuco_board = utils.generate_charuco(BOARD_ROWS, BOARD_COLS,
-#                                                                        square_length=SQUARE_LENGTH,
-#                                                                        marker_length=MARKER_LENGTH,
-#                                                                        marker_bits=MARKER_BITS,
-#                                                                        dict_size=DICT_SIZE,
-#                                                                        save_svg=False)
-#
-#         detector_params = cv2.aruco.DetectorParameters()
-#         self.detector = cv2.aruco.ArucoDetector(self._aruco_dict, detector_params)
-#
-#         self._max_frames = 150
-#         self._recommended_coverage_pct_high = 80
-#         self._recommended_coverage_pct_mid = 50
-#         self._recommended_coverage_pct_low = 25
-#
-#         self.current_charuco_corners = None                                 # Currently visible corners
-#         self.current_charuco_ids = None                                     # Corresponding aruco ids
-#         self.detected_charuco_corners = deque(maxlen=self._max_frames)      # All corners seen so far
-#         self.detected_charuco_ids = deque(maxlen=self._max_frames)          # All corresponding aruco ids
-#
-#         self.camera_matrix = None
-#         self.dist_coeffs = None
-#
-#         self._coverage_pct = 0
-#
-#         self._manual_snapshot = False
-#
-#         self._init_common_ui()
-#         self._init_specific_ui()
-#
-#
-#     def _init_specific_ui(self):
-#
-#         ## Centre Frame: Calibration controls
-#         self.CENTRE_FRAME.config(text="Calibration")
-#
-#         f_snapshots = tk.Frame(self.CENTRE_FRAME)
-#         f_snapshots.pack(side="top", fill="both", expand=True)
-#
-#         self.snap_button = tk.Button(f_snapshots, text="Take Snapshot",
-#                                      font=self.parent.font_regular,
-#                                      command=self._toggle_snapshot)
-#         self.snap_button.pack(padx=(5, 0), side="left", fill="both", expand=False)
-#
-#         rf = tk.Frame(f_snapshots)
-#         rf.pack(padx=5, side="left", fill="both", expand=True)
-#
-#         self.autosnap_var = tk.IntVar(value=0)
-#         autosnap_button = tk.Checkbutton(rf, text="Auto snapshot", variable=self.autosnap_var, anchor='w',
-#                                          font=self.parent.font_regular)
-#         autosnap_button.pack(side="top", fill="both", expand=True)
-#
-#         self.reset_coverage_button = tk.Button(rf, text="Clear snapshots",
-#                                                font=self.parent.font_regular,
-#                                      command=self._reset_coverage)
-#         self.reset_coverage_button.pack(side="top", fill="both", expand=False)
-#
-#         f_calibrate = tk.Frame(self.CENTRE_FRAME)
-#         f_calibrate.pack(side="top", fill="both", expand=True)
-#
-#         separator = ttk.Separator(f_calibrate, orient='horizontal')
-#         separator.pack(ipadx=5, side="top", fill="x", expand=True)
-#
-#         self.calibrate_button = tk.Button(f_calibrate, text="Calibrate",
-#                                          highlightthickness=2, highlightbackground=self.parent.col_red,
-#                                          font=self.parent.font_bold,
-#                                          command=self._perform_calibration)
-#
-#         self.calibrate_button.pack(padx=(5, 0), pady=(0, 5), side="left", fill="both", expand=False)
-#
-#         f_saveload = tk.Frame(f_calibrate)
-#         f_saveload.pack(padx=(5, 5), pady=(0, 5), side="left", fill="both", expand=True)
-#
-#         f_saveload_buttons = tk.Frame(f_saveload)
-#         f_saveload_buttons.pack(side="top", fill="both", expand=True)
-#
-#         self.load_button = tk.Button(f_saveload_buttons, text="Load", font=self.parent.font_regular, command=self.load_calibration)
-#         self.load_button.pack(padx=(0, 3), side="left", fill="both", expand=False)
-#
-#         self.save_button = tk.Button(f_saveload_buttons, text="Save", font=self.parent.font_regular, command=self.save_calibration)
-#         self.save_button.pack(side="left", fill="both", expand=False)
-#
-#         self.saved_label = tk.Label(f_saveload, text='', anchor='w', justify='left', font=self.parent.font_regular)
-#         self.saved_label.pack(side='bottom', fill='x')
-#
-#     def _toggle_snapshot(self):
-#         self._manual_snapshot = True
-#
-#     def _detect(self) -> Image:
-#
-#         img_arr = np.frombuffer(self._frame_buffer, dtype=np.uint8).reshape(self._source_shape)
-#         img_col = cv2.cvtColor(img_arr, cv2.COLOR_GRAY2BGR)
-#
-#         # Detect aruco markers
-#         marker_corners, marker_ids, rejected = self.detector.detectMarkers(img_arr)
-#
-#         marker_corners, marker_ids, rejected, recovered = cv2.aruco.refineDetectedMarkers(
-#             image=img_arr,
-#             board=self._charuco_board,
-#             detectedCorners=marker_corners,
-#             detectedIds=marker_ids,
-#             rejectedCorners=rejected)
-#
-#         criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.0001)
-#
-#         if marker_ids is not None and len(marker_ids) > 5:
-#             img_col = cv2.aruco.drawDetectedMarkers(img_col, marker_corners, marker_ids)
-#             charuco_retval, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(markerCorners=marker_corners,
-#                                                                                                markerIds=marker_ids,
-#                                                                                                image=img_arr,
-#                                                                                                board=self._charuco_board,
-#                                                                                                cameraMatrix=self.camera_matrix,
-#                                                                                                distCoeffs=self.dist_coeffs,
-#                                                                                                minMarkers=0)
-#
-#             try:
-#                 charuco_corners = cv2.cornerSubPix(img_arr, charuco_corners,
-#                                  winSize=(20, 20),
-#                                  zeroZone=(-1, -1),
-#                                  criteria=criteria)
-#             except:
-#                 pass
-#
-#             # Keep copy for visualisation in case of resetting
-#             self.current_charuco_ids = charuco_ids
-#             self.current_charuco_corners = charuco_corners
-#
-#             if charuco_retval > 4:
-#
-#                 img_col = cv2.aruco.drawDetectedCornersCharuco(
-#                     image=img_col,
-#                     charucoCorners=charuco_corners,
-#                     charucoIds=charuco_ids)
-#
-#                 hull = cv2.convexHull(charuco_corners)
-#
-#                 self._current_coverage_area.fill(0)
-#                 current = cv2.drawContours(self._current_coverage_area,
-#                                            [hull.astype(int)], 0,
-#                                            self.parent.col_white_rgb, -1).astype(bool)
-#                 img_col = cv2.drawContours(img_col,
-#                                            [hull.astype(int)], 0,
-#                                            self.parent.col_green_rgb, 2)
-#
-#                 current_total = self._total_coverage_area[:, :, 1].astype(bool)     # Total 'seen' area
-#
-#                 overlap = (current_total & current)     # Overlap between current detection and everything seen so far
-#                 new = (current & ~overlap)              # Area that is new in current detection
-#                 # missing_area = ~current_total          # Area that is still missing
-#
-#                 self._coverage_pct = current_total.sum()/np.prod(self._source_shape) * 100   # Percentage covered so far
-#
-#                 # auto_snapshot = bool(self.autosnap_var.get()) & ((new & missing_area).sum() > new.sum() * 0.75)
-#                 auto_snapshot = bool(self.autosnap_var.get()) & (new.sum() > current.sum() * 0.2)
-#                 if auto_snapshot or self._manual_snapshot:
-#                     self._total_coverage_area[new] += (np.array(self.parent.col_green_rgb) * 0.25).astype(np.uint8)
-#
-#                     self.detected_charuco_corners.append(charuco_corners)
-#                     self.detected_charuco_ids.append(charuco_ids)
-#                     self._manual_snapshot = False
-#
-#         return img_col
-#
-#     def _perform_calibration(self):
-#
-#         self.VIDEO_PANEL.configure(text='Calibrating...', fg='white')
-#         self._refresh_videofeed(Image.fromarray(np.zeros_like(self._frame_buffer), mode='RGB'))
-#
-#         retval, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.aruco.calibrateCameraCharuco(charucoCorners=self.detected_charuco_corners,
-#                                                                                             charucoIds=self.detected_charuco_ids,
-#                                                                                             board=self._charuco_board,
-#                                                                                             imageSize=self._source_shape[:2],
-#                                                                                             cameraMatrix=self.camera_matrix,
-#                                                                                             distCoeffs=self.dist_coeffs,
-#                                                                                             flags=cv2.CALIB_USE_QR)
-#
-#         self._calib_error = retval
-#         self.camera_matrix = camera_matrix
-#         self.dist_coeffs = dist_coeffs
-#
-#         self.VIDEO_PANEL.configure(text='')
-#
-#         self._reset_coverage()
-#         self.saved_label.config(text=f'')
-#
-#     def _reset_coverage(self):
-#         self._total_coverage_area = np.zeros((*self._source_shape, 3), dtype=np.uint8)
-#         self._current_coverage_area = np.zeros(self._source_shape, dtype=np.uint8)
-#
-#         self.detected_charuco_corners = deque(maxlen=self._max_frames)  # Corners seen so far
-#         self.detected_charuco_ids = deque(maxlen=self._max_frames)  # Corresponding aruco ids
-#
-#         self._coverage_pct = 0
-#
-#     def save_calibration(self):
-#         cam_name = self._camera.name.lower()
-#
-#         save_folder = self.parent.mgr.full_path.parent / 'calibrations' / self.parent.mgr.full_path.name / cam_name.lower()
-#         save_folder.mkdir(exist_ok=True, parents=True)
-#
-#         np.save(save_folder / 'camera_matrix.npy', self.camera_matrix)
-#         np.save(save_folder / 'dist_coeffs.npy', self.dist_coeffs)
-#
-#         if (save_folder / 'camera_matrix.npy').exists() and (save_folder / 'dist_coeffs.npy').exists():
-#             self.saved_label.config(text=f'Saved.')
-#
-#     def load_calibration(self, load_path=None):
-#
-#         if load_path is None:
-#             load_path = askdirectory()
-#         load_path = Path(load_path)
-#
-#         if load_path.is_file():
-#             load_path = load_path.parent
-#
-#         cam_name = self._camera.name.lower()
-#
-#         if cam_name not in load_path.name and (load_path / cam_name).exists():
-#             load_path = load_path / f'cam{self.idx}'
-#
-#         if cam_name in load_path.name:
-#             self.camera_matrix = np.load(load_path / 'camera_matrix.npy')
-#             self.dist_coeffs = np.load(load_path / 'dist_coeffs.npy')
-#             self.saved_label.config(text=f'Loaded.')
-#         else:
-#             self.saved_label.config(text=f'No calibration loaded.')
-#
-#     # def detect_pose(self):
-#     #
-#     #     img_arr = np.frombuffer(self._frame_buffer, dtype=np.uint8).reshape(self._source_shape)
-#     #
-#     #     # Undistort the image
-#     #     undistorted_image = cv2.undistort(img_arr, self.camera_matrix, self.dist_coeffs)
-#     #     img_col = cv2.cvtColor(undistorted_image, cv2.COLOR_GRAY2BGR)
-#     #
-#     #     # Detect markers in the undistorted image
-#     #     marker_corners, marker_ids, _ = cv2.aruco.detectMarkers(undistorted_image,
-#     #                                                             self.aruco_dict,
-#     #                                                             parameters=self.detector_parameters)
-#     #
-#     #     # If at least one marker is detected
-#     #     if marker_ids is not None and len(marker_ids) > 0:
-#     #         # Interpolate CharUco corners
-#     #         charuco_retval, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(marker_corners,
-#     #                                                                                            marker_ids,
-#     #                                                                                            undistorted_image,
-#     #                                                                                            self._charuco_board)
-#     #
-#     #         # If enough corners are found, estimate the pose
-#     #         if charuco_retval > 4:
-#     #             retval, rvec, tvec = cv2.aruco.estimatePoseCharucoBoard(charuco_corners, charuco_ids,
-#     #                                                                     self._charuco_board,
-#     #                                                                     self.camera_matrix, self.dist_coeffs,
-#     #                                                                     None, None)
-#     #
-#     #             # If pose estimation is successful, draw the axis
-#     #             if retval:
-#     #                 img_col = cv2.drawFrameAxes(img_col, self.camera_matrix, self.dist_coeffs, rvec, tvec,
-#     #                                   length=1,
-#     #                                   thickness=3)
-#     #     return img_col
-#
-#     def _full_frame_processing(self) -> Image:
-#         return self._detect()
-#
-#     def _update_visualisations(self):
-#
-#         if self._coverage_pct >= self._recommended_coverage_pct_high:
-#             self.calibrate_button.configure(highlightbackground=self.parent.col_green)
-#             pct_color = self.parent.col_green_rgb
-#         elif self._recommended_coverage_pct_high > self._coverage_pct >= self._recommended_coverage_pct_mid:
-#             self.calibrate_button.configure(highlightbackground=self.parent.col_yelgreen)
-#             pct_color = self.parent.col_yelgreen_rgb
-#         elif self._recommended_coverage_pct_mid > self._coverage_pct >= self._recommended_coverage_pct_low:
-#             self.calibrate_button.configure(highlightbackground=self.parent.col_orange)
-#             pct_color = self.parent.col_orange_rgb
-#         else:
-#             self.calibrate_button.configure(highlightbackground=self.parent.col_red)
-#             pct_color = self.parent.col_red_rgb
-#
-#         image = self._full_frame_processing()
-#
-#         image = cv2.addWeighted(image, 1.0, self._total_coverage_area, 0.8, 0.0)
-#
-#         if self.camera_matrix is not None:
-#             image = cv2.undistort(image, self.camera_matrix, self.dist_coeffs)
-#
-#             if self.current_charuco_corners is not None:
-#                 valid, rvec, tvec = cv2.aruco.estimatePoseCharucoBoard(charucoCorners=self.current_charuco_corners,
-#                                                                        charucoIds=self.current_charuco_ids,
-#                                                                        board=self._charuco_board,
-#                                                                        cameraMatrix=self.camera_matrix,
-#                                                                        distCoeffs=self.dist_coeffs,
-#                                                                        rvec=None, tvec=None)
-#                 if valid:
-#                     cv2.drawFrameAxes(image=image,
-#                                       cameraMatrix=self.camera_matrix,
-#                                       distCoeffs=self.dist_coeffs,
-#                                       rvec=rvec, tvec=tvec, length=5)
-#
-#         image = cv2.putText(image, f'Snapshots coverage:',
-#                                 (50, 50), cv2.FONT_HERSHEY_SIMPLEX,
-#                                 1, (255, 255, 255), 2, cv2.LINE_AA)
-#
-#         image = cv2.putText(image,
-#                                 f'{self._coverage_pct:.2f}% ({len(self.detected_charuco_corners)} images)',
-#                                 (400, 50), cv2.FONT_HERSHEY_SIMPLEX,
-#                                 1, pct_color, 2, cv2.LINE_AA)
-#
-#         image = cv2.putText(image, f'Calibration:',
-#                                 (50, 100), cv2.FONT_HERSHEY_SIMPLEX,
-#                                 1, (255, 255, 255), 2, cv2.LINE_AA)
-#
-#         calib_col = self.parent.col_green_rgb if self.camera_matrix is not None else self.parent.col_white_rgb
-#         image = cv2.putText(image, f'{"Applied" if self.camera_matrix is not None else "-"}',
-#                                 (250, 100), cv2.FONT_HERSHEY_SIMPLEX,
-#                                 1, calib_col, 2, cv2.LINE_AA)
-#
-#         img_pil = Image.fromarray(image, mode='RGB')
-#         resized = self._resize_videofeed_image(img_pil)
-#
-#         return resized
 
 
 class VideoWindowMain(VideoWindowBase):
@@ -946,19 +576,19 @@ class VideoWindowMain(VideoWindowBase):
 
     def _get_magn_pos(self, event):
         if self._magnification:
-            margin_horiz = (self.VIDEO_PANEL.winfo_width() - self.image.size[1]) // 2
-            margin_vert = (self.VIDEO_PANEL.winfo_height() - self.image.size[0]) // 2
+            margin_horiz = (self.VIDEO_PANEL.winfo_width() - self.imagetk.width()) // 2
+            margin_vert = (self.VIDEO_PANEL.winfo_height() - self.imagetk.height()) // 2
 
             self.magn_window_x = event.x - margin_horiz - self.magn_window_w // 2
             self.magn_window_y = event.y - margin_vert - self.magn_window_h // 2
 
     def _get_magn_target(self, event):
         if self._magnification:
-            margin_horiz = (self.VIDEO_PANEL.winfo_width() - self.image.size[1]) // 2
-            margin_vert = (self.VIDEO_PANEL.winfo_height() - self.image.size[0]) // 2
+            margin_horiz = (self.VIDEO_PANEL.winfo_width() - self.imagetk.width()) // 2
+            margin_vert = (self.VIDEO_PANEL.winfo_height() - self.imagetk.height()) // 2
 
-            self.magn_target_cx = int(round((event.x - margin_horiz) * self._source_shape[1] / self.image.size[1]))
-            self.magn_target_cy = int(round((event.y - margin_vert) * self._source_shape[0] / self.image.size[0]))
+            self.magn_target_cx = int(round((event.x - margin_horiz) * self._source_shape[1] / self.imagetk.width()))
+            self.magn_target_cy = int(round((event.y - margin_vert) * self._source_shape[0] / self.imagetk.height()))
 
     def update_param(self, param):
 
@@ -1004,127 +634,152 @@ class VideoWindowMain(VideoWindowBase):
 
     def _toggle_focus_display(self):
         if self._show_focus:
-            self._show_focus = False
             self.show_focus_button.configure(highlightbackground=self._window_bg_colour)
+            self._show_focus = False
         else:
-            self._show_focus = True
             self.show_focus_button.configure(highlightbackground=self.parent.col_green)
+            self._show_focus = True
 
     def _toggle_mag_display(self):
         if self._magnification:
-            self._magnification = False
             self.show_mag_button.configure(highlightbackground=self._window_bg_colour)
             self.slider_magn.config(state='disabled')
+            self._magnification = False
         else:
-            self._magnification = True
             self.show_mag_button.configure(highlightbackground=self.parent.col_yellow)
             self.slider_magn.config(state='active')
+            self._magnification = True
 
-    # def _update_visualisations(self):
-    #
-    #     image = self._full_frame_processing()
-    #     image = self._resize_videofeed_image(image)
-    #
-    #     ## Get new coordinates
-    #     h, w = self.videofeed_shape
-    #
-    #     x_centre, y_centre = w // 2, h // 2
-    #     x_north, y_north = w // 2, 0
-    #     x_south, y_south = w // 2, h
-    #     x_east, y_east = w, h // 2
-    #     x_west, y_west = 0, h // 2
-    #
-    #     d = ImageDraw.Draw(image)
-    #     # Draw crosshair
-    #     d.line((x_west, y_west, x_east, y_east), fill=self.parent.col_white_rgb, width=1)  # Horizontal
-    #     d.line((x_north, y_north, x_south, y_south), fill=self.parent.col_white_rgb, width=1)  # Vertical
-    #
-    #     # Position the 'Recording' indicator
-    #     d.text((x_centre, y_south - y_centre/2.0), self.parent.txtvar_recording.get(),
-    #            anchor="ms", font=self._imgfnt,
-    #            fill=self.parent.col_red)
-    #
-    #     if self._warning:
-    #         d.text((x_centre, y_north + y_centre/2.0), self.var_warning.get(),
-    #                anchor="ms", font=self._imgfnt,
-    #                fill=self.parent.col_orange)
-    #
-    #     if self._magnification:
-    #
-    #         col = self.parent.col_yellow_rgb
-    #
-    #         ratio_w = self.videofeed_shape[0] / self._source_shape[0]
-    #         ratio_h = self.videofeed_shape[1] / self._source_shape[1]
-    #
-    #         # Size of the slice to extract from the source
-    #         slice_w = self.magn_window_w
-    #         slice_h = self.magn_window_h
-    #
-    #         # Position of the slice in source pixels coordinates
-    #         slice_cx = self.magn_target_cx
-    #         slice_cy = self.magn_target_cy
-    #
-    #         slice_x1 = max(0, slice_cx - slice_w//2)
-    #         slice_y1 = max(0, slice_cy - slice_h//2)
-    #         slice_x2 = slice_x1 + slice_w
-    #         slice_y2 = slice_y1 + slice_h
-    #
-    #         if slice_x2 > self._source_shape[1]:
-    #             slice_x1 = self._source_shape[1] - slice_w
-    #             slice_x2 = self._source_shape[1]
-    #
-    #         if slice_y2 > self._source_shape[0]:
-    #             slice_y1 = self._source_shape[0] - slice_h
-    #             slice_y2 = self._source_shape[0]
-    #
-    #         # Slice directly from the framebuffer and make a (then zoomed) image
-    #         magn_img = Image.fromarray(self._frame_buffer[slice_y1:slice_y2, slice_x1:slice_x2], mode='L')
-    #         magn_img = magn_img.resize(
-    #             (int(magn_img.width * self.magn_zoom.get()), int(magn_img.height * self.magn_zoom.get())))
-    #
-    #         image.paste(magn_img, (self.magn_window_x, self.magn_window_y))
-    #
-    #         # Add frame around the magnified area
-    #         tgt_x1 = int(slice_x1 * ratio_w)
-    #         tgt_x2 = int(slice_x2 * ratio_w)
-    #         tgt_y1 = int(slice_y1 * ratio_h)
-    #         tgt_y2 = int(slice_y2 * ratio_h)
-    #         d.rectangle([(tgt_x1, tgt_y1), (tgt_x2, tgt_y2)],
-    #                     outline=col, width=1)
-    #
-    #         # Add frame around the magnification
-    #         d.rectangle([(self.magn_window_x, self.magn_window_y),
-    #                      (self.magn_window_x + magn_img.width,
-    #                       self.magn_window_y + magn_img.height)], outline=col, width=1)
-    #
-    #         # Add a small + in the centre
-    #         c = self.magn_window_x + magn_img.width // 2, self.magn_window_y + magn_img.height // 2
-    #         d.line((c[0] - 5, c[1], c[0] + 5, c[1]), fill=col, width=1)  # Horizontal
-    #         d.line((c[0], c[1] - 5, c[0], c[1] + 5), fill=col, width=1)  # Vertical
-    #
-    #     if self._show_focus:
-    #         lapl = ndimage.gaussian_laplace(np.array(image)[:, :, 0].astype(np.uint8), sigma=1)
-    #         blur = ndimage.gaussian_filter(lapl, 5)
-    #
-    #         # threshold
-    #         lim = 90
-    #         blur[blur < lim] = 0
-    #         blur[blur >= lim] = 255
-    #
-    #         ones = np.ones_like(blur)
-    #         r = Image.fromarray(ones * 98, mode='L')
-    #         g = Image.fromarray(ones * 203, mode='L')
-    #         b = Image.fromarray(ones * 90, mode='L')
-    #         a = Image.fromarray(blur * 127, mode='L')
-    #
-    #         overlay = Image.merge('RGBA', (r, g, b, a))
-    #         image = Image.alpha_composite(image.convert('RGBA'), overlay)
-    #
-    #     return image
+    def _process_resized(self, image):
+
+        # Get new coordinates
+        w, h = image.size
+
+        x_centre, y_centre = w // 2, h // 2
+        x_north, y_north = w // 2, 0
+        x_south, y_south = w // 2, h
+        x_east, y_east = w, h // 2
+        x_west, y_west = 0, h // 2
+
+        d = ImageDraw.Draw(image)
+
+        # Draw crosshair
+        d.line((x_west, y_west, x_east, y_east), fill=self.parent.col_white_rgb, width=1)       # Horizontal
+        d.line((x_north, y_north, x_south, y_south), fill=self.parent.col_white_rgb, width=1)   # Vertical
+
+        # Position the 'Recording' indicator
+        d.text((x_centre, y_south - y_centre/2.0), self.parent.var_recording.get(),
+               anchor="ms", font=self._imgfnt,
+               fill=self.parent.col_red)
+
+        if self._warning:
+            d.text((x_centre, y_north + y_centre/2.0), self.var_warning.get(),
+                   anchor="ms", font=self._imgfnt,
+                   fill=self.parent.col_orange)
+
+        if self._magnification:
+
+            col = self.parent.col_yellow_rgb
+
+            ratio_w = w / self._source_shape[1]
+            ratio_h = h / self._source_shape[0]
+
+            # Size of the slice to extract from the source
+            slice_w = self.magn_window_w
+            slice_h = self.magn_window_h
+
+            # Position of the slice in source pixels coordinates
+            slice_cx = self.magn_target_cx
+            slice_cy = self.magn_target_cy
+
+            slice_x1 = max(0, slice_cx - slice_w//2)
+            slice_y1 = max(0, slice_cy - slice_h//2)
+            slice_x2 = slice_x1 + slice_w
+            slice_y2 = slice_y1 + slice_h
+
+            if slice_x2 > self._source_shape[1]:
+                slice_x1 = self._source_shape[1] - slice_w
+                slice_x2 = self._source_shape[1]
+
+            if slice_y2 > self._source_shape[0]:
+                slice_y1 = self._source_shape[0] - slice_h
+                slice_y2 = self._source_shape[0]
+
+            # Slice directly from the framebuffer and make a (then zoomed) image
+            magn_img = Image.fromarray(self._frame_buffer[slice_y1:slice_y2, slice_x1:slice_x2], mode='RGB')
+            magn_img = magn_img.resize(
+                (int(magn_img.width * self.magn_zoom.get()), int(magn_img.height * self.magn_zoom.get())))
+
+            image.paste(magn_img, (self.magn_window_x, self.magn_window_y))
+
+            # Add frame around the magnified area
+            tgt_x1 = int(slice_x1 * ratio_w)
+            tgt_x2 = int(slice_x2 * ratio_w)
+            tgt_y1 = int(slice_y1 * ratio_h)
+            tgt_y2 = int(slice_y2 * ratio_h)
+            d.rectangle([(tgt_x1, tgt_y1), (tgt_x2, tgt_y2)],
+                        outline=col, width=1)
+
+            # Add frame around the magnification
+            d.rectangle([(self.magn_window_x, self.magn_window_y),
+                         (self.magn_window_x + magn_img.width,
+                          self.magn_window_y + magn_img.height)], outline=col, width=1)
+
+            # Add a small + in the centre
+            c = self.magn_window_x + magn_img.width // 2, self.magn_window_y + magn_img.height // 2
+            d.line((c[0] - 5, c[1], c[0] + 5, c[1]), fill=col, width=1)  # Horizontal
+            d.line((c[0], c[1] - 5, c[0], c[1] + 5), fill=col, width=1)  # Vertical
+
+        if self._show_focus:
+            lapl = ndimage.gaussian_laplace(np.array(image)[:, :, 0].astype(np.uint8), sigma=1)
+            blur = ndimage.gaussian_filter(lapl, 5)
+
+            # threshold
+            lim = 90
+            blur[blur < lim] = 0
+            blur[blur >= lim] = 255
+
+            ones = np.ones_like(blur)
+            r = Image.fromarray(ones * 98, mode='L')
+            g = Image.fromarray(ones * 203, mode='L')
+            b = Image.fromarray(ones * 90, mode='L')
+            a = Image.fromarray(blur * 127, mode='L')
+
+            overlay = Image.merge('RGBA', (r, g, b, a))
+            image = Image.alpha_composite(image.convert('RGBA'), overlay).convert('RGB')
+
+        return image
+
 
 class MainWindow:
     MIN_WIDTH = 600
     MIN_HEIGHT = 370
+
+    # Colours
+    col_white = "#ffffff"
+    col_white_rgb = utils.hex_to_rgb(col_white)
+    col_black = "#000000"
+    col_black_rgb = utils.hex_to_rgb(col_black)
+    col_lightgray = "#e3e3e3"
+    col_lightgray_rgb = utils.hex_to_rgb(col_lightgray)
+    col_midgray = "#c0c0c0"
+    col_midgray_rgb = utils.hex_to_rgb(col_midgray)
+    col_darkgray = "#515151"
+    col_darkgray_rgb = utils.hex_to_rgb(col_darkgray)
+    col_red = "#FF3C3C"
+    col_red_rgb = utils.hex_to_rgb(col_red)
+    col_orange = "#FF9B32"
+    col_orange_rgb = utils.hex_to_rgb(col_orange)
+    col_yellow = "#FFEB1E"
+    col_yellow_rgb = utils.hex_to_rgb(col_yellow)
+    col_yelgreen = "#A5EB14"
+    col_yelgreen_rgb = utils.hex_to_rgb(col_yelgreen)
+    col_green = "#00E655"
+    col_green_rgb = utils.hex_to_rgb(col_green)
+    col_blue = "#5ac3f5"
+    col_blue_rgb = utils.hex_to_rgb(col_blue)
+    col_purple = "#c887ff"
+    col_purple_rgb = utils.hex_to_rgb(col_purple)
 
     def __init__(self, mgr):
 
@@ -1154,20 +809,6 @@ class MainWindow:
         self.icon_snapshot_bw = tk.PhotoImage(file=resources_path / 'snapshot_bw.png')
         self.icon_rec_on = tk.PhotoImage(file=resources_path / 'rec.png')
         self.icon_rec_bw = tk.PhotoImage(file=resources_path / 'rec_bw.png')
-
-        # Colours
-        self.col_white = "#ffffff"
-        self.col_black = "#000000"
-        self.col_lightgray = "#e3e3e3"
-        self.col_midgray = "#c0c0c0"
-        self.col_darkgray = "#515151"
-        self.col_red = "#FF3C3C"
-        self.col_orange = "#FF9B32"
-        self.col_yellow = "#FFEB1E"
-        self.col_yelgreen = "#A5EB14"
-        self.col_green = "#00E655"
-        self.col_blue = "#5ac3f5"
-        self.col_purple = "#c887ff"
 
         # Fonts
         self.font_bold = font.Font(weight='bold', size=10)
@@ -1410,12 +1051,12 @@ class MainWindow:
         for c in self.mgr.cameras:
 
             if self._is_calibrating:
-                w = VideoWindowCalib(parent=self, idx=c.idx)
-                self.child_windows.append(w)
-                t = Thread(target=w.update, args=(), daemon=True)
-                t.start()
-                self.child_threads.append(t)
-
+                # w = VideoWindowCalib(parent=self, idx=c.idx)
+                # self.child_windows.append(w)
+                # t = Thread(target=w.update, args=(), daemon=True)
+                # t.start()
+                # self.child_threads.append(t)
+                pass
             else:
                 w = VideoWindowMain(parent=self, idx=c.idx)
                 self.child_windows.append(w)
@@ -1441,15 +1082,6 @@ class MainWindow:
     @property
     def current_buffers(self):
         return self._current_buffers
-
-    @property
-    def capture_fps(self):
-        return self._capture_fps
-
-    @property
-    def screen_dims(self):
-        monitor = self.selected_monitor
-        return np.array([monitor.height, monitor.width, monitor.x, monitor.y], dtype=np.uint32)
 
     def set_monitor(self, idx=None):
         if len(self._monitors) > 1 and idx is None:
