@@ -2,7 +2,7 @@
 from mokap.interface import MainWindow
 from mokap.core import Manager
 
-mgr = Manager(config='./config.yaml', triggered=False, silent=False)
+mgr = Manager(config='./config.yaml', triggered=True, silent=False)
 
 # Set exposure for all cameras (in µs)
 mgr.exposure = 4800
