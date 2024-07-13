@@ -5,6 +5,9 @@ import platform
 import psutil
 import screeninfo
 
+import time
+import cv2
+
 from functools import partial
 from collections import deque
 from datetime import datetime
@@ -20,6 +23,8 @@ from PyQt6.QtGui import QIcon, QImage, QPixmap, QCursor, QBrush, QPen, QColor, Q
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QSplitter, QStatusBar, QSlider, QGraphicsView, QGraphicsScene,
                              QGraphicsRectItem, QComboBox, QLineEdit, QProgressBar, QCheckBox, QScrollArea, QWidget,
                              QLabel, QFrame, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout, QPushButton)
+from PyQt6.QtOpenGL import QOpenGLVersionProfile, QOpenGLTexture, QOpenGLVersionFunctionsFactory
+from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 
 
 class DoubleSlider(QSlider):
@@ -66,7 +71,86 @@ class DoubleSlider(QSlider):
     def maximum(self):
         return self._max_value
 
-import cv2
+
+class VideoGLWidget(QOpenGLWidget):
+    TEX_SLOTS = None
+
+    def __init__(self, height, width, idx, parent=None, *args, **kwargs):
+        super(VideoGLWidget, self).__init__(parent, *args, **kwargs)
+        self.idx = idx
+        self.gl = None
+        self.texture = None
+        self.ratio = width/height
+        self.arraybuffer = np.zeros((height, width, 3), dtype=np.uint8)
+
+    def initializeGL(self):
+        version_profile = QOpenGLVersionProfile()
+        version_profile.setVersion(2, 0)
+        self.gl = QOpenGLVersionFunctionsFactory.get(version_profile, self.context())
+        self.gl.initializeOpenGLFunctions()
+        # self.gl.glClearColor(0.5, 0.8, 0.7, 1.0)
+
+        self.gl.glEnable(self.gl.GL_TEXTURE_2D)
+
+        if VideoGLWidget.TEX_SLOTS is None:
+            VideoGLWidget.TEX_SLOTS = self.gl.glGenTextures(5)
+
+        self.texture = VideoGLWidget.TEX_SLOTS[self.idx]
+
+        self._gen_texture()
+
+    def resizeGL(self, width, height):
+        side = min(width, height)
+        x = int((width - side) / 2)
+        y = int((height - side) / 2)
+        self.gl.glViewport(x, y, side, side)
+
+    def paintGL(self):
+        self.gl.glClear(self.gl.GL_COLOR_BUFFER_BIT)
+        if self.texture:
+
+            self.gl.glBindTexture(self.gl.GL_TEXTURE_2D, self.texture)
+
+            self.gl.glBegin(self.gl.GL_QUADS)
+            self.gl.glTexCoord2f(0, 0)
+            self.gl.glVertex2f(-1, -1)
+            self.gl.glTexCoord2f(1, 0)
+            self.gl.glVertex2f(1, -1)
+            self.gl.glTexCoord2f(1, 1)
+            self.gl.glVertex2f(1, 1)
+            self.gl.glTexCoord2f(0, 1)
+            self.gl.glVertex2f(-1, 1)
+            self.gl.glEnd()
+
+            self.gl.glBindTexture(self.gl.GL_TEXTURE_2D, 0)
+
+    def _gen_texture(self):
+
+        self.gl.glBindTexture(self.gl.GL_TEXTURE_2D, self.texture)
+
+        self.gl.glTexParameteri(self.gl.GL_TEXTURE_2D, self.gl.GL_TEXTURE_MIN_FILTER, self.gl.GL_LINEAR)
+        self.gl.glTexParameteri(self.gl.GL_TEXTURE_2D, self.gl.GL_TEXTURE_MAG_FILTER, self.gl.GL_LINEAR)
+
+        self.gl.glTexImage2D(self.gl.GL_TEXTURE_2D,
+                     0,
+                     self.gl.GL_RGB,
+                     self.arraybuffer.shape[1],
+                     self.arraybuffer.shape[0],
+                     0,
+                     self.gl.GL_RGB,
+                     self.gl.GL_UNSIGNED_BYTE,
+                     self.arraybuffer.tobytes())
+
+        self.gl.glBindTexture(self.gl.GL_TEXTURE_2D, 0)
+
+    def updatedata(self, imagedata):
+        flipped = np.flip(imagedata, axis=0)
+        self.arraybuffer[:, :, 0] = flipped
+        self.arraybuffer[:, :, 1] = flipped
+        self.arraybuffer[:, :, 2] = flipped
+        self._gen_texture()
+        self.update()
+
 
 class VideoWindowBase(QWidget):
     INFO_PANEL_H = 300
@@ -91,7 +175,6 @@ class VideoWindowBase(QWidget):
 
         # Init clock and counter
         self._clock = datetime.now()
-        self._fps = deque(maxlen=10)
         self._capture_fps = deque(maxlen=10)
         self._last_capture_count = 0
 
@@ -107,12 +190,17 @@ class VideoWindowBase(QWidget):
                                    ['w', 'c', 'e'],
                                    ['sw', 's', 'se']])
 
-        # # Initialize where the video will be displayed
-        # h, w, ch = self._frame_buffer.shape
-        # self.image = QImage(self._frame_buffer.data,  w, h, ch * w, QImage.Format.Format_RGB888)
-
-        self.image = Image.fromarray(self._frame_buffer, mode="RGB")
         self.auto_size()
+
+        # Setup MainWindow update
+        self.timer_update = QTimer(self)
+        self.timer_update.timeout.connect(self._update_secondary)
+        self.timer_update.start(100)
+
+        # Setup VideoWindow video update
+        self.timer_video = QTimer(self)
+        self.timer_video.timeout.connect(self.update_image)
+        self.timer_video.start(30)
 
     def init_common_ui(self):
 
@@ -122,7 +210,10 @@ class VideoWindowBase(QWidget):
         self.VIDEO_FEED.setMinimumSize(1, 1)  # Important! Otherwise it crashes when reducing the size of the window
         self.VIDEO_FEED.setAlignment(Qt.AlignmentFlag.AlignCenter)
         v_layout.addWidget(self.VIDEO_FEED)
-        self.VIDEO_FEED.setPixmap(ImageQt.toqpixmap(self.image))
+
+        self.update_image() # Call this once to initialise it
+
+        # self.VIDEO_FEED = VideoGLWidget(self._camera.shape[0], self._camera.shape[1], self.idx, parent=self)
 
         # Camera name bar
         camera_name_bar = QLabel()
@@ -168,14 +259,12 @@ class VideoWindowBase(QWidget):
         self.capturefps_value = QLabel()
         self.exposure_value = QLabel()
         self.brightness_value = QLabel()
-        self.displayfps_value = QLabel()
         self.temperature_value = QLabel()
 
         self.resolution_value.setText(f"{self.source_shape[1]}×{self.source_shape[0]} px")
         self.capturefps_value.setText(f"Off")
         self.exposure_value.setText(f"{self._camera.exposure} µs")
         self.brightness_value.setText(f"-")
-        self.displayfps_value.setText(f"-")
         self.temperature_value.setText(f"{self._camera.temperature}°C" if self._camera.temperature is not None else '-')
 
         labels_and_values = [
@@ -183,7 +272,6 @@ class VideoWindowBase(QWidget):
             ('Capture', self.capturefps_value),
             ('Exposure', self.exposure_value),
             ('Brightness', self.brightness_value),
-            ('Display', self.displayfps_value),
             ('Temperature', self.temperature_value),
         ]
 
@@ -321,19 +409,8 @@ class VideoWindowBase(QWidget):
             self._main_window.child_windows_visibility_buttons[self.idx].setChecked(True)
             self.show()
 
-    # def _refresh_framebuffer(self):
-    #     if self._main_window.mgr.acquiring and self._main_window._current_buffers is not None:
-    #         buf = self._main_window._current_buffers[self.idx]
-    #         if buf is not None:
-    #             if len(self.source_shape) == 2:
-    #                 np.copyto(self._frame_buffer, np.frombuffer(buf, dtype=np.uint8).reshape(self.source_shape)[..., None])
-    #             else:
-    #                 np.copyto(self._frame_buffer, np.frombuffer(buf, dtype=np.uint8).reshape(self.source_shape))
-    #     else:
-    #         self._frame_buffer.fill(0)
-
     def _refresh_framebuffer(self):
-        if self._main_window.mgr.acquiring and self._main_window._current_buffers is not None:
+        if self._main_window.mgr.acquiring:
             arr = self._main_window.mgr.get_current_framebuffer(self.idx)
             if arr is not None:
                 if len(self.source_shape) == 2:
@@ -345,51 +422,9 @@ class VideoWindowBase(QWidget):
         else:
             self._frame_buffer.fill(0)
 
-    def _update_txtvars(self):
-
-        fps = np.mean(list(self._fps)) if self._fps else 0
-
-        if self._main_window.mgr.acquiring:
-
-            cap_fps = np.mean(list(self._capture_fps))
-
-            if 0 < cap_fps < 1000:
-                if abs(cap_fps - self._wanted_fps) > 10:
-                    # self.txtvar_warning.set('[ WARNING: Framerate ]')
-                    self._warning = True
-                else:
-                    self._warning = False
-                self.capturefps_value.setText(f"{cap_fps:.2f} fps")
-            else:
-                self.capturefps_value.setText("-")
-
-            brightness = np.round(self._frame_buffer.mean() / 255 * 100, decimals=2)
-            self.brightness_value.setText(f"{brightness:.2f}%")
-        else:
-            self.capturefps_value.setText("Off")
-            self.brightness_value.setText("-")
-
-        self.displayfps_value.setText(f"{fps:.2f} fps")
-
-        # # Update the temperature label colour
-        # if self._camera.temperature is not None:
-        #     self.temperature_value.setText(f'{self._camera.temperature:.1f}°C')
-        # if self._camera.temperature_state == 'Ok':
-        #     self.temperature_value.setStyleSheet(f"color: {self._main_window.col_green}; font: bold;")
-        # elif self._camera.temperature_state == 'Critical':
-        #     self.temperature_value.setStyleSheet(f"color: {self._main_window.col_orange}; font: bold;")
-        # elif self._camera.temperature_state == 'Error':
-        #     self.temperature_value.setStyleSheet(f"color: {self._main_window.col_red}; font: bold;")
-        # else:
-        #     self.temperature_value.setStyleSheet(f"color: {self._main_window.col_yellow}; font: bold;")
-
-    def update_image(self):
-
-        frame = np.copy(self._main_window.mgr.get_current_framebuffer(self.idx))
-        frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
-
-        frame = cv2.putText(
-            img=frame,
+        # Debug
+        self._frame_buffer = cv2.putText(
+            img=self._frame_buffer,
             text=f"{self.idx}",
             org=(200, 200),
             fontFace=cv2.FONT_HERSHEY_DUPLEX,
@@ -398,35 +433,63 @@ class VideoWindowBase(QWidget):
             thickness=3
         )
 
-        if len(frame.shape) == 3:
-            height, width, channel = frame.shape
-        else:
-            height, width = frame.shape
-            channel = 1
-        step = channel * width
-        q_img = QImage(frame.data, width, height, step, QImage.Format.Format_RGB888)
-        pixmap = QPixmap.fromImage(q_img)
-        self.VIDEO_FEED.setPixmap(pixmap.scaled(self.VIDEO_FEED.width(), self.VIDEO_FEED.height(), Qt.AspectRatioMode.KeepAspectRatio))
+    def update_image(self):
+        if self.isVisible():
+            self._refresh_framebuffer()
 
-    def update(self):
+            h, w = self._frame_buffer.shape[:2]
+            q_img = QImage(self._frame_buffer.data, w, h, 3 * w, QImage.Format.Format_RGB888)
+            pixmap = QPixmap.fromImage(q_img)
+            self.VIDEO_FEED.setPixmap(pixmap.scaled(self.VIDEO_FEED.width(), self.VIDEO_FEED.height(), Qt.AspectRatioMode.KeepAspectRatio))
+
+            # self.VIDEO_FEED_GL.updatedata(self._main_window.mgr.get_current_framebuffer(self.idx))
+
+    def _update_secondary(self):
 
         if self.isVisible():
-            self._update_txtvars()
-            self._refresh_framebuffer()
-            self.update_image()
 
             now = datetime.now()
+
+            if self._main_window.mgr.acquiring:
+
+                cap_fps = sum(list(self._capture_fps)) / 10 if self._capture_fps else 0
+
+                if 0 < cap_fps < 1000:
+                    if abs(cap_fps - self._wanted_fps) > 10:
+                        # self.txtvar_warning.set('[ WARNING: Framerate ]')
+                        self._warning = True
+                    else:
+                        self._warning = False
+                    self.capturefps_value.setText(f"{cap_fps:.2f} fps")
+                else:
+                    self.capturefps_value.setText("-")
+
+                # brightness = np.round(self._frame_buffer.mean() / 255 * 100, decimals=2)
+                # self.brightness_value.setText(f"{brightness:.2f}%")
+            else:
+                self.capturefps_value.setText("Off")
+                self.brightness_value.setText("-")
+
+            # # Update the temperature label colour
+            # if self._camera.temperature is not None:
+            #     self.temperature_value.setText(f'{self._camera.temperature:.1f}°C')
+            # if self._camera.temperature_state == 'Ok':
+            #     self.temperature_value.setStyleSheet(f"color: {self._main_window.col_green}; font: bold;")
+            # elif self._camera.temperature_state == 'Critical':
+            #     self.temperature_value.setStyleSheet(f"color: {self._main_window.col_orange}; font: bold;")
+            # elif self._camera.temperature_state == 'Error':
+            #     self.temperature_value.setStyleSheet(f"color: {self._main_window.col_red}; font: bold;")
+            # else:
+            #     self.temperature_value.setStyleSheet(f"color: {self._main_window.col_yellow}; font: bold;")
 
             # Update display fps
             dt = (now - self._clock).total_seconds()
             ind = int(self._main_window.mgr.indices[self.idx])
             if dt > 0:
-                self._fps.append(1.0 / dt)
                 self._capture_fps.append((ind - self._last_capture_count) / dt)
 
             self._clock = now
             self._last_capture_count = ind
-
 
 class VideoWindowMain(VideoWindowBase):
     def __init__(self, main_window_ref, idx):
@@ -619,8 +682,6 @@ class MainWindow(QMainWindow):
         self.icon_rec_on = QIcon((resources_path / 'rec.png').as_posix())
         self.icon_rec_bw = QIcon((resources_path / 'rec_bw.png').as_posix())
 
-        self._clock = datetime.now()
-
         # States
         self.editing_disabled = True
         self._is_calibrating = False
@@ -641,10 +702,10 @@ class MainWindow(QMainWindow):
         # Start the secondary windows
         self._start_child_windows()
 
-        # Setup MainWindow update
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.update_main)
-        self.timer.start()
+        # Setup MainWindow secondary update
+        self.timer_update = QTimer(self)
+        self.timer_update.timeout.connect(self._update_main)
+        self.timer_update.start(200)
 
     def init_gui(self):
         central_widget = QWidget()
@@ -1071,6 +1132,13 @@ class MainWindow(QMainWindow):
         else:
             self.selected_monitor = self._monitors[0]
 
+    def visible_windows(self, include_main=False):
+        windows = [w for w in self.child_windows if w.isVisible()]
+        if include_main:
+            windows += [self]
+        return windows
+
+
     def _start_child_windows(self):
         for i, cam in enumerate(self.mgr.cameras):
 
@@ -1101,54 +1169,35 @@ class MainWindow(QMainWindow):
             QWidget.close(w)
         self.child_windows = []
 
-    def update_main(self):
-
-        # Update real time counter and determine display fps
-        now = datetime.now()
+    def _update_main(self):
 
         if self._mem_baseline is None:
             self._mem_baseline = psutil.virtual_memory().percent
 
-        if self.mgr.acquiring:
+        # Get an estimation of the saved data size
+        if self.mgr._estim_file_size is None:
+            self.frames_saved_label.setText(f'Saved frames: {self.mgr.saved} (0 bytes)')
 
-            # Grab the latest frames for displaying
-            self._current_buffers = self.mgr.get_current_framebuffer()
-
-            # Get an estimation of the saved data size
-            if self.mgr._estim_file_size is None:
-                self.frames_saved_label.setText(f'Saved frames: {self.mgr.saved} (0 bytes)')
-
-            elif self.mgr._estim_file_size == -1:
-                size = sum(sum(os.path.getsize(os.path.join(res[0], element)) for element in res[2]) for res in
-                           os.walk(self.mgr.full_path))
-                self.frames_saved_label.setText(f'Saved frames: {self.mgr.saved} ({utils.pretty_size(size)})')
-            else:
-                saved = self.mgr.saved
-                size = sum(self.mgr._estim_file_size * saved)
-                self.frames_saved_label.setText(f'Saved frames: {saved} ({utils.pretty_size(size)})')
+        elif self.mgr._estim_file_size == -1:
+            size = sum(sum(os.path.getsize(os.path.join(res[0], element)) for element in res[2]) for res in
+                       os.walk(self.mgr.full_path))
+            self.frames_saved_label.setText(f'Saved frames: {self.mgr.saved} ({utils.pretty_size(size)})')
+        else:
+            saved = self.mgr.saved
+            size = sum(self.mgr._estim_file_size * saved)
+            self.frames_saved_label.setText(f'Saved frames: {saved} ({utils.pretty_size(size)})')
 
         # Update memory pressure estimation
         self._mem_pressure += (psutil.virtual_memory().percent - self._mem_baseline) / self._mem_baseline * 100
         self._mem_pressure_bar.setValue(int(round(self._mem_pressure)))
         self._mem_baseline = psutil.virtual_memory().percent
 
-        # Update secondary windows
-        for w in self.child_windows:
-            w.update()
-
-        self._clock = now
-
-    def visible_windows(self, include_main=False):
-        windows = [w for w in self.child_windows if w.isVisible()]
-        if include_main:
-            windows += [self]
-        return windows
-
-
 ##
 
 from mokap.core import Manager
 
+QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseDesktopOpenGL)
+QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
 app = QApplication(sys.argv)
 
 mgr = Manager(config='../config.yaml', triggered=False, silent=False)
@@ -1171,3 +1220,8 @@ main_window = MainWindow(mgr)
 main_window.show()
 
 sys.exit(app.exec())
+
+bitmap_path = './test.png'
+with Image.open(bitmap_path) as im:
+    w, h = im.width, im.height
+    im_data = im.transpose(Image.FLIP_TOP_BOTTOM).convert("RGBA").tobytes()
