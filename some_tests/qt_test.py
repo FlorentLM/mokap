@@ -403,11 +403,11 @@ class VideoWindowBase(QWidget):
             override = not self.isVisible()
 
         if self.isVisible() and override is False:
-            self._main_window.child_windows_visibility_buttons[self.idx].setChecked(False)
+            self._main_window.secondary_windows_visibility_buttons[self.idx].setChecked(False)
             self.hide()
 
         elif not self.isVisible() and override is True:
-            self._main_window.child_windows_visibility_buttons[self.idx].setChecked(True)
+            self._main_window.secondary_windows_visibility_buttons[self.idx].setChecked(True)
             self.show()
 
     def _refresh_framebuffer(self):
@@ -688,11 +688,10 @@ class MainWindow(QMainWindow):
         self._is_calibrating = False
 
         # Refs for the secondary windows
-        self.child_windows = []
+        self.secondary_windows = []
 
         # Other things to init
         self._current_buffers = None
-        self._mem_baseline = None
         self._mem_pressure = 0.0
 
         # Build the gui
@@ -701,18 +700,23 @@ class MainWindow(QMainWindow):
         self.update_monitors_buttons()
 
         # Start the secondary windows
-        self._start_child_windows()
+        self._start_secondary_windows()
+
+        self.cascade_windows()
 
         # Setup MainWindow secondary update
         self.timer_update = QTimer(self)
         self.timer_update.timeout.connect(self._update_main)
         self.timer_update.start(200)
 
-    def init_gui(self):
+        self._mem_baseline = psutil.virtual_memory().percent
 
-        main_layout = QVBoxLayout()
+    def init_gui(self):
+        main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(5, 5, 5, 5)
         main_layout.setSpacing(5)
+        # self.setStyleSheet('QGroupBox { border: 1px solid #807f7f7f; border-radius: 5px; margin-top: 0.5em;} '
+                           # 'QGroupBox::title { subcontrol-origin: margin; left: 3px; padding: 0 3 3 3;}')
 
         central_widget = QWidget()
         central_widget.setLayout(main_layout)
@@ -721,6 +725,7 @@ class MainWindow(QMainWindow):
         toolbar = QFrame()
         toolbar.setFixedHeight(38)
         toolbar_layout = QHBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(3, 0, 3, 0)
 
         # Mode switch
         mode_label = QLabel('Mode: ')
@@ -735,8 +740,9 @@ class MainWindow(QMainWindow):
         # Exit button
         self.button_exit = QPushButton("Exit (Esc)")
         self.button_exit.clicked.connect(self.quit)
+        self.button_exit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.button_exit.setStyleSheet(f"background-color: {self.col_red}; color: {self.col_white};")
-        toolbar_layout.addWidget(self.button_exit, 1)   # 1 unit
+        toolbar_layout.addWidget(self.button_exit)
 
         main_layout.addWidget(toolbar)  # End toolbar
 
@@ -810,19 +816,23 @@ class MainWindow(QMainWindow):
         # Buttons
         f_buttons = QWidget()
         f_buttons_layout = QVBoxLayout(f_buttons)
+        f_buttons_layout.setContentsMargins(3, 0, 3, 0)
 
         self.button_acquisition = QPushButton("Acquisition off")
+        self.button_acquisition.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.button_acquisition.setCheckable(True)
         self.button_acquisition.clicked.connect(self._toggle_acquisition)
         f_buttons_layout.addWidget(self.button_acquisition, 1)
 
         self.button_snapshot = QPushButton("Snapshot")
+        self.button_snapshot.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.button_snapshot.clicked.connect(self._take_snapshot)
         self.button_snapshot.setIcon(self.icon_snapshot_bw)
         self.button_snapshot.setDisabled(True)
         f_buttons_layout.addWidget(self.button_snapshot, 1)
 
         self.button_recpause = QPushButton("Not recording (Space to toggle)")
+        self.button_recpause.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.button_recpause.setCheckable(True)
         self.button_recpause.clicked.connect(self._toggle_recording)
         self.button_recpause.setIcon(self.icon_rec_bw)
@@ -839,22 +849,24 @@ class MainWindow(QMainWindow):
         windows_list_layout = QVBoxLayout()
         windows_list_widget = QWidget()
         windows_list_layout.setContentsMargins(0, 0, 0, 0)
-        windows_list_layout.setSpacing(8)
+        windows_list_layout.setSpacing(5)
         windows_list_widget.setLayout(windows_list_layout)
+        windows_list_frame.setStyleSheet('border: none; background-color: #00000000;')
         windows_list_frame.setWidget(windows_list_widget)
         windows_list_frame.setWidgetResizable(True)
         live_previews_layout.addWidget(windows_list_frame)
 
         right_pane_layout.addWidget(live_previews)
 
-        self.child_windows_visibility_buttons = []
+        self.secondary_windows_visibility_buttons = []
 
         for i in range(self.mgr.nb_cameras):
             vis_checkbox = QCheckBox(f"Camera {i}")
             vis_checkbox.setChecked(True)
             vis_checkbox.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            vis_checkbox.setMinimumHeight(25)
             windows_list_layout.addWidget(vis_checkbox)
-            self.child_windows_visibility_buttons.append(vis_checkbox)
+            self.secondary_windows_visibility_buttons.append(vis_checkbox)
 
         monitors_frame = QGroupBox('Active monitor')
         monitors_frame_layout = QVBoxLayout(monitors_frame)
@@ -863,10 +875,10 @@ class MainWindow(QMainWindow):
 
         self.monitors_buttons = QGraphicsView()
         self.monitors_buttons_scene = QGraphicsScene()
-        monitors_frame_layout.setContentsMargins(0, 0, 0, 0)
+        monitors_frame_layout.setContentsMargins(3, 3, 3, 3)
         monitors_frame_layout.setSpacing(5)
 
-        self.monitors_buttons.setStyleSheet("background-color: #00000000")
+        self.monitors_buttons.setStyleSheet("border: none; background-color: #00000000")
         self.monitors_buttons.setScene(self.monitors_buttons_scene)
         if 'Darwin' in platform.system():
             self.monitors_buttons.viewport().setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents, False)
@@ -897,7 +909,7 @@ class MainWindow(QMainWindow):
 
         # Status bar
         statusbar = QStatusBar()
-        statusbar.setStyleSheet(f"background-color: {'#157f7f7f'}")
+        statusbar.setStyleSheet(f"background-color: {'#157f7f7f'}; color: {'#ff7f7f7f'};")
         self.setStatusBar(statusbar)
 
         mem_pressure_label = QLabel('Memory pressure: ')
@@ -918,8 +930,8 @@ class MainWindow(QMainWindow):
         self.quit()
 
     def quit(self):
-        # Close the child windows and stop their threads
-        self._stop_child_windows()
+        # Close the secondary windows and stop their threads
+        self._stop_secondary_windows()
 
         # Stop camera acquisition
         if self.mgr.acquiring:
@@ -959,12 +971,15 @@ class MainWindow(QMainWindow):
         if self.acq_name_textbox.text() == "":
             path = self.mgr.full_path
 
-        if 'Linux' in platform.system():
-            subprocess.Popen(['xdg-open', path])
-        elif 'Windows' in platform.system():
-            os.startfile(path)
-        elif 'Darwin' in platform.system():
-            subprocess.Popen(['open', path])
+        try:
+            if 'Linux' in platform.system():
+                subprocess.Popen(['xdg-open', path])
+            elif 'Windows' in platform.system():
+                os.startfile(path)
+            elif 'Darwin' in platform.system():
+                subprocess.Popen(['open', path])
+        except:
+            pass
 
     def _toggle_acquisition(self, override=None):
 
@@ -988,14 +1003,14 @@ class MainWindow(QMainWindow):
 
             # Re-enable the framerate sliders (only in case of hardware-triggered cameras)
             if self.mgr.triggered:
-                for w in self.child_windows:
+                for w in self.secondary_windows:
                     w.camera_controls_sliders['framerate'].config(state='normal', troughcolor=w.col_default)
 
         elif not self.mgr.acquiring and override is True:
             self.mgr.on()
 
             if self.mgr.triggered:
-                for w in self.child_windows:
+                for w in self.secondary_windows:
                     w.camera_controls_sliders['framerate'].config(state='disabled', troughcolor=self.col_lightgray)
 
             self.save_dir_current.setText(f'{self.mgr.full_path.resolve()}')
@@ -1035,7 +1050,6 @@ class MainWindow(QMainWindow):
                 self.txt_recording = ''
                 self.button_recpause.setIcon(self.icon_rec_bw)
             elif not self.mgr.recording and override is True:
-                self._mem_baseline = psutil.virtual_memory().percent
                 # self.mgr.record()
                 self.txt_recording = '[ Recording... ]'
                 self.button_recpause.setText("Recording... (Space to toggle)")
@@ -1048,7 +1062,7 @@ class MainWindow(QMainWindow):
     def screen_update(self, val, event):
 
         # Get current monitor coordinates
-        prev_monitor_x, prev_monitor_y = self.selected_monitor.x, self.selected_monitor.y
+        prev_monitor = self.selected_monitor
 
         # Get current mouse cursor position in relation to window origin
         prev_mouse_pos = QCursor.pos() - self.geometry().topLeft()
@@ -1057,30 +1071,31 @@ class MainWindow(QMainWindow):
         self.set_monitor(val)
         self.update_monitors_buttons()
 
+        new_monitor = self.selected_monitor
+
         # Move windows by the difference
-        for window_to_move in self.visible_windows(include_main=True):
-            geo = window_to_move.geometry()
+        for win in self.visible_windows(include_main=True):
+            geo = win.geometry()
             w = geo.width()
             h = geo.height()
             x = geo.x()
             y = geo.y()
 
-            d_x = x - prev_monitor_x
-            d_y = y - prev_monitor_y
+            d_x = x - prev_monitor.x
+            d_y = y - prev_monitor.y
 
             # minmax to make sure the window stays inside the monitor
-            new_x = min(max(self.selected_monitor.x,
-                            self.selected_monitor.x + d_x),
-                        self.selected_monitor.width + self.selected_monitor.x - w)
-            new_y = min(max(self.selected_monitor.y,
-                            self.selected_monitor.y + d_y),
-                        self.selected_monitor.height + self.selected_monitor.y - h)
+            new_x = min(max(new_monitor.x, new_monitor.x + d_x), new_monitor.width + new_monitor.x - w)
+            new_y = min(max(new_monitor.y, new_monitor.y + d_y), new_monitor.height + new_monitor.y - h)
 
-            window_to_move.setGeometry(new_x, new_y, w, h)
+            win.move(new_x, new_y)
 
             # Also move cursor with main window
-            if window_to_move is self:
-                QCursor.setPos(new_x + prev_mouse_pos.x(), new_y + prev_mouse_pos.y())
+            if w is self:
+                try:
+                    QCursor.setPos(new_x + prev_mouse_pos.x(), new_y + prev_mouse_pos.y())
+                except:
+                    pass
 
     def autotile_windows(self):
         """
@@ -1089,6 +1104,27 @@ class MainWindow(QMainWindow):
         for w in self.visible_windows(include_main=True):
             w.auto_size()
             w.auto_move()
+
+    def cascade_windows(self):
+
+        monitor = self.selected_monitor
+
+        for win in self.visible_windows(include_main=True):
+            w = win.geometry().width()
+            h = win.geometry().height()
+
+            if win is self:
+                d_x = 30 * len(self.visible_windows(include_main=False)) + 30
+                d_y = 30 * len(self.visible_windows(include_main=False)) + 30
+            else:
+                d_x = 30 * win.idx + 30
+                d_y = 30 * win.idx + 30
+
+            # minmax to make sure the window stays inside the monitor
+            new_x = min(max(monitor.x, monitor.x + d_x), self.selected_monitor.width + monitor.x - w)
+            new_y = min(max(monitor.y, monitor.y + d_y), monitor.height + monitor.y - h)
+
+            win.move(new_x, new_y)
 
     def auto_size(self):
         # Do nothing on the main window
@@ -1104,7 +1140,7 @@ class MainWindow(QMainWindow):
 
         nb_positions = len(positions)
 
-        idx = len(self.child_windows)
+        idx = len(self.secondary_windows)
         if idx <= nb_positions:
             pos = positions[idx]
         else:  # Start over to first position
@@ -1112,7 +1148,7 @@ class MainWindow(QMainWindow):
 
         self.move_to(pos)
 
-    # TODO - The functions auto_move and mote_to are almost the same in the Main window and the child windows
+    # TODO - The functions auto_move and mote_to are almost the same in the Main window and the secondary windows
     # this needs to be refactored
 
     def move_to(self, pos):
@@ -1147,16 +1183,16 @@ class MainWindow(QMainWindow):
 
         for i, m in enumerate(self._monitors):
             w, h, x, y = m.width // 40, m.height // 40, m.x // 40, m.y // 40
-            col = '#77000000' if m == self.selected_monitor else '#33000000'
+            col = '#7f7f7f' if m == self.selected_monitor else '#807f7f7f'
 
             rect = QGraphicsRectItem(x, y, w - 2, h - 2)
             rect.setBrush(QBrush(QColor(col)))      # Fill colour
             rect.setPen(QPen(Qt.PenStyle.NoPen))    # No outline
             rect.mousePressEvent = partial(self.screen_update, i)  # Bind the function
 
-            text_item = QGraphicsTextItem(f"screen {i}")
-            text_item.setDefaultTextColor(QColor(Qt.GlobalColor.white))
-            text_item.setFont(QFont("Arial", 9))
+            text_item = QGraphicsTextItem(f"{i}")
+            text_item.setDefaultTextColor(QColor.fromString('#99ffffff'))
+            text_item.setFont(QFont("Monospace", 9))
 
             text_rect = text_item.boundingRect()
             text_item.setPos(x, y + h - text_rect.height())
@@ -1175,46 +1211,42 @@ class MainWindow(QMainWindow):
             self.selected_monitor = self._monitors[0]
 
     def visible_windows(self, include_main=False):
-        windows = [w for w in self.child_windows if w.isVisible()]
+        windows = [w for w in self.secondary_windows if w.isVisible()]
         if include_main:
             windows += [self]
         return windows
 
 
-    def _start_child_windows(self):
+    def _start_secondary_windows(self):
         for i, cam in enumerate(self.mgr.cameras):
 
             if self._is_calibrating:
                 # w = VideoWindowCalib(rootwindow=self, idx=cam.idx)
-                # self.child_windows.append(w)
-                # self.child_windows_visibility_buttons[i].setText(f" {w.name.title()} camera")
-                # self.child_windows_visibility_buttons[i].setStyleSheet(f"color: {w.colour_2}; background-color: {w.colour};")
-                # self.child_windows_visibility_buttons[i].clicked.connect(w.toggle_visibility)
-                # self.child_windows_visibility_buttons[i].setChecked(True)
+                # self.secondary_windows.append(w)
+                # self.secondary_windows_visibility_buttons[i].setText(f" {w.name.title()} camera")
+                # self.secondary_windows_visibility_buttons[i].setStyleSheet(f"border-radius: 5px; padding: 0 10 0 10; color: {w.colour_2}; background-color: {w.colour};")
+                # self.secondary_windows_visibility_buttons[i].clicked.connect(w.toggle_visibility)
+                # self.secondary_windows_visibility_buttons[i].setChecked(True)
 
                 # For now, do nothing
                 continue
 
             else:
                 w = VideoWindowMain(main_window_ref=self, idx=cam.idx)
-                self.child_windows.append(w)
-                self.child_windows_visibility_buttons[i].setText(f" {w.name.title()} camera")
-                self.child_windows_visibility_buttons[i].setStyleSheet(
-                    f"color: {w.colour_2}; background-color: {w.colour};")
-                self.child_windows_visibility_buttons[i].clicked.connect(w.toggle_visibility)
-                self.child_windows_visibility_buttons[i].setChecked(True)
+                self.secondary_windows.append(w)
+                self.secondary_windows_visibility_buttons[i].setText(f" {w.name.title()} camera")
+                self.secondary_windows_visibility_buttons[i].setStyleSheet(f"border-radius: 5px; padding: 0 10 0 10; color: {w.colour_2}; background-color: {w.colour};")
+                self.secondary_windows_visibility_buttons[i].clicked.connect(w.toggle_visibility)
+                self.secondary_windows_visibility_buttons[i].setChecked(True)
 
                 w.show()
 
-    def _stop_child_windows(self):
-        for w in self.child_windows:
+    def _stop_secondary_windows(self):
+        for w in self.secondary_windows:
             QWidget.close(w)
-        self.child_windows = []
+        self.secondary_windows = []
 
     def _update_main(self):
-
-        if self._mem_baseline is None:
-            self._mem_baseline = psutil.virtual_memory().percent
 
         # Get an estimation of the saved data size
         if self.mgr._estim_file_size is None:
