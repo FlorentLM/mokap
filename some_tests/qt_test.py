@@ -228,12 +228,12 @@ class VideoWindowBase(QWidget):
             label = QLabel(f"{label} :")
             label.setAlignment(Qt.AlignmentFlag.AlignRight)
             label.setStyleSheet(f"color: {self._main_window.col_darkgray}; font: bold;")
-            label.setMinimumWidth(80)
+            label.setMinimumWidth(88)
             line_layout.addWidget(label)
 
             value.setStyleSheet("font: regular;")
             value.setAlignment(Qt.AlignmentFlag.AlignLeft)
-            value.setMinimumWidth(80)
+            value.setMinimumWidth(90)
             line_layout.addWidget(value)
 
             left_group_layout.addWidget(line)
@@ -254,7 +254,7 @@ class VideoWindowBase(QWidget):
         line_layout.addWidget(l_windowsnap)
 
         buttons_windowsnap = QWidget()
-        buttons_windowsnap.setFixedSize(60, 60)
+        buttons_windowsnap.setFixedSize(55, 55)
         buttons_windowsnap_layout = QGridLayout(buttons_windowsnap)
         buttons_windowsnap_layout.setContentsMargins(0, 0, 0, 0)
         buttons_windowsnap_layout.setSpacing(0)
@@ -265,7 +265,6 @@ class VideoWindowBase(QWidget):
             for c in range(3):
                 button = QPushButton()
                 buttons_windowsnap_layout.setContentsMargins(0, 0, 0, 0)
-                button.setFixedSize(20, 20)
                 button.clicked.connect(partial(self.move_to, self.positions[r, c]))
                 buttons_windowsnap_layout.addWidget(button, r, c)
 
@@ -431,7 +430,7 @@ class VideoWindowBase(QWidget):
 
             if self._main_window.mgr.acquiring:
 
-                cap_fps = sum(list(self._capture_fps)) / 10 if self._capture_fps else 0
+                cap_fps = sum(list(self._capture_fps)) / len(self._capture_fps) if self._capture_fps else 0
 
                 if 0 < cap_fps < 1000:
                     if abs(cap_fps - self._wanted_fps) > 10:
@@ -542,7 +541,7 @@ class VideoWindowMain(VideoWindowBase):
             param_value = getattr(self._main_window.mgr.cameras[self.idx], label)
 
             slider_label = QLabel(f'{label.title()}:')
-            slider_label.setFixedWidth(62)
+            slider_label.setFixedWidth(70)
             slider_label.setContentsMargins(0, 5, 5, 0)
             slider_label.setAlignment(Qt.AlignmentFlag.AlignRight)
 
@@ -572,6 +571,7 @@ class VideoWindowMain(VideoWindowBase):
 
                 self.camera_controls_sliders_scales[label] = scale
 
+            slider.setMinimumWidth(100)
             slider.valueChanged.connect(lambda value, lbl=label: self._slider_changed(lbl, value))
             slider.sliderReleased.connect(lambda lbl=label: self._slider_released(lbl))
             line_layout.addWidget(slider, 1)
