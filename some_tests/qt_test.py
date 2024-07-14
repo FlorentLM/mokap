@@ -174,7 +174,7 @@ class VideoWindowBase(QWidget):
         # self.VIDEO_FEED = VideoGLWidget(self._camera.shape[0], self._camera.shape[1], self.idx, parent=self)
 
         # Camera name bar
-        camera_name_bar = QLabel()
+        camera_name_bar = QLabel(f'{self._camera.name.title()} camera')
         camera_name_bar.setFixedHeight(25)
         camera_name_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
         camera_name_bar.setStyleSheet(f"color: {self.colour_2}; background-color: {self.colour}; font: bold;")
@@ -309,20 +309,20 @@ class VideoWindowBase(QWidget):
 
         # If landscape screen
         if self._main_window.selected_monitor.height < self._main_window.selected_monitor.width:
-            available_h = self._main_window.selected_monitor.height // 2 - VideoWindowBase.SPACING * 2
+            available_h = self._main_window.selected_monitor.height // 2 - VideoWindowBase.SPACING * 3
             video_max_h = available_h - self.BOTTOM_PANEL.height() - cam_name_bar_h * self.aspect_ratio
             video_max_w = video_max_h * self.aspect_ratio
 
-            h = int(np.ceil(video_max_h + self.BOTTOM_PANEL.height()))
+            h = int(video_max_h + self.BOTTOM_PANEL.height())
             w = int(video_max_w)
 
         # If portrait screen
         else:
-            video_max_w = self._main_window.selected_monitor.width // 2 - VideoWindowBase.SPACING * 2
+            video_max_w = self._main_window.selected_monitor.width // 2 - VideoWindowBase.SPACING * 3
             video_max_h = video_max_w / self.aspect_ratio
 
             h = int(video_max_h + self.BOTTOM_PANEL.height() + cam_name_bar_h)
-            w = int(np.ceil(video_max_w))
+            w = int(video_max_w)
 
         self.resize(w, h)
 
