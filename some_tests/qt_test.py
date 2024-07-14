@@ -156,7 +156,8 @@ class VideoGLWidget(QOpenGLWidget):
 class VideoWindowBase(QWidget):
     INFO_PANEL_H = 300
     WINDOW_MIN_W = 650
-    TASKBAR_H = 80
+    TASKBAR_H = 75
+    SPACING = 10
 
     def __init__(self, main_window_ref, idx):
         super().__init__()
@@ -191,8 +192,6 @@ class VideoWindowBase(QWidget):
                                    ['w', 'c', 'e'],
                                    ['sw', 's', 'se']])
 
-        self.auto_size()
-
         # Setup MainWindow update
         self.timer_update = QTimer(self)
         self.timer_update.timeout.connect(self._update_secondary)
@@ -205,56 +204,48 @@ class VideoWindowBase(QWidget):
 
     def init_common_ui(self):
 
-        v_layout = QVBoxLayout(self)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
         self.VIDEO_FEED = QLabel()
+        self.VIDEO_FEED.setContentsMargins(10, 10, 10, 10)
         self.VIDEO_FEED.setMinimumSize(1, 1)  # Important! Otherwise it crashes when reducing the size of the window
         self.VIDEO_FEED.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        v_layout.addWidget(self.VIDEO_FEED)
+        main_layout.addWidget(self.VIDEO_FEED, 1)
 
-        self.update_image() # Call this once to initialise it
+        self.update_image()     # Call this once to initialise it
 
         # self.VIDEO_FEED = VideoGLWidget(self._camera.shape[0], self._camera.shape[1], self.idx, parent=self)
 
         # Camera name bar
         camera_name_bar = QLabel()
-        camera_name_bar.setMinimumHeight(20)
-        camera_name_bar.setMaximumHeight(20)
+        camera_name_bar.setFixedHeight(25)
         camera_name_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
         camera_name_bar.setStyleSheet(f"color: {self.colour_2}; background-color: {self.colour}; font: bold;")
-        v_layout.addWidget(camera_name_bar)
 
-        controlsRestrictorWidget = QWidget()
-        layoutHControls = QHBoxLayout()
-        controlsRestrictorWidget.setLayout(layoutHControls)
-        controlsRestrictorWidget.setMinimumHeight(VideoWindowBase.INFO_PANEL_H)
-        controlsRestrictorWidget.setMaximumHeight(VideoWindowBase.INFO_PANEL_H)
+        main_layout.addWidget(camera_name_bar)
 
-        h_layout = layoutHControls
-        v_layout.addWidget(controlsRestrictorWidget)
+        self.BOTTOM_PANEL = QWidget()
+        bottom_panel_layout = QHBoxLayout()
+        self.BOTTOM_PANEL.setLayout(bottom_panel_layout)
 
-        self.LEFT_FRAME = QGroupBox("Information")
-        self.LEFT_FRAME.setStyleSheet("font: bold;")
-        h_layout.addWidget(self.LEFT_FRAME)
+        # BOTTOM_PANEL.setMinimumHeight(VideoWindowBase.INFO_PANEL_H)
+        # BOTTOM_PANEL.setMaximumHeight(VideoWindowBase.INFO_PANEL_H)
 
-        self.CENTRE_FRAME = QGroupBox("Centre")
-        self.CENTRE_FRAME.setStyleSheet("font: bold;")
-        h_layout.addWidget(self.CENTRE_FRAME)
+        self.LEFT_GROUP = QGroupBox("Information")
+        bottom_panel_layout.addWidget(self.LEFT_GROUP)
 
-        self.RIGHT_FRAME = QGroupBox("View")
-        self.RIGHT_FRAME.setStyleSheet("font: bold;")
-        h_layout.addWidget(self.RIGHT_FRAME)
+        self.CENTRE_GROUP = QGroupBox("Centre")
+        bottom_panel_layout.addWidget(self.CENTRE_GROUP, 1)     # Expand the centre group only
 
-        # Left frame: Information block
-        left_layout = QHBoxLayout(self.LEFT_FRAME)
+        self.RIGHT_GROUP = QGroupBox("View")
+        bottom_panel_layout.addWidget(self.RIGHT_GROUP)
 
-        # This layout is for the immutable labels
-        f_labels = QVBoxLayout()
-        left_layout.addLayout(f_labels)
+        main_layout.addWidget(self.BOTTOM_PANEL)
 
-        # This layout is for the variable values
-        f_values = QVBoxLayout()
-        left_layout.addLayout(f_values)
+        # LEFT GROUP
+        left_group_layout = QVBoxLayout(self.LEFT_GROUP)
 
         self.resolution_value = QLabel()
         self.capturefps_value = QLabel()
@@ -277,36 +268,58 @@ class VideoWindowBase(QWidget):
         ]
 
         for label, value in labels_and_values:
+            line = QWidget()
+            line_layout = QHBoxLayout(line)
+            line_layout.setContentsMargins(1, 1, 1, 1)
+            line_layout.setSpacing(5)
+
             label = QLabel(f"{label} :")
             label.setAlignment(Qt.AlignmentFlag.AlignRight)
             label.setStyleSheet(f"color: {self._main_window.col_darkgray}; font: bold;")
-            f_labels.addWidget(label)
+            label.setMinimumWidth(80)
+            line_layout.addWidget(label)
 
             value.setStyleSheet("font: regular;")
-            f_values.addWidget(value)
+            value.setAlignment(Qt.AlignmentFlag.AlignLeft)
+            value.setMinimumWidth(80)
+            line_layout.addWidget(value)
 
-        # Right frame: View controls block
-        right_layout = QVBoxLayout(self.RIGHT_FRAME)
+            left_group_layout.addWidget(line)
 
-        f_windowsnap = QFrame()
-        f_windowsnap_layout = QHBoxLayout(f_windowsnap)
-        right_layout.addWidget(f_windowsnap)
+        # RIGHT GROUP
+        right_group_layout = QVBoxLayout(self.RIGHT_GROUP)
 
-        l_windowsnap = QLabel("Window snap : ")
-        l_windowsnap.setAlignment(Qt.AlignmentFlag.AlignRight)
-        l_windowsnap.setStyleSheet(f"color: {self._main_window.col_darkgray}; font: bold;")
-        f_windowsnap_layout.addWidget(l_windowsnap)
+        line = QWidget()
+        line_layout = QHBoxLayout(line)
+        line_layout.setContentsMargins(1, 1, 1, 1)
+        line_layout.setSpacing(5)
 
-        f_buttons_windowsnap = QWidget()
-        f_buttons_windowsnap_layout = QGridLayout(f_buttons_windowsnap)
-        f_windowsnap_layout.addWidget(f_buttons_windowsnap)
+        line_layout.addStretch(1)
+
+        l_windowsnap = QLabel("Window snap: ")
+        l_windowsnap.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        l_windowsnap.setStyleSheet(f"color: {self._main_window.col_darkgray};")
+        line_layout.addWidget(l_windowsnap)
+
+        buttons_windowsnap = QWidget()
+        buttons_windowsnap.setFixedSize(60, 60)
+        buttons_windowsnap_layout = QGridLayout(buttons_windowsnap)
+        buttons_windowsnap_layout.setContentsMargins(0, 0, 0, 0)
+        buttons_windowsnap_layout.setSpacing(0)
+        buttons_windowsnap_layout.setColumnStretch(3, 1)
+        buttons_windowsnap_layout.setColumnStretch(3, 1)
 
         for r in range(3):
             for c in range(3):
                 button = QPushButton()
-                button.setFixedSize(26, 26)
+                buttons_windowsnap_layout.setContentsMargins(0, 0, 0, 0)
+                button.setFixedSize(20, 20)
                 button.clicked.connect(partial(self.move_to, self.positions[r, c]))
-                f_buttons_windowsnap_layout.addWidget(button, r, c)
+                buttons_windowsnap_layout.addWidget(button, r, c)
+
+        line_layout.addWidget(buttons_windowsnap, 1)
+
+        right_group_layout.addWidget(line)
 
     def init_specific_ui(self):
         pass
@@ -339,13 +352,13 @@ class VideoWindowBase(QWidget):
 
         # If landscape screen
         if self._main_window.selected_monitor.height < self._main_window.selected_monitor.width:
-            h = self._main_window.selected_monitor.height // 2 - VideoWindowBase.TASKBAR_H
-            w = int(self.aspect_ratio * (h - VideoWindowBase.INFO_PANEL_H))
+            h = self._main_window.selected_monitor.height // 2 - VideoWindowBase.TASKBAR_H - VideoWindowBase.SPACING * 2
+            w = int(self.aspect_ratio * (h - self.BOTTOM_PANEL.height()))
 
         # If portrait screen
         else:
-            w = self._main_window.selected_monitor.width // 2
-            h = int(w / self.aspect_ratio) + VideoWindowBase.INFO_PANEL_H
+            w = self._main_window.selected_monitor.width // 2 - VideoWindowBase.SPACING * 2
+            h = int(w / self.aspect_ratio) + self.BOTTOM_PANEL.height()
 
         self.resize(w, h)
 
@@ -372,26 +385,27 @@ class VideoWindowBase(QWidget):
         w = self.geometry().width()
         h = self.geometry().height()
 
+        sp = VideoWindowBase.SPACING
+
         match pos:
             case 'nw':
-                self.move(monitor.x, monitor.y)
+                self.move(monitor.x + sp, monitor.y + sp)
             case 'n':
-                self.move(monitor.x + monitor.width // 2 - w // 2, monitor.y)
+                self.move(monitor.x + monitor.width // 2 - w // 2, monitor.y + sp)
             case 'ne':
-                self.move(monitor.x + monitor.width - w - 1, monitor.y)
+                self.move(monitor.x - sp + monitor.width - w - 1, monitor.y + sp)
             case 'w':
-                self.move(monitor.x, monitor.y + monitor.height // 2 - h // 2)
+                self.move(monitor.x + sp, monitor.y + monitor.height // 2 - h // 2)
             case 'c':
                 self.move(monitor.x + monitor.width // 2 - w // 2, monitor.y + monitor.height // 2 - h // 2)
             case 'e':
-                self.move(monitor.x + monitor.width - w - 1, monitor.y + monitor.height // 2 - h // 2)
+                self.move(monitor.x - sp + monitor.width - w - 1, monitor.y + monitor.height // 2 - h // 2)
             case 'sw':
-                self.move(monitor.x, monitor.y + monitor.height - h - VideoWindowBase.TASKBAR_H)
+                self.move(monitor.x + sp, monitor.y + monitor.height - h - VideoWindowBase.TASKBAR_H - sp)
             case 's':
-                self.move(monitor.x + monitor.width // 2 - w // 2,
-                          monitor.y + monitor.height - h - VideoWindowBase.TASKBAR_H)
+                self.move(monitor.x + monitor.width // 2 - w // 2, monitor.y + monitor.height - h - VideoWindowBase.TASKBAR_H - sp)
             case 'se':
-                self.move(monitor.x + monitor.width - w - 1, monitor.y + monitor.height - h - VideoWindowBase.TASKBAR_H)
+                self.move(monitor.x - sp + monitor.width - w - 1, monitor.y + monitor.height - h - VideoWindowBase.TASKBAR_H - sp)
 
     def closeEvent(self, event):
         event.ignore()
@@ -519,11 +533,13 @@ class VideoWindowMain(VideoWindowBase):
         self.col_default = None
 
         self.init_common_ui()
-        self.init_specific_ui()
+        # self.init_specific_ui()
+
+        self.auto_size()
 
     def init_specific_ui(self):
         # Centre frame: Information block
-        centre_layout = QVBoxLayout(self.CENTRE_FRAME)
+        centre_layout = QVBoxLayout(self.CENTRE_GROUP)
 
         f_labels = QVBoxLayout()
         centre_layout.addLayout(f_labels)
