@@ -212,7 +212,6 @@ class VideoWindowBase(QWidget):
         main_layout.setSpacing(0)
 
         self.VIDEO_FEED = QLabel()
-        self.VIDEO_FEED.setContentsMargins(10, 10, 10, 10)
         self.VIDEO_FEED.setMinimumSize(1, 1)  # Important! Otherwise it crashes when reducing the size of the window
         self.VIDEO_FEED.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(self.VIDEO_FEED, 1)
@@ -236,7 +235,7 @@ class VideoWindowBase(QWidget):
         self.LEFT_GROUP = QGroupBox("Information")
         bottom_panel_layout.addWidget(self.LEFT_GROUP)
 
-        self.CENTRE_GROUP = QGroupBox("Centre")
+        self.CENTRE_GROUP = QGroupBox("Control")
         bottom_panel_layout.addWidget(self.CENTRE_GROUP, 1)     # Expand the centre group only
 
         self.RIGHT_GROUP = QGroupBox("View")
@@ -540,7 +539,8 @@ class VideoWindowMain(VideoWindowBase):
     def init_specific_ui(self):
 
         # CENTRE GROUP
-        right_group_layout = QVBoxLayout(self.CENTRE_GROUP)
+        centre_group_layout = QHBoxLayout(self.CENTRE_GROUP)
+        centre_group_layout.setContentsMargins(5, 5, 5, 5)
 
         self.camera_controls_sliders = {}
         self.camera_controls_sliders_labels = {}
@@ -555,18 +555,33 @@ class VideoWindowMain(VideoWindowBase):
             ('gamma', (float, 0.0, 3.99, 0.05, 3))
         ]
 
+        centre_group_sliders = QWidget()
+        centre_group_sliders_layout = QVBoxLayout(centre_group_sliders)
+        centre_group_sliders_layout.setContentsMargins(0, 20, 0, 5)
+        centre_group_sliders_layout.setSpacing(0)
+
+        sync_groupbox = QGroupBox("Sync")
+        sync_groupbox.setContentsMargins(5, 20, 0, 5)
+        sync_groupbox_layout = QVBoxLayout(sync_groupbox)
+
+        sync_groupbox_layout.setSpacing(12)
+
         for label, params in slider_params:
             type_, min_val, max_val, step, digits = params
 
             line = QWidget()
             line_layout = QHBoxLayout(line)
             line_layout.setContentsMargins(1, 1, 1, 1)
-            line_layout.setSpacing(5)
+            line_layout.setSpacing(2)
 
             param_value = getattr(self._main_window.mgr.cameras[self.idx], label)
 
-            label_widget = QLabel(f'{label.title()}:')
-            line_layout.addWidget(label_widget)
+            slider_label = QLabel(f'{label.title()}:')
+            slider_label.setFixedWidth(62)
+            slider_label.setContentsMargins(0, 5, 5, 0)
+            slider_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+
+            line_layout.addWidget(slider_label)
 
             if type_ == int:
                 slider = QSlider(Qt.Orientation.Horizontal)
@@ -598,17 +613,23 @@ class VideoWindowMain(VideoWindowBase):
             line_layout.addWidget(slider, 1)
 
             value_label = QLabel(f"{param_value}")
+            value_label.setFixedWidth(40)
+            value_label.setAlignment(Qt.AlignmentFlag.AlignVCenter)
             self.camera_controls_sliders_labels[label] = value_label
             line_layout.addWidget(value_label)
 
             vis_checkbox = QCheckBox()
+            vis_checkbox.setMaximumWidth(16)
             vis_checkbox.setChecked(True)
-            line_layout.addWidget(vis_checkbox)
+            sync_groupbox_layout.addWidget(vis_checkbox)
 
             self.camera_controls_sliders[label] = slider
             self._val_in_sync[label] = vis_checkbox
 
-            right_group_layout.addWidget(line)
+            centre_group_sliders_layout.addWidget(line)
+
+        centre_group_layout.addWidget(centre_group_sliders)
+        centre_group_layout.addWidget(sync_groupbox)
 
     def _toggle_focus_display(self):
         pass
