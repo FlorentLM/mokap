@@ -66,6 +66,9 @@ class DoubleSlider(QSlider):
         self._max_value = value
         self.setValue(self.value())
 
+    def setSingleStep(self, value):
+        super().setSingleStep(int((value - self._min_value) / self._value_range * self._max_int))
+
     def minimum(self):
         return self._min_value
 
@@ -229,9 +232,6 @@ class VideoWindowBase(QWidget):
         self.BOTTOM_PANEL = QWidget()
         bottom_panel_layout = QHBoxLayout()
         self.BOTTOM_PANEL.setLayout(bottom_panel_layout)
-
-        # BOTTOM_PANEL.setMinimumHeight(VideoWindowBase.INFO_PANEL_H)
-        # BOTTOM_PANEL.setMaximumHeight(VideoWindowBase.INFO_PANEL_H)
 
         self.LEFT_GROUP = QGroupBox("Information")
         bottom_panel_layout.addWidget(self.LEFT_GROUP)
@@ -485,17 +485,17 @@ class VideoWindowBase(QWidget):
                 self.capturefps_value.setText("Off")
                 self.brightness_value.setText("-")
 
-            # # Update the temperature label colour
-            # if self._camera.temperature is not None:
-            #     self.temperature_value.setText(f'{self._camera.temperature:.1f}°C')
-            # if self._camera.temperature_state == 'Ok':
-            #     self.temperature_value.setStyleSheet(f"color: {self._main_window.col_green}; font: bold;")
-            # elif self._camera.temperature_state == 'Critical':
-            #     self.temperature_value.setStyleSheet(f"color: {self._main_window.col_orange}; font: bold;")
-            # elif self._camera.temperature_state == 'Error':
-            #     self.temperature_value.setStyleSheet(f"color: {self._main_window.col_red}; font: bold;")
-            # else:
-            #     self.temperature_value.setStyleSheet(f"color: {self._main_window.col_yellow}; font: bold;")
+            # Update the temperature label colour
+            if self._camera.temperature is not None:
+                self.temperature_value.setText(f'{self._camera.temperature:.1f}°C')
+            if self._camera.temperature_state == 'Ok':
+                self.temperature_value.setStyleSheet(f"color: {self._main_window.col_green}; font: bold;")
+            elif self._camera.temperature_state == 'Critical':
+                self.temperature_value.setStyleSheet(f"color: {self._main_window.col_orange}; font: bold;")
+            elif self._camera.temperature_state == 'Error':
+                self.temperature_value.setStyleSheet(f"color: {self._main_window.col_red}; font: bold;")
+            else:
+                self.temperature_value.setStyleSheet(f"color: {self._main_window.col_yellow}; font: bold;")
 
             # Update display fps
             dt = (now - self._clock).total_seconds()
@@ -533,71 +533,82 @@ class VideoWindowMain(VideoWindowBase):
         self.col_default = None
 
         self.init_common_ui()
-        # self.init_specific_ui()
+        self.init_specific_ui()
 
         self.auto_size()
 
     def init_specific_ui(self):
-        # Centre frame: Information block
-        centre_layout = QVBoxLayout(self.CENTRE_GROUP)
 
-        f_labels = QVBoxLayout()
-        centre_layout.addLayout(f_labels)
+        # CENTRE GROUP
+        right_group_layout = QVBoxLayout(self.CENTRE_GROUP)
+
         self.camera_controls_sliders = {}
+        self.camera_controls_sliders_labels = {}
+        self.camera_controls_sliders_scales = {}
+        self._val_in_sync = {}
 
         slider_params = [
-            ('framerate', 1.0, self._main_window.mgr.cameras[self.idx].max_framerate, 1, 1),
-            ('exposure', 21, 10000, 5, 1),  # in microseconds - 100000 microseconds ~ 10 fps
-            ('blacks', 0.0, 32.0, 0.5, 3),
-            ('gain', 0.0, 36.0, 0.5, 3),
-            ('gamma', 0.0, 3.99, 0.05, 3)
+            ('framerate', (int, 1, int(self._main_window.mgr.cameras[self.idx].max_framerate), 1, 1)),
+            ('exposure', (int, 21, 100000, 5, 1)),  # in microseconds - 100000 microseconds ~ 10 fps
+            ('blacks', (float, 0.0, 32.0, 0.5, 3)),
+            ('gain', (float, 0.0, 36.0, 0.5, 3)),
+            ('gamma', (float, 0.0, 3.99, 0.05, 3))
         ]
 
-        for label, from_, to, resolution, digits in slider_params:
+        for label, params in slider_params:
+            type_, min_val, max_val, step, digits = params
+
+            line = QWidget()
+            line_layout = QHBoxLayout(line)
+            line_layout.setContentsMargins(1, 1, 1, 1)
+            line_layout.setSpacing(5)
+
             param_value = getattr(self._main_window.mgr.cameras[self.idx], label)
 
-            label_widget = QLabel(f'{label.title()} :', self)
-            centre_layout.addWidget(label_widget)
+            label_widget = QLabel(f'{label.title()}:')
+            line_layout.addWidget(label_widget)
 
-            slider = DoubleSlider(Qt.Orientation.Horizontal, self)
+            if type_ == int:
+                slider = QSlider(Qt.Orientation.Horizontal)
+                slider.setMinimum(min_val)
+                slider.setMaximum(max_val)
+                slider.setSingleStep(step)
+                slider.setValue(param_value)
 
-            slider.setMaximum(to)
-            slider.setMinimum(from_)
-            # slider.setSingleStep(resolution)
-            slider.setValue(param_value)
-            slider.valueChanged.connect(lambda value, l=label: self._update_param_all(l, value))
-            centre_layout.addWidget(slider)
+                self.camera_controls_sliders_scales[label] = 1
+            else:
+                # For floats, map to an integer range
+                scale = 10 ** digits
+                scaled_min = int(min_val * scale)
+                scaled_max = int(max_val * scale)
+                scaled_step = int(step * scale)
+                scaled_initial = int(param_value * scale)
 
-            scale_val_label = QLabel('', self)
+                slider = QSlider(Qt.Orientation.Horizontal)
+                slider.setMinimum(scaled_min)
+                slider.setMaximum(scaled_max)
+                slider.setSingleStep(scaled_step)
+                slider.setValue(scaled_initial)
+
+                self.camera_controls_sliders_scales[label] = scale
+
+            slider.setMinimumWidth(200)
+            slider.valueChanged.connect(lambda value, lbl=label: self._slider_changed(lbl, value))
+            slider.sliderReleased.connect(lambda lbl=label: self._slider_released(lbl))
+            line_layout.addWidget(slider, 1)
+
+            value_label = QLabel(f"{param_value}")
+            self.camera_controls_sliders_labels[label] = value_label
+            line_layout.addWidget(value_label)
+
+            vis_checkbox = QCheckBox()
+            vis_checkbox.setChecked(True)
+            line_layout.addWidget(vis_checkbox)
+
             self.camera_controls_sliders[label] = slider
-            centre_layout.addWidget(scale_val_label)
+            self._val_in_sync[label] = vis_checkbox
 
-        # # Right Frame: Specific buttons
-        # right_layout = QHBoxLayout(self.RIGHT_FRAME)
-        #
-        # f_buttons_controls = QFrame()
-        # f_buttons_controls_layout = QVBoxLayout(f_buttons_controls)
-        #
-        # f = QFrame()
-        # f_buttons_controls_layout.addWidget(f)
-        #
-        # self.show_focus_button = QPushButton("Focus zone", f)
-        # self.show_focus_button.clicked.connect(self._toggle_focus_display)
-        # f_buttons_controls_layout.addWidget(self.show_focus_button)
-        #
-        # f = QFrame()
-        # f_buttons_controls_layout.addWidget(f)
-        #
-        # self.show_mag_button = QPushButton("Magnifier", f)
-        # self.show_mag_button.clicked.connect(self._toggle_mag_display)
-        # f_buttons_controls_layout.addWidget(self.show_mag_button)
-        #
-        # self.slider_magn = QSlider(Qt.Orientation.Horizontal, f)
-        # self.slider_magn.setMinimum(1)
-        # self.slider_magn.setMaximum(5)
-        # self.slider_magn.setSingleStep(1)
-        # self.slider_magn.setValue(1)
-        # f_buttons_controls_layout.addWidget(self.slider_magn)
+            right_group_layout.addWidget(line)
 
     def _toggle_focus_display(self):
         pass
@@ -605,6 +616,62 @@ class VideoWindowMain(VideoWindowBase):
     def _toggle_mag_display(self):
         pass
 
+    def update_param(self, label):
+        if label == 'framerate' and self._main_window.mgr.triggered and self._main_window.mgr.acquiring:
+            return
+
+        slider = self.camera_controls_sliders[label]
+
+        new_val_float = slider.value() / self.camera_controls_sliders_scales[label]
+
+        setattr(self._main_window.mgr.cameras[self.idx], label, new_val_float)
+
+        # And update the slider to the actual new value (can be different from the one requested)
+        read_back = getattr(self._main_window.mgr.cameras[self.idx], label)
+
+        actual_new_val = int(read_back * self.camera_controls_sliders_scales[label])
+        slider.setValue(actual_new_val)
+
+        if label == 'exposure':
+            # Refresh exposure value for UI display
+            self.exposure_value.setText(f"{self._main_window.mgr.cameras[self.idx].exposure} µs")
+
+            # We also need to update the framerate slider to current resulting fps after exposure change
+            self.update_param('framerate')
+
+        elif label == 'framerate':
+            # Keep a local copy to warn user if actual framerate is too different from requested fps
+            wanted_fps_val = slider.value() / self.camera_controls_sliders_scales[label]
+            self._wanted_fps = wanted_fps_val
+
+            if self._main_window.mgr.triggered:
+                self._main_window.mgr.framerate = self._wanted_fps
+            else:
+                self._main_window.mgr.cameras[self.idx].framerate = self._wanted_fps
+
+            new_max = int(self._main_window.mgr.cameras[self.idx].max_framerate * self.camera_controls_sliders_scales[label])
+            self.camera_controls_sliders['framerate'].setMaximum(new_max)
+
+    def _slider_changed(self, label, int_value):
+        value_float = self.camera_controls_sliders[label].value() / self.camera_controls_sliders_scales[label]
+        self.camera_controls_sliders_labels[label].setText(f'{int(value_float)}' if value_float.is_integer() else f'{value_float:.2f}')
+
+
+    def _slider_released(self, label):
+
+        self.update_param(label)
+        should_apply = bool(self._val_in_sync[label].isChecked())
+
+        if should_apply:
+            # This should not be needed, the scale is supposed to be the same anyway but... just in case
+            new_val_float = self.camera_controls_sliders[label].value() / self.camera_controls_sliders_scales[label]
+
+            for window in self._main_window.secondary_windows:
+                if window is not self and bool(window._val_in_sync[label].isChecked()):
+                    # Apply the window's scale (which should be the same anyway)
+                    w_new_val = int(new_val_float * window.camera_controls_sliders_scales[label])
+                    window.camera_controls_sliders[label].setValue(w_new_val)
+                    window.update_param(label)
 
 # class VideoWindowCalib(VideoWindowBase):
 #     def __init__(self, rootwindow, idx):

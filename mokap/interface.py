@@ -625,7 +625,7 @@ class VideoWindowMain(VideoWindowBase):
         self.update_param(param)
         should_apply = bool(self._val_in_sync[param].get())
         if should_apply:
-            for window in self.parent.child_windows:
+            for window in self.parent.secondary_windows:
                 if window is not self and bool(window._val_in_sync[param].get()):
                     slider = self.camera_controls_sliders[param]
                     new_val = slider.get()
