@@ -18,11 +18,12 @@ import numpy as np
 from mokap import utils
 
 from PIL import Image, ImageQt
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QIcon, QImage, QPixmap, QCursor, QBrush, QPen, QColor, QPixmapCache, QFont
+from PyQt6.QtCore import Qt, QTimer, QSettings
+from PyQt6.QtGui import QIcon, QImage, QPixmap, QCursor, QBrush, QPen, QColor, QPixmapCache, QFont, QPalette
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QSplitter, QStatusBar, QSlider, QGraphicsView, QGraphicsScene,
                              QGraphicsRectItem, QComboBox, QLineEdit, QProgressBar, QCheckBox, QScrollArea, QWidget,
-                             QLabel, QFrame, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout, QPushButton)
+                             QLabel, QFrame, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout, QPushButton, QSizePolicy,
+                             QGraphicsTextItem)
 from PyQt6.QtOpenGL import QOpenGLVersionProfile, QOpenGLTexture, QOpenGLVersionFunctionsFactory
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 
@@ -838,6 +839,7 @@ class MainWindow(QMainWindow):
         windows_list_layout = QVBoxLayout()
         windows_list_widget = QWidget()
         windows_list_layout.setContentsMargins(0, 0, 0, 0)
+        windows_list_layout.setSpacing(8)
         windows_list_widget.setLayout(windows_list_layout)
         windows_list_frame.setWidget(windows_list_widget)
         windows_list_frame.setWidgetResizable(True)
@@ -850,9 +852,9 @@ class MainWindow(QMainWindow):
         for i in range(self.mgr.nb_cameras):
             vis_checkbox = QCheckBox(f"Camera {i}")
             vis_checkbox.setChecked(True)
+            vis_checkbox.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             windows_list_layout.addWidget(vis_checkbox)
             self.child_windows_visibility_buttons.append(vis_checkbox)
-
 
         monitors_frame = QGroupBox('Active monitor')
         monitors_frame_layout = QVBoxLayout(monitors_frame)
@@ -861,7 +863,10 @@ class MainWindow(QMainWindow):
 
         self.monitors_buttons = QGraphicsView()
         self.monitors_buttons_scene = QGraphicsScene()
-        self.monitors_buttons_scene.setBackgroundBrush(QBrush(QColor(self.col_lightgray)))
+        monitors_frame_layout.setContentsMargins(0, 0, 0, 0)
+        monitors_frame_layout.setSpacing(5)
+
+        self.monitors_buttons.setStyleSheet("background-color: #00000000")
         self.monitors_buttons.setScene(self.monitors_buttons_scene)
         if 'Darwin' in platform.system():
             self.monitors_buttons.viewport().setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents, False)
@@ -892,10 +897,11 @@ class MainWindow(QMainWindow):
 
         # Status bar
         statusbar = QStatusBar()
-        statusbar.setStyleSheet(f"background-color: {self.col_lightgray};")
+        statusbar.setStyleSheet(f"background-color: {'#157f7f7f'}")
         self.setStatusBar(statusbar)
 
         mem_pressure_label = QLabel('Memory pressure: ')
+        mem_pressure_label.setStyleSheet(f"background-color: {'#00000000'}")
         statusbar.addWidget(mem_pressure_label)
 
         self._mem_pressure_bar = QProgressBar()
@@ -904,6 +910,7 @@ class MainWindow(QMainWindow):
 
         self.frames_saved_label = QLabel()
         self.frames_saved_label.setText(f'Saved frames: {self.mgr.saved} (0 bytes)')
+        self.frames_saved_label.setStyleSheet(f"background-color: {'#00000000'}")
         statusbar.addPermanentWidget(self.frames_saved_label)
 
     def closeEvent(self, event):
@@ -1140,13 +1147,23 @@ class MainWindow(QMainWindow):
 
         for i, m in enumerate(self._monitors):
             w, h, x, y = m.width // 40, m.height // 40, m.x // 40, m.y // 40
-            col = self.col_darkgray if m == self.selected_monitor else self.col_midgray
+            col = '#77000000' if m == self.selected_monitor else '#33000000'
 
-            rect = QGraphicsRectItem(x + 10, y + 10, w - 2, h - 2)
-            rect.setBrush(QBrush(QColor(col)))  # Fill colour
-            rect.setPen(QPen(Qt.PenStyle.NoPen))  # No outline
+            rect = QGraphicsRectItem(x, y, w - 2, h - 2)
+            rect.setBrush(QBrush(QColor(col)))      # Fill colour
+            rect.setPen(QPen(Qt.PenStyle.NoPen))    # No outline
             rect.mousePressEvent = partial(self.screen_update, i)  # Bind the function
 
+            text_item = QGraphicsTextItem(f"screen {i}")
+            text_item.setDefaultTextColor(QColor(Qt.GlobalColor.white))
+            text_item.setFont(QFont("Arial", 9))
+
+            text_rect = text_item.boundingRect()
+            text_item.setPos(x, y + h - text_rect.height())
+            text_item.setZValue(1)
+            rect.setZValue(0)
+
+            self.monitors_buttons_scene.addItem(text_item)
             self.monitors_buttons_scene.addItem(rect)
 
     def set_monitor(self, idx=None):
