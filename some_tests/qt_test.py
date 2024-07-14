@@ -28,54 +28,6 @@ from PyQt6.QtOpenGL import QOpenGLVersionProfile, QOpenGLTexture, QOpenGLVersion
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 
 
-class DoubleSlider(QSlider):
-    """
-        A slider widget that accepts floats (from https://gist.github.com/dennis-tra/994a65d6165a328d4eabaadbaedac2cc)
-    """
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.decimals = 5
-        self._max_int = 10 ** self.decimals
-
-        super().setMinimum(0)
-        super().setMaximum(self._max_int)
-
-        self._min_value = 0.0
-        self._max_value = 1.0
-
-    @property
-    def _value_range(self):
-        return self._max_value - self._min_value
-
-    def value(self):
-        return float(super().value()) / self._max_int * self._value_range + self._min_value
-
-    def setValue(self, value):
-        super().setValue(int((value - self._min_value) / self._value_range * self._max_int))
-
-    def setMinimum(self, value):
-        if value > self._max_value:
-            raise ValueError("Minimum limit cannot be higher than maximum")
-        self._min_value = value
-        self.setValue(self.value())
-
-    def setMaximum(self, value):
-        if value < self._min_value:
-            raise ValueError("Minimum limit cannot be higher than maximum")
-        self._max_value = value
-        self.setValue(self.value())
-
-    def setSingleStep(self, value):
-        super().setSingleStep(int((value - self._min_value) / self._value_range * self._max_int))
-
-    def minimum(self):
-        return self._min_value
-
-    def maximum(self):
-        return self._max_value
-
-
 class VideoGLWidget(QOpenGLWidget):
     TEX_SLOTS = None
 
@@ -157,7 +109,7 @@ class VideoGLWidget(QOpenGLWidget):
 
 
 class VideoWindowBase(QWidget):
-    INFO_PANEL_H = 300
+    BOTTOM_PANEL_H = 300
     WINDOW_MIN_W = 650
     TASKBAR_H = 75
     SPACING = 10
@@ -212,6 +164,7 @@ class VideoWindowBase(QWidget):
         main_layout.setSpacing(0)
 
         self.VIDEO_FEED = QLabel()
+        self.VIDEO_FEED.setStyleSheet('background-color: black;')
         self.VIDEO_FEED.setMinimumSize(1, 1)  # Important! Otherwise it crashes when reducing the size of the window
         self.VIDEO_FEED.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(self.VIDEO_FEED, 1)
@@ -320,6 +273,10 @@ class VideoWindowBase(QWidget):
 
         right_group_layout.addWidget(line)
 
+    def resizeEvent(self, event):
+        print(event)
+
+
     def init_specific_ui(self):
         pass
 
@@ -348,16 +305,24 @@ class VideoWindowBase(QWidget):
         return self._source_shape[1] / self._source_shape[0]
 
     def auto_size(self):
+        cam_name_bar_h = 25
 
         # If landscape screen
         if self._main_window.selected_monitor.height < self._main_window.selected_monitor.width:
-            h = self._main_window.selected_monitor.height // 2 - VideoWindowBase.TASKBAR_H - VideoWindowBase.SPACING * 2
-            w = int(self.aspect_ratio * (h - self.BOTTOM_PANEL.height()))
+            available_h = self._main_window.selected_monitor.height // 2 - VideoWindowBase.SPACING * 2
+            video_max_h = available_h - self.BOTTOM_PANEL.height() - cam_name_bar_h * self.aspect_ratio
+            video_max_w = video_max_h * self.aspect_ratio
+
+            h = int(np.ceil(video_max_h + self.BOTTOM_PANEL.height()))
+            w = int(video_max_w)
 
         # If portrait screen
         else:
-            w = self._main_window.selected_monitor.width // 2 - VideoWindowBase.SPACING * 2
-            h = int(w / self.aspect_ratio) + self.BOTTOM_PANEL.height()
+            video_max_w = self._main_window.selected_monitor.width // 2 - VideoWindowBase.SPACING * 2
+            video_max_h = video_max_w / self.aspect_ratio
+
+            h = int(video_max_h + self.BOTTOM_PANEL.height() + cam_name_bar_h)
+            w = int(np.ceil(video_max_w))
 
         self.resize(w, h)
 
@@ -607,7 +572,6 @@ class VideoWindowMain(VideoWindowBase):
 
                 self.camera_controls_sliders_scales[label] = scale
 
-            slider.setMinimumWidth(200)
             slider.valueChanged.connect(lambda value, lbl=label: self._slider_changed(lbl, value))
             slider.sliderReleased.connect(lambda lbl=label: self._slider_released(lbl))
             line_layout.addWidget(slider, 1)
