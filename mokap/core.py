@@ -19,7 +19,7 @@ import fnmatch
 from subprocess import Popen, PIPE, STDOUT
 import shlex
 import sys
-
+import re
 
 class Manager:
     COLOURS = ['#3498db', '#f4d03f', '#27ae60', '#e74c3c', '#9b59b6', '#f39c12', '#1abc9c', '#F5A7D4', '#34495e', '#bdc3c7',
@@ -62,6 +62,8 @@ class Manager:
         self._base_folder = Path(self.config_dict.get('base_path', './')) / 'MokapRecordings'
         if self._base_folder.parent.name == self._base_folder.name:
             self._base_folder = self._base_folder.parent
+        if re.match(r'[A-Z]:', self._base_folder.parts[0]) and 'Darwin' in platform.system():
+            self._base_folder = Path(self._base_folder.as_posix()[2:].lstrip('/'))
         self._base_folder.mkdir(parents=True, exist_ok=True)
 
         self._session_name: str = ''

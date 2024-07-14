@@ -19,7 +19,7 @@ from mokap import utils
 
 from PIL import Image, ImageQt
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QIcon, QImage, QPixmap, QCursor, QBrush, QPen, QColor, QPixmapCache
+from PyQt6.QtGui import QIcon, QImage, QPixmap, QCursor, QBrush, QPen, QColor, QPixmapCache, QFont
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QSplitter, QStatusBar, QSlider, QGraphicsView, QGraphicsScene,
                              QGraphicsRectItem, QComboBox, QLineEdit, QProgressBar, QCheckBox, QScrollArea, QWidget,
                              QLabel, QFrame, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout, QPushButton)
@@ -650,7 +650,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         self.setWindowTitle('Controls')
-        self.setGeometry(100, 100, MainWindow.WINDOW_MIN_W, MainWindow.INFO_PANEL_MINSIZE_H)  # todo
+        # self.setGeometry(100, 100, MainWindow.WINDOW_MIN_W, MainWindow.INFO_PANEL_MINSIZE_H)  # todo
 
         self.mgr = mgr
 
@@ -708,17 +708,18 @@ class MainWindow(QMainWindow):
         self.timer_update.start(200)
 
     def init_gui(self):
+
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(5, 5, 5, 5)
+        main_layout.setSpacing(5)
+
         central_widget = QWidget()
+        central_widget.setLayout(main_layout)
         self.setCentralWidget(central_widget)
-        layout = QVBoxLayout(central_widget)
 
         toolbar = QFrame()
         toolbar.setFixedHeight(38)
         toolbar_layout = QHBoxLayout(toolbar)
-        layout.addWidget(toolbar)
-
-        content_panels = QSplitter(Qt.Orientation.Vertical)
-        layout.addWidget(content_panels)
 
         # Mode switch
         mode_label = QLabel('Mode: ')
@@ -726,101 +727,123 @@ class MainWindow(QMainWindow):
 
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(['Recording', 'Calibration'])
-        toolbar_layout.addWidget(self.mode_combo)
+        toolbar_layout.addWidget(self.mode_combo, 1)    # 1 unit
+
+        toolbar_layout.addStretch(2)    # spacing of 2 units
 
         # Exit button
         self.button_exit = QPushButton("Exit (Esc)")
         self.button_exit.clicked.connect(self.quit)
         self.button_exit.setStyleSheet(f"background-color: {self.col_red}; color: {self.col_white};")
-        toolbar_layout.addWidget(self.button_exit)
+        toolbar_layout.addWidget(self.button_exit, 1)   # 1 unit
 
+        main_layout.addWidget(toolbar)  # End toolbar
+
+        # Main content
         maincontent = QWidget()
         maincontent_layout = QHBoxLayout(maincontent)
 
         left_pane = QGroupBox("Acquisition")
+        left_pane.setMinimumWidth(400)
         left_pane_layout = QVBoxLayout(left_pane)
-        maincontent_layout.addWidget(left_pane)
+        maincontent_layout.addWidget(left_pane, 4)
 
         right_pane = QGroupBox("Display")
+        right_pane.setMinimumWidth(300)
         right_pane_layout = QVBoxLayout(right_pane)
-        maincontent_layout.addWidget(right_pane)
+        maincontent_layout.addWidget(right_pane, 3)
 
-        content_panels.addWidget(maincontent)
+        main_layout.addWidget(maincontent)
 
         # LEFT HALF
-        name_frame = QWidget()
-        name_frame_layout = QVBoxLayout(name_frame)
-        left_pane_layout.addWidget(name_frame)
+        f_name_and_path = QWidget()
+        f_name_and_path_layout = QVBoxLayout(f_name_and_path)
+        f_name_and_path_layout.setContentsMargins(0, 0, 0, 0)
+        f_name_and_path_layout.setSpacing(0)
 
-        editable_name_frame = QWidget()
-        editable_name_frame_layout = QHBoxLayout(editable_name_frame)
-        name_frame_layout.addWidget(editable_name_frame)
+        line_1 = QWidget()
+        line_1_layout = QHBoxLayout(line_1)
 
-        pathname_label = QLabel('Name: ')
-        editable_name_frame_layout.addWidget(pathname_label)
+        acquisition_label = QLabel('Name: ')
+        line_1_layout.addWidget(acquisition_label)
 
-        self.pathname_textbox = QLineEdit()
-        self.pathname_textbox.setDisabled(True)
-        editable_name_frame_layout.addWidget(self.pathname_textbox)
+        self.acq_name_textbox = QLineEdit()
+        self.acq_name_textbox.setDisabled(True)
+        self.acq_name_textbox.setPlaceholderText("yymmdd-hhmm")
+        line_1_layout.addWidget(self.acq_name_textbox, 1)
 
-        self.pathname_button = QPushButton("Edit")
-        self.pathname_button.setCheckable(True)
-        self.pathname_button.clicked.connect(self._toggle_text_editing)
-        editable_name_frame_layout.addWidget(self.pathname_button)
+        self.acq_name_edit_btn = QPushButton("Edit")
+        self.acq_name_edit_btn.setCheckable(True)
+        self.acq_name_edit_btn.clicked.connect(self._toggle_text_editing)
+        line_1_layout.addWidget(self.acq_name_edit_btn)
 
-        info_name_frame = QWidget()
-        info_name_frame_layout = QHBoxLayout(info_name_frame)
-        name_frame_layout.addWidget(info_name_frame)
+        f_name_and_path_layout.addWidget(line_1)
 
-        save_dir_label = QLabel('Saves to: ')
-        info_name_frame_layout.addWidget(save_dir_label)
+        line_2 = QWidget()
+        line_2_layout = QHBoxLayout(line_2)
 
         self.save_dir_current = QLabel()
         self.save_dir_current.setStyleSheet(f"color: {self.col_darkgray};")
-        info_name_frame_layout.addWidget(self.save_dir_current)
+        self.save_dir_current.setWordWrap(True)
+        folderpath_label_font = QFont()
+        folderpath_label_font.setPointSize(10)
+        self.save_dir_current.setFont(folderpath_label_font)
+        line_2_layout.addWidget(self.save_dir_current, 1)
 
-        self.gothere_button = QPushButton("Open")
-        self.gothere_button.clicked.connect(self.open_session_folder)
-        info_name_frame_layout.addWidget(self.gothere_button)
+        self.save_dir_current.setText(f'{self.mgr.full_path.resolve()}')
+
+        f_name_and_path_layout.addWidget(line_2)
+
+        line_3 = QWidget()
+        line_3_layout = QHBoxLayout(line_3)
+
+        self.button_open_folder = QPushButton("Open folder")
+        self.button_open_folder.clicked.connect(self.open_session_folder)
+        line_3_layout.addStretch(2)
+        line_3_layout.addWidget(self.button_open_folder)
+
+        f_name_and_path_layout.addWidget(line_3)
+
+        left_pane_layout.addWidget(f_name_and_path, 1)
 
         # Buttons
         f_buttons = QWidget()
         f_buttons_layout = QVBoxLayout(f_buttons)
-        left_pane_layout.addWidget(f_buttons)
 
         self.button_acquisition = QPushButton("Acquisition off")
         self.button_acquisition.setCheckable(True)
         self.button_acquisition.clicked.connect(self._toggle_acquisition)
-        f_buttons_layout.addWidget(self.button_acquisition)
+        f_buttons_layout.addWidget(self.button_acquisition, 1)
 
         self.button_snapshot = QPushButton("Snapshot")
         self.button_snapshot.clicked.connect(self._take_snapshot)
         self.button_snapshot.setIcon(self.icon_snapshot_bw)
         self.button_snapshot.setDisabled(True)
-        f_buttons_layout.addWidget(self.button_snapshot)
+        f_buttons_layout.addWidget(self.button_snapshot, 1)
 
         self.button_recpause = QPushButton("Not recording (Space to toggle)")
         self.button_recpause.setCheckable(True)
         self.button_recpause.clicked.connect(self._toggle_recording)
         self.button_recpause.setIcon(self.icon_rec_bw)
         self.button_recpause.setDisabled(True)
-        f_buttons_layout.addWidget(self.button_recpause)
+        f_buttons_layout.addWidget(self.button_recpause, 1)
+
+        left_pane_layout.addWidget(f_buttons, 2)
 
         # RIGHT HALF
-        windows_visibility_frame = QWidget()
-        windows_visibility_frame_layout = QVBoxLayout(windows_visibility_frame)
-        right_pane_layout.addWidget(windows_visibility_frame)
-
-        visibility_label = QLabel('Show previews:')
-        windows_visibility_frame_layout.addWidget(visibility_label)
+        live_previews = QGroupBox('Live previews')
+        live_previews_layout = QVBoxLayout(live_previews)
 
         windows_list_frame = QScrollArea()
         windows_list_layout = QVBoxLayout()
         windows_list_widget = QWidget()
+        windows_list_layout.setContentsMargins(0, 0, 0, 0)
         windows_list_widget.setLayout(windows_list_layout)
         windows_list_frame.setWidget(windows_list_widget)
         windows_list_frame.setWidgetResizable(True)
-        windows_visibility_frame_layout.addWidget(windows_list_frame)
+        live_previews_layout.addWidget(windows_list_frame)
+
+        right_pane_layout.addWidget(live_previews)
 
         self.child_windows_visibility_buttons = []
 
@@ -830,17 +853,19 @@ class MainWindow(QMainWindow):
             windows_list_layout.addWidget(vis_checkbox)
             self.child_windows_visibility_buttons.append(vis_checkbox)
 
-        monitors_frame = QWidget()
+
+        monitors_frame = QGroupBox('Active monitor')
         monitors_frame_layout = QVBoxLayout(monitors_frame)
+
         right_pane_layout.addWidget(monitors_frame)
 
-        monitors_label = QLabel('Active monitor:')
-        monitors_frame_layout.addWidget(monitors_label)
-
         self.monitors_buttons = QGraphicsView()
-        self.monitors_buttons.setGeometry(10, 10, 780, 580)
         self.monitors_buttons_scene = QGraphicsScene()
+        self.monitors_buttons_scene.setBackgroundBrush(QBrush(QColor(self.col_lightgray)))
         self.monitors_buttons.setScene(self.monitors_buttons_scene)
+        if 'Darwin' in platform.system():
+            self.monitors_buttons.viewport().setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents, False)
+
         monitors_frame_layout.addWidget(self.monitors_buttons)
 
         self.autotile_button = QPushButton("Auto-tile windows")
@@ -909,22 +934,22 @@ class MainWindow(QMainWindow):
             override = not self.editing_disabled
 
         if self.editing_disabled and override is True:
-            self.pathname_textbox.setDisabled(False)
-            self.pathname_button.setText('Set')
+            self.acq_name_textbox.setDisabled(False)
+            self.acq_name_edit_btn.setText('Set')
             self.editing_disabled = False
 
         elif not self.editing_disabled and override is False:
-            self.pathname_textbox.setDisabled(True)
-            self.pathname_button.setText('Edit')
-            self.mgr.session_name = self.pathname_textbox.text()
+            self.acq_name_textbox.setDisabled(True)
+            self.acq_name_edit_btn.setText('Edit')
+            self.mgr.session_name = self.acq_name_textbox.text()
             self.editing_disabled = True
 
             self.save_dir_current.setText(f'{self.mgr.full_path.resolve()}')
 
     def open_session_folder(self):
-        path = Path(self.pathname_textbox.text()).resolve()
+        path = Path(self.acq_name_textbox.text()).resolve()
 
-        if self.pathname_textbox.text() == "":
+        if self.acq_name_textbox.text() == "":
             path = self.mgr.full_path
 
         if 'Linux' in platform.system():
@@ -946,7 +971,7 @@ class MainWindow(QMainWindow):
             self.mgr.off()
 
             # Reset Acquisition folder name
-            self.pathname_button.setText('')
+            self.acq_name_textbox.setText('')
             self.save_dir_current.setText('')
 
             self.button_acquisition.setText("Acquisition off")
@@ -1220,8 +1245,3 @@ main_window = MainWindow(mgr)
 main_window.show()
 
 sys.exit(app.exec())
-
-bitmap_path = './test.png'
-with Image.open(bitmap_path) as im:
-    w, h = im.width, im.height
-    im_data = im.transpose(Image.FLIP_TOP_BOTTOM).convert("RGBA").tobytes()
