@@ -111,7 +111,13 @@ class VideoGLWidget(QOpenGLWidget):
 class VideoWindowBase(QWidget):
     BOTTOM_PANEL_H = 300
     WINDOW_MIN_W = 650
-    TASKBAR_H = 75
+    if 'Windows' in platform.system():
+        TASKBAR_H = 48
+        TOPBAR_H = 23
+    else:
+        # TODO
+        TASKBAR_H = 48
+        TOPBAR_H = 23
     SPACING = 10
 
     def __init__(self, main_window_ref, idx):
@@ -129,6 +135,7 @@ class VideoWindowBase(QWidget):
 
         # Where the frame data will be stored
         self._frame_buffer = np.zeros((*self._source_shape[:2], 3), dtype=np.uint8)
+        self._display_buffer = np.zeros((*self._source_shape[:2], 3), dtype=np.uint8)
 
         # Init clock and counter
         self._clock = datetime.now()
@@ -172,6 +179,16 @@ class VideoWindowBase(QWidget):
         self.update_image()     # Call this once to initialise it
 
         # self.VIDEO_FEED = VideoGLWidget(self._camera.shape[0], self._camera.shape[1], self.idx, parent=self)
+        # self.update_image()  # Call this once to initialise it
+
+        main_layout.addWidget(self.VIDEO_FEED, 1)
+
+        self.BOTTOM_PANEL = QWidget()
+        bottom_panel_v_layout = QVBoxLayout(self.BOTTOM_PANEL)
+        bottom_panel_v_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_panel_v_layout.setSpacing(0)
+        bottom_panel_h = QWidget()
+        bottom_panel_h_layout = QHBoxLayout(bottom_panel_h)
 
         # Camera name bar
         camera_name_bar = QLabel(f'{self._camera.name.title()} camera')
@@ -179,20 +196,17 @@ class VideoWindowBase(QWidget):
         camera_name_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
         camera_name_bar.setStyleSheet(f"color: {self.colour_2}; background-color: {self.colour}; font: bold;")
 
-        main_layout.addWidget(camera_name_bar)
-
-        self.BOTTOM_PANEL = QWidget()
-        bottom_panel_layout = QHBoxLayout()
-        self.BOTTOM_PANEL.setLayout(bottom_panel_layout)
+        bottom_panel_v_layout.addWidget(camera_name_bar)
+        bottom_panel_v_layout.addWidget(bottom_panel_h)
 
         self.LEFT_GROUP = QGroupBox("Information")
-        bottom_panel_layout.addWidget(self.LEFT_GROUP)
+        bottom_panel_h_layout.addWidget(self.LEFT_GROUP)
 
         self.CENTRE_GROUP = QGroupBox("Control")
-        bottom_panel_layout.addWidget(self.CENTRE_GROUP, 1)     # Expand the centre group only
+        bottom_panel_h_layout.addWidget(self.CENTRE_GROUP, 1)     # Expand the centre group only
 
         self.RIGHT_GROUP = QGroupBox("View")
-        bottom_panel_layout.addWidget(self.RIGHT_GROUP)
+        bottom_panel_h_layout.addWidget(self.RIGHT_GROUP)
 
         main_layout.addWidget(self.BOTTOM_PANEL)
 
@@ -272,10 +286,6 @@ class VideoWindowBase(QWidget):
 
         right_group_layout.addWidget(line)
 
-    def resizeEvent(self, event):
-        print(event)
-
-
     def init_specific_ui(self):
         pass
 
@@ -304,12 +314,11 @@ class VideoWindowBase(QWidget):
         return self._source_shape[1] / self._source_shape[0]
 
     def auto_size(self):
-        cam_name_bar_h = 25
 
         # If landscape screen
         if self._main_window.selected_monitor.height < self._main_window.selected_monitor.width:
-            available_h = self._main_window.selected_monitor.height // 2 - VideoWindowBase.SPACING * 3
-            video_max_h = available_h - self.BOTTOM_PANEL.height() - cam_name_bar_h * self.aspect_ratio
+            available_h = (self._main_window.selected_monitor.height - VideoWindowBase.TASKBAR_H) // 2 - VideoWindowBase.SPACING * 3
+            video_max_h = available_h - self.BOTTOM_PANEL.height() - VideoWindowBase.TOPBAR_H
             video_max_w = video_max_h * self.aspect_ratio
 
             h = int(video_max_h + self.BOTTOM_PANEL.height())
@@ -320,7 +329,7 @@ class VideoWindowBase(QWidget):
             video_max_w = self._main_window.selected_monitor.width // 2 - VideoWindowBase.SPACING * 3
             video_max_h = video_max_w / self.aspect_ratio
 
-            h = int(video_max_h + self.BOTTOM_PANEL.height() + cam_name_bar_h)
+            h = int(video_max_h + self.BOTTOM_PANEL.height())
             w = int(video_max_w)
 
         self.resize(w, h)
@@ -392,16 +401,17 @@ class VideoWindowBase(QWidget):
             arr = self._main_window.mgr.get_current_framebuffer(self.idx)
             if arr is not None:
                 if len(self.source_shape) == 2:
-                    np.copyto(self._frame_buffer[:, :, 0], arr)
-                    np.copyto(self._frame_buffer[:, :, 1], arr)
-                    np.copyto(self._frame_buffer[:, :, 2], arr)
+                    # Using cv for this is faster than any way using numpy (?)
+                    self._frame_buffer = cv2.cvtColor(arr, cv2.COLOR_GRAY2RGB)
                 else:
-                    np.copyto(self._frame_buffer, arr)
+                    self._frame_buffer = arr
         else:
             self._frame_buffer.fill(0)
 
-        # Debug
-        self._frame_buffer = cv2.putText(
+    def _refresh_displaybuffer(self):
+        # Just a debug modification of the frame buffer
+
+        img = cv2.putText(
             img=self._frame_buffer,
             text=f"{self.idx}",
             org=(200, 200),
@@ -411,16 +421,21 @@ class VideoWindowBase(QWidget):
             thickness=3
         )
 
+        scale = self.VIDEO_FEED.width() / self._frame_buffer.shape[1]
+        self._display_buffer = cv2.resize(img, (0, 0), fx=scale, fy=scale)
+
     def update_image(self):
         if self.isVisible():
             self._refresh_framebuffer()
+            self._refresh_displaybuffer()
 
-            h, w = self._frame_buffer.shape[:2]
-            q_img = QImage(self._frame_buffer.data, w, h, 3 * w, QImage.Format.Format_RGB888)
+            h, w = self._display_buffer.shape[:2]
+            q_img = QImage(self._display_buffer.data, w, h, 3 * w, QImage.Format.Format_RGB888)
             pixmap = QPixmap.fromImage(q_img)
-            self.VIDEO_FEED.setPixmap(pixmap.scaled(self.VIDEO_FEED.width(), self.VIDEO_FEED.height(), Qt.AspectRatioMode.KeepAspectRatio))
+            # self.VIDEO_FEED.setPixmap(pixmap.scaled(self.VIDEO_FEED.width(), self.VIDEO_FEED.height(), Qt.AspectRatioMode.KeepAspectRatio))
+            self.VIDEO_FEED.setPixmap(pixmap)
 
-            # self.VIDEO_FEED_GL.updatedata(self._main_window.mgr.get_current_framebuffer(self.idx))
+            # self.VIDEO_FEED.updatedata(self._main_window.mgr.get_current_framebuffer(self.idx))
 
     def _update_secondary(self):
 
@@ -473,8 +488,8 @@ class VideoWindowMain(VideoWindowBase):
     def __init__(self, main_window_ref, idx):
         super().__init__(main_window_ref, idx)
 
-        self._show_focus = False
-        self._magnification = False
+        self._n_enabled = False
+        self._magnifier_enabled = False
 
         # Magnification parameters
         self.magn_zoom = 1.0
@@ -595,11 +610,132 @@ class VideoWindowMain(VideoWindowBase):
         centre_group_layout.addWidget(centre_group_sliders)
         centre_group_layout.addWidget(sync_groupbox)
 
-    def _toggle_focus_display(self):
-        pass
+        # RIGHT GROUP - Additional elements
+        right_group_layout = self.RIGHT_GROUP.layout()
+
+        line = QWidget()
+        line.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        line_layout = QHBoxLayout(line)
+
+        # line_layout.addStretch(1)
+
+        self.n_button = QPushButton('Nothing')
+        # self.n_button.setCheckable(True)
+        self.n_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.n_button.clicked.connect(self._toggle_n_display)
+        line_layout.addWidget(self.n_button)
+
+        self.magn_button = QPushButton('Magnification')
+        # self.magn_button.setCheckable(True)
+        self.magn_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.magn_button.clicked.connect(self._toggle_mag_display)
+        line_layout.addWidget(self.magn_button)
+
+        right_group_layout.addWidget(line)
+
+    def _toggle_n_display(self):
+        if self._n_enabled:
+            self.n_button.setStyleSheet('')
+            self._n_enabled = False
+        else:
+            self.n_button.setStyleSheet(f'background-color: #80{self._main_window.col_green.lstrip("#")};')
+            self._n_enabled = True
 
     def _toggle_mag_display(self):
-        pass
+        if self._magnifier_enabled:
+            self.magn_button.setStyleSheet('')
+            # self.magn_slider.setDisabled(True)
+            self._magnifier_enabled = False
+        else:
+            self.magn_button.setStyleSheet(f'background-color: #80{self._main_window.col_yellow.lstrip("#")};')
+            # self.magn_slider.setDisabled(False)
+            self._magnifier_enabled = True
+
+    # def _refresh_displaybuffer(self):
+    #     scale = self.VIDEO_FEED.width() / self._frame_buffer.shape[0]
+    #     self._display_buffer = cv2.resize(self._frame_buffer, (0, 0), fx=scale, fy=scale)
+
+    def _process_resized(self, image):
+
+        # Get new coordinates
+        w, h = image.size
+
+        x_centre, y_centre = w // 2, h // 2
+        x_north, y_north = w // 2, 0
+        x_south, y_south = w // 2, h
+        x_east, y_east = w, h // 2
+        x_west, y_west = 0, h // 2
+
+        d = ImageDraw.Draw(image)
+
+        # Draw crosshair
+        d.line((x_west, y_west, x_east, y_east), fill=self.parent.col_white_rgb, width=1)  # Horizontal
+        d.line((x_north, y_north, x_south, y_south), fill=self.parent.col_white_rgb, width=1)  # Vertical
+
+        # Position the 'Recording' indicator
+        d.text((x_centre, y_south - y_centre / 2.0), self.parent.var_recording.get(),
+               anchor="ms", font=self._imgfnt,
+               fill=self.parent.col_red)
+
+        if self._warning:
+            d.text((x_centre, y_north + y_centre / 2.0), self.var_warning.get(),
+                   anchor="ms", font=self._imgfnt,
+                   fill=self.parent.col_orange)
+
+        if self._magnification:
+
+            col = self.parent.col_yellow_rgb
+
+            ratio_w = w / self._source_shape[1]
+            ratio_h = h / self._source_shape[0]
+
+            # Size of the slice to extract from the source
+            slice_w = self.magn_window_w
+            slice_h = self.magn_window_h
+
+            # Position of the slice in source pixels coordinates
+            slice_cx = self.magn_target_cx
+            slice_cy = self.magn_target_cy
+
+            slice_x1 = max(0, slice_cx - slice_w // 2)
+            slice_y1 = max(0, slice_cy - slice_h // 2)
+            slice_x2 = slice_x1 + slice_w
+            slice_y2 = slice_y1 + slice_h
+
+            if slice_x2 > self._source_shape[1]:
+                slice_x1 = self._source_shape[1] - slice_w
+                slice_x2 = self._source_shape[1]
+
+            if slice_y2 > self._source_shape[0]:
+                slice_y1 = self._source_shape[0] - slice_h
+                slice_y2 = self._source_shape[0]
+
+            # Slice directly from the framebuffer and make a (then zoomed) image
+            magn_img = Image.fromarray(self._frame_buffer[slice_y1:slice_y2, slice_x1:slice_x2], mode='RGB')
+            magn_img = magn_img.resize(
+                (int(magn_img.width * self.magn_zoom.get()), int(magn_img.height * self.magn_zoom.get())))
+
+            image.paste(magn_img, (self.magn_window_x, self.magn_window_y))
+
+            # Add frame around the magnified area
+            tgt_x1 = int(slice_x1 * ratio_w)
+            tgt_x2 = int(slice_x2 * ratio_w)
+            tgt_y1 = int(slice_y1 * ratio_h)
+            tgt_y2 = int(slice_y2 * ratio_h)
+            d.rectangle([(tgt_x1, tgt_y1), (tgt_x2, tgt_y2)],
+                        outline=col, width=1)
+
+            # Add frame around the magnification
+            d.rectangle([(self.magn_window_x, self.magn_window_y),
+                         (self.magn_window_x + magn_img.width,
+                          self.magn_window_y + magn_img.height)], outline=col, width=1)
+
+            # Add a small + in the centre
+            c = self.magn_window_x + magn_img.width // 2, self.magn_window_y + magn_img.height // 2
+            d.line((c[0] - 5, c[1], c[0] + 5, c[1]), fill=col, width=1)  # Horizontal
+            d.line((c[0], c[1] - 5, c[0], c[1] + 5), fill=col, width=1)  # Vertical
+
+        return image
 
     def update_param(self, label):
         if label == 'framerate' and self._main_window.mgr.triggered and self._main_window.mgr.acquiring:
@@ -640,7 +776,6 @@ class VideoWindowMain(VideoWindowBase):
     def _slider_changed(self, label, int_value):
         value_float = self.camera_controls_sliders[label].value() / self.camera_controls_sliders_scales[label]
         self.camera_controls_sliders_labels[label].setText(f'{int(value_float)}' if value_float.is_integer() else f'{value_float:.2f}')
-
 
     def _slider_released(self, label):
 
