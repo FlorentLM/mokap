@@ -450,7 +450,6 @@ class Manager:
                     else:
                         self._close_videowriter(cam_idx)     # This does nothing if not in video mode
                         self._l_finished_saving[cam_idx].set()
-                        break
                 else:
                     # Default state of this thread: if cameras are acquiring but we're not recording, just wait
                     timer.wait(0.1)
