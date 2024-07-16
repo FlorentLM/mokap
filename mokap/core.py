@@ -355,7 +355,6 @@ class Manager:
                 self._videowriters[cam_idx].stdin.close()
                 self._videowriters[cam_idx].wait()
         self._videowriters[cam_idx] = False
-        print(f'Closing videowriter ({get_ident()})')
 
     def _writer_thread(self, cam_idx: int) -> NoReturn:
         """
@@ -450,6 +449,7 @@ class Manager:
                     else:
                         self._close_videowriter(cam_idx)     # This does nothing if not in video mode
                         self._l_finished_saving[cam_idx].set()
+                        timer.wait(0.1)
                 else:
                     # Default state of this thread: if cameras are acquiring but we're not recording, just wait
                     timer.wait(0.1)
