@@ -17,7 +17,7 @@ import numpy as np
 
 from mokap import utils
 
-from PIL import Image, ImageQt
+from PIL import Image, ImageDraw, ImageFont
 from PyQt6.QtCore import Qt, QTimer, QSettings
 from PyQt6.QtGui import QIcon, QImage, QPixmap, QCursor, QBrush, QPen, QColor, QPixmapCache, QFont, QPalette
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QSplitter, QStatusBar, QSlider, QGraphicsView, QGraphicsScene,
@@ -144,6 +144,7 @@ class VideoWindowBase(QWidget):
 
         # Init states
         self._warning = False
+        self._warning_text = '[WARNING]'
 
         # Some other stuff
         self._wanted_fps = self._camera.framerate
@@ -154,14 +155,20 @@ class VideoWindowBase(QWidget):
                                    ['w', 'c', 'e'],
                                    ['sw', 's', 'se']])
 
+        try:
+            self._imgfnt = ImageFont.load_default(30)
+        except TypeError:
+            print('[INFO] Mokap works better with Pillow version 10.1.0 or more!')
+            self._imgfnt = ImageFont.load_default()
+
         # Setup MainWindow update
         self.timer_update = QTimer(self)
-        self.timer_update.timeout.connect(self._update_secondary)
+        self.timer_update.timeout.connect(self._update_others)
         self.timer_update.start(100)
 
         # Setup VideoWindow video update
         self.timer_video = QTimer(self)
-        self.timer_video.timeout.connect(self.update_image)
+        self.timer_video.timeout.connect(self._update_images)
         self.timer_video.start(30)
 
     def init_common_ui(self):
@@ -176,7 +183,7 @@ class VideoWindowBase(QWidget):
         self.VIDEO_FEED.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(self.VIDEO_FEED, 1)
 
-        self.update_image()     # Call this once to initialise it
+        self._blit_image()     # Call this once to initialise it
 
         # self.VIDEO_FEED = VideoGLWidget(self._camera.shape[0], self._camera.shape[1], self.idx, parent=self)
         # self.update_image()  # Call this once to initialise it
@@ -397,47 +404,78 @@ class VideoWindowBase(QWidget):
             self.show()
 
     def _refresh_framebuffer(self):
+        """ Grabs a new frame from the cameras and stores it in the frame buffer """
         if self._main_window.mgr.acquiring:
             arr = self._main_window.mgr.get_current_framebuffer(self.idx)
             if arr is not None:
                 if len(self.source_shape) == 2:
                     # Using cv for this is faster than any way using numpy (?)
-                    self._frame_buffer = cv2.cvtColor(arr, cv2.COLOR_GRAY2RGB)
+                    self._frame_buffer = cv2.cvtColor(arr, cv2.COLOR_GRAY2RGB, dst=self._frame_buffer)
                 else:
                     self._frame_buffer = arr
         else:
             self._frame_buffer.fill(0)
 
-    def _refresh_displaybuffer(self):
-        # Just a debug modification of the frame buffer
+    def _resize_to_display(self):
+        """ Fills and resizes the display buffer to the current window size """
+        if self.VIDEO_FEED.width() > self.VIDEO_FEED.height():
+            scale = self.VIDEO_FEED.height() / self._frame_buffer.shape[1]
+        else:
+            scale = self.VIDEO_FEED.width() / self._frame_buffer.shape[0]
+        self._display_buffer = cv2.resize(self._frame_buffer, (0, 0), dst=self._display_buffer, fx=scale, fy=scale)
 
-        img = cv2.putText(
+    def _blit_image(self):
+        """ Applies the content of display buffers to the GUI """
+        h, w = self._display_buffer.shape[:2]
+        q_img = QImage(self._display_buffer.data, w, h, 3 * w, QImage.Format.Format_RGB888)
+        pixmap = QPixmap.fromImage(q_img)
+        # self.VIDEO_FEED.setPixmap(pixmap.scaled(self.VIDEO_FEED.width(), self.VIDEO_FEED.height(), Qt.AspectRatioMode.KeepAspectRatio))
+        self.VIDEO_FEED.setPixmap(pixmap)
+
+        # self.VIDEO_FEED.updatedata(self._main_window.mgr.get_current_framebuffer(self.idx))
+
+    def _full_res_stuff(self):
+        # Just a debug modification of the frame buffer
+        self._frame_buffer = cv2.putText(
             img=self._frame_buffer,
-            text=f"{self.idx}",
-            org=(200, 200),
+            text=f"{self.idx} (HR)",
+            org=(150, 150),
             fontFace=cv2.FONT_HERSHEY_DUPLEX,
             fontScale=3.0,
             color=(125, 246, 55),
             thickness=3
         )
 
-        scale = self.VIDEO_FEED.width() / self._frame_buffer.shape[1]
-        self._display_buffer = cv2.resize(img, (0, 0), fx=scale, fy=scale)
+    def _low_res_stuff(self):
+        # Just a debug modification of the frame buffer
+        self._display_buffer = cv2.putText(
+            img=self._display_buffer,
+            text=f"{self.idx} (LW)",
+            org=(150, 150),
+            fontFace=cv2.FONT_HERSHEY_DUPLEX,
+            fontScale=3.0,
+            color=(245, 246, 55),
+            thickness=3
+        )
 
-    def update_image(self):
+    def _update_images(self):
         if self.isVisible():
+            # 1- Grab a new frame from cameras
             self._refresh_framebuffer()
-            self._refresh_displaybuffer()
 
-            h, w = self._display_buffer.shape[:2]
-            q_img = QImage(self._display_buffer.data, w, h, 3 * w, QImage.Format.Format_RGB888)
-            pixmap = QPixmap.fromImage(q_img)
-            # self.VIDEO_FEED.setPixmap(pixmap.scaled(self.VIDEO_FEED.width(), self.VIDEO_FEED.height(), Qt.AspectRatioMode.KeepAspectRatio))
-            self.VIDEO_FEED.setPixmap(pixmap)
+            # 2- Do anything with the full resolution frame
+            self._full_res_stuff()
 
-            # self.VIDEO_FEED.updatedata(self._main_window.mgr.get_current_framebuffer(self.idx))
+            # 3- Create resized buffer to display
+            self._resize_to_display()
 
-    def _update_secondary(self):
+            # 4- Do anything with the smaller resolution frame
+            self._low_res_stuff()
+
+            # 5- Blit
+            self._blit_image()
+
+    def _update_others(self):
 
         if self.isVisible():
 
@@ -449,7 +487,7 @@ class VideoWindowBase(QWidget):
 
                 if 0 < cap_fps < 1000:
                     if abs(cap_fps - self._wanted_fps) > 10:
-                        # self.txtvar_warning.set('[ WARNING: Framerate ]')
+                        self._warning_text = '[WARNING] Framerate'
                         self._warning = True
                     else:
                         self._warning = False
@@ -492,11 +530,11 @@ class VideoWindowMain(VideoWindowBase):
         self._magnifier_enabled = False
 
         # Magnification parameters
-        self.magn_zoom = 1.0
+        self.magn_zoom = 5.0
         self.magn_window_w = 100
         self.magn_window_h = 100
-        self.magn_window_x = 10 + self.magn_window_w // 2  # Initialise in the corner
-        self.magn_window_y = 10 + self.magn_window_h // 2
+        self.magn_window_x = 10
+        self.magn_window_y = 10
 
         self.magn_target_cx = self.source_shape[1] // 2
         self.magn_target_cy = self.source_shape[0] // 2
@@ -651,14 +689,10 @@ class VideoWindowMain(VideoWindowBase):
             # self.magn_slider.setDisabled(False)
             self._magnifier_enabled = True
 
-    # def _refresh_displaybuffer(self):
-    #     scale = self.VIDEO_FEED.width() / self._frame_buffer.shape[0]
-    #     self._display_buffer = cv2.resize(self._frame_buffer, (0, 0), fx=scale, fy=scale)
-
-    def _process_resized(self, image):
+    def _low_res_stuff(self):
 
         # Get new coordinates
-        w, h = image.size
+        w, h = self._display_buffer.shape[:2]
 
         x_centre, y_centre = w // 2, h // 2
         x_north, y_north = w // 2, 0
@@ -666,25 +700,95 @@ class VideoWindowMain(VideoWindowBase):
         x_east, y_east = w, h // 2
         x_west, y_west = 0, h // 2
 
+        # Draw crosshair
+        cv2.line(self._display_buffer, (x_west, y_west), (x_east, y_east), self._main_window.col_white_rgb, 1)
+        cv2.line(self._display_buffer, (x_north, y_north), (x_south, y_south), self._main_window.col_white_rgb, 1)
+
+        # Position the 'Recording' indicator
+        font, txtsiz = cv2.FONT_HERSHEY_DUPLEX, 1.25
+        textsize = cv2.getTextSize(self._main_window._recording_text, font, txtsiz, 2)[0]
+        self._display_buffer = cv2.putText(self._display_buffer, self._main_window._recording_text,
+                                           (int(x_south - textsize[0] / 2), int(y_south - textsize[1])),
+                                           font, txtsiz, self._main_window.col_red_rgb, 2, cv2.LINE_AA)
+        # Position the 'Warning' indicator
+        if self._warning:
+            textsize = cv2.getTextSize(self._warning_text, font, txtsiz, 2)[0]
+            self._display_buffer = cv2.putText(self._display_buffer, self._warning_text,
+                                           (int(x_north - textsize[0] / 2), int(y_centre / 2 - textsize[1])),
+                                           font, txtsiz, self._main_window.col_orange_rgb, 2, cv2.LINE_AA)
+
+        if self._magnifier_enabled:
+
+            # Position of the slice in source pixels coordinates
+            slice_x1 = max(0, self.magn_target_cx - self.magn_window_w // 2)
+            slice_y1 = max(0, self.magn_target_cy - self.magn_window_h // 2)
+            slice_x2 = slice_x1 + self.magn_window_w
+            slice_y2 = slice_y1 + self.magn_window_h
+
+            if slice_x2 > self._source_shape[1]:
+                slice_x1 = self._source_shape[1] - self.magn_window_w
+                slice_x2 = self._source_shape[1]
+
+            if slice_y2 > self._source_shape[0]:
+                slice_y1 = self._source_shape[0] - self.magn_window_h
+                slice_y2 = self._source_shape[0]
+
+            # Slice directly from the framebuffer and make the small, zoomed window image
+            ratio_w = w / self._frame_buffer.shape[0]
+            ratio_h = h / self._frame_buffer.shape[1]
+            magn_img = cv2.resize(self._frame_buffer[slice_y1:slice_y2, slice_x1:slice_x2], (0, 0),
+                                  fx=float(self.magn_zoom * ratio_w),
+                                  fy=float(self.magn_zoom * ratio_h))
+
+            # Paste the zoom window into the display buffer
+            magn_x1 = self.magn_window_x
+            magn_x2 = self.magn_window_x + magn_img.shape[0]
+            magn_y1 = self.magn_window_y
+            magn_y2 = self.magn_window_y + magn_img.shape[1]
+            self._display_buffer[magn_x1:magn_x2, magn_y1:magn_y2] = magn_img
+
+            # Add frame around the magnification
+            self._display_buffer = cv2.rectangle(self._display_buffer,
+                                                 (magn_x1, magn_y1), (magn_x2, magn_y2),
+                                                 self._main_window.col_yellow_rgb, 1)
+
+            # Add frame around the magnified area
+            target_x1 = int((self.magn_target_cx - self.magn_window_w / 2) * ratio_w)
+            target_x2 = int((self.magn_target_cx + self.magn_window_w / 2) * ratio_w)
+            target_y1 = int((self.magn_target_cy - self.magn_window_h / 2) * ratio_h)
+            target_y2 = int((self.magn_target_cy + self.magn_window_h / 2) * ratio_h)
+            self._display_buffer = cv2.rectangle(self._display_buffer,
+                                                 (target_x1, target_y1), (target_x2, target_y2),
+                                                 self._main_window.col_yellow_rgb, 1)
+
+    def _low_res_stuff_pillow(self):
+
+        # Get new coordinates
+        w, h = self._display_buffer.shape[:2]
+
+        x_centre, y_centre = w // 2, h // 2
+        x_north, y_north = w // 2, 0
+        x_south, y_south = w // 2, h
+        x_east, y_east = w, h // 2
+        x_west, y_west = 0, h // 2
+
+        image = Image.fromarray(self._display_buffer, mode='RGB')
+
         d = ImageDraw.Draw(image)
 
         # Draw crosshair
-        d.line((x_west, y_west, x_east, y_east), fill=self.parent.col_white_rgb, width=1)  # Horizontal
-        d.line((x_north, y_north, x_south, y_south), fill=self.parent.col_white_rgb, width=1)  # Vertical
-
-        # Position the 'Recording' indicator
-        d.text((x_centre, y_south - y_centre / 2.0), self.parent.var_recording.get(),
-               anchor="ms", font=self._imgfnt,
-               fill=self.parent.col_red)
+        d.line((x_west, y_west, x_east, y_east), fill=self._main_window.col_yellow_rgb, width=1)             # Horizontal
+        d.line((x_north, y_north, x_south, y_south), fill=self._main_window.col_yellow_rgb, width=1)         # Vertical
+        d.text((x_centre, y_south - y_centre / 2.0), self._main_window._recording_text, anchor="ms", font=self._imgfnt, fill=self._main_window.col_red)
 
         if self._warning:
-            d.text((x_centre, y_north + y_centre / 2.0), self.var_warning.get(),
+            d.text((x_centre, y_north + y_centre / 2.0), self._warning_text,
                    anchor="ms", font=self._imgfnt,
-                   fill=self.parent.col_orange)
+                   fill=self._main_window.col_orange)
 
-        if self._magnification:
+        if self._magnifier_enabled:
 
-            col = self.parent.col_yellow_rgb
+            col = self._main_window.col_yellow_rgb
 
             ratio_w = w / self._source_shape[1]
             ratio_h = h / self._source_shape[0]
@@ -713,7 +817,7 @@ class VideoWindowMain(VideoWindowBase):
             # Slice directly from the framebuffer and make a (then zoomed) image
             magn_img = Image.fromarray(self._frame_buffer[slice_y1:slice_y2, slice_x1:slice_x2], mode='RGB')
             magn_img = magn_img.resize(
-                (int(magn_img.width * self.magn_zoom.get()), int(magn_img.height * self.magn_zoom.get())))
+                (int(magn_img.width * self.magn_zoom), int(magn_img.height * self.magn_zoom)))
 
             image.paste(magn_img, (self.magn_window_x, self.magn_window_y))
 
@@ -735,7 +839,8 @@ class VideoWindowMain(VideoWindowBase):
             d.line((c[0] - 5, c[1], c[0] + 5, c[1]), fill=col, width=1)  # Horizontal
             d.line((c[0], c[1] - 5, c[0], c[1] + 5), fill=col, width=1)  # Vertical
 
-        return image
+        np.copyto(self._display_buffer, np.array(image).astype(np.uint8))
+
 
     def update_param(self, label):
         if label == 'framerate' and self._main_window.mgr.triggered and self._main_window.mgr.acquiring:
@@ -850,6 +955,32 @@ class MainWindow(QMainWindow):
     VIDEO_PANEL_MINSIZE_H = 50  # haha
     WINDOW_MIN_W = 630
 
+    # Colours
+    col_white = "#ffffff"
+    col_white_rgb = utils.hex_to_rgb(col_white)
+    col_black = "#000000"
+    col_black_rgb = utils.hex_to_rgb(col_black)
+    col_lightgray = "#e3e3e3"
+    col_lightgray_rgb = utils.hex_to_rgb(col_lightgray)
+    col_midgray = "#c0c0c0"
+    col_midgray_rgb = utils.hex_to_rgb(col_midgray)
+    col_darkgray = "#515151"
+    col_darkgray_rgb = utils.hex_to_rgb(col_darkgray)
+    col_red = "#FF3C3C"
+    col_red_rgb = utils.hex_to_rgb(col_red)
+    col_orange = "#FF9B32"
+    col_orange_rgb = utils.hex_to_rgb(col_orange)
+    col_yellow = "#FFEB1E"
+    col_yellow_rgb = utils.hex_to_rgb(col_yellow)
+    col_yelgreen = "#A5EB14"
+    col_yelgreen_rgb = utils.hex_to_rgb(col_yelgreen)
+    col_green = "#00E655"
+    col_green_rgb = utils.hex_to_rgb(col_green)
+    col_blue = "#5ac3f5"
+    col_blue_rgb = utils.hex_to_rgb(col_blue)
+    col_purple = "#c887ff"
+    col_purple_rgb = utils.hex_to_rgb(col_purple)
+
     def __init__(self, mgr):
         super().__init__()
 
@@ -862,19 +993,6 @@ class MainWindow(QMainWindow):
         self.selected_monitor = None
         self._monitors = screeninfo.get_monitors()
         self.set_monitor()
-
-        self.col_white = "#ffffff"
-        self.col_black = "#000000"
-        self.col_lightgray = "#e3e3e3"
-        self.col_midgray = "#c0c0c0"
-        self.col_darkgray = "#515151"
-        self.col_red = "#FF3C3C"
-        self.col_orange = "#FF9B32"
-        self.col_yellow = "#FFEB1E"
-        self.col_yelgreen = "#A5EB14"
-        self.col_green = "#00E655"
-        self.col_blue = "#5ac3f5"
-        self.col_purple = "#c887ff"
 
         # Icons
         resources_path = [p for p in Path().cwd().glob('../**/*') if p.is_dir() and p.name == 'icons'][0]
@@ -889,6 +1007,8 @@ class MainWindow(QMainWindow):
         # States
         self.editing_disabled = True
         self._is_calibrating = False
+
+        self._recording_text = ''
 
         # Refs for the secondary windows
         self.secondary_windows = []
@@ -1221,6 +1341,10 @@ class MainWindow(QMainWindow):
             self.button_acquisition.setText("Acquiring")
             self.button_acquisition.setIcon(self.icon_capture)
             self.button_snapshot.setDisabled(False)
+
+            self._recording_text = '[Recording]'
+
+
             if not self._is_calibrating:
                 self.button_recpause.setDisabled(False)
 
@@ -1250,11 +1374,11 @@ class MainWindow(QMainWindow):
 
             if self.mgr.recording and override is False:
                 # self.mgr.pause()
-                self.txt_recording = ''
+                self._recording_text = ''
                 self.button_recpause.setIcon(self.icon_rec_bw)
             elif not self.mgr.recording and override is True:
                 # self.mgr.record()
-                self.txt_recording = '[ Recording... ]'
+                self._recording_text = '[Recording]'
                 self.button_recpause.setText("Recording... (Space to toggle)")
                 self.button_recpause.setIcon(self.icon_rec_on)
 
