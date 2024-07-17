@@ -5,7 +5,6 @@ import platform
 import psutil
 import screeninfo
 
-import time
 import cv2
 
 from functools import partial
@@ -17,13 +16,15 @@ import numpy as np
 
 from mokap import utils
 
-from PIL import Image, ImageDraw, ImageFont
-from PyQt6.QtCore import Qt, QTimer, QSettings, QEvent, QObject
-from PyQt6.QtGui import QIcon, QImage, QPixmap, QCursor, QBrush, QPen, QColor, QPixmapCache, QFont, QPalette
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QSplitter, QStatusBar, QSlider, QGraphicsView, QGraphicsScene,
+from PIL import Image
+
+from PyQt6.QtCore import Qt, QTimer, QEvent
+from PyQt6.QtGui import QIcon, QImage, QPixmap, QCursor, QBrush, QPen, QColor, QFont
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QStatusBar, QSlider, QGraphicsView, QGraphicsScene,
                              QGraphicsRectItem, QComboBox, QLineEdit, QProgressBar, QCheckBox, QScrollArea, QWidget,
                              QLabel, QFrame, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout, QPushButton, QSizePolicy,
                              QGraphicsTextItem)
+
 # from PyQt6.QtOpenGL import QOpenGLVersionProfile, QOpenGLTexture, QOpenGLVersionFunctionsFactory
 # from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 
@@ -960,7 +961,7 @@ class MainWindow(QMainWindow):
         self.set_monitor()
 
         # Icons
-        resources_path = [p for p in Path().cwd().glob('../**/*') if p.is_dir() and p.name == 'icons'][0]
+        resources_path = [p for p in Path().cwd().glob('./**/*') if p.is_dir() and p.name == 'icons'][0]
 
         self.icon_capture = QIcon((resources_path / 'capture.png').as_posix())
         self.icon_capture_bw = QIcon((resources_path / 'capture_bw.png').as_posix())
@@ -1335,11 +1336,11 @@ class MainWindow(QMainWindow):
         if self.mgr.acquiring:
 
             if self.mgr.recording and override is False:
-                # self.mgr.pause()
+                self.mgr.pause()
                 self._recording_text = ''
                 self.button_recpause.setIcon(self.icon_rec_bw)
             elif not self.mgr.recording and override is True:
-                # self.mgr.record()
+                self.mgr.record()
                 self._recording_text = '[Recording]'
                 self.button_recpause.setText("Recording... (Space to toggle)")
                 self.button_recpause.setIcon(self.icon_rec_on)
@@ -1556,30 +1557,3 @@ class MainWindow(QMainWindow):
         self._mem_baseline = psutil.virtual_memory().percent
 
 ##
-
-from mokap.core import Manager
-
-QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseDesktopOpenGL)
-QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
-app = QApplication(sys.argv)
-
-mgr = Manager(config='../config.yaml', triggered=False, silent=False)
-
-# Set exposure for all cameras (in µs)
-mgr.exposure = 4800
-
-# Enable binning
-mgr.binning = 1
-mgr.binning_mode = 'avg'
-
-# Set framerate in images per second for all cameras at once
-mgr.framerate = 100
-
-mgr.gamma = 1.0
-mgr.blacks = 1.0
-mgr.gain = 0.0
-
-main_window = MainWindow(mgr)
-main_window.show()
-
-sys.exit(app.exec())

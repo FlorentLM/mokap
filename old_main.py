@@ -1,12 +1,8 @@
 #!/usr/bin/env python
+from mokap.interface_tk import MainWindow
 from mokap.core import Manager
-from mokap.interface_qt import *
 
-QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseDesktopOpenGL)
-QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
-app = QApplication(sys.argv)
-
-mgr = Manager(config='./config.yaml', triggered=False, silent=False)
+mgr = Manager(config='./config.yaml', triggered=True, silent=False)
 
 # Set exposure for all cameras (in µs)
 mgr.exposure = 4800
@@ -25,7 +21,5 @@ mgr.gain = 0.0
 if __name__ == '__main__':
     if mgr.nb_cameras == 0:
         exit()
-    main_window = MainWindow(mgr)
-    main_window.show()
-
-    sys.exit(app.exec())
+    MainWindow(mgr)
+    exit()
