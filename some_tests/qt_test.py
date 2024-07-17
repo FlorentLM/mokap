@@ -18,94 +18,94 @@ import numpy as np
 from mokap import utils
 
 from PIL import Image, ImageDraw, ImageFont
-from PyQt6.QtCore import Qt, QTimer, QSettings
+from PyQt6.QtCore import Qt, QTimer, QSettings, QEvent, QObject
 from PyQt6.QtGui import QIcon, QImage, QPixmap, QCursor, QBrush, QPen, QColor, QPixmapCache, QFont, QPalette
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QSplitter, QStatusBar, QSlider, QGraphicsView, QGraphicsScene,
                              QGraphicsRectItem, QComboBox, QLineEdit, QProgressBar, QCheckBox, QScrollArea, QWidget,
                              QLabel, QFrame, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout, QPushButton, QSizePolicy,
                              QGraphicsTextItem)
-from PyQt6.QtOpenGL import QOpenGLVersionProfile, QOpenGLTexture, QOpenGLVersionFunctionsFactory
-from PyQt6.QtOpenGLWidgets import QOpenGLWidget
+# from PyQt6.QtOpenGL import QOpenGLVersionProfile, QOpenGLTexture, QOpenGLVersionFunctionsFactory
+# from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 
 
-class VideoGLWidget(QOpenGLWidget):
-    TEX_SLOTS = None
-
-    def __init__(self, height, width, idx, parent=None, *args, **kwargs):
-        super(VideoGLWidget, self).__init__(parent, *args, **kwargs)
-        self.idx = idx
-        self.gl = None
-        self.texture = None
-        self.ratio = width/height
-        self.arraybuffer = np.zeros((height, width, 3), dtype=np.uint8)
-
-    def initializeGL(self):
-        version_profile = QOpenGLVersionProfile()
-        version_profile.setVersion(2, 0)
-        self.gl = QOpenGLVersionFunctionsFactory.get(version_profile, self.context())
-        self.gl.initializeOpenGLFunctions()
-        # self.gl.glClearColor(0.5, 0.8, 0.7, 1.0)
-
-        self.gl.glEnable(self.gl.GL_TEXTURE_2D)
-
-        if VideoGLWidget.TEX_SLOTS is None:
-            VideoGLWidget.TEX_SLOTS = self.gl.glGenTextures(5)
-
-        self.texture = VideoGLWidget.TEX_SLOTS[self.idx]
-
-        self._gen_texture()
-
-    def resizeGL(self, width, height):
-        side = min(width, height)
-        x = int((width - side) / 2)
-        y = int((height - side) / 2)
-        self.gl.glViewport(x, y, side, side)
-
-    def paintGL(self):
-        self.gl.glClear(self.gl.GL_COLOR_BUFFER_BIT)
-        if self.texture:
-
-            self.gl.glBindTexture(self.gl.GL_TEXTURE_2D, self.texture)
-
-            self.gl.glBegin(self.gl.GL_QUADS)
-            self.gl.glTexCoord2f(0, 0)
-            self.gl.glVertex2f(-1, -1)
-            self.gl.glTexCoord2f(1, 0)
-            self.gl.glVertex2f(1, -1)
-            self.gl.glTexCoord2f(1, 1)
-            self.gl.glVertex2f(1, 1)
-            self.gl.glTexCoord2f(0, 1)
-            self.gl.glVertex2f(-1, 1)
-            self.gl.glEnd()
-
-            self.gl.glBindTexture(self.gl.GL_TEXTURE_2D, 0)
-
-    def _gen_texture(self):
-
-        self.gl.glBindTexture(self.gl.GL_TEXTURE_2D, self.texture)
-
-        self.gl.glTexParameteri(self.gl.GL_TEXTURE_2D, self.gl.GL_TEXTURE_MIN_FILTER, self.gl.GL_LINEAR)
-        self.gl.glTexParameteri(self.gl.GL_TEXTURE_2D, self.gl.GL_TEXTURE_MAG_FILTER, self.gl.GL_LINEAR)
-
-        self.gl.glTexImage2D(self.gl.GL_TEXTURE_2D,
-                     0,
-                     self.gl.GL_RGB,
-                     self.arraybuffer.shape[1],
-                     self.arraybuffer.shape[0],
-                     0,
-                     self.gl.GL_RGB,
-                     self.gl.GL_UNSIGNED_BYTE,
-                     self.arraybuffer.tobytes())
-
-        self.gl.glBindTexture(self.gl.GL_TEXTURE_2D, 0)
-
-    def updatedata(self, imagedata):
-        flipped = np.flip(imagedata, axis=0)
-        self.arraybuffer[:, :, 0] = flipped
-        self.arraybuffer[:, :, 1] = flipped
-        self.arraybuffer[:, :, 2] = flipped
-        self._gen_texture()
-        self.update()
+# class VideoGLWidget(QOpenGLWidget):
+#     TEX_SLOTS = None
+#
+#     def __init__(self, height, width, idx, parent=None, *args, **kwargs):
+#         super(VideoGLWidget, self).__init__(parent, *args, **kwargs)
+#         self.idx = idx
+#         self.gl = None
+#         self.texture = None
+#         self.ratio = width/height
+#         self.arraybuffer = np.zeros((height, width, 3), dtype=np.uint8)
+#
+#     def initializeGL(self):
+#         version_profile = QOpenGLVersionProfile()
+#         version_profile.setVersion(2, 0)
+#         self.gl = QOpenGLVersionFunctionsFactory.get(version_profile, self.context())
+#         self.gl.initializeOpenGLFunctions()
+#         # self.gl.glClearColor(0.5, 0.8, 0.7, 1.0)
+#
+#         self.gl.glEnable(self.gl.GL_TEXTURE_2D)
+#
+#         if VideoGLWidget.TEX_SLOTS is None:
+#             VideoGLWidget.TEX_SLOTS = self.gl.glGenTextures(5)
+#
+#         self.texture = VideoGLWidget.TEX_SLOTS[self.idx]
+#
+#         self._gen_texture()
+#
+#     def resizeGL(self, width, height):
+#         side = min(width, height)
+#         x = int((width - side) / 2)
+#         y = int((height - side) / 2)
+#         self.gl.glViewport(x, y, side, side)
+#
+#     def paintGL(self):
+#         self.gl.glClear(self.gl.GL_COLOR_BUFFER_BIT)
+#         if self.texture:
+#
+#             self.gl.glBindTexture(self.gl.GL_TEXTURE_2D, self.texture)
+#
+#             self.gl.glBegin(self.gl.GL_QUADS)
+#             self.gl.glTexCoord2f(0, 0)
+#             self.gl.glVertex2f(-1, -1)
+#             self.gl.glTexCoord2f(1, 0)
+#             self.gl.glVertex2f(1, -1)
+#             self.gl.glTexCoord2f(1, 1)
+#             self.gl.glVertex2f(1, 1)
+#             self.gl.glTexCoord2f(0, 1)
+#             self.gl.glVertex2f(-1, 1)
+#             self.gl.glEnd()
+#
+#             self.gl.glBindTexture(self.gl.GL_TEXTURE_2D, 0)
+#
+#     def _gen_texture(self):
+#
+#         self.gl.glBindTexture(self.gl.GL_TEXTURE_2D, self.texture)
+#
+#         self.gl.glTexParameteri(self.gl.GL_TEXTURE_2D, self.gl.GL_TEXTURE_MIN_FILTER, self.gl.GL_LINEAR)
+#         self.gl.glTexParameteri(self.gl.GL_TEXTURE_2D, self.gl.GL_TEXTURE_MAG_FILTER, self.gl.GL_LINEAR)
+#
+#         self.gl.glTexImage2D(self.gl.GL_TEXTURE_2D,
+#                      0,
+#                      self.gl.GL_RGB,
+#                      self.arraybuffer.shape[1],
+#                      self.arraybuffer.shape[0],
+#                      0,
+#                      self.gl.GL_RGB,
+#                      self.gl.GL_UNSIGNED_BYTE,
+#                      self.arraybuffer.tobytes())
+#
+#         self.gl.glBindTexture(self.gl.GL_TEXTURE_2D, 0)
+#
+#     def updatedata(self, imagedata):
+#         flipped = np.flip(imagedata, axis=0)
+#         self.arraybuffer[:, :, 0] = flipped
+#         self.arraybuffer[:, :, 1] = flipped
+#         self.arraybuffer[:, :, 2] = flipped
+#         self._gen_texture()
+#         self.update()
 
 
 class VideoWindowBase(QWidget):
@@ -155,21 +155,15 @@ class VideoWindowBase(QWidget):
                                    ['w', 'c', 'e'],
                                    ['sw', 's', 'se']])
 
-        try:
-            self._imgfnt = ImageFont.load_default(30)
-        except TypeError:
-            print('[INFO] Mokap works better with Pillow version 10.1.0 or more!')
-            self._imgfnt = ImageFont.load_default()
-
         # Setup MainWindow update
         self.timer_update = QTimer(self)
         self.timer_update.timeout.connect(self._update_others)
-        self.timer_update.start(100)
+        self.timer_update.start(50)
 
         # Setup VideoWindow video update
         self.timer_video = QTimer(self)
         self.timer_video.timeout.connect(self._update_images)
-        self.timer_video.start(30)
+        self.timer_video.start(20)
 
     def init_common_ui(self):
 
@@ -418,10 +412,7 @@ class VideoWindowBase(QWidget):
 
     def _resize_to_display(self):
         """ Fills and resizes the display buffer to the current window size """
-        if self.VIDEO_FEED.width() > self.VIDEO_FEED.height():
-            scale = self.VIDEO_FEED.height() / self._frame_buffer.shape[1]
-        else:
-            scale = self.VIDEO_FEED.width() / self._frame_buffer.shape[0]
+        scale = min(self.VIDEO_FEED.width() / self._frame_buffer.shape[1], self.VIDEO_FEED.height() / self._frame_buffer.shape[0])
         self._display_buffer = cv2.resize(self._frame_buffer, (0, 0), dst=self._display_buffer, fx=scale, fy=scale)
 
     def _blit_image(self):
@@ -434,7 +425,7 @@ class VideoWindowBase(QWidget):
 
         # self.VIDEO_FEED.updatedata(self._main_window.mgr.get_current_framebuffer(self.idx))
 
-    def _full_res_stuff(self):
+    def _full_res_processing(self):
         # Just a debug modification of the frame buffer
         self._frame_buffer = cv2.putText(
             img=self._frame_buffer,
@@ -446,8 +437,8 @@ class VideoWindowBase(QWidget):
             thickness=3
         )
 
-    def _low_res_stuff(self):
-        # Just a debug modification of the frame buffer
+    def _low_res_processing(self):
+        # Just a debug modification of the display buffer
         self._display_buffer = cv2.putText(
             img=self._display_buffer,
             text=f"{self.idx} (LW)",
@@ -464,13 +455,13 @@ class VideoWindowBase(QWidget):
             self._refresh_framebuffer()
 
             # 2- Do anything with the full resolution frame
-            self._full_res_stuff()
+            self._full_res_processing()
 
             # 3- Create resized buffer to display
             self._resize_to_display()
 
             # 4- Do anything with the smaller resolution frame
-            self._low_res_stuff()
+            self._low_res_processing()
 
             # 5- Blit
             self._blit_image()
@@ -530,14 +521,18 @@ class VideoWindowMain(VideoWindowBase):
         self._magnifier_enabled = False
 
         # Magnification parameters
-        self.magn_zoom = 5.0
         self.magn_window_w = 100
         self.magn_window_h = 100
         self.magn_window_x = 10
         self.magn_window_y = 10
 
-        self.magn_target_cx = self.source_shape[1] // 2
-        self.magn_target_cy = self.source_shape[0] // 2
+        # Target area for the magnification (initialise at the centre)
+        self.magn_target_cx = 0.5
+        self.magn_target_cy = 0.5
+
+        # Mouse states
+        self.left_mouse_btn = False
+        self.right_mouse_btn = False
 
         # Focus view parameters
         # Kernel to use for focus detection
@@ -554,6 +549,9 @@ class VideoWindowMain(VideoWindowBase):
         self.auto_size()
 
     def init_specific_ui(self):
+
+        # Add mouse click detection to video feed (for the magnifier)
+        self.VIDEO_FEED.installEventFilter(self)
 
         # CENTRE GROUP
         centre_group_layout = QHBoxLayout(self.CENTRE_GROUP)
@@ -653,6 +651,7 @@ class VideoWindowMain(VideoWindowBase):
 
         line = QWidget()
         line.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        line.setMaximumHeight(80)
         line_layout = QHBoxLayout(line)
 
         # line_layout.addStretch(1)
@@ -668,6 +667,13 @@ class VideoWindowMain(VideoWindowBase):
         self.magn_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.magn_button.clicked.connect(self._toggle_mag_display)
         line_layout.addWidget(self.magn_button)
+
+        self.magn_slider = QSlider(Qt.Orientation.Vertical)
+        self.magn_slider.setMinimum(1)
+        self.magn_slider.setMaximum(5)
+        self.magn_slider.setSingleStep(1)
+        self.magn_slider.setValue(2)
+        line_layout.addWidget(self.magn_slider)
 
         right_group_layout.addWidget(line)
 
@@ -689,10 +695,42 @@ class VideoWindowMain(VideoWindowBase):
             # self.magn_slider.setDisabled(False)
             self._magnifier_enabled = True
 
-    def _low_res_stuff(self):
+    def eventFilter(self, obj, event):
+
+        if event.type() in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseMove):
+
+            # Get mouse position relative to displayed image
+            mouse_x = int(event.pos().x() - (self.VIDEO_FEED.width() - self._display_buffer.shape[1]) / 2)
+            mouse_y = int(event.pos().y() - (self.VIDEO_FEED.height() - self._display_buffer.shape[0]) / 2)
+
+            if event.button() == Qt.MouseButton.LeftButton:
+                self.left_mouse_btn = True
+            if event.button() == Qt.MouseButton.RightButton:
+                self.right_mouse_btn = True
+
+            if self.left_mouse_btn:
+                self.magn_target_cx = mouse_x / self._display_buffer.shape[0]
+                self.magn_target_cy = mouse_y / self._display_buffer.shape[1]
+
+            if self.right_mouse_btn:
+                self.magn_window_x = mouse_y
+                self.magn_window_y = mouse_x
+
+        elif event.type() == QEvent.Type.MouseButtonRelease:
+            if event.button() == Qt.MouseButton.LeftButton:
+                self.left_mouse_btn = False
+            if event.button() == Qt.MouseButton.RightButton:
+                self.right_mouse_btn = False
+
+        return super().eventFilter(obj, event)
+
+    def _full_res_processing(self):
+        pass
+
+    def _low_res_processing(self):
 
         # Get new coordinates
-        w, h = self._display_buffer.shape[:2]
+        h, w = self._display_buffer.shape[:2]
 
         x_centre, y_centre = w // 2, h // 2
         x_north, y_north = w // 2, 0
@@ -704,24 +742,14 @@ class VideoWindowMain(VideoWindowBase):
         cv2.line(self._display_buffer, (x_west, y_west), (x_east, y_east), self._main_window.col_white_rgb, 1)
         cv2.line(self._display_buffer, (x_north, y_north), (x_south, y_south), self._main_window.col_white_rgb, 1)
 
-        # Position the 'Recording' indicator
-        font, txtsiz = cv2.FONT_HERSHEY_DUPLEX, 1.25
-        textsize = cv2.getTextSize(self._main_window._recording_text, font, txtsiz, 2)[0]
-        self._display_buffer = cv2.putText(self._display_buffer, self._main_window._recording_text,
-                                           (int(x_south - textsize[0] / 2), int(y_south - textsize[1])),
-                                           font, txtsiz, self._main_window.col_red_rgb, 2, cv2.LINE_AA)
-        # Position the 'Warning' indicator
-        if self._warning:
-            textsize = cv2.getTextSize(self._warning_text, font, txtsiz, 2)[0]
-            self._display_buffer = cv2.putText(self._display_buffer, self._warning_text,
-                                           (int(x_north - textsize[0] / 2), int(y_centre / 2 - textsize[1])),
-                                           font, txtsiz, self._main_window.col_orange_rgb, 2, cv2.LINE_AA)
-
         if self._magnifier_enabled:
 
-            # Position of the slice in source pixels coordinates
-            slice_x1 = max(0, self.magn_target_cx - self.magn_window_w // 2)
-            slice_y1 = max(0, self.magn_target_cy - self.magn_window_h // 2)
+            target_cx_fb = self.magn_target_cx * self._frame_buffer.shape[0]
+            target_cy_fb = self.magn_target_cy * self._frame_buffer.shape[1]
+
+            # Position of the slice (in frame_buffer coordinates)
+            slice_x1 = max(0, int(target_cx_fb - self.magn_window_w // 2))
+            slice_y1 = max(0, int(target_cy_fb - self.magn_window_h // 2))
             slice_x2 = slice_x1 + self.magn_window_w
             slice_y2 = slice_y1 + self.magn_window_h
 
@@ -733,114 +761,47 @@ class VideoWindowMain(VideoWindowBase):
                 slice_y1 = self._source_shape[0] - self.magn_window_h
                 slice_y2 = self._source_shape[0]
 
-            # Slice directly from the framebuffer and make the small, zoomed window image
-            ratio_w = w / self._frame_buffer.shape[0]
-            ratio_h = h / self._frame_buffer.shape[1]
+            # Slice directly from the frame_buffer and make the small, zoomed window image
+            ratio_w = w / self._frame_buffer.shape[1]
+            ratio_h = h / self._frame_buffer.shape[0]
             magn_img = cv2.resize(self._frame_buffer[slice_y1:slice_y2, slice_x1:slice_x2], (0, 0),
-                                  fx=float(self.magn_zoom * ratio_w),
-                                  fy=float(self.magn_zoom * ratio_h))
-
-            # Paste the zoom window into the display buffer
-            magn_x1 = self.magn_window_x
-            magn_x2 = self.magn_window_x + magn_img.shape[0]
-            magn_y1 = self.magn_window_y
-            magn_y2 = self.magn_window_y + magn_img.shape[1]
-            self._display_buffer[magn_x1:magn_x2, magn_y1:magn_y2] = magn_img
-
-            # Add frame around the magnification
-            self._display_buffer = cv2.rectangle(self._display_buffer,
-                                                 (magn_x1, magn_y1), (magn_x2, magn_y2),
-                                                 self._main_window.col_yellow_rgb, 1)
+                                  fx=float(self.magn_slider.value() * ratio_w),
+                                  fy=float(self.magn_slider.value() * ratio_h))
 
             # Add frame around the magnified area
-            target_x1 = int((self.magn_target_cx - self.magn_window_w / 2) * ratio_w)
-            target_x2 = int((self.magn_target_cx + self.magn_window_w / 2) * ratio_w)
-            target_y1 = int((self.magn_target_cy - self.magn_window_h / 2) * ratio_h)
-            target_y2 = int((self.magn_target_cy + self.magn_window_h / 2) * ratio_h)
+            target_x1 = int((target_cx_fb - self.magn_window_w / 2) * ratio_w)
+            target_x2 = int((target_cx_fb + self.magn_window_w / 2) * ratio_w)
+            target_y1 = int((target_cy_fb - self.magn_window_h / 2) * ratio_h)
+            target_y2 = int((target_cy_fb + self.magn_window_h / 2) * ratio_h)
             self._display_buffer = cv2.rectangle(self._display_buffer,
                                                  (target_x1, target_y1), (target_x2, target_y2),
                                                  self._main_window.col_yellow_rgb, 1)
 
-    def _low_res_stuff_pillow(self):
-
-        # Get new coordinates
-        w, h = self._display_buffer.shape[:2]
-
-        x_centre, y_centre = w // 2, h // 2
-        x_north, y_north = w // 2, 0
-        x_south, y_south = w // 2, h
-        x_east, y_east = w, h // 2
-        x_west, y_west = 0, h // 2
-
-        image = Image.fromarray(self._display_buffer, mode='RGB')
-
-        d = ImageDraw.Draw(image)
-
-        # Draw crosshair
-        d.line((x_west, y_west, x_east, y_east), fill=self._main_window.col_yellow_rgb, width=1)             # Horizontal
-        d.line((x_north, y_north, x_south, y_south), fill=self._main_window.col_yellow_rgb, width=1)         # Vertical
-        d.text((x_centre, y_south - y_centre / 2.0), self._main_window._recording_text, anchor="ms", font=self._imgfnt, fill=self._main_window.col_red)
-
-        if self._warning:
-            d.text((x_centre, y_north + y_centre / 2.0), self._warning_text,
-                   anchor="ms", font=self._imgfnt,
-                   fill=self._main_window.col_orange)
-
-        if self._magnifier_enabled:
-
-            col = self._main_window.col_yellow_rgb
-
-            ratio_w = w / self._source_shape[1]
-            ratio_h = h / self._source_shape[0]
-
-            # Size of the slice to extract from the source
-            slice_w = self.magn_window_w
-            slice_h = self.magn_window_h
-
-            # Position of the slice in source pixels coordinates
-            slice_cx = self.magn_target_cx
-            slice_cy = self.magn_target_cy
-
-            slice_x1 = max(0, slice_cx - slice_w // 2)
-            slice_y1 = max(0, slice_cy - slice_h // 2)
-            slice_x2 = slice_x1 + slice_w
-            slice_y2 = slice_y1 + slice_h
-
-            if slice_x2 > self._source_shape[1]:
-                slice_x1 = self._source_shape[1] - slice_w
-                slice_x2 = self._source_shape[1]
-
-            if slice_y2 > self._source_shape[0]:
-                slice_y1 = self._source_shape[0] - slice_h
-                slice_y2 = self._source_shape[0]
-
-            # Slice directly from the framebuffer and make a (then zoomed) image
-            magn_img = Image.fromarray(self._frame_buffer[slice_y1:slice_y2, slice_x1:slice_x2], mode='RGB')
-            magn_img = magn_img.resize(
-                (int(magn_img.width * self.magn_zoom), int(magn_img.height * self.magn_zoom)))
-
-            image.paste(magn_img, (self.magn_window_x, self.magn_window_y))
-
-            # Add frame around the magnified area
-            tgt_x1 = int(slice_x1 * ratio_w)
-            tgt_x2 = int(slice_x2 * ratio_w)
-            tgt_y1 = int(slice_y1 * ratio_h)
-            tgt_y2 = int(slice_y2 * ratio_h)
-            d.rectangle([(tgt_x1, tgt_y1), (tgt_x2, tgt_y2)],
-                        outline=col, width=1)
+            # Paste the zoom window into the display buffer
+            magn_x1 = min(self._display_buffer.shape[0], max(0, self.magn_window_x))
+            magn_y1 = min(self._display_buffer.shape[1], max(0, self.magn_window_y))
+            magn_x2 = min(self._display_buffer.shape[0], magn_x1 + magn_img.shape[0])
+            magn_y2 = min(self._display_buffer.shape[1], magn_y1 + magn_img.shape[1])
+            self._display_buffer[magn_x1:magn_x2, magn_y1:magn_y2, :] = magn_img[:magn_x2 - magn_x1, :magn_y2 - magn_y1, :]
 
             # Add frame around the magnification
-            d.rectangle([(self.magn_window_x, self.magn_window_y),
-                         (self.magn_window_x + magn_img.width,
-                          self.magn_window_y + magn_img.height)], outline=col, width=1)
+            self._display_buffer = cv2.rectangle(self._display_buffer,
+                                                 (magn_y1, magn_x1), (magn_y2, magn_x2),
+                                                 self._main_window.col_yellow_rgb, 1)
 
-            # Add a small + in the centre
-            c = self.magn_window_x + magn_img.width // 2, self.magn_window_y + magn_img.height // 2
-            d.line((c[0] - 5, c[1], c[0] + 5, c[1]), fill=col, width=1)  # Horizontal
-            d.line((c[0], c[1] - 5, c[0], c[1] + 5), fill=col, width=1)  # Vertical
+        # Position the 'Recording' indicator
+        font, txtsiz, txtth = cv2.FONT_HERSHEY_DUPLEX, 1.0, 2
+        textsize = cv2.getTextSize(self._main_window._recording_text, font, txtsiz, txtth)[0]
+        self._display_buffer = cv2.putText(self._display_buffer, self._main_window._recording_text,
+                                           (int(x_centre - textsize[0] / 2), int(1.5 * y_centre - textsize[1])),
+                                           font, txtsiz, self._main_window.col_red_rgb, txtth, cv2.LINE_AA)
 
-        np.copyto(self._display_buffer, np.array(image).astype(np.uint8))
-
+        # Position the 'Warning' indicator
+        if self._warning:
+            textsize = cv2.getTextSize(self._warning_text, font, txtsiz, txtth)[0]
+            self._display_buffer = cv2.putText(self._display_buffer, self._warning_text,
+                                               (int(x_north - textsize[0] / 2), int(y_centre / 2 - textsize[1])),
+                                               font, txtsiz, self._main_window.col_orange_rgb, txtth, cv2.LINE_AA)
 
     def update_param(self, label):
         if label == 'framerate' and self._main_window.mgr.triggered and self._main_window.mgr.acquiring:
@@ -968,8 +929,12 @@ class MainWindow(QMainWindow):
     col_darkgray_rgb = utils.hex_to_rgb(col_darkgray)
     col_red = "#FF3C3C"
     col_red_rgb = utils.hex_to_rgb(col_red)
+    col_darkred = "#bc2020"
+    col_darkred_rgb = utils.hex_to_rgb(col_darkred)
     col_orange = "#FF9B32"
     col_orange_rgb = utils.hex_to_rgb(col_orange)
+    col_darkorange = "#cb782d"
+    col_darkorange_rgb = utils.hex_to_rgb(col_darkorange)
     col_yellow = "#FFEB1E"
     col_yellow_rgb = utils.hex_to_rgb(col_yellow)
     col_yelgreen = "#A5EB14"
@@ -1341,9 +1306,6 @@ class MainWindow(QMainWindow):
             self.button_acquisition.setText("Acquiring")
             self.button_acquisition.setIcon(self.icon_capture)
             self.button_snapshot.setDisabled(False)
-
-            self._recording_text = '[Recording]'
-
 
             if not self._is_calibrating:
                 self.button_recpause.setDisabled(False)
