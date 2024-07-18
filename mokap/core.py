@@ -96,7 +96,7 @@ class Manager:
         self._metadata = {'sessions': []}
 
         # Initialise the list of sources
-        self._l_sources_list: List[BaslerCamera] = []
+        self._sources_list: List[BaslerCamera] = []
         # and populate it    # TODO - Other brands
         self.connect_basler_devices()
 
@@ -110,11 +110,11 @@ class Manager:
         self._videowriters: List[Union[bool, subprocess.Popen]] = []
 
         # Sort the sources according to their idx
-        self._l_sources_list.sort(key=lambda x: x.idx)
-        self._nb_cams = len(self._l_sources_list)
+        self._sources_list.sort(key=lambda x: x.idx)
+        self._nb_cams = len(self._sources_list)
 
         # and populate the lists
-        for i, cam in enumerate(self._l_sources_list):
+        for i, cam in enumerate(self._sources_list):
             self._l_display_buffers.append(np.zeros(cam.shape, dtype=np.uint8))
             self._l_finished_saving.append(Event())
             self._l_all_frames.append(deque())
@@ -202,75 +202,80 @@ class Manager:
                 self._cameras_colours[source.name] = source_col
 
                 # Keep references of cameras as list and as dict for easy access
-                self._l_sources_list.append(source)
+                self._sources_list.append(source)
                 self._sources_dict[source.name] = source
 
                 if not self._silent:
                     print(f"[INFO] Attached {source}")
 
+    def __getitem__(self, i):
+        if isinstance(i, int):
+            return self._sources_list[i]
+        if isinstance(i, slice):
+            return self._sources_list[i]
+        if isinstance(i, str):
+            return self._sources_dict[i]
+
+    def __len__(self):
+        return self._nb_cams
+
     @property
-    def framerate(self) -> Union[float, None]:
-        if all([c.framerate == self._l_sources_list[0].framerate for c in self._l_sources_list]):
-            return self._l_sources_list[0].framerate
-        else:
-            return None
+    def framerate(self) -> List[float]:
+        return [c.framerate for c in self._sources_list]
 
     @framerate.setter
     def framerate(self, value: int) -> None:
-        for i, cam in enumerate(self._l_sources_list):
+        for i, cam in enumerate(self._sources_list):
             cam.framerate = value
         self._framerate = value
 
     @property
     def exposure(self) -> List[float]:
-        return [c.exposure for c in self._l_sources_list]
+        return [c.exposure for c in self._sources_list]
 
     @exposure.setter
     def exposure(self, value: float) -> None:
-        for i, cam in enumerate(self._l_sources_list):
+        for i, cam in enumerate(self._sources_list):
             cam.exposure = value
 
     @property
     def gain(self) -> List[float]:
-        return [c.gain for c in self._l_sources_list]
+        return [c.gain for c in self._sources_list]
 
     @gain.setter
     def gain(self, value: float) -> None:
-        for i, cam in enumerate(self._l_sources_list):
+        for i, cam in enumerate(self._sources_list):
             cam.gain = value
 
     @property
     def blacks(self) -> List[float]:
-        return [c.blacks for c in self._l_sources_list]
+        return [c.blacks for c in self._sources_list]
 
     @blacks.setter
     def blacks(self, value: float) -> None:
-        for i, cam in enumerate(self._l_sources_list):
+        for i, cam in enumerate(self._sources_list):
             cam.blacks = value
 
     @property
     def gamma(self) -> List[float]:
-        return [c.gamma for c in self._l_sources_list]
+        return [c.gamma for c in self._sources_list]
 
     @gamma.setter
     def gamma(self, value: float) -> None:
-        for i, cam in enumerate(self._l_sources_list):
+        for i, cam in enumerate(self._sources_list):
             cam.gamma = value
 
     @property
     def binning(self) -> List[int]:
-        return [c.binning for c in self._l_sources_list]
+        return [c.binning for c in self._sources_list]
 
     @property
-    def binning_mode(self) -> Union[str, None]:
-        if all([c.binning_mode == self._l_sources_list[0].binning_mode for c in self._l_sources_list]):
-            return self._l_sources_list[0].binning_mode
-        else:
-            return None
+    def binning_mode(self) -> List[str]:
+        return [c.binning_mode for c in self._sources_list]
 
     @binning.setter
     def binning(self, value: int) -> None:
-        for i, cam in enumerate(self._l_sources_list):
+        for i, cam in enumerate(self._sources_list):
             cam.binning = value
             self._binning = cam.binning
 
@@ -285,15 +290,15 @@ class Manager:
             self._binning_mode = 'avg'
         else:
             self._binning_mode = 'sum'
-        for i, cam in enumerate(self._l_sources_list):
+        for i, cam in enumerate(self._sources_list):
             cam.binning_mode = value
 
     def disconnect(self) -> None:
 
-        for cam in self._l_sources_list:
+        for cam in self._sources_list:
             cam.disconnect()
 
-        self._l_sources_list = []
+        self._sources_list = []
 
         if not self._silent:
             print(f"[INFO] Disconnected {self._nb_cams} camera{'s' if self._nb_cams > 1 else ''}")
@@ -301,7 +306,7 @@ class Manager:
 
     def _init_videowriter(self, cam_idx: int):
         if self._saving_ext == 'mp4':
-            cam = self._l_sources_list[cam_idx]
+            cam = self._sources_list[cam_idx]
 
             if not self._videowriters[cam_idx]:
                 dummy_frame = np.zeros((cam.height, cam.width), dtype=np.uint8)
@@ -367,12 +372,12 @@ class Manager:
 
         queue = self._l_all_frames[cam_idx]
 
-        h = self._l_sources_list[cam_idx].height
-        w = self._l_sources_list[cam_idx].width
-        folder = self.full_path / f"cam{cam_idx}_{self._l_sources_list[cam_idx].name}"
+        h = self._sources_list[cam_idx].height
+        w = self._sources_list[cam_idx].width
+        folder = self.full_path / f"cam{cam_idx}_{self._sources_list[cam_idx].name}"
 
         if 'mp4' not in self._saving_ext:
-            folder = self.full_path / f"cam{cam_idx}_{self._l_sources_list[cam_idx].name}"
+            folder = self.full_path / f"cam{cam_idx}_{self._sources_list[cam_idx].name}"
             folder.mkdir(parents=True, exist_ok=True)
 
         def save_frame(frame, number):
@@ -484,7 +489,7 @@ class Manager:
             ----------
             cam_idx: the index of the camera this threads belongs to
         """
-        cam = self._l_sources_list[cam_idx]
+        cam = self._sources_list[cam_idx]
         queue_latest = self._l_latest_frames[cam_idx]
         queue_all = self._l_all_frames[cam_idx]
 
@@ -565,7 +570,7 @@ class Manager:
 
                 for i, cam in enumerate(self.cameras):
                     if 'mp4' in self._saving_ext:
-                        vid = self.full_path / f"cam{i}_{self._l_sources_list[i].name}_session{len(self._metadata['sessions'])-1}.mp4"
+                        vid = self.full_path / f"cam{i}_{self._sources_list[i].name}_session{len(self._metadata['sessions']) - 1}.mp4"
                         if vid.is_file():
                             # Using cv2 here is much faster than calling ffprobe...
                             cap = cv2.VideoCapture(vid.as_posix())
@@ -642,7 +647,7 @@ class Manager:
             #   - One that (less frequently) updates local buffers for displaying
 
             self._threads = []
-            for i, cam in enumerate(self._l_sources_list):
+            for i, cam in enumerate(self._sources_list):
                 g = Thread(target=self._grabber_thread, args=(i, ), daemon=True)
                 g.start()
                 self._threads.append(g)
@@ -756,7 +761,7 @@ class Manager:
 
     @property
     def cameras(self) -> list[BaslerCamera]:
-        return self._l_sources_list
+        return self._sources_list
 
     @property
     def colours(self) -> dict:
