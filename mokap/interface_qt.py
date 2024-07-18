@@ -156,10 +156,10 @@ class VideoWindowBase(QWidget):
         self._main_window = main_window_ref
         self.idx = idx
 
-        self._camera = self._main_window.mgr.cameras[self.idx]
+        self._camera = self._main_window.mc.cameras[self.idx]
         self._source_shape = self._camera.shape
 
-        self._bg_colour = f'#{self._main_window.mgr.colours[self._camera.name].lstrip("#")}'
+        self._bg_colour = f'#{self._main_window.mc.colours[self._camera.name].lstrip("#")}'
         self._fg_colour = self._main_window.col_white if utils.hex_to_hls(self._bg_colour)[
                                                              1] < 60 else self._main_window.col_black
 
@@ -429,8 +429,8 @@ class VideoWindowBase(QWidget):
 
     def _refresh_framebuffer(self):
         """ Grabs a new frame from the cameras and stores it in the frame buffer """
-        if self._main_window.mgr.acquiring:
-            arr = self._main_window.mgr.get_current_framebuffer(self.idx)
+        if self._main_window.mc.acquiring:
+            arr = self._main_window.mc.get_current_framebuffer(self.idx)
             if arr is not None:
                 if len(self.source_shape) == 2:
                     # Using cv for this is faster than any way using numpy (?)
@@ -453,7 +453,7 @@ class VideoWindowBase(QWidget):
         # self.VIDEO_FEED.setPixmap(pixmap.scaled(self.VIDEO_FEED.width(), self.VIDEO_FEED.height(), Qt.AspectRatioMode.KeepAspectRatio))
         self.VIDEO_FEED.setPixmap(pixmap)
 
-        # self.VIDEO_FEED.updatedata(self._main_window.mgr.get_current_framebuffer(self.idx))
+        # self.VIDEO_FEED.updatedata(self._main_window.mc.get_current_framebuffer(self.idx))
 
     def _full_res_processing(self):
         # Just a debug modification of the frame buffer
@@ -502,7 +502,7 @@ class VideoWindowBase(QWidget):
 
             now = datetime.now()
 
-            if self._main_window.mgr.acquiring:
+            if self._main_window.mc.acquiring:
 
                 cap_fps = sum(list(self._capture_fps)) / len(self._capture_fps) if self._capture_fps else 0
 
@@ -536,7 +536,7 @@ class VideoWindowBase(QWidget):
 
             # Update display fps
             dt = (now - self._clock).total_seconds()
-            ind = int(self._main_window.mgr.indices[self.idx])
+            ind = int(self._main_window.mc.indices[self.idx])
             if dt > 0:
                 self._capture_fps.append((ind - self._last_capture_count) / dt)
 
@@ -593,7 +593,7 @@ class VideoWindowMain(VideoWindowBase):
         self._val_in_sync = {}
 
         slider_params = [
-            ('framerate', (int, 1, int(self._main_window.mgr.cameras[self.idx].max_framerate), 1, 1)),
+            ('framerate', (int, 1, int(self._main_window.mc.cameras[self.idx].max_framerate), 1, 1)),
             ('exposure', (int, 21, 100000, 5, 1)),  # in microseconds - 100000 microseconds ~ 10 fps
             ('blacks', (float, 0.0, 32.0, 0.5, 3)),
             ('gain', (float, 0.0, 36.0, 0.5, 3)),
@@ -619,7 +619,7 @@ class VideoWindowMain(VideoWindowBase):
             line_layout.setContentsMargins(1, 1, 1, 1)
             line_layout.setSpacing(2)
 
-            param_value = getattr(self._main_window.mgr.cameras[self.idx], label)
+            param_value = getattr(self._main_window.mc.cameras[self.idx], label)
 
             slider_label = QLabel(f'{label.title()}:')
             slider_label.setFixedWidth(70)
@@ -834,24 +834,24 @@ class VideoWindowMain(VideoWindowBase):
                                                font, txtsiz, self._main_window.col_orange_rgb, txtth, cv2.LINE_AA)
 
     def update_param(self, label):
-        if label == 'framerate' and self._main_window.mgr.triggered and self._main_window.mgr.acquiring:
+        if label == 'framerate' and self._main_window.mc.triggered and self._main_window.mc.acquiring:
             return
 
         slider = self.camera_controls_sliders[label]
 
         new_val_float = slider.value() / self.camera_controls_sliders_scales[label]
 
-        setattr(self._main_window.mgr.cameras[self.idx], label, new_val_float)
+        setattr(self._main_window.mc.cameras[self.idx], label, new_val_float)
 
         # And update the slider to the actual new value (can be different from the one requested)
-        read_back = getattr(self._main_window.mgr.cameras[self.idx], label)
+        read_back = getattr(self._main_window.mc.cameras[self.idx], label)
 
         actual_new_val = int(read_back * self.camera_controls_sliders_scales[label])
         slider.setValue(actual_new_val)
 
         if label == 'exposure':
             # Refresh exposure value for UI display
-            self.exposure_value.setText(f"{self._main_window.mgr.cameras[self.idx].exposure} µs")
+            self.exposure_value.setText(f"{self._main_window.mc.cameras[self.idx].exposure} µs")
 
             # We also need to update the framerate slider to current resulting fps after exposure change
             self.update_param('framerate')
@@ -861,12 +861,12 @@ class VideoWindowMain(VideoWindowBase):
             wanted_fps_val = slider.value() / self.camera_controls_sliders_scales[label]
             self._wanted_fps = wanted_fps_val
 
-            if self._main_window.mgr.triggered:
-                self._main_window.mgr.framerate = self._wanted_fps
+            if self._main_window.mc.triggered:
+                self._main_window.mc.framerate = self._wanted_fps
             else:
-                self._main_window.mgr.cameras[self.idx].framerate = self._wanted_fps
+                self._main_window.mc.cameras[self.idx].framerate = self._wanted_fps
 
-            new_max = int(self._main_window.mgr.cameras[self.idx].max_framerate * self.camera_controls_sliders_scales[label])
+            new_max = int(self._main_window.mc.cameras[self.idx].max_framerate * self.camera_controls_sliders_scales[label])
             self.camera_controls_sliders['framerate'].setMaximum(new_max)
 
     def _slider_changed(self, label, int_value):
@@ -976,13 +976,13 @@ class MainWindow(QMainWindow):
     col_purple = "#c887ff"
     col_purple_rgb = utils.hex_to_rgb(col_purple)
 
-    def __init__(self, mgr):
+    def __init__(self, mc):
         super().__init__()
 
         self.setWindowTitle('Controls')
         self.gui_logger = gui_logger
 
-        self.mgr = mgr
+        self.mc = mc
 
         # Identify monitors
         self.selected_monitor = None
@@ -1115,7 +1115,7 @@ class MainWindow(QMainWindow):
         self.save_dir_current.setFont(folderpath_label_font)
         line_2_layout.addWidget(self.save_dir_current, 1)
 
-        self.save_dir_current.setText(f'{self.mgr.full_path.resolve()}')
+        self.save_dir_current.setText(f'{self.mc.full_path.resolve()}')
 
         f_name_and_path_layout.addWidget(line_2)
 
@@ -1178,7 +1178,7 @@ class MainWindow(QMainWindow):
 
         self.secondary_windows_visibility_buttons = []
 
-        for i in range(self.mgr.nb_cameras):
+        for i in range(self.mc.nb_cameras):
             vis_checkbox = QCheckBox(f"Camera {i}")
             vis_checkbox.setChecked(True)
             vis_checkbox.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -1239,7 +1239,7 @@ class MainWindow(QMainWindow):
         statusbar.addWidget(self._mem_pressure_bar)
 
         self.frames_saved_label = QLabel()
-        self.frames_saved_label.setText(f'Saved frames: {self.mgr.saved} (0 bytes)')
+        self.frames_saved_label.setText(f'Saved frames: {self.mc.saved} (0 bytes)')
         self.frames_saved_label.setStyleSheet(f"background-color: {'#00000000'}")
         statusbar.addPermanentWidget(self.frames_saved_label)
 
@@ -1252,10 +1252,10 @@ class MainWindow(QMainWindow):
         self._stop_secondary_windows()
 
         # Stop camera acquisition
-        if self.mgr.acquiring:
-            self.mgr.off()
+        if self.mc.acquiring:
+            self.mc.off()
 
-        self.mgr.disconnect()
+        self.mc.disconnect()
 
         # Close the main window
         QWidget.close(self)
@@ -1278,16 +1278,16 @@ class MainWindow(QMainWindow):
         elif not self.editing_disabled and override is False:
             self.acq_name_textbox.setDisabled(True)
             self.acq_name_edit_btn.setText('Edit')
-            self.mgr.session_name = self.acq_name_textbox.text()
+            self.mc.session_name = self.acq_name_textbox.text()
             self.editing_disabled = True
 
-            self.save_dir_current.setText(f'{self.mgr.full_path.resolve()}')
+            self.save_dir_current.setText(f'{self.mc.full_path.resolve()}')
 
     def open_session_folder(self):
         path = Path(self.acq_name_textbox.text()).resolve()
 
         if self.acq_name_textbox.text() == "":
-            path = self.mgr.full_path
+            path = self.mc.full_path
 
         try:
             if 'Linux' in platform.system():
@@ -1302,13 +1302,13 @@ class MainWindow(QMainWindow):
     def _toggle_acquisition(self, override=None):
 
         if override is None:
-            override = not self.mgr.acquiring
+            override = not self.mc.acquiring
 
         # If we're currently acquiring, then we should stop
-        if self.mgr.acquiring and override is False:
+        if self.mc.acquiring and override is False:
 
             self._toggle_recording(False)
-            self.mgr.off()
+            self.mc.off()
 
             # Reset Acquisition folder name
             self.acq_name_textbox.setText('')
@@ -1320,18 +1320,18 @@ class MainWindow(QMainWindow):
             self.button_recpause.setDisabled(True)
 
             # Re-enable the framerate sliders (only in case of hardware-triggered cameras)
-            if self.mgr.triggered:
+            if self.mc.triggered:
                 for w in self.secondary_windows:
                     w.camera_controls_sliders['framerate'].config(state='normal', troughcolor=w.col_default)
 
-        elif not self.mgr.acquiring and override is True:
-            self.mgr.on()
+        elif not self.mc.acquiring and override is True:
+            self.mc.on()
 
-            if self.mgr.triggered:
+            if self.mc.triggered:
                 for w in self.secondary_windows:
                     w.camera_controls_sliders['framerate'].config(state='disabled', troughcolor=self.col_lightgray)
 
-            self.save_dir_current.setText(f'{self.mgr.full_path.resolve()}')
+            self.save_dir_current.setText(f'{self.mc.full_path.resolve()}')
 
             self.button_acquisition.setText("Acquiring")
             self.button_acquisition.setIcon(self.icon_capture)
@@ -1347,31 +1347,31 @@ class MainWindow(QMainWindow):
 
         now = datetime.now().strftime('%y%m%d-%H%M%S')
 
-        if self.mgr.acquiring:
+        if self.mc.acquiring:
 
-            arrays = self.mgr.get_current_framebuffer()
+            arrays = self.mc.get_current_framebuffer()
 
             for i, arr in enumerate(arrays):
                 if len(arr.shape) == 3:
                     img = Image.fromarray(arr, mode='RGB')
                 else:
                     img = Image.fromarray(arr, mode='L')
-                img.save(self.mgr.full_path.resolve() / f"snapshot_{now}_{self.mgr.cameras[i].name}.bmp")
+                img.save(self.mc.full_path.resolve() / f"snapshot_{now}_{self.mc.cameras[i].name}.bmp")
 
     def _toggle_recording(self, override=None):
 
         if override is None:
-            override = not self.mgr.recording
+            override = not self.mc.recording
 
         # If we're currently recording, then we should stop
-        if self.mgr.acquiring:
+        if self.mc.acquiring:
 
-            if self.mgr.recording and override is False:
-                self.mgr.pause()
+            if self.mc.recording and override is False:
+                self.mc.pause()
                 self._recording_text = ''
                 self.button_recpause.setIcon(self.icon_rec_bw)
-            elif not self.mgr.recording and override is True:
-                self.mgr.record()
+            elif not self.mc.recording and override is True:
+                self.mc.record()
                 self._recording_text = '[Recording]'
                 self.button_recpause.setText("Recording... (Space to toggle)")
                 self.button_recpause.setIcon(self.icon_rec_on)
@@ -1539,7 +1539,7 @@ class MainWindow(QMainWindow):
 
 
     def _start_secondary_windows(self):
-        for i, cam in enumerate(self.mgr.cameras):
+        for i, cam in enumerate(self.mc.cameras):
 
             if self._is_calibrating:
                 # w = VideoWindowCalib(rootwindow=self, idx=cam.idx)
@@ -1570,16 +1570,16 @@ class MainWindow(QMainWindow):
     def _update_main(self):
 
         # Get an estimation of the saved data size
-        if self.mgr._estim_file_size is None:
-            self.frames_saved_label.setText(f'Saved frames: {self.mgr.saved} (0 bytes)')
+        if self.mc._estim_file_size is None:
+            self.frames_saved_label.setText(f'Saved frames: {self.mc.saved} (0 bytes)')
 
-        elif self.mgr._estim_file_size == -1:
+        elif self.mc._estim_file_size == -1:
             size = sum(sum(os.path.getsize(os.path.join(res[0], element)) for element in res[2]) for res in
-                       os.walk(self.mgr.full_path))
-            self.frames_saved_label.setText(f'Saved frames: {self.mgr.saved} ({utils.pretty_size(size)})')
+                       os.walk(self.mc.full_path))
+            self.frames_saved_label.setText(f'Saved frames: {self.mc.saved} ({utils.pretty_size(size)})')
         else:
-            saved = self.mgr.saved
-            size = sum(self.mgr._estim_file_size * saved)
+            saved = self.mc.saved
+            size = sum(self.mc._estim_file_size * saved)
             self.frames_saved_label.setText(f'Saved frames: {saved} ({utils.pretty_size(size)})')
 
         # Update memory pressure estimation

@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 from mokap.interface_tk import MainWindow
-from mokap.core import Manager
+from mokap.core import MultiCam
 
-mgr = Manager(config='./config.yaml', triggered=True, silent=False)
+mgr = MultiCam(config='./config.yaml', triggered=True, silent=False)
 
 # Set exposure for all cameras (in µs)
 mgr.exposure = 4800

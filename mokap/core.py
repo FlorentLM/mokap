@@ -21,7 +21,7 @@ import shlex
 import sys
 import re
 
-class Manager:
+class MultiCam:
     COLOURS = ['#3498db', '#f4d03f', '#27ae60', '#e74c3c', '#9b59b6', '#f39c12', '#1abc9c', '#F5A7D4', '#34495e', '#bdc3c7',
                '#2471a3', '#d4ac0d', '#186a3b', '#922b21', '#6c3483', '#d35400', '#117a65', '#e699db', '#1c2833', '#707b7c']
     def __init__(self,
@@ -191,7 +191,7 @@ class Manager:
 
             if source.connected:
 
-                source_col = Manager.COLOURS[i]
+                source_col = MultiCam.COLOURS[i]
 
                 # Grab name and colour from config file if they're in there
                 for n in config_sources_names:

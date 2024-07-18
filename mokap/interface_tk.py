@@ -93,13 +93,13 @@ class VideoWindowBase:
         else:
             self._macOS_trick = False
 
-        self._camera = self.parent.mgr.cameras[self.idx]
+        self._camera = self.parent.mc.cameras[self.idx]
         self._source_shape = self._camera.shape
 
         self.window.minsize(VideoWindowBase.WINDOW_MIN_W, VideoWindowBase.INFO_PANEL_H)
         self.window.protocol("WM_DELETE_WINDOW", self.toggle_visibility)
 
-        self._bg_colour = f'#{self.parent.mgr.colours[self._camera.name].lstrip("#")}'
+        self._bg_colour = f'#{self.parent.mc.colours[self._camera.name].lstrip("#")}'
         self._fg_colour = self.parent.col_white if utils.hex_to_hls(self._bg_colour)[1] < 60 else self.parent.col_black
         self._window_bg_colour = self.window.cget('background')
 
@@ -325,7 +325,7 @@ class VideoWindowBase:
             self.window.deiconify()
 
     def _refresh_framebuffer(self):
-        if self.parent.mgr.acquiring and self.parent.current_buffers is not None:
+        if self.parent.mc.acquiring and self.parent.current_buffers is not None:
             frame = self.parent.current_buffers[self.idx]
             if frame is not None:
                 if len(self._source_shape) == 2:
@@ -366,7 +366,7 @@ class VideoWindowBase:
 
         fps = np.mean(list(self._fps)) if self._fps else 0
 
-        if self.parent.mgr.acquiring:
+        if self.parent.mc.acquiring:
 
             cap_fps = np.mean(list(self._capture_fps))
 
@@ -419,7 +419,7 @@ class VideoWindowBase:
 
                 # Update display fps
                 dt = (now - self._clock).total_seconds()
-                ind = int(self.parent.mgr.indices[self.idx])
+                ind = int(self.parent.mc.indices[self.idx])
                 if dt > 0:
                     self._fps.append(1.0 / dt)
                     self._capture_fps.append((ind - self._last_capture_count) / dt)
@@ -497,14 +497,14 @@ class VideoWindowMain(VideoWindowBase):
 
         for label, slider_params in zip(['framerate', 'exposure', 'blacks', 'gain', 'gamma'],
                                         # type,   from,   to,     resolution,     digits
-                                         [(int,   1,      self.parent.mgr.cameras[self.idx].max_framerate,     1,    1),
+                                         [(int, 1, self.parent.mc.cameras[self.idx].max_framerate, 1, 1),
                                           (int,   21,     1e5,    5,              1),  # in microseconds - 1e5 ~ 10 fps
                                           (float, 0.0,    32.0,   0.5,            3),
                                           (float, 0.0,    36.0,   0.5,            3),
                                           (float, 0.0,    3.99,   0.05,           3)
                                           ]):
 
-            param_value = getattr(self.parent.mgr.cameras[self.idx], label)
+            param_value = getattr(self.parent.mc.cameras[self.idx], label)
 
             v = tk.IntVar()
             b = tk.Checkbutton(rf, variable=v, state='normal')
@@ -592,20 +592,20 @@ class VideoWindowMain(VideoWindowBase):
 
     def update_param(self, param):
 
-        if param == 'framerate' and self.parent.mgr.triggered and self.parent.mgr.acquiring:
+        if param == 'framerate' and self.parent.mc.triggered and self.parent.mc.acquiring:
             return
 
         slider = self.camera_controls_sliders[param]
         new_val = slider.get()
 
-        setattr(self.parent.mgr.cameras[self.idx], param, new_val)
+        setattr(self.parent.mc.cameras[self.idx], param, new_val)
 
         # And update the slider to the actual new value (can be different from the one requested)
-        slider.set(getattr(self.parent.mgr.cameras[self.idx], param))
+        slider.set(getattr(self.parent.mc.cameras[self.idx], param))
 
         if param == 'exposure':
             # Refresh exposure value for UI display
-            self.var_exposure.set(f"{self.parent.mgr.cameras[self.idx].exposure} µs")
+            self.var_exposure.set(f"{self.parent.mc.cameras[self.idx].exposure} µs")
 
             # We also need to update the framerate slider to current resulting fps after exposure change
             self.update_param('framerate')
@@ -614,12 +614,12 @@ class VideoWindowMain(VideoWindowBase):
             # Keep a local copy to warn user if actual framerate is too different from requested fps
             self._wanted_fps = self.camera_controls_sliders[param].get()
 
-            if self.parent.mgr.triggered:
-                self.parent.mgr.framerate = self._wanted_fps
+            if self.parent.mc.triggered:
+                self.parent.mc.framerate = self._wanted_fps
             else:
-                self.parent.mgr.cameras[self.idx].framerate = self._wanted_fps
+                self.parent.mc.cameras[self.idx].framerate = self._wanted_fps
 
-            self.camera_controls_sliders['framerate'].config(to=self.parent.mgr.cameras[self.idx].max_framerate)
+            self.camera_controls_sliders['framerate'].config(to=self.parent.mc.cameras[self.idx].max_framerate)
 
     def _update_param_all(self, param, event=None):
         self.update_param(param)
@@ -781,7 +781,7 @@ class MainWindow:
     col_purple = "#c887ff"
     col_purple_rgb = utils.hex_to_rgb(col_purple)
 
-    def __init__(self, mgr):
+    def __init__(self, mc):
 
         # Set up root window
         self.root = tk.Tk()
@@ -815,7 +815,7 @@ class MainWindow:
         self.font_regular = font.Font(size=9)
         self.font_mini = font.Font(size=8)
 
-        self.mgr = mgr
+        self.mc = mc
 
         self.var_recording = tk.StringVar()
         self.var_recording.set('')
@@ -884,7 +884,7 @@ class MainWindow:
 
         # --- STATUSBAR
         self.var_frames_saved = tk.StringVar()
-        self.var_frames_saved.set(f'Saved frames: {self.mgr.saved} (0 bytes)')
+        self.var_frames_saved.set(f'Saved frames: {self.mc.saved} (0 bytes)')
 
         mem_pressure_label = tk.Label(statusbar, text='Memory pressure: ', anchor=tk.NW)
         mem_pressure_label.pack(side="left", expand=False)
@@ -934,7 +934,7 @@ class MainWindow:
         save_dir_label.pack(side="top", fill="both", expand=False)
 
         self.var_save_dir_current = tk.StringVar()
-        self.var_save_dir_current.set(self.mgr.full_path.resolve())
+        self.var_save_dir_current.set(self.mc.full_path.resolve())
 
         save_dir_current = tk.Label(info_name_frame, textvariable=self.var_save_dir_current, anchor=tk.W, fg=self.col_darkgray)
         save_dir_current.pack(side="left", fill="both", expand=True)
@@ -988,7 +988,7 @@ class MainWindow:
         self.child_windows_visibility_vars = []
         self.child_windows_visibility_buttons = []
 
-        for i in range(self.mgr.nb_cameras):
+        for i in range(self.mc.nb_cameras):
             vis_var = tk.IntVar()
             vis_checkbox = tk.Checkbutton(windows_list_frame, text=f"", anchor=tk.W,
                                           font=self.font_bold,
@@ -1048,7 +1048,7 @@ class MainWindow:
                                                             activeforeground=window.colour,
                                                             command=window.toggle_visibility)
     def _start_child_windows(self):
-        for c in self.mgr.cameras:
+        for c in self.mc.cameras:
 
             if self._is_calibrating:
                 # w = VideoWindowCalib(parent=self, idx=c.idx)
@@ -1095,7 +1095,7 @@ class MainWindow:
         path = Path(self.var_save_dir_current.get()).resolve()
 
         if self.var_save_dir_current.get() == "":
-            path = self.mgr.full_path
+            path = self.mc.full_path
 
         if 'Linux' in platform.system():
             subprocess.Popen(['xdg-open', path])
@@ -1257,21 +1257,21 @@ class MainWindow:
             Takes an instantaneous snapshot from all cameras
         """
 
-        dims = np.array([(cam.height, cam.width) for cam in self.mgr.cameras], dtype=np.uint32).T
-        ext = self.mgr.saving_ext
+        dims = np.array([(cam.height, cam.width) for cam in self.mc.cameras], dtype=np.uint32).T
+        ext = self.mc.saving_ext
         now = datetime.now().strftime('%y%m%d-%H%M')
 
-        if self.mgr.acquiring:
+        if self.mc.acquiring:
             arrays = [np.frombuffer(c, dtype=np.uint8) for c in self._current_buffers]
 
             for a, arr in enumerate(arrays):
                 img = Image.fromarray(arr.reshape(dims[a]))
-                img.save(self.mgr.full_path.resolve() / f"snapshot_{now}_{self.mgr.cameras[a].name}.{ext}")
+                img.save(self.mc.full_path.resolve() / f"snapshot_{now}_{self.mc.cameras[a].name}.{ext}")
 
     def _toggle_text_editing(self, override=None):
 
         if override is None:
-            override = not self.mgr.recording
+            override = not self.mc.recording
 
         if self.editing_disabled and override is False:
             self.pathname_textbox.config(state='normal')
@@ -1281,26 +1281,26 @@ class MainWindow:
         elif not self.editing_disabled and override is True:
             self.pathname_textbox.config(state='disabled')
             self.pathname_button.config(text='Edit')
-            self.mgr.session_name = self.var_userentry.get()
+            self.mc.session_name = self.var_userentry.get()
             self.editing_disabled = True
 
-            self.var_save_dir_current.set(f'{self.mgr.full_path.resolve()}')
+            self.var_save_dir_current.set(f'{self.mc.full_path.resolve()}')
 
     def _toggle_recording(self, override=None):
 
         if override is None:
-            override = not self.mgr.recording
+            override = not self.mc.recording
 
         # If we're currently recording, then we should stop
-        if self.mgr.acquiring:
+        if self.mc.acquiring:
 
-            if self.mgr.recording and override is False:
-                self.mgr.pause()
+            if self.mc.recording and override is False:
+                self.mc.pause()
                 self.var_recording.set('')
                 self.button_recpause.config(text="Not recording (Space to toggle)", image=self.icon_rec_bw)
-            elif not self.mgr.recording and override is True:
+            elif not self.mc.recording and override is True:
                 self._mem_baseline = psutil.virtual_memory().percent
-                self.mgr.record()
+                self.mc.record()
                 self.var_recording.set('[ Recording... ]')
                 self.button_recpause.config(text="Recording... (Space to toggle)", image=self.icon_rec_on)
 
@@ -1312,7 +1312,7 @@ class MainWindow:
 
             self._is_calibrating = False
 
-            if self.mgr.acquiring:
+            if self.mc.acquiring:
                 self.button_snapshot.config(state="normal")
                 self.button_recpause.config(state="normal")
 
@@ -1332,13 +1332,13 @@ class MainWindow:
     def _toggle_acquisition(self, override=None):
 
         if override is None:
-            override = not self.mgr.acquiring
+            override = not self.mc.acquiring
 
         # If we're currently acquiring, then we should stop
-        if self.mgr.acquiring and override is False:
+        if self.mc.acquiring and override is False:
 
             self._toggle_recording(False)
-            self.mgr.off()
+            self.mc.off()
 
             # Reset Acquisition folder name
             self.var_userentry.set('')
@@ -1349,18 +1349,18 @@ class MainWindow:
             self.button_recpause.config(state="disabled")
 
             # Re-enable the framerate sliders (only in case of hardware-triggered cameras)
-            if self.mgr.triggered:
+            if self.mc.triggered:
                 for w in self.child_windows:
                     w.camera_controls_sliders['framerate'].config(state='normal', troughcolor=w.col_default)
 
-        elif not self.mgr.acquiring and override is True:
-            self.mgr.on()
+        elif not self.mc.acquiring and override is True:
+            self.mc.on()
 
-            if self.mgr.triggered:
+            if self.mc.triggered:
                 for w in self.child_windows:
                     w.camera_controls_sliders['framerate'].config(state='disabled', troughcolor=self.col_lightgray)
 
-            self.var_save_dir_current.set(f'{self.mgr.full_path.resolve()}')
+            self.var_save_dir_current.set(f'{self.mc.full_path.resolve()}')
 
             self.button_acquisition.config(text="Acquiring", image=self.icon_capture)
             self.button_snapshot.config(state="normal")
@@ -1374,10 +1374,10 @@ class MainWindow:
             w.should_stop = True
 
         # Stop camera acquisition
-        if self.mgr.acquiring:
-            self.mgr.off()
+        if self.mc.acquiring:
+            self.mc.off()
 
-        self.mgr.disconnect()
+        self.mc.disconnect()
 
         # Close main window and exit Python program
         self.root.quit()
@@ -1391,22 +1391,22 @@ class MainWindow:
         if self._mem_baseline is None:
             self._mem_baseline = psutil.virtual_memory().percent
 
-        if self.mgr.acquiring:
+        if self.mc.acquiring:
 
             # Grab the latest frames for displaying
-            self._current_buffers = self.mgr.get_current_framebuffer()
+            self._current_buffers = self.mc.get_current_framebuffer()
 
             # Get an estimation of the saved data size
-            if self.mgr._estim_file_size is None:
-                self.var_frames_saved.set(f'Saved frames: {self.mgr.saved} (0 bytes)')
+            if self.mc._estim_file_size is None:
+                self.var_frames_saved.set(f'Saved frames: {self.mc.saved} (0 bytes)')
 
-            elif self.mgr._estim_file_size == -1:
+            elif self.mc._estim_file_size == -1:
                 size = sum(sum(os.path.getsize(os.path.join(res[0], element)) for element in res[2]) for res in
-                           os.walk(self.mgr.full_path))
-                self.var_frames_saved.set(f'Saved frames: {self.mgr.saved} ({utils.pretty_size(size)})')
+                           os.walk(self.mc.full_path))
+                self.var_frames_saved.set(f'Saved frames: {self.mc.saved} ({utils.pretty_size(size)})')
             else:
-                saved = self.mgr.saved
-                size = sum(self.mgr._estim_file_size * saved)
+                saved = self.mc.saved
+                size = sum(self.mc._estim_file_size * saved)
                 self.var_frames_saved.set(f'Saved frames: {saved} ({utils.pretty_size(size)})')
 
         # Update memory pressure estimation
