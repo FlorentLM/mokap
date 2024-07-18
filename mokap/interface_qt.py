@@ -19,15 +19,17 @@ from mokap import utils
 from PIL import Image
 
 from PyQt6.QtCore import Qt, QTimer, QEvent
-from PyQt6.QtGui import QIcon, QImage, QPixmap, QCursor, QBrush, QPen, QColor, QFont
+from PyQt6.QtGui import QIcon, QImage, QPixmap, QCursor, QBrush, QPen, QColor, QFont, QTextCursor
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QStatusBar, QSlider, QGraphicsView, QGraphicsScene,
                              QGraphicsRectItem, QComboBox, QLineEdit, QProgressBar, QCheckBox, QScrollArea, QWidget,
                              QLabel, QFrame, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout, QPushButton, QSizePolicy,
-                             QGraphicsTextItem)
+                             QGraphicsTextItem, QTextEdit)
 
 # from PyQt6.QtOpenGL import QOpenGLVersionProfile, QOpenGLTexture, QOpenGLVersionFunctionsFactory
 # from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 
+# QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseDesktopOpenGL)
+# QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
 
 # class VideoGLWidget(QOpenGLWidget):
 #     TEX_SLOTS = None
@@ -107,6 +109,33 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QStatusBar, QSlider, QGr
 #         self.arraybuffer[:, :, 2] = flipped
 #         self._gen_texture()
 #         self.update()
+
+
+class GUILogger:
+    def __init__(self):
+        self.text_area = None
+        self._temp_output = ''
+        sys.stdout = self
+        sys.stderr = self
+
+    def register_text_area(self, text_area):
+        self.text_area = text_area
+        self.text_area.insertPlainText(self._temp_output)
+
+    def write(self, text):
+        if self.text_area is None:
+            # Temporarily capture console output to display later in the log widget
+            self._temp_output += f'{text}'
+        else:
+            self.text_area.insertPlainText(text)
+
+    def flush(self):
+        pass
+
+
+# Create this immediately to capture everything
+# gui_logger = GUILogger()
+gui_logger = False
 
 
 class VideoWindowBase(QWidget):
@@ -951,7 +980,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         self.setWindowTitle('Controls')
-        # self.setGeometry(100, 100, MainWindow.WINDOW_MIN_W, MainWindow.INFO_PANEL_MINSIZE_H)  # todo
+        self.gui_logger = gui_logger
 
         self.mgr = mgr
 
@@ -1001,14 +1030,14 @@ class MainWindow(QMainWindow):
         self._mem_baseline = psutil.virtual_memory().percent
 
     def init_gui(self):
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(5, 5, 5, 5)
-        main_layout.setSpacing(5)
+        self.MAIN_LAYOUT = QVBoxLayout(self)
+        self.MAIN_LAYOUT.setContentsMargins(5, 5, 5, 5)
+        self.MAIN_LAYOUT.setSpacing(5)
         # self.setStyleSheet('QGroupBox { border: 1px solid #807f7f7f; border-radius: 5px; margin-top: 0.5em;} '
                            # 'QGroupBox::title { subcontrol-origin: margin; left: 3px; padding: 0 3 3 3;}')
 
         central_widget = QWidget()
-        central_widget.setLayout(main_layout)
+        central_widget.setLayout(self.MAIN_LAYOUT)
         self.setCentralWidget(central_widget)
 
         toolbar = QFrame()
@@ -1033,7 +1062,7 @@ class MainWindow(QMainWindow):
         self.button_exit.setStyleSheet(f"background-color: {self.col_red}; color: {self.col_white};")
         toolbar_layout.addWidget(self.button_exit)
 
-        main_layout.addWidget(toolbar)  # End toolbar
+        self.MAIN_LAYOUT.addWidget(toolbar)  # End toolbar
 
         # Main content
         maincontent = QWidget()
@@ -1049,7 +1078,7 @@ class MainWindow(QMainWindow):
         right_pane_layout = QVBoxLayout(right_pane)
         maincontent_layout.addWidget(right_pane, 3)
 
-        main_layout.addWidget(maincontent)
+        self.MAIN_LAYOUT.addWidget(maincontent)
 
         # LEFT HALF
         f_name_and_path = QWidget()
@@ -1178,23 +1207,23 @@ class MainWindow(QMainWindow):
         self.autotile_button.clicked.connect(self.autotile_windows)
         monitors_frame_layout.addWidget(self.autotile_button)
 
-        # # LOG PANEL
-        # if self.gui_logger:
-        #     log_label_frame = QWidget()
-        #     log_label_frame_layout = QVBoxLayout(log_label_frame)
-        #     log_label = QLabel('↓ pull for log ↓')
-        #     log_label.setFont(QFont('Arial', 6))
-        #     log_label_frame_layout.addWidget(log_label)
-        #     content_panels.addWidget(log_label_frame)
-        #
-        #     log_frame = QWidget()
-        #     log_frame_layout = QVBoxLayout(log_frame)
-        #     log_text_area = QTextEdit()
-        #     log_text_area.setFont(QFont('consolas', 9))
-        #     log_frame_layout.addWidget(log_text_area)
-        #     content_panels.addWidget(log_frame)
-        #
-        #     self.gui_logger.register_text_area(log_text_area)
+        # LOG PANEL
+        if self.gui_logger:
+            log_button = QPushButton('Show log')
+            log_button.setCheckable(True)
+            log_button.setChecked(False)
+            log_button.setMaximumWidth(80)
+            self.MAIN_LAYOUT.addWidget(log_button)
+
+            log_text_area = QTextEdit()
+            log_text_area.setFont(QFont('consolas', 9))
+            log_text_area.setDisabled(True)
+            log_text_area.setVisible(False)
+            self.MAIN_LAYOUT.addWidget(log_text_area)
+
+            log_button.clicked.connect(log_text_area.setVisible)
+
+            self.gui_logger.register_text_area(log_text_area)
 
         # Status bar
         statusbar = QStatusBar()
@@ -1316,16 +1345,18 @@ class MainWindow(QMainWindow):
             Takes an instantaneous snapshot from all cameras
         """
 
-        dims = np.array([(cam.height, cam.width) for cam in self.mgr.cameras], dtype=np.uint32)
-        ext = self.mgr.saving_ext
-        now = datetime.now().strftime('%y%m%d-%H%M')
+        now = datetime.now().strftime('%y%m%d-%H%M%S')
 
-        if self.mgr.acquiring and self._current_buffers is not None:
-            arrays = [np.frombuffer(c, dtype=np.uint8) for c in self._current_buffers]
+        if self.mgr.acquiring:
 
-            for a, arr in enumerate(arrays):
-                img = Image.fromarray(arr.reshape(dims[a]))
-                img.save(self.mgr.full_path.resolve() / f"snapshot_{now}_{self.mgr.cameras[a].name}.{ext}")
+            arrays = self.mgr.get_current_framebuffer()
+
+            for i, arr in enumerate(arrays):
+                if len(arr.shape) == 3:
+                    img = Image.fromarray(arr, mode='RGB')
+                else:
+                    img = Image.fromarray(arr, mode='L')
+                img.save(self.mgr.full_path.resolve() / f"snapshot_{now}_{self.mgr.cameras[i].name}.bmp")
 
     def _toggle_recording(self, override=None):
 
