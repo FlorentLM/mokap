@@ -420,7 +420,7 @@ class BaslerCamera:
                 self.ptr.StartGrabbing()
                 self._is_grabbing = True
         else:
-            print(f"{self.name.title()} camera is not connected.")
+            print(f"{self.name.title()} camera is not connected")
 
     def stop_grabbing(self) -> NoReturn:
         if self._connected:
@@ -428,8 +428,7 @@ class BaslerCamera:
                 self.ptr.StopGrabbing()
                 self._is_grabbing = False
         else:
-            print(f"{self.name.title()} camera is not connected.")
-
+            print(f"{self.name.title()} camera is not connected")
     @property
     def ptr(self) -> py.InstantCamera:
         return self._ptr
