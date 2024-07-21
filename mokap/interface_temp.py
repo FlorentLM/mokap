@@ -1,3 +1,91 @@
+# from PyQt6.QtOpenGL import QOpenGLVersionProfile, QOpenGLTexture, QOpenGLVersionFunctionsFactory
+# from PyQt6.QtOpenGLWidgets import QOpenGLWidget
+
+# QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseDesktopOpenGL)
+# QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
+
+# class VideoGLWidget(QOpenGLWidget):
+#     TEX_SLOTS = None
+#
+#     def __init__(self, height, width, idx, parent=None, *args, **kwargs):
+#         super(VideoGLWidget, self).__init__(parent, *args, **kwargs)
+#         self.idx = idx
+#         self.gl = None
+#         self.texture = None
+#         self.ratio = width/height
+#         self.arraybuffer = np.zeros((height, width, 3), dtype=np.uint8)
+#
+#     def initializeGL(self):
+#         version_profile = QOpenGLVersionProfile()
+#         version_profile.setVersion(2, 0)
+#         self.gl = QOpenGLVersionFunctionsFactory.get(version_profile, self.context())
+#         self.gl.initializeOpenGLFunctions()
+#         # self.gl.glClearColor(0.5, 0.8, 0.7, 1.0)
+#
+#         self.gl.glEnable(self.gl.GL_TEXTURE_2D)
+#
+#         if VideoGLWidget.TEX_SLOTS is None:
+#             VideoGLWidget.TEX_SLOTS = self.gl.glGenTextures(5)
+#
+#         self.texture = VideoGLWidget.TEX_SLOTS[self.idx]
+#
+#         self._gen_texture()
+#
+#     def resizeGL(self, width, height):
+#         side = min(width, height)
+#         x = int((width - side) / 2)
+#         y = int((height - side) / 2)
+#         self.gl.glViewport(x, y, side, side)
+#
+#     def paintGL(self):
+#         self.gl.glClear(self.gl.GL_COLOR_BUFFER_BIT)
+#         if self.texture:
+#
+#             self.gl.glBindTexture(self.gl.GL_TEXTURE_2D, self.texture)
+#
+#             self.gl.glBegin(self.gl.GL_QUADS)
+#             self.gl.glTexCoord2f(0, 0)
+#             self.gl.glVertex2f(-1, -1)
+#             self.gl.glTexCoord2f(1, 0)
+#             self.gl.glVertex2f(1, -1)
+#             self.gl.glTexCoord2f(1, 1)
+#             self.gl.glVertex2f(1, 1)
+#             self.gl.glTexCoord2f(0, 1)
+#             self.gl.glVertex2f(-1, 1)
+#             self.gl.glEnd()
+#
+#             self.gl.glBindTexture(self.gl.GL_TEXTURE_2D, 0)
+#
+#     def _gen_texture(self):
+#
+#         self.gl.glBindTexture(self.gl.GL_TEXTURE_2D, self.texture)
+#
+#         self.gl.glTexParameteri(self.gl.GL_TEXTURE_2D, self.gl.GL_TEXTURE_MIN_FILTER, self.gl.GL_LINEAR)
+#         self.gl.glTexParameteri(self.gl.GL_TEXTURE_2D, self.gl.GL_TEXTURE_MAG_FILTER, self.gl.GL_LINEAR)
+#
+#         self.gl.glTexImage2D(self.gl.GL_TEXTURE_2D,
+#                      0,
+#                      self.gl.GL_RGB,
+#                      self.arraybuffer.shape[1],
+#                      self.arraybuffer.shape[0],
+#                      0,
+#                      self.gl.GL_RGB,
+#                      self.gl.GL_UNSIGNED_BYTE,
+#                      self.arraybuffer.tobytes())
+#
+#         self.gl.glBindTexture(self.gl.GL_TEXTURE_2D, 0)
+#
+#     def updatedata(self, imagedata):
+#         flipped = np.flip(imagedata, axis=0)
+#         self.arraybuffer[:, :, 0] = flipped
+#         self.arraybuffer[:, :, 1] = flipped
+#         self.arraybuffer[:, :, 2] = flipped
+#         self._gen_texture()
+#         self.update()
+
+
+
+
 # class VideoWindowCalib(VideoWindowBase):
 #
 #     def __init__(self, parent, idx):
