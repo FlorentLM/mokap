@@ -431,8 +431,8 @@ class VideoWindowBase(QWidget):
                 else:
                     self.capturefps_value.setText("-")
 
-                # brightness = np.round(self._frame_buffer.mean() / 255 * 100, decimals=2)
-                # self.brightness_value.setText(f"{brightness:.2f}%")
+                brightness = np.round(self._frame_buffer.mean() / 255 * 100, decimals=2)
+                self.brightness_value.setText(f"{brightness:.2f}%")
             else:
                 self.capturefps_value.setText("Off")
                 self.brightness_value.setText("-")
