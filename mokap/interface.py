@@ -1237,14 +1237,14 @@ class MainWindow(QMainWindow):
             # Re-enable the framerate sliders (only in case of hardware-triggered cameras)
             if self.mc.triggered:
                 for w in self.secondary_windows:
-                    w.camera_controls_sliders['framerate'].config(state='normal', troughcolor=w.col_default)
+                    w.camera_controls_sliders['framerate'].setDisabled(True)
 
         elif not self.mc.acquiring and override is True:
             self.mc.on()
 
             if self.mc.triggered:
                 for w in self.secondary_windows:
-                    w.camera_controls_sliders['framerate'].config(state='disabled', troughcolor=self.col_lightgray)
+                    w.camera_controls_sliders['framerate'].setDisabled(True)
 
             self.save_dir_current.setText(f'{self.mc.full_path.resolve()}')
 

@@ -349,6 +349,7 @@ class MultiCam:
 
                 # p = Popen(shlex.split(command), stdin=PIPE, close_fds=ON_POSIX)     # Debug mode (stderr/stdout on)
                 p = Popen(shlex.split(command), stdin=PIPE, stdout=False, stderr=False)
+
                 p.stdin.write(dummy_frame.tobytes())
                 self._videowriters[cam_idx] = p
         else:
@@ -360,8 +361,6 @@ class MultiCam:
                 self._videowriters[cam_idx].stdin.flush()
                 self._videowriters[cam_idx].stdin.close()
                 self._videowriters[cam_idx].wait()
-                print(f'Closed video writer for cam {cam_idx} (return: {self._videowriters[cam_idx].returncode()})')
-
                 self._videowriters[cam_idx] = False
 
     def _writer_thread(self, cam_idx: int) -> NoReturn:
@@ -456,17 +455,15 @@ class MultiCam:
                         save_frame(frame, frame_nb)
                     else:
                         self._close_videowriter(cam_idx)     # This does nothing if not in video mode
-                        timer.wait(0.1)
+                        started_saving = False
                         self._l_finished_saving[cam_idx].set()
                 else:
                     # Default state of this thread: if cameras are acquiring but we're not recording, just wait
                     timer.wait(0.1)
-        # print(f'[DEBUG] Stopped writer thread {get_ident()}')
 
     def _display_updater_thread(self, cam_idx: int) -> NoReturn:
         """
-            This thread updates the display buffers at a relatively slow pace (not super accurate timing but who cares),
-            and otherwise mostly sleeps
+            This thread updates the display buffers at a relatively slow pace (not super accurate timing but who cares)
 
             Parameters
             ----------
@@ -481,8 +478,6 @@ class MultiCam:
             if queue:
                 np.copyto(self._l_display_buffers[cam_idx], queue.popleft())
                 self._cnt_displayed[cam_idx] += 1
-
-        # print(f'[DEBUG] Stopped display thread {get_ident()}')
 
     def _grabber_thread(self, cam_idx: int) -> NoReturn:
         """
@@ -512,7 +507,6 @@ class MultiCam:
                     pass
 
         cam.stop_grabbing()
-        # print(f'[DEBUG] Stopped grabber thread {get_ident()}')
 
     def record(self) -> None:
         """
@@ -622,7 +616,7 @@ class MultiCam:
         saved_frames_n = len(fnmatch.filter(os.listdir(path), f'*.{self._saving_ext}'))
         while saved_frames_n > saved_frames:
             saved_frames = saved_frames_n
-            time.sleep(0.1)
+            Event().wait(0.1)
             saved_frames_n = len(
                 fnmatch.filter(os.listdir(path), f'*.{self._saving_ext}'))
         return saved_frames_n
@@ -640,7 +634,7 @@ class MultiCam:
 
             if self._triggered:
                 self.trigger.start(self._framerate)
-                time.sleep(0.1)
+                Event().wait(0.1)
 
             self._acquiring = True
 
@@ -675,9 +669,6 @@ class MultiCam:
             self.pause()
 
             self._acquiring = False
-
-            # for cam in self._l_sources_list:
-            #     cam.stop_grabbing()             # This should not be necessary here
 
             if self._triggered:
                 self.trigger.stop()
