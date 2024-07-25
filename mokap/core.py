@@ -358,9 +358,11 @@ class MultiCam:
     def _close_videowriter(self, cam_idx: int):
         if self._saving_ext == 'mp4':
             if self._videowriters[cam_idx]:
+                # self._videowriters[cam_idx].stdin.flush()
                 self._videowriters[cam_idx].stdin.close()
                 self._videowriters[cam_idx].wait()
-        self._videowriters[cam_idx] = False
+                self._videowriters[cam_idx] = False
+                print(f'Closed video writer for cam {cam_idx}')
 
     def _writer_thread(self, cam_idx: int) -> NoReturn:
         """
