@@ -360,8 +360,7 @@ class MultiCam:
                 self._videowriters[cam_idx].stdin.flush()
                 self._videowriters[cam_idx].stdin.close()
                 self._videowriters[cam_idx].wait()
-                if self._videowriters[cam_idx].returncode() == 0:
-                    print(f'Closed video writer for cam {cam_idx}')
+                print(f'Closed video writer for cam {cam_idx} (return: {self._videowriters[cam_idx].returncode()})')
 
                 self._videowriters[cam_idx] = False
 
