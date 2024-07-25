@@ -19,11 +19,11 @@ from mokap import utils
 from PIL import Image
 
 from PyQt6.QtCore import Qt, QTimer, QEvent
-from PyQt6.QtGui import QIcon, QImage, QPixmap, QCursor, QBrush, QPen, QColor, QFont
+from PyQt6.QtGui import QIcon, QImage, QPixmap, QCursor, QBrush, QPen, QColor, QFont, QDoubleValidator
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QStatusBar, QSlider, QGraphicsView, QGraphicsScene,
                              QGraphicsRectItem, QComboBox, QLineEdit, QProgressBar, QCheckBox, QScrollArea, QWidget,
                              QLabel, QFrame, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout, QPushButton, QSizePolicy,
-                             QGraphicsTextItem, QTextEdit)
+                             QGraphicsTextItem, QTextEdit, QSplitter, QSpinBox)
 
 
 class GUILogger:
@@ -123,9 +123,6 @@ class VideoWindowBase(QWidget):
         main_layout.addWidget(self.VIDEO_FEED, 1)
 
         self._blit_image()     # Call this once to initialise it
-
-        # self.VIDEO_FEED = VideoGLWidget(self._camera.shape[0], self._camera.shape[1], self.idx, parent=self)
-        # self.update_image()  # Call this once to initialise it
 
         main_layout.addWidget(self.VIDEO_FEED, 1)
 
@@ -368,10 +365,7 @@ class VideoWindowBase(QWidget):
         h, w = self._display_buffer.shape[:2]
         q_img = QImage(self._display_buffer.data, w, h, 3 * w, QImage.Format.Format_RGB888)
         pixmap = QPixmap.fromImage(q_img)
-        # self.VIDEO_FEED.setPixmap(pixmap.scaled(self.VIDEO_FEED.width(), self.VIDEO_FEED.height(), Qt.AspectRatioMode.KeepAspectRatio))
         self.VIDEO_FEED.setPixmap(pixmap)
-
-        # self.VIDEO_FEED.updatedata(self._main_window.mc.get_current_framebuffer(self.idx))
 
     def _full_res_processing(self):
         # Just a debug modification of the frame buffer
@@ -488,8 +482,6 @@ class VideoWindowMain(VideoWindowBase):
             [0, 0, 0],
             [0, 1, 0],
             [0, 0, 0]], dtype=np.uint8)
-
-        self.col_default = None
 
         self.init_common_ui()
         self.init_specific_ui()
@@ -807,57 +799,156 @@ class VideoWindowMain(VideoWindowBase):
                     window.camera_controls_sliders[label].setValue(w_new_val)
                     window.update_param(label)
 
-# class VideoWindowCalib(VideoWindowBase):
-#     def __init__(self, rootwindow, idx):
-#         super().__init__(rootwindow, idx)
-#         self.init_specific_ui()
-#
-#     def init_specific_ui(self):
-#         vbox = QVBoxLayout(self)
-#
-#         # Centre Frame: Calibration controls
-#         self.CENTRE_FRAME = QFrame()
-#         vbox.addWidget(self.CENTRE_FRAME)
-#
-#         f_snapshots = QFrame()
-#         vbox.addWidget(f_snapshots)
-#
-#         self.snap_button = QPushButton("Take Snapshot", f_snapshots)
-#         self.snap_button.clicked.connect(self._toggle_snapshot)
-#
-#         rf = QFrame()
-#         vbox.addWidget(rf)
-#
-#         self.autosnap_var = QCheckBox("Auto snapshot", rf)
-#         self.autosnap_var.setChecked(False)
-#
-#         self.reset_coverage_button = QPushButton("Clear snapshots", rf)
-#         self.reset_coverage_button.clicked.connect(self._reset_coverage)
-#
-#         f_calibrate = QFrame()
-#         vbox.addWidget(f_calibrate)
-#
-#         separator = QFrame()
-#         separator.setFrameShape(QFrame.Shape.HLine)
-#         vbox.addWidget(separator)
-#
-#         self.calibrate_button = QPushButton("Calibrate", f_calibrate)
-#         self.calibrate_button.clicked.connect(self._perform_calibration)
-#
-#         f_saveload = QFrame()
-#         vbox.addWidget(f_saveload)
-#
-#         f_saveload_buttons = QFrame()
-#         vbox.addWidget(f_saveload_buttons)
-#
-#         self.load_button = QPushButton("Load", f_saveload_buttons)
-#         self.load_button.clicked.connect(self.load_calibration)
-#
-#         self.save_button = QPushButton("Save", f_saveload_buttons)
-#         self.save_button.clicked.connect(self.save_calibration)
-#
-#         self.saved_label = QLabel('', f_saveload)
 
+class VideoWindowCalib(VideoWindowBase):
+    def __init__(self, main_window_ref, idx):
+        super().__init__(main_window_ref, idx)
+
+        # Board parameters to detect
+        self.BOARD_COLS = 5             # Total rows in the board (chessboard)
+        self.BOARD_ROWS = 6             # Total cols in the board
+        self.SQUARE_LENGTH_MM = 1.5     # Length of one chessboard square in real life units (i.e. mm)
+        self.MARKER_BITS = 4            # Size of the markers in 'pixels' (not really but...yeah)
+
+        self.init_common_ui()
+        self.init_specific_ui()
+
+        self.update_charuco_board()
+
+        self.auto_size()
+
+    def update_charuco_board(self):
+
+        self.BOARD_COLS = self.board_cols_spin.value()
+        self.BOARD_ROWS = self.board_rows_spin.value()
+        self.SQUARE_LENGTH_MM = float(self.board_scale_value.text())
+
+        # Generate new board
+        self.charuco_board = utils.generate_charuco(board_rows=self.BOARD_ROWS,
+                                                    board_cols=self.BOARD_COLS,
+                                                    square_length_mm=self.SQUARE_LENGTH_MM,
+                                                    marker_bits=self.MARKER_BITS)
+
+        # Update board preview image
+        r = self.BOARD_ROWS / self.BOARD_COLS
+        h, w = 100, int(r * 100)
+        board_arr = self.charuco_board.generateImage((h, w))
+        q_img = QImage(board_arr, h, w, h, QImage.Format.Format_Grayscale8)
+        pixmap = QPixmap.fromImage(q_img.scaled(h, w, Qt.AspectRatioMode.KeepAspectRatio))
+        self.board_preview.setPixmap(pixmap)
+
+        # Remove the focus from the text field
+        self.board_scale_value.setDisabled(True)
+        self.board_scale_value.setDisabled(False)
+
+    def init_specific_ui(self):
+
+        # CENTRE GROUP
+        centre_group_layout = QVBoxLayout(self.CENTRE_GROUP)
+        centre_group_layout.setContentsMargins(5, 5, 5, 5)
+
+        upper_area = QWidget()
+        upper_area_layout = QVBoxLayout(upper_area)
+        lower_area = QWidget()
+        lower_area_layout = QHBoxLayout(lower_area)
+
+        centre_group_layout.addWidget(upper_area)
+        centre_group_layout.addWidget(lower_area)
+
+        # Upper area
+        charuco_board_wdgt = QWidget()
+        charuco_board_wdgt_layout = QHBoxLayout(charuco_board_wdgt)
+
+        left = QWidget()
+        left_layout = QGridLayout(left)
+        left_layout.setColumnStretch(1, 1)
+        left_layout.setColumnStretch(2, 1)
+
+        board_rows_label = QLabel('Rows: ')
+        board_rows_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        left_layout.addWidget(board_rows_label, 0, 0)
+
+        self.board_rows_spin = QSpinBox()
+        self.board_rows_spin.setMinimum(2)
+        self.board_rows_spin.setMaximum(20)
+        self.board_rows_spin.setSingleStep(1)
+        self.board_rows_spin.setValue(6)
+        self.board_rows_spin.valueChanged.connect(self.update_charuco_board)
+
+        left_layout.addWidget(self.board_rows_spin, 0, 1)
+
+        board_cols_label = QLabel('Columns: ')
+        board_cols_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        left_layout.addWidget(board_cols_label, 1, 0)
+
+        self.board_cols_spin = QSpinBox()
+        self.board_cols_spin.setMinimum(2)
+        self.board_cols_spin.setMaximum(10)
+        self.board_cols_spin.setSingleStep(1)
+        self.board_cols_spin.setValue(5)
+        self.board_cols_spin.valueChanged.connect(self.update_charuco_board)
+
+        left_layout.addWidget(self.board_cols_spin, 1, 1)
+
+        board_scale_label = QLabel('Square length (mm): ')
+        self.board_scale_value = QLineEdit()
+        self.board_scale_value.setValidator(QDoubleValidator(bottom=0.01, top=1000.0, decimals=2))
+        self.board_scale_value.setText('5.0')
+        self.board_scale_value.editingFinished.connect(self.update_charuco_board)
+
+        left_layout.addWidget(board_scale_label, 2, 0)
+        left_layout.addWidget(self.board_scale_value, 2, 1)
+
+        charuco_board_wdgt_layout.addWidget(left)
+
+        self.board_preview = QLabel()
+        self.board_preview.setMinimumSize(1, 1)
+        self.board_preview.setMaximumSize(200, 200)
+
+        charuco_board_wdgt_layout.addWidget(self.board_preview)
+
+        upper_area_layout.addWidget(charuco_board_wdgt)
+
+        # Lower area
+        detection_wdgt = QWidget()
+        detection_wdgt_layout = QVBoxLayout(detection_wdgt)
+
+        self.auto_sample_check = QCheckBox("Sample automatically")
+        self.auto_sample_check.setChecked(False)
+        detection_wdgt_layout.addWidget(self.auto_sample_check)
+
+        self.sample_button = QPushButton("Add sample")
+        self.sample_button.clicked.connect(self._main_window.nothing)
+        detection_wdgt_layout.addWidget(self.sample_button)
+
+        self.clear_samples_button = QPushButton("Clear samples")
+        self.clear_samples_button.clicked.connect(self._main_window.nothing)
+        detection_wdgt_layout.addWidget(self.clear_samples_button)
+
+        lower_area_layout.addWidget(detection_wdgt)
+
+        calibration_wdgt = QWidget()
+        calibration_wdgt_layout = QVBoxLayout(calibration_wdgt)
+
+        self.auto_calibrate_check = QCheckBox("Calibrate automatically")
+        self.auto_calibrate_check.setChecked(False)
+        calibration_wdgt_layout.addWidget(self.auto_calibrate_check)
+
+        self.load_calib_button = QPushButton("Load calibration")
+        self.load_calib_button.clicked.connect(self._main_window.nothing)
+        calibration_wdgt_layout.addWidget(self.load_calib_button)
+
+        self.save_calib_button = QPushButton("Save calibration")
+        self.save_calib_button.clicked.connect(self._main_window.nothing)
+        calibration_wdgt_layout.addWidget(self.save_calib_button)
+
+        lower_area_layout.addWidget(calibration_wdgt)
+
+    def _full_res_processing(self):
+        pass
+
+    def _low_res_processing(self):
+        pass
 
 class MainWindow(QMainWindow):
     INFO_PANEL_MINSIZE_H = 200
@@ -938,8 +1029,6 @@ class MainWindow(QMainWindow):
         # Start the secondary windows
         self._start_secondary_windows()
 
-        self.cascade_windows()
-
         # Setup MainWindow secondary update
         self.timer_update = QTimer(self)
         self.timer_update.timeout.connect(self._update_main)
@@ -969,6 +1058,7 @@ class MainWindow(QMainWindow):
 
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(['Recording', 'Calibration'])
+        self.mode_combo.currentIndexChanged.connect(self._toggle_calibrate)
         toolbar_layout.addWidget(self.mode_combo, 1)    # 1 unit
 
         toolbar_layout.addStretch(2)    # spacing of 2 units
@@ -1181,7 +1271,29 @@ class MainWindow(QMainWindow):
         sys.exit()
 
     def _toggle_calibrate(self):
-        pass
+
+        if self._is_calibrating and self.mode_combo.currentIndex() == 0:
+            self._is_calibrating = False
+
+            self._stop_secondary_windows()
+
+            if self.mc.acquiring:
+                self.button_snapshot.setDisabled(False)
+                self.button_recpause.setDisabled(False)
+
+            self._start_secondary_windows()
+
+        elif not self._is_calibrating and self.mode_combo.currentIndex() == 1:
+            self._is_calibrating = True
+
+            self._stop_secondary_windows()
+
+            self.button_recpause.setDisabled(True)
+
+            self._start_secondary_windows()
+
+        else:
+            pass
 
     def _toggle_text_editing(self, override=None):
 
@@ -1236,14 +1348,14 @@ class MainWindow(QMainWindow):
             self.button_recpause.setDisabled(True)
 
             # Re-enable the framerate sliders (only in case of hardware-triggered cameras)
-            if self.mc.triggered:
+            if not self._is_calibrating and self.mc.triggered:
                 for w in self.secondary_windows:
                     w.camera_controls_sliders['framerate'].setDisabled(True)
 
         elif not self.mc.acquiring and override is True:
             self.mc.on()
 
-            if self.mc.triggered:
+            if not self._is_calibrating and self.mc.triggered:
                 for w in self.secondary_windows:
                     w.camera_controls_sliders['framerate'].setDisabled(True)
 
@@ -1454,30 +1566,23 @@ class MainWindow(QMainWindow):
             windows += [self]
         return windows
 
-
     def _start_secondary_windows(self):
+
         for i, cam in enumerate(self.mc.cameras):
-
             if self._is_calibrating:
-                # w = VideoWindowCalib(rootwindow=self, idx=cam.idx)
-                # self.secondary_windows.append(w)
-                # self.secondary_windows_visibility_buttons[i].setText(f" {w.name.title()} camera")
-                # self.secondary_windows_visibility_buttons[i].setStyleSheet(f"border-radius: 5px; padding: 0 10 0 10; color: {w.colour_2}; background-color: {w.colour};")
-                # self.secondary_windows_visibility_buttons[i].clicked.connect(w.toggle_visibility)
-                # self.secondary_windows_visibility_buttons[i].setChecked(True)
-
-                # For now, do nothing
-                continue
-
+                w = VideoWindowCalib(main_window_ref=self, idx=cam.idx)
             else:
                 w = VideoWindowMain(main_window_ref=self, idx=cam.idx)
-                self.secondary_windows.append(w)
-                self.secondary_windows_visibility_buttons[i].setText(f" {w.name.title()} camera")
-                self.secondary_windows_visibility_buttons[i].setStyleSheet(f"border-radius: 5px; padding: 0 10 0 10; color: {w.colour_2}; background-color: {w.colour};")
-                self.secondary_windows_visibility_buttons[i].clicked.connect(w.toggle_visibility)
-                self.secondary_windows_visibility_buttons[i].setChecked(True)
 
-                w.show()
+            self.secondary_windows.append(w)
+            self.secondary_windows_visibility_buttons[i].setText(f" {w.name.title()} camera")
+            self.secondary_windows_visibility_buttons[i].setStyleSheet(f"border-radius: 5px; padding: 0 10 0 10; color: {w.colour_2}; background-color: {w.colour};")
+            self.secondary_windows_visibility_buttons[i].clicked.connect(w.toggle_visibility)
+            self.secondary_windows_visibility_buttons[i].setChecked(True)
+
+            w.show()
+
+        self.cascade_windows()
 
     def _stop_secondary_windows(self):
         for w in self.secondary_windows:

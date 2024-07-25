@@ -50,48 +50,6 @@ def hls_to_hex(*hls):
     return new_hex
 
 
-def randframe(w=1440, h=1080):
-    return np.random.randint(0, 255, (w, h), dtype='<u1')
-
-
-def to_ticks(frequency: float, duration=1.0) -> (float, float):
-    """ Converts frequency, duration to tick length and ticks count """
-    count = frequency * duration
-    interval = 1 / frequency
-    return interval, count
-
-
-def to_freq(interval: float, count: float) -> (float, float):
-    """ Converts tick length and number of ticks into frequency, total duration """
-    duration = interval * count
-    frequency = 1 / interval
-    return frequency, duration
-
-
-def focus_zone(img):
-    # LoG
-    fz = ndimage.gaussian_laplace(img, sigma=2).astype(np.uint8)
-    fz = ndimage.gaussian_filter(fz, 5).astype(np.uint8)
-
-    # Zero-crossing approximation
-    # fz = fz / fz.max() * 255
-    return fz.astype(np.uint8)
-
-
-def compute_focus_plan(img, axis):
-    indices = np.arange(img.shape[axis])
-
-    summed = img.sum(axis=axis).astype(float)
-    summed[summed == 0] = np.nan
-
-    terms = [img, img]
-    terms[axis] = indices
-
-    plan = np.dot(*terms) / summed
-
-    return plan
-
-
 def USB_on() -> None:
     subprocess.Popen(["uhubctl", "-l", "4-2", "-a", "1"], stdout=subprocess.PIPE)
 
@@ -138,88 +96,170 @@ def pretty_size(value: int, verbose=False, decimal=False) -> str:
     return f"{int(amount)} {unit}" if amount.is_integer() else f"{amount:.2f} {unit}"
 
 
-def generate_charuco(board_rows, board_cols, square_length=None, marker_length=None, marker_bits=4, dict_size=100, save_svg=True):
+def probe_video(video_path):
+    video_path = Path(video_path)
+    if not video_path.exists():
+        raise FileNotFoundError(video_path.resolve())
+    cap = cv2.VideoCapture(video_path.as_posix())
+    r, frame = cap.read()
+    if not r:
+        raise IOError(f"Can't read video {video_path.resolve()}")
+    nb_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+    return frame.shape, nb_frames
 
-    if square_length is None:
-        square_length = 8
-    if marker_length is None:
-        marker_length = 6
 
+def generate_charuco(board_rows, board_cols, square_length_mm=5.0, marker_bits=4, margin=1):
+    """
+        Generates a Charuco board for the given parameters, and optionally saves it in a SVG file.
+    """
+    all_dict_sizes = [50, 100, 250, 1000]
+
+    padding = 1     # Black margin inside the markers (i.e. OpenCV's borderBits)
+
+    mk_l_bits = marker_bits + padding * 2
+    sq_l_bits = mk_l_bits + margin * 2
+
+    marker_length_mm = mk_l_bits / sq_l_bits * square_length_mm
+
+    dict_size = next(s for s in all_dict_sizes if s >= board_rows * board_cols)
     dict_name = f'DICT_{marker_bits}X{marker_bits}_{dict_size}'
 
     aruco_dict = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, dict_name))
-    board = cv2.aruco.CharucoBoard((board_cols, board_rows),   # number of chessboard squares in x and y directions
-                                   square_length,                     # chessboard square side length (normally in meters)
-                                   marker_length,                     # marker side length (same unit than squareLength)
+    board = cv2.aruco.CharucoBoard((board_cols, board_rows),        # number of chessboard squares in x and y directions
+                                   square_length_mm,                # chessboard square side length (normally in meters)
+                                   marker_length_mm,                # marker side length (same unit than squareLength)
                                    aruco_dict)
+    return board
 
-    if save_svg:
-        image_size = (board_cols * square_length, board_rows * square_length)
-        array = ~board.generateImage(image_size, None, 0, 1).astype(bool)
 
-        chessboard_arrays = array[::square_length, ::square_length]
-        chessboard_mask = chessboard_arrays.repeat(square_length, axis=0).repeat(square_length, axis=1)
+def print_board(board, multi_size=False, factor=2.0, dpi=1200):
 
-        svg_lines = [f'<svg version="1.1" width="100%" height="100%" viewBox="0 0 {image_size[0]} {image_size[1]}" xmlns="http://www.w3.org/2000/svg">']
+    square_length_mm = board.getSquareLength()
+    marker_length_mm = board.getMarkerLength()
 
-        svg_lines.append('  <g id="charuco">')
-        svg_lines.append('    <g id="chessboard">')
+    marker_bits = board.getDictionary().markerSize
 
-        for r in range(board_rows):
-            for c in range(board_cols):
-                if chessboard_arrays[r, c]:
-                    svg_lines.append(f'      <rect x="{c * square_length}" y="{r * square_length}" width="{square_length}" height="{square_length}" fill="#000000"/>')
+    mk_l_bits = marker_bits + 2
+    sq_l_bits = square_length_mm / marker_length_mm * mk_l_bits
+    if not int(sq_l_bits) == sq_l_bits:
+        raise AssertionError('Error creating board svg :(')         # TODO make sure this never happens
+    else:
+        sq_l_bits = int(sq_l_bits)
 
+    # Ratios to convert between mm and "bits" (i.e. pixels ...but not really, since we work with svg)
+    bits_to_mm = square_length_mm / sq_l_bits
+    mm_to_bits = sq_l_bits / square_length_mm
+
+    margin = int((sq_l_bits - mk_l_bits) / 2)
+
+    board_cols, board_rows = board.getChessboardSize()
+
+    chessboard_arr = (~np.indices((board_rows, board_cols)).sum(axis=0) % 2).astype(bool)
+
+    A4_mm = np.array([210, 297])
+    A4_size_bits = A4_mm * mm_to_bits
+
+    text_h_bits = 3.0 * mm_to_bits
+    board_size_bits = np.array([sq_l_bits * board_cols, sq_l_bits * board_rows])
+
+    if multi_size:
+        filename = f'Multi_Charuco{board_rows}x{board_cols}_markers{marker_bits}x{marker_bits}-margin{margin}.svg'
+
+        bleed = 15.0 * mm_to_bits
+        spacing = 25.0 * mm_to_bits
+        text_width = 30.0 * mm_to_bits
+
+        # Compute the scales to generate, from 1/4 of the page width, to the theoretical smallest with current dpi
+        min_scale = 1 / dpi * 25.4 * mm_to_bits   # Theoretical smallest marker size with visible bits
+        max_scale = A4_size_bits[1] / 8 / board_size_bits[1]
+
+        nb_scales = int(np.ceil(np.log(max_scale / min_scale) / np.log(factor)) + 1)
+
+        scales = np.array([max_scale / (factor ** i) for i in range(nb_scales)])
+
+        # Position the boards on the page
+        positions = [np.array([bleed, bleed])]
+
+        # These are used when one page width is full
+        x_ref, y_ref = positions[0]
+        scale_ref = scales[0]
+
+        for i in range(1, nb_scales):
+            x, y = positions[i-1]
+            next_x = max(x + text_width + spacing, x + board_size_bits[0] * scales[i-1] + spacing)
+            if max(next_x + text_width, next_x + board_size_bits[0] * scales[i]) < A4_size_bits[0] - bleed:
+                next_pos = np.array([next_x, y_ref])
+            else:
+                next_y = y_ref + board_size_bits[1] * scale_ref + text_h_bits * 4 + spacing
+                next_pos = np.array([x_ref, next_y])
+                x_ref, y_ref = next_pos
+                scale_ref = scales[i]
+            positions.append(next_pos)
+    else:
+        # If only one size, use the one that comes with the board object and position in the centre of the page
+        filename = f'Charuco{board_rows}x{board_cols}_markers{marker_bits}x{marker_bits}-margin{margin}.svg'
+        scales = [1.0]
+        positions = [A4_size_bits / 2.0 - board_size_bits / 2.0]    # page centre
+
+    # Start svg content
+    svg_lines = [
+        f'<svg version="1.1" width="100%" height="100%" viewBox="0 0 {A4_size_bits[0]} {A4_size_bits[1]}" xmlns="http://www.w3.org/2000/svg">',
+        f' <rect id="background" x="0" y="0" width="{A4_size_bits[0]}" height="{A4_size_bits[1]}" fill="none" stroke="#000000" stroke-width="0.1"/>'
+    ]
+
+    for board_pos, board_scale in zip(positions, scales):
+
+        # Container group with charuco board, cutting guides and info text
+        svg_lines.append(f'  <g id="container" transform="translate({board_pos[0]}, {board_pos[1]})">')
+
+        # Add cutting guides
+        svg_lines.append(f'    <line x1="{-2 * mm_to_bits}" y1="{-2 * mm_to_bits}" x2="{-2 * mm_to_bits}" y2="{-7 * mm_to_bits}" stroke="black" stroke-width="{0.1 * mm_to_bits}" />')
+        svg_lines.append(f'    <line x1="{-7 * mm_to_bits}" y1="{-2 * mm_to_bits}" x2="{-2 * mm_to_bits}" y2="{-2 * mm_to_bits}" stroke="black" stroke-width="{0.1 * mm_to_bits}" />')
+        svg_lines.append(f'    <line x1="{board_size_bits[0] * board_scale + 2 * mm_to_bits}" y1="{-2 * mm_to_bits}" x2="{board_size_bits[0] * board_scale + 2 * mm_to_bits}" y2="{-7 * mm_to_bits}" stroke="black" stroke-width="{0.1 * mm_to_bits}" />')
+        svg_lines.append(f'    <line x1="{board_size_bits[0] * board_scale + 2 * mm_to_bits}" y1="{-2 * mm_to_bits}" x2="{board_size_bits[0] * board_scale + 7 * mm_to_bits}" y2="{-2 * mm_to_bits}" stroke="black" stroke-width="{0.1 * mm_to_bits}" />')
+        svg_lines.append(f'    <line x1="{-2 * mm_to_bits}" y1="{board_size_bits[1] * board_scale + 2 * mm_to_bits}" x2="{-2 * mm_to_bits}" y2="{board_size_bits[1] * board_scale + 7 * mm_to_bits}" stroke="black" stroke-width="{0.1 * mm_to_bits}" />')
+        svg_lines.append(f'    <line x1="{-7 * mm_to_bits}" y1="{board_size_bits[1] * board_scale + 2 * mm_to_bits}" x2="{-2 * mm_to_bits}" y2="{board_size_bits[1] * board_scale + 2 * mm_to_bits}" stroke="black" stroke-width="{0.1 * mm_to_bits}" />')
+        svg_lines.append(f'    <line x1="{board_size_bits[0] * board_scale + 2 * mm_to_bits}" y1="{board_size_bits[1] * board_scale + 2 * mm_to_bits}" x2="{board_size_bits[0] * board_scale + 2 * mm_to_bits}" y2="{board_size_bits[1] * board_scale + 7 * mm_to_bits}" stroke="black" stroke-width="{0.1 * mm_to_bits}" />')
+        svg_lines.append(f'    <line x1="{board_size_bits[0] * board_scale + 2 * mm_to_bits}" y1="{board_size_bits[1] * board_scale + 2 * mm_to_bits}" x2="{board_size_bits[0] * board_scale + 7 * mm_to_bits}" y2="{board_size_bits[1] * board_scale + 2 * mm_to_bits}" stroke="black" stroke-width="{0.1 * mm_to_bits}" />')
+
+        # Charuco group with white background
+        svg_lines.append(f'    <g id="charuco" transform="scale({board_scale})">')
+        svg_lines.append(f'      <rect id="background" x="0" y="0" width="{board_size_bits[0]}" height="{board_size_bits[1]}" fill="#ffffff"/>')
+
+        # Chessboard group
+        svg_lines.append('      <g id="chessboard">')
+        cc, rr = np.where(chessboard_arr)
+        for i, rc in enumerate(zip(rr, cc)):
+            svg_lines.append(f'        <rect id="{i}" x="{rc[0] * sq_l_bits}" y="{rc[1] * sq_l_bits}" width="{sq_l_bits}" height="{sq_l_bits}" fill="#000000"/>')
+        svg_lines.append('      </g>')
+
+        # Aruco markers group
+        svg_lines.append('      <g id="aruco_markers">')
+        cc, rr = np.where(~chessboard_arr)
+        for i, rc in enumerate(zip(rr, cc)):
+            marker = board.getDictionary().generateImageMarker(i, mk_l_bits, mk_l_bits).astype(bool)
+            py, px = np.where(marker)
+            svg_lines.append(f'        <g id="{i}">')
+            svg_lines.append(
+                f'          <rect x="{rc[0] * sq_l_bits + margin}" y="{rc[1] * sq_l_bits + margin}" width="{mk_l_bits}" height="{mk_l_bits}" fill="#000000"/>')
+            for x, y in zip(px, py):
+                svg_lines.append(f'          <rect x="{rc[0] * sq_l_bits + x + margin}" y="{rc[1] * sq_l_bits + y + margin}" width="1" height="1" fill="#ffffff"/>')
+            svg_lines.append('        </g>')
+
+        svg_lines.append('      </g>')
         svg_lines.append('    </g>')
-        svg_lines.append('    <g id="aruco_markers">')
 
-        array[chessboard_mask] = False
-        for r in range(image_size[1]):
-            for c in range(image_size[0]):
-                if array[r, c]:
-                    svg_lines.append(f'      <rect x="{c}" y="{r}" width="1" height="1" fill="#000000"/>')
-
-        svg_lines.append('    </g>')
+        # Add text with sizes
+        bsize_text = f'{board_scale * square_length_mm * board_rows:.1f} x {board_scale * square_length_mm * board_cols:.1f} mm'
+        sqsize_text = f'(squares: {board_scale * square_length_mm:.3f} mm)'
+        msize_text = f'(markers: {board_scale * marker_length_mm:.3f} mm)'
+        svg_lines.append(f'    <text x="0" y="{board_size_bits[1] * board_scale + text_h_bits * 4}" font-family="monospace" font-size="{text_h_bits}" font-weight="bold">{bsize_text}</text>')
+        svg_lines.append(f'    <text x="0" y="{board_size_bits[1] * board_scale + text_h_bits * 5}" font-family="monospace" font-size="{text_h_bits}" font-weight="bold">{sqsize_text}</text>')
+        svg_lines.append(f'    <text x="0" y="{board_size_bits[1] * board_scale + text_h_bits * 6}" font-family="monospace" font-size="{text_h_bits}" font-weight="bold">{msize_text}</text>')
         svg_lines.append('  </g>')
-        svg_lines.append('</svg>')
 
-        with open(f'Charuco_{board_rows}x{board_cols}_{dict_name}.svg', 'w') as f:
-            f.write('\n'.join(svg_lines))
+    svg_lines.append('</svg>')
 
-    return aruco_dict, board
-
-
-##
-
-def write_png(buf, width, height):
-    # From https://stackoverflow.com/a/19174800
-    # Use as:
-    #   data = write_png(buf, 64, 64)
-    #   with open("my_image.png", 'wb') as fh:
-    #       fh.write(data)
-
-    """ buf: must be bytes or a bytearray in Python3.x,
-        a regular string in Python2.x.
-    """
-    import zlib, struct
-
-    # reverse the vertical line order and add null bytes at the start
-    width_byte_4 = width * 4
-    raw_data = b''.join(
-        b'\x00' + buf[span:span + width_byte_4]
-        for span in range((height - 1) * width_byte_4, -1, - width_byte_4)
-    )
-
-    def png_pack(png_tag, data):
-        chunk_head = png_tag + data
-        return (struct.pack("!I", len(data)) +
-                chunk_head +
-                struct.pack("!I", 0xFFFFFFFF & zlib.crc32(chunk_head)))
-
-    return b''.join([
-        b'\x89PNG\r\n\x1a\n',
-        png_pack(b'IHDR', struct.pack("!2I5B", width, height, 8, 6, 0, 0, 0)),
-        png_pack(b'IDAT', zlib.compress(raw_data, 9)),
-        png_pack(b'IEND', b'')])
-
-    # TODO - time this
+    with open(filename, 'w') as f:
+        f.write('\n'.join(svg_lines))
