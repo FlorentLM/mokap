@@ -9,25 +9,20 @@ sources:
     strawberry:
         type: basler
         serial: xxxxxx
-        virtual: true
         color: da141d
     avocado:
         type: basler
         serial: xxxxxx
-        virtual: true
         color: 7a9c21
     banana:
         type: basler
         serial: xxxxxx
-        virtual: true
         color: f3d586
     blueberry:
         type: basler
         serial: xxxxxx
-        virtual: true
         color: 443e93
     coconut:
         type: basler
         serial: xxxxxx
-        virtual: true
         color: efeee7

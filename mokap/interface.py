@@ -55,7 +55,7 @@ gui_logger = False
 
 class VideoWindowBase(QWidget):
     BOTTOM_PANEL_H = 300
-    WINDOW_MIN_W = 650
+    WINDOW_MIN_W = 550
     if 'Windows' in platform.system():
         TASKBAR_H = 48
         TOPBAR_H = 23
@@ -945,7 +945,7 @@ class MainWindow(QMainWindow):
         self._mem_baseline = psutil.virtual_memory().percent
 
     def init_gui(self):
-        self.MAIN_LAYOUT = QVBoxLayout(self)
+        self.MAIN_LAYOUT = QVBoxLayout()
         self.MAIN_LAYOUT.setContentsMargins(5, 5, 5, 5)
         self.MAIN_LAYOUT.setSpacing(5)
         # self.setStyleSheet('QGroupBox { border: 1px solid #807f7f7f; border-radius: 5px; margin-top: 0.5em;} '
@@ -1199,10 +1199,8 @@ class MainWindow(QMainWindow):
             self.save_dir_current.setText(f'{self.mc.full_path.resolve()}')
 
     def open_session_folder(self):
-        path = Path(self.acq_name_textbox.text()).resolve()
 
-        if self.acq_name_textbox.text() == "":
-            path = self.mc.full_path
+        path = self.mc.full_path.resolve()
 
         try:
             if 'Linux' in platform.system():
@@ -1284,6 +1282,7 @@ class MainWindow(QMainWindow):
             if self.mc.recording and override is False:
                 self.mc.pause()
                 self._recording_text = ''
+                self.button_recpause.setText("Not recording (Space to toggle)")
                 self.button_recpause.setIcon(self.icon_rec_bw)
             elif not self.mc.recording and override is True:
                 self.mc.record()
