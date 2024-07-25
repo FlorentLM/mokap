@@ -358,7 +358,7 @@ class MultiCam:
     def _close_videowriter(self, cam_idx: int):
         if self._saving_ext == 'mp4':
             if self._videowriters[cam_idx]:
-                # self._videowriters[cam_idx].stdin.flush()
+                self._videowriters[cam_idx].stdin.flush()
                 self._videowriters[cam_idx].stdin.close()
                 self._videowriters[cam_idx].wait()
                 self._videowriters[cam_idx] = False
@@ -446,7 +446,7 @@ class MultiCam:
 
                 # If we're writing fast enough, this thread should wait a bit
                 else:
-                    time.sleep(0.01)
+                    timer.wait(0.01)
             else:
                 # Recording is not set - either it hasn't started, or it has but hasn't finished yet
                 if started_saving:
@@ -456,8 +456,8 @@ class MultiCam:
                         save_frame(frame, frame_nb)
                     else:
                         self._close_videowriter(cam_idx)     # This does nothing if not in video mode
-                        self._l_finished_saving[cam_idx].set()
                         timer.wait(0.1)
+                        self._l_finished_saving[cam_idx].set()
                 else:
                     # Default state of this thread: if cameras are acquiring but we're not recording, just wait
                     timer.wait(0.1)
