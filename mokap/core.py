@@ -347,9 +347,8 @@ class MultiCam:
 
                 command = f'{input_params.strip()} {output_params.strip()} {filepath.as_posix()}'.replace('  ', ' ')
 
-                ON_POSIX = 'posix' in sys.builtin_module_names
                 # p = Popen(shlex.split(command), stdin=PIPE, close_fds=ON_POSIX)     # Debug mode (stderr/stdout on)
-                p = Popen(shlex.split(command), stdin=PIPE, stdout=False, stderr=False, close_fds=ON_POSIX)
+                p = Popen(shlex.split(command), stdin=PIPE, stdout=False, stderr=False)
                 p.stdin.write(dummy_frame.tobytes())
                 self._videowriters[cam_idx] = p
         else:
