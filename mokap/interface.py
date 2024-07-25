@@ -159,12 +159,14 @@ class VideoWindowBase(QWidget):
         # LEFT GROUP
         left_group_layout = QVBoxLayout(self.LEFT_GROUP)
 
+        self.triggered_value = QLabel()
         self.resolution_value = QLabel()
         self.capturefps_value = QLabel()
         self.exposure_value = QLabel()
         self.brightness_value = QLabel()
         self.temperature_value = QLabel()
 
+        self.triggered_value.setText("Yes" if self._camera.triggered else "No")
         self.resolution_value.setText(f"{self.source_shape[1]}×{self.source_shape[0]} px")
         self.capturefps_value.setText(f"Off")
         self.exposure_value.setText(f"{self._camera.exposure} µs")
@@ -172,6 +174,7 @@ class VideoWindowBase(QWidget):
         self.temperature_value.setText(f"{self._camera.temperature}°C" if self._camera.temperature is not None else '-')
 
         labels_and_values = [
+            ('Triggered', self.triggered_value),
             ('Resolution', self.resolution_value),
             ('Capture', self.capturefps_value),
             ('Exposure', self.exposure_value),
