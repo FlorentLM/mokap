@@ -159,7 +159,6 @@ sources:
         type: basler
         serial: 401xxxxx
         color: efeee7
-
 ```
 
 ### Start GUI
@@ -168,6 +167,22 @@ sources:
 2. Run `./main.py`
 
 *Note: There are some default values hardcoded in `main.py`, but they can be changed with the GUI*
+
+**Important**: The default in `main.py` is to use a hardware trigger (Raspberry Pi). For this, you **_MUST_** have three environment variables defined.
+The recommended way is to create a file named `.env` that contains the three variables:
+
+For example (replace with your trigger's IP or hostname, username and passsword):
+```dotenv
+TRIGGER_HOST=192.168.0.10
+TRIGGER_USER=pi
+TRIGGER_PASS=hunter2
+```
+
+You can disable the hardware trigger by editing the `main.py` file line 6:
+```python
+mc = MultiCam(config='./config.yml', triggered=False, silent=False)
+```
+
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 

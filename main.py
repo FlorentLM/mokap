@@ -3,7 +3,7 @@ import sys
 from mokap.core import MultiCam
 from mokap.interface import QApplication, MainWindow
 
-mc = MultiCam(config='./config.yaml', triggered=True, silent=False)
+mc = MultiCam(config='./config.yml', triggered=True, silent=False)
 
 # Example:
 # Set some default parameters for all cameras at once

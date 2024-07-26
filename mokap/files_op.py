@@ -35,7 +35,7 @@ ENCODE_FORMAT = COMPRESSED
 #
 #     return confparser
 
-def read_config(config_file='config.yaml'):
+def read_config(config_file='config.yml'):
     config_file = Path(config_file)
 
     if not config_file.exists():

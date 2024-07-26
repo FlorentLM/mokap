@@ -17,3 +17,4 @@ dependencies:
       - pypylon==2.3.0
       - scikit-image==0.24.0
       - screeninfo==0.8.1
+      - pyqt6==6.7.1
