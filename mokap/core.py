@@ -311,7 +311,7 @@ class MultiCam:
 
             if not self._videowriters[cam_idx]:
                 dummy_frame = np.zeros((cam.height, cam.width), dtype=np.uint8)
-                filepath = self.full_path / f"cam{cam.idx}_{cam.name}_session{len(self._metadata['sessions'])-1}.mp4"
+                filepath = self.full_path / f"{self.session_name}_cam{cam.idx}_{cam.name}_session{len(self._metadata['sessions'])-1}.mp4"
 
                 # TODO - Get available hardware-accelerated encoders on user's system and choose the best one automatically
                 # TODO - Why is QSV not working????
@@ -376,10 +376,10 @@ class MultiCam:
 
         h = self._sources_list[cam_idx].height
         w = self._sources_list[cam_idx].width
-        folder = self.full_path / f"cam{cam_idx}_{self._sources_list[cam_idx].name}"
+        folder = self.full_path / f"{self.session_name}_cam{cam_idx}_{self._sources_list[cam_idx].name}"
 
         if 'mp4' not in self._saving_ext:
-            folder = self.full_path / f"cam{cam_idx}_{self._sources_list[cam_idx].name}"
+            folder = self.full_path / f"{self.session_name}_cam{cam_idx}_{self._sources_list[cam_idx].name}"
             folder.mkdir(parents=True, exist_ok=True)
 
         def save_frame(frame, number):
@@ -567,7 +567,7 @@ class MultiCam:
 
                 for i, cam in enumerate(self.cameras):
                     if 'mp4' in self._saving_ext:
-                        vid = self.full_path / f"cam{i}_{self._sources_list[i].name}_session{len(self._metadata['sessions']) - 1}.mp4"
+                        vid = self.full_path / f"{self.session_name}_cam{i}_{self._sources_list[i].name}_session{len(self._metadata['sessions']) - 1}.mp4"
                         if vid.is_file():
                             # Using cv2 here is much faster than calling ffprobe...
                             cap = cv2.VideoCapture(vid.as_posix())
@@ -581,7 +581,7 @@ class MultiCam:
                                                 range(len(self._metadata['sessions']))])
 
                         # Wait for all files to finish being written and write the number of frames for this session
-                        saved_frames = self._safe_files_counter(self.full_path / f'cam{i}_{cam.name}')
+                        saved_frames = self._safe_files_counter(self.full_path / f'{self.session_name}_cam{i}_{cam.name}')
                         saved_frames_curr_sess = saved_frames - previsouly_saved
 
                     self._metadata['sessions'][-1]['cameras'][i]['frames'] = saved_frames_curr_sess
