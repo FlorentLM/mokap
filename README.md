@@ -104,7 +104,7 @@ We recommend using Miniconda to manage Python environments and install Mokap eas
 * **Note:** Basler's default increase on USB memory is 1000 Mib. This is, in our case, **not enough** for more than 3 USB cameras. 
   You can increase it even further by modifying the `/sys/module/usbcore/parameters/usbfs_memory_mb` file.
   A value of `2048` is enough for our 5 cameras.
-* **Note:** On Arch-based systems, Basler's script is not sufficient. You need to manually add the line `DefaultLimitNOFILE=8192` to `/etc/systemd/user.conf`
+* **Note:** On Arch-based systems, you need to manually add the line `DefaultLimitNOFILE=2048` to `/etc/systemd/user.conf` (or `/etc/systemd/system.conf` if you want to apply it system-wide)
 * On systems that do not use GRUB, if you want to the USB memory setting to be persistent, Basler's script won't work. You need to change your bootloader options manually.
     
     For instance, EndeavourOS uses systemd-boot: edit `/efi/loader/entries/YOURDISTRO.conf` (replace `YOURDISTRO` by the name of the entry for your system, typically the machine-id in the case of EndeavourOS) and add `usbcore.usbfs_memory_mb=2048` to the `options` line.
@@ -231,7 +231,7 @@ or
     
     Too many open files. Reached open files limit
 
-**Fix**:  Increase the number of file `nofile` file descriptors: `ulimit -n 8192` (or more)
+**Fix**:  Increase the number of open file descriptors: `ulimit -n 2048` (or more)
 
 _Note_: mokap normally does this automatically
 
