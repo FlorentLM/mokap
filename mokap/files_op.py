@@ -93,9 +93,9 @@ def rm_if_empty(path):
                 rm_if_empty(f)
 
 
-def clean_folder(path):
+def clean_root_folder(path):
     path = Path(path)
-    [f.unlink() for f in path.glob('*')]
+    [rm_if_empty(f) for f in path.glob('*') if f.is_dir()]
     print(f"Cleaned {path}")
 
 

@@ -66,6 +66,7 @@ class MultiCam:
         if re.match(r'[A-Z]:', self._base_folder.parts[0]) and 'Darwin' in platform.system():
             self._base_folder = Path(self._base_folder.as_posix()[2:].lstrip('/'))
         self._base_folder.mkdir(parents=True, exist_ok=True)
+        files_op.clean_root_folder(self._base_folder)
 
         self._session_name: str = ''
         self._saving_ext = self.config_dict.get('save_format', 'bmp').lower()
@@ -673,19 +674,19 @@ class MultiCam:
             if self._triggered:
                 self.trigger.stop()
 
-            # Clean up the acquisition folder if nothing was written in it
-            files_op.rm_if_empty(self._base_folder / self._session_name)
+        # Clean up the acquisition folder if nothing was written in it
+        files_op.rm_if_empty(self._base_folder / self._session_name)
 
-            # Reset everything for next acquisition
-            self._session_name = ''
-            self._metadata['sessions'] = []
+        # Reset everything for next acquisition
+        self._session_name = ''
+        self._metadata['sessions'] = []
 
-            self._cnt_grabbed = RawArray('I', int(self._nb_cams))
-            self._cnt_displayed = RawArray('I', int(self._nb_cams))
-            self._cnt_saved = RawArray('I', int(self._nb_cams))
+        self._cnt_grabbed = RawArray('I', int(self._nb_cams))
+        self._cnt_displayed = RawArray('I', int(self._nb_cams))
+        self._cnt_saved = RawArray('I', int(self._nb_cams))
 
-            if not self._silent:
-                print(f'[INFO] Grabbing stopped')
+        if not self._silent:
+            print(f'[INFO] Grabbing stopped')
 
     @property
     def session_name(self) -> str:
