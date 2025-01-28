@@ -123,10 +123,14 @@ class MainWorker(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._running = True
+        self._paused = False
+
+    def set_paused(self, val):
+        self._paused = val
 
     @Slot(np.ndarray)
     def process_frame(self, frame):
-        if not self._running:
+        if not self._running or self._paused:
             return
 
         # 1- TODO: motiuon detection
@@ -157,12 +161,16 @@ class CalibWorker(QObject):
         self.auto_sample = auto_sample
         self.auto_compute = auto_compute
         self._running = True
+        self._paused = False
+
+    def set_paused(self, val):
+        self._paused = val
 
     @Slot(np.ndarray)
     def process_frame(self, frame):
         # Called for each new frame received from main thread to process
 
-        if not self._running:
+        if not self._running or self._paused:
             return
 
         # 1- Detect
@@ -752,12 +760,13 @@ class VideoWindowMain(VideoWindowBase):
 
     #  ============= Qt method overrides =============
     def closeEvent(self, event):
-        self.worker.stop()
-        self.worker_thread.quit()
-        self.worker_thread.wait()
-        # super().closeEvent(event)
         event.ignore()
+        self.worker.set_paused(True)
         self.toggle_visibility(False)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.worker.set_paused(False)
 
     def eventFilter(self, obj, event):
 
@@ -1120,12 +1129,13 @@ class VideoWindowCalib(VideoWindowBase):
 
     #  ============= Qt method overrides =============
     def closeEvent(self, event):
-        self.calib_worker.stop()
-        self.calib_thread.quit()
-        self.calib_thread.wait()
-        # super().closeEvent(event)
         event.ignore()
+        self.calib_worker.set_paused(True)
         self.toggle_visibility(False)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.calib_worker.set_paused(False)
 
     #  ============= Update frame, and worker communication =============
     def _update_images(self):
