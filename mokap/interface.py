@@ -4,37 +4,24 @@ import sys
 import platform
 import psutil
 import screeninfo
-
 import cv2
-
 from functools import partial
 from collections import deque
 from datetime import datetime
 from pathlib import Path
-
 import numpy as np
-
 from mokap import utils, calibration_utils
 from mokap.calibration import DetectionTool, MonocularCalibrationTool
-
 from PIL import Image
-
-# PyQt6
-# from PyQt6.QtCore import Qt, QTimer, QEvent
-# from PyQt6.QtGui import QIcon, QImage, QPixmap, QCursor, QBrush, QPen, QColor, QFont, QDoubleValidator
-# from PyQt6.QtWidgets import (QApplication, QMainWindow, QStatusBar, QSlider, QGraphicsView, QGraphicsScene,
-#                              QGraphicsRectItem, QComboBox, QLineEdit, QProgressBar, QCheckBox, QScrollArea, QWidget,
-#                              QLabel, QFrame, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout, QPushButton, QSizePolicy,
-#                              QGraphicsTextItem, QTextEdit, QSplitter, QSpinBox)
-
-# PySide6
-from PySide6.QtCore import Qt, QTimer, QEvent, QDir
-from PySide6.QtGui import QIcon, QImage, QPixmap, QCursor, QBrush, QPen, QColor, QFont, QDoubleValidator
+from PySide6.QtCore import Qt, QTimer, QEvent, QDir, QObject, Signal, Slot, QThread
+from PySide6.QtGui import QIcon, QImage, QPixmap, QCursor, QBrush, QPen, QColor, QFont
 from PySide6.QtWidgets import (QApplication, QMainWindow, QStatusBar, QSlider, QGraphicsView, QGraphicsScene,
                                QGraphicsRectItem, QComboBox, QLineEdit, QProgressBar, QCheckBox, QScrollArea,
                                QWidget, QLabel, QFrame, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout,
                                QPushButton, QSizePolicy, QGraphicsTextItem, QTextEdit, QFileDialog, QSpinBox,
                                QDialog, QDoubleSpinBox, QDialogButtonBox)
+
+##
 
 class GUILogger:
     def __init__(self):
@@ -123,10 +110,98 @@ class BoardParamsDialog(QDialog):
     def get_values(self):
         return self.row_spin.value(), self.col_spin.value(), self.sq_spin.value(), self.apply_all_checkbox.isChecked()
 
+##
+
+class MainWorker(QObject):
+    """
+        This worker lives in its own thread and does stuff on the full resolution image
+    """
+    # testing stuff for now, let's send bounding boxes of a fake detection:
+    result_ready = Signal(list)
+    finished_processing = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._running = True
+
+    @Slot(np.ndarray)
+    def process_frame(self, frame):
+        if not self._running:
+            return
+
+        # 1- TODO: motiuon detection
+        bboxes = self._do_motion_detection(frame)
+
+        # 2- Emit the results (metadata) back to the main thread, and emit 'done' signal
+        self.result_ready.emit(bboxes)
+        self.finished_processing.emit()
+
+    def _do_motion_detection(self, frame):
+        # TODO. for now let's just assume we found one bounding box around (100,100) of size (50,40)
+        return [(100, 100, 50, 40)]
+
+    def stop(self):
+        self._running = False
+
+
+class CalibWorker(QObject):
+    """
+        This worker lives in its own thread and does detection/calibration
+    """
+    result_ready = Signal(np.ndarray)   # carry back the annotated image back to the main thread (to didplay it)
+    finished_processing = Signal()      # signals when this worker is busy / free
+
+    def __init__(self, calib_tool, auto_sample=True, auto_compute=True, parent=None):
+        super().__init__(parent)
+        self.calib_tool = calib_tool
+        self.auto_sample = auto_sample
+        self.auto_compute = auto_compute
+        self._running = True
+
+    @Slot(np.ndarray)
+    def process_frame(self, frame):
+        # Called for each new frame received from main thread to process
+
+        if not self._running:
+            return
+
+        # 1- Detect
+        self.calib_tool.detect(frame)
+
+        # 2- Auto-register samples
+        if self.auto_sample:
+            self.calib_tool.auto_register(area_threshold=0.2, nb_points_threshold=4)
+
+        # 3- Auto-calibrate
+        if self.auto_compute:
+            self.calib_tool.auto_compute_intrinsics(
+                coverage_threshold=60,
+                stack_length_threshold=15,
+                simple_focal=True,
+                complex_distortion=True
+            )
+
+        # 4- Compute extrinsics (if intrinsics exist)
+        self.calib_tool.compute_extrinsics()
+
+        # 5- Visualize (this returns the annotated image in full resolution) - TODO: maybe this should be scaled...
+        annotated = self.calib_tool.visualise(errors_mm=True)
+
+        # 6- Emit the annotated frame to the main thread, and emit the 'done' signal
+        self.result_ready.emit(annotated)
+        self.finished_processing.emit()
+
+    def stop(self):
+        self._running = False
+
+##
 
 # Create this immediately to capture everything
 # gui_logger = GUILogger()
 gui_logger = False
+
+
+##
 
 
 class VideoWindowBase(QWidget):
@@ -176,17 +251,13 @@ class VideoWindowBase(QWidget):
                                    ['w', 'c', 'e'],
                                    ['sw', 's', 'se']])
 
-        # Setup MainWindow update
+        # This updater function foes not need to run super frequently
         self.timer_update = QTimer(self)
-        self.timer_update.timeout.connect(self._update_others)
+        self.timer_update.timeout.connect(self._update_vars)
         self.timer_update.start(100)
 
-        # Setup VideoWindow video update
-        self.timer_video = QTimer(self)
-        self.timer_video.timeout.connect(self._update_images)
-        self.timer_video.start(33)
-
-    def init_common_ui(self):
+    #  ============= UI constructors =============
+    def _init_common_ui(self):
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -308,9 +379,10 @@ class VideoWindowBase(QWidget):
 
         right_group_layout.addWidget(line)
 
-    def init_specific_ui(self):
+    def _init_specific_ui(self):
         pass
 
+    #  ============= Some useful attributes =============
     @property
     def name(self) -> str:
         return self._camera.name
@@ -335,6 +407,7 @@ class VideoWindowBase(QWidget):
     def aspect_ratio(self):
         return self._source_shape[1] / self._source_shape[0]
 
+    #  ============= Some common window-related methods =============
     def auto_size(self):
 
         # If landscape screen
@@ -401,10 +474,6 @@ class VideoWindowBase(QWidget):
             case 'se':
                 self.move(monitor.x - sp + monitor.width - w - 1, monitor.y + monitor.height - h - VideoWindowBase.TASKBAR_H - sp)
 
-    def closeEvent(self, event):
-        event.ignore()
-        self.toggle_visibility(False)
-
     def toggle_visibility(self, override=None):
 
         if override is None:
@@ -418,6 +487,7 @@ class VideoWindowBase(QWidget):
             self._main_window.secondary_windows_visibility_buttons[self.idx].setChecked(True)
             self.show()
 
+    #  ============= Display-related common methods =============
     def _refresh_framebuffer(self):
         """ Grabs a new frame from the cameras and stores it in the frame buffer """
         if self._main_window.mc.acquiring:
@@ -443,48 +513,8 @@ class VideoWindowBase(QWidget):
         pixmap = QPixmap.fromImage(q_img)
         self.VIDEO_FEED.setPixmap(pixmap)
 
-    def _full_res_processing(self):
-        # Just a debug modification of the frame buffer
-        self._frame_buffer = cv2.putText(
-            img=self._frame_buffer,
-            text=f"{self.idx} (HR)",
-            org=(150, 150),
-            fontFace=cv2.FONT_HERSHEY_DUPLEX,
-            fontScale=3.0,
-            color=(125, 246, 55),
-            thickness=3
-        )
-
-    def _low_res_processing(self):
-        # Just a debug modification of the display buffer
-        self._display_buffer = cv2.putText(
-            img=self._display_buffer,
-            text=f"{self.idx} (LW)",
-            org=(150, 150),
-            fontFace=cv2.FONT_HERSHEY_DUPLEX,
-            fontScale=3.0,
-            color=(245, 246, 55),
-            thickness=3
-        )
-
-    def _update_images(self):
-        if self.isVisible():
-            # 1- Grab a new frame from cameras
-            self._refresh_framebuffer()
-
-            # 2- Do anything with the full resolution frame
-            self._full_res_processing()
-
-            # 3- Create resized buffer to display
-            self._resize_to_display()
-
-            # 4- Do anything with the smaller resolution frame
-            self._low_res_processing()
-
-            # 5- Blit
-            self._blit_image()
-
-    def _update_others(self):
+    #  ============= Common update method for texts and stuff =============
+    def _update_vars(self):
 
         if self.isVisible():
 
@@ -531,7 +561,10 @@ class VideoWindowBase(QWidget):
             self._clock = now
             self._last_capture_count = ind
 
+
 class VideoWindowMain(VideoWindowBase):
+    newFrameSignal = Signal(np.ndarray)
+
     def __init__(self, main_window_ref, idx):
         super().__init__(main_window_ref, idx)
 
@@ -559,12 +592,36 @@ class VideoWindowMain(VideoWindowBase):
             [0, 1, 0],
             [0, 0, 0]], dtype=np.uint8)
 
-        self.init_common_ui()
-        self.init_specific_ui()
+        ##
 
+        # Setup worker
+        self.worker_thread = QThread(self)
+        self.worker = MainWorker()
+        self.worker.moveToThread(self.worker_thread)
+
+        # Setup signals
+        self.newFrameSignal.connect(self.worker.process_frame, type=Qt.QueuedConnection)
+        self.worker.result_ready.connect(self.on_worker_result)
+        self.worker.finished_processing.connect(self.on_worker_finished)
+        self.worker_thread.start()
+
+        # Store worker results and its current state
+        self._bboxes = []
+        self._worker_busy = False
+        self._latest_frame = None
+
+        # This updater function should only run at 60 fps
+        self.timer_video = QTimer(self)
+        self.timer_video.timeout.connect(self._update_images)
+        self.timer_video.start(16)  # 60 FPS
+
+        # Finish building the UI by calling the other constructors
+        self._init_common_ui()
+        self._init_specific_ui()
         self.auto_size()
 
-    def init_specific_ui(self):
+    #  ============= UI constructors =============
+    def _init_specific_ui(self):
 
         # Add mouse click detection to video feed (for the magnifier)
         self.VIDEO_FEED.installEventFilter(self)
@@ -693,23 +750,14 @@ class VideoWindowMain(VideoWindowBase):
 
         right_group_layout.addWidget(line)
 
-    def _toggle_n_display(self):
-        if self._n_enabled:
-            self.n_button.setStyleSheet('')
-            self._n_enabled = False
-        else:
-            self.n_button.setStyleSheet(f'background-color: #80{self._main_window.col_green.lstrip("#")};')
-            self._n_enabled = True
-
-    def _toggle_mag_display(self):
-        if self._magnifier_enabled:
-            self.magn_button.setStyleSheet('')
-            # self.magn_slider.setDisabled(True)
-            self._magnifier_enabled = False
-        else:
-            self.magn_button.setStyleSheet(f'background-color: #80{self._main_window.col_yellow.lstrip("#")};')
-            # self.magn_slider.setDisabled(False)
-            self._magnifier_enabled = True
+    #  ============= Qt method overrides =============
+    def closeEvent(self, event):
+        self.worker.stop()
+        self.worker_thread.quit()
+        self.worker_thread.wait()
+        # super().closeEvent(event)
+        event.ignore()
+        self.toggle_visibility(False)
 
     def eventFilter(self, obj, event):
 
@@ -740,10 +788,8 @@ class VideoWindowMain(VideoWindowBase):
 
         return super().eventFilter(obj, event)
 
-    def _full_res_processing(self):
-        pass
-
-    def _low_res_processing(self):
+    #  ============= Update frame, and worker communication =============
+    def _annotate(self):
 
         # Get new coordinates
         h, w = self._display_buffer.shape[:2]
@@ -819,6 +865,78 @@ class VideoWindowMain(VideoWindowBase):
                                                (int(x_north - textsize[0] / 2), int(y_centre / 2 - textsize[1])),
                                                font, txtsiz, self._main_window.col_orange_rgb, txtth, cv2.LINE_AA)
 
+
+    def _update_images(self):
+        # 1- Grab camera frame
+        self._refresh_framebuffer()
+        frame = self._frame_buffer.copy()
+
+        # 2- if worker is free, send frame
+        if not self._worker_busy:
+            self._send_frame_to_worker(frame)
+        else:
+            self._latest_frame = frame
+
+        # 3- resize to current window
+        self._resize_to_display()
+
+        disp_h, disp_w = self._display_buffer.shape[:2]
+        scale = min(disp_w / frame.shape[1], disp_h / frame.shape[0])
+        display_img = cv2.resize(frame, (0,0), fx=scale, fy=scale)
+
+        # 4- annotate resized image - TODO: this will be moved to _annotate()
+        h, w = display_img.shape[:2]
+        self._display_buffer[:h, :w] = display_img
+        if h < disp_h:
+            self._display_buffer[h:, :] = 0
+        if w < disp_w:
+            self._display_buffer[:, w:] = 0
+
+        # TODO - this is a test fake bounding box
+        for (x, y, bw, bh) in self._bboxes:
+            sx, sy = int(x*scale), int(y*scale)
+            sw, sh = int(bw*scale), int(bh*scale)
+            cv2.rectangle(self._display_buffer, (sx, sy), (sx+sw, sy+sh),
+                          (0,255,255), 2)
+
+        self._annotate()
+
+        self._blit_image()
+
+    def _send_frame_to_worker(self, frame):
+        self.newFrameSignal.emit(frame)
+        self._worker_busy = True
+
+    def on_worker_finished(self):
+        self._worker_busy = False
+        if self._latest_frame is not None:
+            frame = self._latest_frame
+            self._latest_frame = None
+            self._send_frame_to_worker(frame)
+
+    def on_worker_result(self, bboxes):
+        # called in the main thread when worker finishes processing and emits 'result_ready'
+        self._bboxes = bboxes
+
+    #  ============= Custom functions =============
+    def _toggle_n_display(self):
+        if self._n_enabled:
+            self.n_button.setStyleSheet('')
+            self._n_enabled = False
+        else:
+            self.n_button.setStyleSheet(f'background-color: #80{self._main_window.col_green.lstrip("#")};')
+            self._n_enabled = True
+
+    def _toggle_mag_display(self):
+        if self._magnifier_enabled:
+            self.magn_button.setStyleSheet('')
+            # self.magn_slider.setDisabled(True)
+            self._magnifier_enabled = False
+        else:
+            self.magn_button.setStyleSheet(f'background-color: #80{self._main_window.col_yellow.lstrip("#")};')
+            # self.magn_slider.setDisabled(False)
+            self._magnifier_enabled = True
+
     def update_param(self, label):
         if label == 'framerate' and self._main_window.mc.triggered and self._main_window.mc.acquiring:
             return
@@ -878,6 +996,8 @@ class VideoWindowMain(VideoWindowBase):
 
 class VideoWindowCalib(VideoWindowBase):
 
+    newFrameSignal = Signal(np.ndarray)
+
     def __init__(self, main_window_ref, idx):
         super().__init__(main_window_ref, idx)
 
@@ -887,90 +1007,46 @@ class VideoWindowCalib(VideoWindowBase):
         self.SQUARE_LENGTH_MM = 1.5
         self.MARKER_BITS = 4
 
-        # 1) Generate a Charuco board and create our detection tool
-        self._update_board()  # sets self.charuco_board
+        # Setup Detection classes
+        self._update_board()
         self.detection_tool = DetectionTool(self.charuco_board)
-
-        # 2) Create a calibration tool for this single camera
-        #    We pass the frame size so it can track coverage, etc.
-        #    Make sure self._source_shape is (height, width, [channels]).
         self.calib_tool = MonocularCalibrationTool(
             detectiontool=self.detection_tool,
-            imsize=self._source_shape[:2]  # (height, width)
+            imsize=self._source_shape[:2]   # pass frame size so it can track coverage
         )
 
-        # Just call these helper methods from the base class & below
-        self.init_common_ui()
-        self.init_specific_ui()
+        ##
+
+        # Setup worker
+        self.calib_thread = QThread(self)
+        self.calib_worker = CalibWorker(self.calib_tool, auto_sample=True, auto_compute=True)
+        self.calib_worker.moveToThread(self.calib_thread)
+
+        # Setup signals
+        self.newFrameSignal.connect(self.calib_worker.process_frame, type=Qt.QueuedConnection)
+        self.calib_worker.result_ready.connect(self.on_worker_result)
+        self.calib_worker.finished_processing.connect(self.on_worker_finished)
+        self.calib_thread.start()
+
+        # Store worker results and its current state
+        self.annotated_frame = None
+        self._worker_busy = False
+        self._latest_frame = None
+
+        # This updater function should only run at 60 fps
+        self.timer_calib = QTimer(self)
+        self.timer_calib.timeout.connect(self._update_images)
+        self.timer_calib.start(16)  # 60 FPS
+
+        # Finish building the UI by calling the other constructors
+        self._init_common_ui()
+        self._init_specific_ui()
         self.auto_size()
 
         self._update_board_preview()
 
-    def _update_board(self):
-        """
-        Creates/updates the Charuco board whenever board parameters change.
-        """
-        self.charuco_board = calibration_utils.generate_charuco(
-            board_rows=self.BOARD_ROWS,
-            board_cols=self.BOARD_COLS,
-            square_length_mm=self.SQUARE_LENGTH_MM,
-            marker_bits=self.MARKER_BITS
-        )
-
-    def _reset_detector(self):
-        self.detection_tool = DetectionTool(self.charuco_board)
-        self.calib_tool.dt = self.detection_tool
-        self.calib_tool.clear_stacks()
-
-    def show_board_params_dialog(self):
-        """
-        Opens the small BoardParamsDialog to let the user set board parameters
-        """
-
-        dlg = BoardParamsDialog(
-            rows=self.BOARD_ROWS,
-            cols=self.BOARD_COLS,
-            square_length=self.SQUARE_LENGTH_MM,
-            parent=self
-        )
-        ret = dlg.exec_()
-        if ret == QDialog.Accepted:
-            # retrieve updated parameters
-            rows, cols, sq, all = dlg.get_values()
-
-            if all:
-                # Loop over all secondary windows in the main app
-                for w in self._main_window.secondary_windows:
-                    if isinstance(w, VideoWindowCalib):
-                        w.BOARD_ROWS = rows
-                        w.BOARD_COLS = cols
-                        w.SQUARE_LENGTH_MM = sq
-                        w._update_board()
-                        w._reset_detector()
-                        w._update_board_preview()
-            else:
-                self.BOARD_ROWS = rows
-                self.BOARD_COLS = cols
-                self.SQUARE_LENGTH_MM = sq
-
-                self._update_board()
-                self._reset_detector()
-                self._update_board_preview()
-
-    def _update_board_preview(self):
-        MAX_W, MAX_H = 100, 100
-
-        r = self.BOARD_ROWS / self.BOARD_COLS
-        h, w = 100, int(r * 100)
-        board_arr = self.charuco_board.generateImage((h, w))
-        q_img = QImage(board_arr, h, w, h, QImage.Format.Format_Grayscale8)
-        pixmap = QPixmap.fromImage(q_img)
-        bounded_pixmap = pixmap.scaled(MAX_W, MAX_H,
-                                       Qt.KeepAspectRatio,
-                                       Qt.SmoothTransformation)
-        self.board_preview_label.setPixmap(bounded_pixmap)
-
-    def init_specific_ui(self):
+    #  ============= UI constructors =============
+    def _init_specific_ui(self):
 
         layout = QHBoxLayout(self.CENTRE_GROUP)
         layout.setContentsMargins(5, 5, 5, 5)
@@ -1042,6 +1118,121 @@ class VideoWindowCalib(VideoWindowBase):
 
         layout.addWidget(calib_io_group)
 
+    #  ============= Qt method overrides =============
+    def closeEvent(self, event):
+        self.calib_worker.stop()
+        self.calib_thread.quit()
+        self.calib_thread.wait()
+        # super().closeEvent(event)
+        event.ignore()
+        self.toggle_visibility(False)
+
+    #  ============= Update frame, and worker communication =============
+    def _update_images(self):
+        self._refresh_framebuffer()
+        frame = self._frame_buffer.copy()
+
+        if not self._worker_busy:
+            self._send_frame_to_worker(frame)
+        else:
+            self._latest_frame = frame
+
+        self._resize_to_display()
+
+        # Now scale + display the last annotated frame we got from the worker
+        disp_h, disp_w = self._display_buffer.shape[:2]
+        if self.annotated_frame is not None and self.annotated_frame.size > 0:
+            scale = min(disp_w / self.annotated_frame.shape[1],
+                        disp_h / self.annotated_frame.shape[0])
+            out = cv2.resize(self.annotated_frame, (0, 0), fx=scale, fy=scale)
+
+            h, w = out.shape[:2]
+            self._display_buffer[:h, :w] = out
+            if h < disp_h:
+                self._display_buffer[h:, :] = 0
+            if w < disp_w:
+                self._display_buffer[:, w:] = 0
+        else:
+            self._display_buffer.fill(0)
+
+        self._blit_image()
+
+    def _send_frame_to_worker(self, frame):
+        self.newFrameSignal.emit(frame)
+        self._worker_busy = True
+
+    def on_worker_finished(self):
+        self._worker_busy = False
+        if self._latest_frame is not None:
+            f = self._latest_frame
+            self._latest_frame = None
+            self._send_frame_to_worker(f)
+
+    def on_worker_result(self, annotated):
+        # called in the main thread when worker finishes processing and emits 'result_ready'
+        self.annotated_frame = annotated
+
+    #  ============= Custom functions =============
+    def _update_board(self):
+        self.charuco_board = calibration_utils.generate_charuco(
+            board_rows=self.BOARD_ROWS,
+            board_cols=self.BOARD_COLS,
+            square_length_mm=self.SQUARE_LENGTH_MM,
+            marker_bits=self.MARKER_BITS
+        )
+
+    def _reset_detector(self):
+        self.detection_tool = DetectionTool(self.charuco_board)
+        self.calib_tool.dt = self.detection_tool
+        self.calib_tool.clear_stacks()
+
+    def show_board_params_dialog(self):
+        """
+            Opens the small BoardParamsDialog to let the user set board parameters
+        """
+        dlg = BoardParamsDialog(
+            rows=self.BOARD_ROWS,
+            cols=self.BOARD_COLS,
+            square_length=self.SQUARE_LENGTH_MM,
+            parent=self
+        )
+        ret = dlg.exec_()
+        if ret == QDialog.Accepted:
+            # retrieve updated parameters
+            rows, cols, sq, all = dlg.get_values()
+
+            if all:
+                # Loop over all secondary windows in the main app
+                for w in self._main_window.secondary_windows:
+                    if isinstance(w, VideoWindowCalib):
+                        w.BOARD_ROWS = rows
+                        w.BOARD_COLS = cols
+                        w.SQUARE_LENGTH_MM = sq
+                        w._update_board()
+                        w._reset_detector()
+                        w._update_board_preview()
+            else:
+                self.BOARD_ROWS = rows
+                self.BOARD_COLS = cols
+                self.SQUARE_LENGTH_MM = sq
+
+                self._update_board()
+                self._reset_detector()
+                self._update_board_preview()
+
+    def _update_board_preview(self):
+        MAX_W, MAX_H = 100, 100
+
+        r = self.BOARD_ROWS / self.BOARD_COLS
+        h, w = 100, int(r * 100)
+        board_arr = self.charuco_board.generateImage((h, w))
+        q_img = QImage(board_arr, h, w, h, QImage.Format.Format_Grayscale8)
+        pixmap = QPixmap.fromImage(q_img)
+        bounded_pixmap = pixmap.scaled(MAX_W, MAX_H,
+                                       Qt.KeepAspectRatio,
+                                       Qt.SmoothTransformation)
+        self.board_preview_label.setPixmap(bounded_pixmap)
+
     def on_load_calib(self):
         file_path = self.file_dialog(self._main_window.mc.full_path.parent)
         if file_path is not None:
@@ -1071,55 +1262,7 @@ class VideoWindowCalib(VideoWindowBase):
                     selected_path = file_path
         return selected_path
 
-    def _full_res_processing(self):
-        pass
-
-    def _low_res_processing(self):
-        # 1- detect
-        self.calib_tool.detect(self._frame_buffer)
-
-        # 2- auto-register stacks
-        if self.auto_sample_check.isChecked():
-            self.calib_tool.auto_register(area_threshold=0.2, nb_points_threshold=4)
-
-        # 3- auto-calibrate if requirements are met
-        if self.auto_compute_check.isChecked():
-            # TODO - GUI needs access to these parameters
-            r = self.calib_tool.auto_compute_intrinsics(
-                coverage_threshold=60,    # 60% image coverage
-                stack_length_threshold=15,
-                simple_focal=True,
-                complex_distortion=True
-            )
-            if r:
-                self.load_save_message.setText('Current intrinsics <b>are not saved</b>.')
-
-        # 4- Compute extrinsics from the newly detected corners (if intrinsics exist)
-        self.calib_tool.compute_extrinsics()
-
-        # 5- visualise the current state
-        annotated = self.calib_tool.visualise(errors_mm=True)
-        # annotated will have the same size as the input frame
-
-        # 6- resize annotated image to fit self._display_buffer
-        disp_h, disp_w = self._display_buffer.shape[:2]
-        if annotated.shape[0] > 0 and annotated.shape[1] > 0:
-            scale = min(disp_w / annotated.shape[1], disp_h / annotated.shape[0])
-            if scale < 1.0:
-                annotated = cv2.resize(annotated, (0, 0), fx=scale, fy=scale)
-
-            h, w = annotated.shape[:2]
-            # center it or top-left align: here we put it at (0,0)
-            self._display_buffer[:h, :w] = annotated
-
-            # if there's leftover area in the display buffer, fill black
-            if h < disp_h:
-                self._display_buffer[h:, :] = 0
-            if w < disp_w:
-                self._display_buffer[:, w:] = 0
-        else:
-            # If detection returned empty, fill black
-            self._display_buffer.fill(0)
+##
 
 
 class MainWindow(QMainWindow):
@@ -1781,5 +1924,3 @@ class MainWindow(QMainWindow):
         self._mem_pressure += (psutil.virtual_memory().percent - self._mem_baseline) / self._mem_baseline * 100
         self._mem_pressure_bar.setValue(int(round(self._mem_pressure)))
         self._mem_baseline = psutil.virtual_memory().percent
-
-##
