@@ -162,8 +162,8 @@ class MainWorker(QObject):
         This worker lives in its own thread and does stuff on the full resolution image
     """
     # testing stuff for now, let's send bounding boxes of a fake detection:
-    result_ready = Signal(list)
-    finished_processing = Signal()
+    signal_result_ready = Signal(list)
+    signal_finished_processing = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -182,8 +182,8 @@ class MainWorker(QObject):
         bboxes = self._do_motion_detection(frame)
 
         # 2- Emit the results (metadata) back to the main thread, and emit 'done' signal
-        self.result_ready.emit(bboxes)
-        self.finished_processing.emit()
+        self.signal_result_ready.emit(bboxes)
+        self.signal_finished_processing.emit()
 
     def _do_motion_detection(self, frame):
         # TODO. for now let's just assume we found one bounding box around (100,100) of size (50,40)
@@ -192,21 +192,34 @@ class MainWorker(QObject):
     def stop(self):
         self._running = False
 
-
 class CalibWorker(QObject):
     """
         This worker lives in its own thread and does detection/calibration
     """
-    result_ready = Signal(np.ndarray)   # carry back the annotated image back to the main thread (to didplay it)
-    finished_processing = Signal()      # signals when this worker is busy / free
+    signal_result_ready = Signal(np.ndarray)   # carry back the annotated image back to the main thread (to didplay it)
+    signal_finished_processing = Signal()      # signals when this worker is busy / free
+    signal_auto_sample = Signal(bool)
+    signal_auto_compute = Signal(bool)
 
-    def __init__(self, calib_tool, auto_sample=True, auto_compute=True, parent=None):
+    signal_TEST_EXTRINSICS_MODE = Signal(bool)
+
+    def __init__(self, calib_tool, parent=None):
         super().__init__(parent)
         self.calib_tool = calib_tool
-        self.auto_sample = auto_sample
-        self.auto_compute = auto_compute
+
+        # Flags for worker state
         self._running = True
         self._paused = False
+
+        # Flags for worker function
+        self.auto_sample = True
+        self.auto_compute = True
+
+        self._TEST_EXTRINSICS_MODE = False
+
+        self.signal_auto_sample.connect(self.set_auto_sample)
+        self.signal_auto_compute.connect(self.set_auto_compute)
+        self.signal_TEST_EXTRINSICS_MODE.connect(self.set_TEST_EXTRINSICS_MODE)
 
     def set_paused(self, val):
         self._paused = val
@@ -223,16 +236,22 @@ class CalibWorker(QObject):
 
         # 2- Auto-register samples
         if self.auto_sample:
-            self.calib_tool.auto_register(area_threshold=0.2, nb_points_threshold=4)
+            if self._TEST_EXTRINSICS_MODE:
+                print('EXTRINSICS MODE')
+            else:
+                self.calib_tool.auto_register_monocular(area_threshold=0.2, nb_points_threshold=4)
 
         # 3- Auto-calibrate
         if self.auto_compute:
-            self.calib_tool.auto_compute_intrinsics(
-                coverage_threshold=60,
-                stack_length_threshold=15,
-                simple_focal=True,
-                complex_distortion=True
-            )
+            if self._TEST_EXTRINSICS_MODE:
+                print('EXTRINSICS MODE')
+            else:
+                self.calib_tool.auto_compute_intrinsics(
+                    coverage_threshold=60,
+                    stack_length_threshold=15,
+                    simple_focal=True,
+                    complex_distortion=True
+                )
 
         # 4- Compute extrinsics (only works if we already have intrinsics)
         self.calib_tool.compute_extrinsics()
@@ -241,8 +260,23 @@ class CalibWorker(QObject):
         annotated = self.calib_tool.visualise(errors_mm=True)
 
         # 6- Emit the annotated frame to the main thread, and emit the 'done' signal
-        self.result_ready.emit(annotated)
-        self.finished_processing.emit()
+        self.signal_result_ready.emit(annotated)
+        self.signal_finished_processing.emit()
+
+    @Slot(bool)
+    def set_auto_sample(self, value):
+        self.auto_sample = value
+        print(f"[CalibWorker] Auto sample: {self.auto_sample}")
+
+    @Slot(bool)
+    def set_auto_compute(self, value):
+        self.auto_compute = value
+        print(f"[CalibWorker] Auto compute: {self.auto_compute}")
+
+    @Slot(bool)
+    def set_TEST_EXTRINSICS_MODE(self, value):
+        self._TEST_EXTRINSICS_MODE = value
+        print(f"[CalibWorker] TEST_EXTRINSICS_MODE: {self._TEST_EXTRINSICS_MODE}")
 
     def stop(self):
         self._running = False
@@ -481,7 +515,6 @@ class VideoWindowBase(QWidget):
         button_pos = self.snap_button.mapToGlobal(QPoint(0, self.snap_button.height()))
         self.snap_popup.show_popup(button_pos)
 
-
     def auto_size(self):
 
         # If landscape screen
@@ -677,8 +710,8 @@ class VideoWindowRec(VideoWindowBase):
 
         # Setup signals
         self.newFrameSignal.connect(self.worker.process_frame, type=Qt.QueuedConnection)
-        self.worker.result_ready.connect(self.on_worker_result)
-        self.worker.finished_processing.connect(self.on_worker_finished)
+        self.worker.signal_result_ready.connect(self.on_worker_result)
+        self.worker.signal_finished_processing.connect(self.on_worker_finished)
         self.worker_thread.start()
 
         # Store worker results and its current state
@@ -1071,7 +1104,11 @@ class VideoWindowRec(VideoWindowBase):
 
 class VideoWindowCalib(VideoWindowBase):
 
-    new_frame_signal = Signal(np.ndarray)
+    signal_new_frame = Signal(np.ndarray)
+    signal_auto_sample = Signal(bool)
+    signal_auto_compute = Signal(bool)
+
+    signal_TEST_EXTRINSICS_MODE = Signal(bool)
 
     def __init__(self, main_window_ref, idx):
         super().__init__(main_window_ref, idx)
@@ -1095,13 +1132,18 @@ class VideoWindowCalib(VideoWindowBase):
 
         # Setup worker
         self.worker_thread = QThread(self)
-        self.worker = CalibWorker(self.calib_tool, auto_sample=True, auto_compute=True)
+        self.worker = CalibWorker(self.calib_tool)
         self.worker.moveToThread(self.worker_thread)
 
         # Setup signals
-        self.new_frame_signal.connect(self.worker.process_frame, type=Qt.QueuedConnection)
-        self.worker.result_ready.connect(self.on_worker_result)
-        self.worker.finished_processing.connect(self.on_worker_finished)
+        self.signal_new_frame.connect(self.worker.process_frame, type=Qt.QueuedConnection)
+        self.worker.signal_result_ready.connect(self.on_worker_result)
+        self.worker.signal_finished_processing.connect(self.on_worker_finished)
+        self.signal_auto_sample.connect(self.worker.signal_auto_sample)
+        self.signal_auto_compute.connect(self.worker.signal_auto_compute)
+
+        self.signal_TEST_EXTRINSICS_MODE.connect(self.worker.signal_TEST_EXTRINSICS_MODE)
+
         self.worker_thread.start()
 
         # Store worker results and its current state
@@ -1151,6 +1193,7 @@ class VideoWindowCalib(VideoWindowBase):
 
         self.auto_sample_check = QCheckBox("Sample automatically")
         self.auto_sample_check.setChecked(True)
+        self.auto_sample_check.stateChanged.connect(self.on_auto_sample_toggled)
         sampling_layout.addWidget(self.auto_sample_check)
 
         sampling_btns_group = QWidget()
@@ -1169,7 +1212,18 @@ class VideoWindowCalib(VideoWindowBase):
 
         self.auto_compute_check = QCheckBox("Compute intrinsics automatically")
         self.auto_compute_check.setChecked(True)
+        self.auto_compute_check.stateChanged.connect(self.on_auto_compute_toggled)
         sampling_layout.addWidget(self.auto_compute_check)
+
+
+        ## TEMPORARY
+
+        self.test_extrinsics_checkbox = QCheckBox("TEST _ EXTRINSICS MODE")
+        self.test_extrinsics_checkbox.setChecked(False)
+        self.test_extrinsics_checkbox.stateChanged.connect(self.on_TEST_EXTRINSICS_MODE_toggled)
+        sampling_layout.addWidget(self.test_extrinsics_checkbox)
+
+        ##
 
         layout.addWidget(sampling_group)
 
@@ -1224,7 +1278,7 @@ class VideoWindowCalib(VideoWindowBase):
         self._blit_image()
 
     def _send_frame_to_worker(self, frame):
-        self.new_frame_signal.emit(frame)
+        self.signal_new_frame.emit(frame)
         self._worker_busy = True
 
     def on_worker_finished(self):
@@ -1298,6 +1352,18 @@ class VideoWindowCalib(VideoWindowBase):
                                        Qt.KeepAspectRatio,
                                        Qt.SmoothTransformation)
         self.board_preview_label.setPixmap(bounded_pixmap)
+
+    @Slot(bool)
+    def on_auto_sample_toggled(self, checked):
+        self.signal_auto_sample.emit(checked)
+
+    @Slot(bool)
+    def on_auto_compute_toggled(self, checked):
+        self.signal_auto_compute.emit(checked)
+
+    @Slot(bool)
+    def on_TEST_EXTRINSICS_MODE_toggled(self, checked):
+        self.signal_TEST_EXTRINSICS_MODE.emit(checked)
 
     def on_load_calib(self):
         file_path = self.file_dialog(self._main_window.mc.full_path.parent)

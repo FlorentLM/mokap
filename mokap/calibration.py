@@ -492,7 +492,7 @@ class MonocularCalibrationTool:
                                               refine_markers=True,
                                               refine_points=False)
 
-    def auto_register(self, area_threshold=0.2, nb_points_threshold=4):
+    def auto_register_monocular(self, area_threshold=0.2, nb_points_threshold=4):
 
         # Compute image area with detection
         overlap_area, novel_area = self._compute_new_area()
@@ -641,5 +641,4 @@ class MonocularCalibrationTool:
         # frame_out = cv2.addWeighted(frame_out, 1.0, overlay, 0.75, 1.0)
 
         return frame_out
-
 
