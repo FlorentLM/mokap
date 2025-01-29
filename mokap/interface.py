@@ -189,7 +189,7 @@ class CalibWorker(QObject):
                 complex_distortion=True
             )
 
-        # 4- Compute extrinsics (if intrinsics exist)
+        # 4- Compute extrinsics (only works if we already have intrinsics)
         self.calib_tool.compute_extrinsics()
 
         # 5- Visualize (this returns the annotated image in full resolution) - TODO: maybe this should be scaled...
@@ -227,6 +227,9 @@ class VideoWindowBase(QWidget):
     def __init__(self, main_window_ref, idx):
         super().__init__()
 
+        self._force_destroy = False     # This is used to defined whether we only hide or destroy the window
+        self.setAttribute(Qt.WA_DeleteOnClose, True)    # force PySide to destroy the windows on mode change
+
         self._main_window = main_window_ref
         self.idx = idx
 
@@ -249,6 +252,9 @@ class VideoWindowBase(QWidget):
         # Init states
         self._warning = False
         self._warning_text = '[WARNING]'
+
+        self.worker = None
+        self.worker_thread = None
 
         # Some other stuff
         self._wanted_fps = self._camera.framerate
@@ -390,6 +396,32 @@ class VideoWindowBase(QWidget):
     def _init_specific_ui(self):
         pass
 
+    #  ============= Qt method overrides =============
+    def closeEvent(self, event):
+        if self._force_destroy:
+            # stop the worker and allow Qt event to actually destroy the window
+            self._stop_worker()
+            super().closeEvent(event)
+        else:
+            # pause worker and only hide window
+            event.ignore()
+            self.hide()
+            self.pause_worker()
+            self._main_window.secondary_windows_visibility_buttons[self.idx].setChecked(False)
+
+    #  ============= Qt method overrides =============
+    def pause_worker(self):
+        self.worker.set_paused(True)
+
+    def resume_worker(self):
+        self.worker.set_paused(False)
+
+    def _stop_worker(self):
+        if self.worker is not None and self.worker_thread is not None:
+            self.worker.stop()
+            self.worker_thread.quit()
+            self.worker_thread.wait()
+
     #  ============= Some useful attributes =============
     @property
     def name(self) -> str:
@@ -490,10 +522,12 @@ class VideoWindowBase(QWidget):
         if self.isVisible() and override is False:
             self._main_window.secondary_windows_visibility_buttons[self.idx].setChecked(False)
             self.hide()
+            self.pause_worker()
 
         elif not self.isVisible() and override is True:
             self._main_window.secondary_windows_visibility_buttons[self.idx].setChecked(True)
             self.show()
+            self.resume_worker()
 
     #  ============= Display-related common methods =============
     def _refresh_framebuffer(self):
@@ -570,7 +604,7 @@ class VideoWindowBase(QWidget):
             self._last_capture_count = ind
 
 
-class VideoWindowMain(VideoWindowBase):
+class VideoWindowRec(VideoWindowBase):
     newFrameSignal = Signal(np.ndarray)
 
     def __init__(self, main_window_ref, idx):
@@ -759,15 +793,6 @@ class VideoWindowMain(VideoWindowBase):
         right_group_layout.addWidget(line)
 
     #  ============= Qt method overrides =============
-    def closeEvent(self, event):
-        event.ignore()
-        self.worker.set_paused(True)
-        self.toggle_visibility(False)
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        self.worker.set_paused(False)
-
     def eventFilter(self, obj, event):
 
         if event.type() in (QEvent.MouseButtonPress, QEvent.MouseMove):
@@ -884,7 +909,7 @@ class VideoWindowMain(VideoWindowBase):
         if not self._worker_busy:
             self._send_frame_to_worker(frame)
         else:
-            self._latest_frame = frame
+            self._latest_frame = frame  # We overwrite the latest_frame purposefully, no need to queue them
 
         # 3- resize to current window
         self._resize_to_display()
@@ -901,12 +926,12 @@ class VideoWindowMain(VideoWindowBase):
         if w < disp_w:
             self._display_buffer[:, w:] = 0
 
-        # TODO - this is a test fake bounding box
-        for (x, y, bw, bh) in self._bboxes:
-            sx, sy = int(x*scale), int(y*scale)
-            sw, sh = int(bw*scale), int(bh*scale)
-            cv2.rectangle(self._display_buffer, (sx, sy), (sx+sw, sy+sh),
-                          (0,255,255), 2)
+        # # TODO - this is a test fake bounding box
+        # for (x, y, bw, bh) in self._bboxes:
+        #     sx, sy = int(x*scale), int(y*scale)
+        #     sw, sh = int(bw*scale), int(bh*scale)
+        #     cv2.rectangle(self._display_buffer, (sx, sy), (sx+sw, sy+sh),
+        #                   (0,255,255), 2)
 
         self._annotate()
 
@@ -1005,7 +1030,7 @@ class VideoWindowMain(VideoWindowBase):
 
 class VideoWindowCalib(VideoWindowBase):
 
-    newFrameSignal = Signal(np.ndarray)
+    new_frame_signal = Signal(np.ndarray)
 
     def __init__(self, main_window_ref, idx):
         super().__init__(main_window_ref, idx)
@@ -1027,15 +1052,15 @@ class VideoWindowCalib(VideoWindowBase):
         ##
 
         # Setup worker
-        self.calib_thread = QThread(self)
-        self.calib_worker = CalibWorker(self.calib_tool, auto_sample=True, auto_compute=True)
-        self.calib_worker.moveToThread(self.calib_thread)
+        self.worker_thread = QThread(self)
+        self.worker = CalibWorker(self.calib_tool, auto_sample=True, auto_compute=True)
+        self.worker.moveToThread(self.worker_thread)
 
         # Setup signals
-        self.newFrameSignal.connect(self.calib_worker.process_frame, type=Qt.QueuedConnection)
-        self.calib_worker.result_ready.connect(self.on_worker_result)
-        self.calib_worker.finished_processing.connect(self.on_worker_finished)
-        self.calib_thread.start()
+        self.new_frame_signal.connect(self.worker.process_frame, type=Qt.QueuedConnection)
+        self.worker.result_ready.connect(self.on_worker_result)
+        self.worker.finished_processing.connect(self.on_worker_finished)
+        self.worker_thread.start()
 
         # Store worker results and its current state
         self.annotated_frame = None
@@ -1060,9 +1085,6 @@ class VideoWindowCalib(VideoWindowBase):
         layout = QHBoxLayout(self.CENTRE_GROUP)
         layout.setContentsMargins(5, 5, 5, 5)
 
-        detection_group = QGroupBox("Detection")
-        detection_layout = QHBoxLayout(detection_group)
-
         board_group = QWidget()
         board_layout = QVBoxLayout(board_group)
 
@@ -1075,7 +1097,7 @@ class VideoWindowCalib(VideoWindowBase):
         board_settings_button.clicked.connect(self.show_board_params_dialog)
         board_layout.addWidget(board_settings_button)
 
-        detection_layout.addWidget(board_group)
+        layout.addWidget(board_group)
 
         # Detection and sampling
 
@@ -1104,8 +1126,7 @@ class VideoWindowCalib(VideoWindowBase):
         self.auto_compute_check.setChecked(True)
         sampling_layout.addWidget(self.auto_compute_check)
 
-        detection_layout.addWidget(sampling_group)
-        layout.addWidget(detection_group)
+        layout.addWidget(sampling_group)
 
         ##
 
@@ -1127,16 +1148,6 @@ class VideoWindowCalib(VideoWindowBase):
 
         layout.addWidget(calib_io_group)
 
-    #  ============= Qt method overrides =============
-    def closeEvent(self, event):
-        event.ignore()
-        self.calib_worker.set_paused(True)
-        self.toggle_visibility(False)
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        self.calib_worker.set_paused(False)
-
     #  ============= Update frame, and worker communication =============
     def _update_images(self):
         self._refresh_framebuffer()
@@ -1145,7 +1156,7 @@ class VideoWindowCalib(VideoWindowBase):
         if not self._worker_busy:
             self._send_frame_to_worker(frame)
         else:
-            self._latest_frame = frame
+            self._latest_frame = frame      # We overwrite the latest_frame purposefully, no need to queue them
 
         self._resize_to_display()
 
@@ -1168,7 +1179,7 @@ class VideoWindowCalib(VideoWindowBase):
         self._blit_image()
 
     def _send_frame_to_worker(self, frame):
-        self.newFrameSignal.emit(frame)
+        self.new_frame_signal.emit(frame)
         self._worker_busy = True
 
     def on_worker_finished(self):
@@ -1898,7 +1909,7 @@ class MainWindow(QMainWindow):
             if self._is_calibrating:
                 w = VideoWindowCalib(main_window_ref=self, idx=cam.idx)
             else:
-                w = VideoWindowMain(main_window_ref=self, idx=cam.idx)
+                w = VideoWindowRec(main_window_ref=self, idx=cam.idx)
 
             self.secondary_windows.append(w)
             self.secondary_windows_visibility_buttons[i].setText(f" {w.name.title()} camera")
@@ -1912,8 +1923,9 @@ class MainWindow(QMainWindow):
 
     def _stop_secondary_windows(self):
         for w in self.secondary_windows:
-            QWidget.close(w)
-        self.secondary_windows = []
+            w._force_destroy = True
+            w.close()
+        self.secondary_windows.clear()
 
     def _update_main(self):
 
