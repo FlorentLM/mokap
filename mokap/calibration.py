@@ -641,4 +641,3 @@ class MonocularCalibrationTool:
         # frame_out = cv2.addWeighted(frame_out, 1.0, overlay, 0.75, 1.0)
 
         return frame_out
-

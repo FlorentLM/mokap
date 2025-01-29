@@ -198,10 +198,11 @@ class CalibWorker(QObject):
     """
     signal_result_ready = Signal(np.ndarray)   # carry back the annotated image back to the main thread (to didplay it)
     signal_finished_processing = Signal()      # signals when this worker is busy / free
-    signal_auto_sample = Signal(bool)
-    signal_auto_compute = Signal(bool)
 
-    signal_TEST_EXTRINSICS_MODE = Signal(bool)
+    signal_auto_sample = Signal(bool)       # received when auto-sampling is toggled
+    signal_auto_compute = Signal(bool)      # received when auto-copute is toggled
+
+    signal_TEST_EXTRINSICS_MODE = Signal(bool)      # TEMP
 
     def __init__(self, calib_tool, parent=None):
         super().__init__(parent)
@@ -266,17 +267,31 @@ class CalibWorker(QObject):
     @Slot(bool)
     def set_auto_sample(self, value):
         self.auto_sample = value
-        print(f"[CalibWorker] Auto sample: {self.auto_sample}")
 
     @Slot(bool)
     def set_auto_compute(self, value):
         self.auto_compute = value
-        print(f"[CalibWorker] Auto compute: {self.auto_compute}")
 
     @Slot(bool)
     def set_TEST_EXTRINSICS_MODE(self, value):
         self._TEST_EXTRINSICS_MODE = value
         print(f"[CalibWorker] TEST_EXTRINSICS_MODE: {self._TEST_EXTRINSICS_MODE}")
+
+    @Slot()
+    def add_sample(self):
+        self.calib_tool.register_sample()
+
+    @Slot()
+    def clear_samples(self):
+        self.calib_tool.clear_stacks()
+
+    @Slot(str)
+    def load_calib(self, file_path):
+        self.calib_tool.readfile(file_path)
+
+    @Slot(str)
+    def save_calib(self, file_path):
+        self.calib_tool.writefile(file_path)
 
     def stop(self):
         self._running = False
@@ -1107,6 +1122,10 @@ class VideoWindowCalib(VideoWindowBase):
     signal_new_frame = Signal(np.ndarray)
     signal_auto_sample = Signal(bool)
     signal_auto_compute = Signal(bool)
+    signal_load_calib = Signal(str)
+    signal_save_calib = Signal(str)
+    signal_add_sample = Signal()
+    signal_clear_samples = Signal()
 
     signal_TEST_EXTRINSICS_MODE = Signal(bool)
 
@@ -1136,9 +1155,16 @@ class VideoWindowCalib(VideoWindowBase):
         self.worker.moveToThread(self.worker_thread)
 
         # Setup signals
-        self.signal_new_frame.connect(self.worker.process_frame, type=Qt.QueuedConnection)
+        #      Worker --> Main thread
         self.worker.signal_result_ready.connect(self.on_worker_result)
         self.worker.signal_finished_processing.connect(self.on_worker_finished)
+
+        #       Main thread --> Worker
+        self.signal_new_frame.connect(self.worker.process_frame, type=Qt.QueuedConnection)
+        self.signal_load_calib.connect(self.worker.load_calib)
+        self.signal_save_calib.connect(self.worker.save_calib)
+        self.signal_add_sample.connect(self.worker.add_sample)
+        self.signal_clear_samples.connect(self.worker.clear_samples)
         self.signal_auto_sample.connect(self.worker.signal_auto_sample)
         self.signal_auto_compute.connect(self.worker.signal_auto_compute)
 
@@ -1200,12 +1226,12 @@ class VideoWindowCalib(VideoWindowBase):
         sampling_btns_layout = QHBoxLayout(sampling_btns_group)
 
         self.sample_button = QPushButton("Add sample")
-        self.sample_button.clicked.connect(self.calib_tool.register_sample)
+        self.sample_button.clicked.connect(self.on_add_sample)
         self.sample_button.setStyleSheet(f"background-color: {self._main_window.col_darkgreen}; color: {self._main_window.col_white};")
         sampling_btns_layout.addWidget(self.sample_button)
 
         self.clear_samples_button = QPushButton("Clear samples")
-        self.clear_samples_button.clicked.connect(self.calib_tool.clear_stacks)
+        self.clear_samples_button.clicked.connect(self.on_clear_samples)
         sampling_btns_layout.addWidget(self.clear_samples_button)
 
         sampling_layout.addWidget(sampling_btns_group)
@@ -1281,6 +1307,23 @@ class VideoWindowCalib(VideoWindowBase):
         self.signal_new_frame.emit(frame)
         self._worker_busy = True
 
+    def on_add_sample(self):
+        self.signal_add_sample.emit()
+
+    def on_clear_samples(self):
+        self.signal_clear_samples.emit()
+
+    def on_load_calib(self):
+        file_path = self.file_dialog(self._main_window.mc.full_path.parent)
+        if file_path is not None:
+            self.signal_load_calib.emit(file_path.as_posix())
+            self.load_save_message.setText(f"<b>Intrinsics loaded:</b>\n{file_path}")
+
+    def on_save_calib(self):
+        file_path = self._main_window.mc.full_path / f"{self._camera.name}_intrinsics.toml"
+        self.signal_save_calib.emit(file_path.as_posix())
+        self.load_save_message.setText(f"<b>Intrinsics saved:</b>\n{file_path}")
+
     def on_worker_finished(self):
         self._worker_busy = False
         if self._latest_frame is not None:
@@ -1302,6 +1345,7 @@ class VideoWindowCalib(VideoWindowBase):
         )
 
     def _reset_detector(self):
+        # TODO - this is not thread safe - it WILL crash if used
         self.detection_tool = DetectionTool(self.charuco_board)
         self.calib_tool.dt = self.detection_tool
         self.calib_tool.clear_stacks()
@@ -1364,17 +1408,6 @@ class VideoWindowCalib(VideoWindowBase):
     @Slot(bool)
     def on_TEST_EXTRINSICS_MODE_toggled(self, checked):
         self.signal_TEST_EXTRINSICS_MODE.emit(checked)
-
-    def on_load_calib(self):
-        file_path = self.file_dialog(self._main_window.mc.full_path.parent)
-        if file_path is not None:
-            self.calib_tool.readfile(file_path)
-            self.load_save_message.setText(f"<b>Intrinsics loaded:</b>\n{file_path}")
-
-    def on_save_calib(self):
-        file_path = self._main_window.mc.full_path / f"{self._camera.name}_intrinsics.toml"
-        self.calib_tool.writefile(file_path)
-        self.load_save_message.setText(f"<b>Intrinsics saved:</b>\n{file_path}")
 
     def file_dialog(self, startpath):
         dial = QFileDialog(self)
