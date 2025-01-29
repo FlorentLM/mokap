@@ -1048,6 +1048,7 @@ class VideoWindowCalib(VideoWindowBase):
             detectiontool=self.detection_tool,
             imsize=self._source_shape[:2]   # pass frame size so it can track coverage
         )
+        self.calib_tool.set_visualisation_scale(2)
 
         ##
 

@@ -1,4 +1,4 @@
-from collections import deque
+from collections import defaultdict, deque
 from pathlib import Path
 import numpy as np
 np.set_printoptions(precision=3, suppress=True, threshold=5)
@@ -162,12 +162,17 @@ class MonocularCalibrationTool:
         self._stack_error = np.inf      # This will be the mean of the last_best_errors
         self.curr_error = np.inf
 
+        self.set_visualisation_scale(scale=1)
+
+    def set_visualisation_scale(self, scale=1):
         # Stuff for visualisation
         self.BIT_SHIFT = 4
+        self.SCALE = scale
         self.shift_factor = 2 ** self.BIT_SHIFT
         self.draw_params = {'shift': self.BIT_SHIFT, 'lineType': cv2.LINE_AA}
-        self.text_params = {'fontFace': cv2.FONT_HERSHEY_DUPLEX, 'fontScale': 0.8,
-                            'color': (255, 255, 255), 'thickness': 1, 'lineType': cv2.LINE_AA}
+        self.text_params = {'fontFace': cv2.FONT_HERSHEY_DUPLEX, 'fontScale': 0.8 * self.SCALE,
+                            'color': (255, 255, 255), 'thickness': 1 * self.SCALE, 'lineType': cv2.LINE_AA}
+
 
     @property
     def has_intrinsics(self):
@@ -558,7 +563,7 @@ class MonocularCalibrationTool:
             detected_points_int = (self._points2d * self.shift_factor).astype(np.int32)
 
             for xy in detected_points_int:
-                frame_out = cv2.circle(frame_out, xy, 4, (0, 0, 255), 4, **self.draw_params)
+                frame_out = cv2.circle(frame_out, xy, 4 * self.SCALE, (0, 0, 255), 4 * self.SCALE, **self.draw_params)
 
         if self.has_intrinsics and self.has_extrinsics:
             # Display reprojected points: currently detected corners as yellow dots, the others as white dots
@@ -571,9 +576,9 @@ class MonocularCalibrationTool:
 
             for i, xy in enumerate(reproj_points_int):
                 if i in self._points_ids:
-                    frame_out = cv2.circle(frame_out, xy, 2, (0, 255, 255), 4, **self.draw_params)
+                    frame_out = cv2.circle(frame_out, xy, 2 * self.SCALE, (0, 255, 255), 4 * self.SCALE, **self.draw_params)
                 else:
-                    frame_out = cv2.circle(frame_out, xy, 4, (255, 255, 255), 4, **self.draw_params)
+                    frame_out = cv2.circle(frame_out, xy, 4 * self.SCALE, (255, 255, 255), 4 * self.SCALE, **self.draw_params)
 
             # Compute errors in mm for each point
             if errors_mm:
@@ -591,8 +596,8 @@ class MonocularCalibrationTool:
 
                 for i, err in enumerate(error_mm):
                     frame_out = cv2.putText(frame_out, f"{err:.3f}", self._points2d[i].astype(int) + 6,
-                                            fontFace=cv2.FONT_HERSHEY_DUPLEX, fontScale=0.3, color=(0, 255, 255),
-                                            thickness=1, lineType=cv2.LINE_AA)
+                                            fontFace=cv2.FONT_HERSHEY_DUPLEX, fontScale=0.3 * self.SCALE, color=(0, 255, 255),
+                                            thickness=1 * self.SCALE, lineType=cv2.LINE_AA)
 
         # Add the coverage as a green overlay
         self._cumul_coverage_px[self._cumul_coverage_mask, 1] = 255
@@ -614,20 +619,20 @@ class MonocularCalibrationTool:
                                                  optimal_camera_matrix, None)
 
                 pts_int = (corners2d * self.shift_factor).astype(np.int32)
-                frame_out = cv2.polylines(frame_out, [pts_int], True, (255, 0, 255), 1, **self.draw_params)
+                frame_out = cv2.polylines(frame_out, [pts_int], True, (255, 0, 255), 1 * self.SCALE, **self.draw_params)
 
         # Add information text to the visualisation image
-        frame_out = cv2.putText(frame_out, f"Points: {self.nb_points}/{self.dt.total_points}", (30, 30),
+        frame_out = cv2.putText(frame_out, f"Points: {self.nb_points}/{self.dt.total_points}", (30, 30 * self.SCALE),
                                 **self.text_params)
         frame_out = cv2.putText(frame_out,
                                 f"Area: {self.coverage:.2f}% ({len(self.stack_points2d)} snapshots)",
-                                (30, 60), **self.text_params)
+                                (30, 60 * self.SCALE), **self.text_params)
 
         txt = f"{self.error:.2f} px" if self.error != np.inf else '-'
-        frame_out = cv2.putText(frame_out, f"Current reprojection error: {txt}", (30, 90), **self.text_params)
+        frame_out = cv2.putText(frame_out, f"Current reprojection error: {txt}", (30, 90 * self.SCALE), **self.text_params)
 
         txt = f"{self.stackerror:.2f} px" if self.stackerror != np.inf else '-'
-        frame_out = cv2.putText(frame_out, f"Best average reprojection error: {txt}", (30, 120), **self.text_params)
+        frame_out = cv2.putText(frame_out, f"Best average reprojection error: {txt}", (30, 120 * self.SCALE), **self.text_params)
 
         # if self.curr_error != float('inf'):
         #     self.graph.update(self.curr_error)
@@ -636,3 +641,5 @@ class MonocularCalibrationTool:
         # frame_out = cv2.addWeighted(frame_out, 1.0, overlay, 0.75, 1.0)
 
         return frame_out
+
+
