@@ -2,6 +2,8 @@ import os
 import subprocess
 import sys
 import platform
+from unittest.mock import right
+
 import psutil
 import screeninfo
 import cv2
@@ -13,13 +15,13 @@ import numpy as np
 from mokap import utils, calibration_utils
 from mokap.calibration import DetectionTool, MonocularCalibrationTool
 from PIL import Image
-from PySide6.QtCore import Qt, QTimer, QEvent, QDir, QObject, Signal, Slot, QThread
+from PySide6.QtCore import Qt, QTimer, QEvent, QDir, QObject, Signal, Slot, QThread, QPoint, QSize
 from PySide6.QtGui import QIcon, QImage, QPixmap, QCursor, QBrush, QPen, QColor, QFont
 from PySide6.QtWidgets import (QApplication, QMainWindow, QStatusBar, QSlider, QGraphicsView, QGraphicsScene,
                                QGraphicsRectItem, QComboBox, QLineEdit, QProgressBar, QCheckBox, QScrollArea,
                                QWidget, QLabel, QFrame, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout,
                                QPushButton, QSizePolicy, QGraphicsTextItem, QTextEdit, QFileDialog, QSpinBox,
-                               QDialog, QDoubleSpinBox, QDialogButtonBox)
+                               QDialog, QDoubleSpinBox, QDialogButtonBox, QToolButton)
 
 ##
 
@@ -43,6 +45,49 @@ class GUILogger:
 
     def flush(self):
         pass
+
+
+class SnapPopup(QFrame):
+
+    """
+        Mini popup with 9 buttons to snap the window
+    """
+
+    def __init__(self, parent=None, move_callback=None):
+        super().__init__(parent)
+        self.move_callback = move_callback
+        self.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint)
+
+        layout = QGridLayout()
+        layout.setSpacing(1)
+        self.setLayout(layout)
+
+        positions = [
+            ("nw", "Top-left"), ("n", "Top-center"), ("ne", "Top-right"),
+            ("w", "Left"),      ("c", "Center"),      ("e", "Right"),
+            ("sw", "Bottom-left"), ("s", "Bottom-center"), ("se", "Bottom-right"),
+        ]
+
+        for idx, (pos_code, tooltip) in enumerate(positions):
+            btn = QPushButton()
+            btn.setToolTip(tooltip)
+            btn.setProperty("position", pos_code)
+            btn.setMaximumWidth(25)
+            btn.setMaximumHeight(25)
+            btn.clicked.connect(self.on_button_clicked)
+            # btn.setIcon(QIcon(f"icons/{pos_code}.png"))   # TODO
+            layout.addWidget(btn, idx // 3, idx % 3)
+
+    def on_button_clicked(self):
+        button = self.sender()
+        pos_code = button.property("position")
+        if self.move_callback:
+            self.move_callback(pos_code)
+        self.hide()
+
+    def show_popup(self, pos: QPoint):
+        self.move(pos)
+        self.show()
 
 
 class BoardParamsDialog(QDialog):
@@ -272,7 +317,9 @@ class VideoWindowBase(QWidget):
 
     #  ============= UI constructors =============
     def _init_common_ui(self):
-
+        """
+            This constructor creates all the UI elements that are common to all modes
+        """
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
@@ -306,11 +353,8 @@ class VideoWindowBase(QWidget):
         self.LEFT_GROUP = QGroupBox("Information")
         bottom_panel_h_layout.addWidget(self.LEFT_GROUP)
 
-        self.CENTRE_GROUP = QGroupBox("Control")
-        bottom_panel_h_layout.addWidget(self.CENTRE_GROUP, 1)     # Expand the centre group only
-
-        self.RIGHT_GROUP = QGroupBox("View")
-        bottom_panel_h_layout.addWidget(self.RIGHT_GROUP)
+        self.RIGHT_GROUP = QGroupBox("Control")
+        bottom_panel_h_layout.addWidget(self.RIGHT_GROUP, 1)     # Expand the right group only
 
         main_layout.addWidget(self.BOTTOM_PANEL)
 
@@ -359,41 +403,26 @@ class VideoWindowBase(QWidget):
 
             left_group_layout.addWidget(line)
 
-        # RIGHT GROUP
-        right_group_layout = QVBoxLayout(self.RIGHT_GROUP)
+        # Status bar
+        statusbar = QStatusBar()
+        # statusbar.setStyleSheet(f"background-color: {'#157f7f7f'};")
 
-        line = QWidget()
-        line_layout = QHBoxLayout(line)
-        line_layout.setContentsMargins(1, 1, 1, 1)
-        line_layout.setSpacing(5)
+        self.snap_button = QToolButton()
+        # self.snap_button.setText("Snap to:")
+        self.snap_button.setIcon(self._main_window.icon_move_bw)
+        self.snap_button.setIconSize(QSize(16, 16))
+        self.snap_button.setToolTip("Move current window to a position")
+        self.snap_button.setPopupMode(QToolButton.InstantPopup)
 
-        line_layout.addStretch(1)
-
-        l_windowsnap = QLabel("Window snap: ")
-        l_windowsnap.setAlignment(Qt.AlignVCenter)
-        l_windowsnap.setStyleSheet(f"color: {self._main_window.col_darkgray};")
-        line_layout.addWidget(l_windowsnap)
-
-        buttons_windowsnap = QWidget()
-        buttons_windowsnap.setFixedSize(55, 55)
-        buttons_windowsnap_layout = QGridLayout(buttons_windowsnap)
-        buttons_windowsnap_layout.setContentsMargins(0, 0, 0, 0)
-        buttons_windowsnap_layout.setSpacing(0)
-        buttons_windowsnap_layout.setColumnStretch(3, 1)
-        buttons_windowsnap_layout.setColumnStretch(3, 1)
-
-        for r in range(3):
-            for c in range(3):
-                button = QPushButton()
-                buttons_windowsnap_layout.setContentsMargins(0, 0, 0, 0)
-                button.clicked.connect(partial(self.move_to, self.positions[r, c]))
-                buttons_windowsnap_layout.addWidget(button, r, c)
-
-        line_layout.addWidget(buttons_windowsnap, 1)
-
-        right_group_layout.addWidget(line)
+        self.snap_popup = SnapPopup(parent=self, move_callback=self.move_to)
+        self.snap_button.clicked.connect(self.show_snap_popup)
+        statusbar.addPermanentWidget(self.snap_button)
+        main_layout.addWidget(statusbar)
 
     def _init_specific_ui(self):
+        """
+            This does nothing in the base class, each VideoWindow implements its own specific UI elements
+        """
         pass
 
     #  ============= Qt method overrides =============
@@ -448,6 +477,11 @@ class VideoWindowBase(QWidget):
         return self._source_shape[1] / self._source_shape[0]
 
     #  ============= Some common window-related methods =============
+    def show_snap_popup(self):
+        button_pos = self.snap_button.mapToGlobal(QPoint(0, self.snap_button.height()))
+        self.snap_popup.show_popup(button_pos)
+
+
     def auto_size(self):
 
         # If landscape screen
@@ -664,13 +698,16 @@ class VideoWindowRec(VideoWindowBase):
 
     #  ============= UI constructors =============
     def _init_specific_ui(self):
+        """
+            This constructor creates the UI elements specific to Recording mode
+        """
 
         # Add mouse click detection to video feed (for the magnifier)
         self.VIDEO_FEED.installEventFilter(self)
 
-        # CENTRE GROUP
-        centre_group_layout = QHBoxLayout(self.CENTRE_GROUP)
-        centre_group_layout.setContentsMargins(5, 5, 5, 5)
+        # RIGHT GROUP
+        right_group_layout = QHBoxLayout(self.RIGHT_GROUP)
+        right_group_layout.setContentsMargins(5, 5, 5, 5)
 
         self.camera_controls_sliders = {}
         self.camera_controls_sliders_labels = {}
@@ -685,10 +722,10 @@ class VideoWindowRec(VideoWindowBase):
             ('gamma', (float, 0.0, 3.99, 0.05, 3))
         ]
 
-        centre_group_sliders = QWidget()
-        centre_group_sliders_layout = QVBoxLayout(centre_group_sliders)
-        centre_group_sliders_layout.setContentsMargins(0, 20, 0, 5)
-        centre_group_sliders_layout.setSpacing(0)
+        right_group_sliders = QWidget()
+        right_group_sliders_layout = QVBoxLayout(right_group_sliders)
+        right_group_sliders_layout.setContentsMargins(0, 20, 0, 5)
+        right_group_sliders_layout.setSpacing(0)
 
         sync_groupbox = QGroupBox("Sync")
         sync_groupbox.setContentsMargins(5, 20, 0, 5)
@@ -756,13 +793,16 @@ class VideoWindowRec(VideoWindowBase):
             self.camera_controls_sliders[label] = slider
             self._val_in_sync[label] = vis_checkbox
 
-            centre_group_sliders_layout.addWidget(line)
+            right_group_sliders_layout.addWidget(line)
 
-        centre_group_layout.addWidget(centre_group_sliders)
-        centre_group_layout.addWidget(sync_groupbox)
+        right_group_layout.addWidget(right_group_sliders)
+        right_group_layout.addWidget(sync_groupbox)
 
         # RIGHT GROUP - Additional elements
-        right_group_layout = self.RIGHT_GROUP.layout()
+        right_group_additional = QWidget()
+        right_group_additional_layout = QVBoxLayout(right_group_additional)
+        right_group_additional_layout.setContentsMargins(0, 20, 0, 5)
+        right_group_additional_layout.setSpacing(0)
 
         line = QWidget()
         line.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -790,7 +830,8 @@ class VideoWindowRec(VideoWindowBase):
         self.magn_slider.setValue(2)
         line_layout.addWidget(self.magn_slider)
 
-        right_group_layout.addWidget(line)
+        right_group_additional_layout.addWidget(line)
+        right_group_layout.addWidget(right_group_additional)
 
     #  ============= Qt method overrides =============
     def eventFilter(self, obj, event):
@@ -1082,8 +1123,11 @@ class VideoWindowCalib(VideoWindowBase):
 
     #  ============= UI constructors =============
     def _init_specific_ui(self):
+        """
+            This constructor creates the UI elements specific to Calib mode
+        """
 
-        layout = QHBoxLayout(self.CENTRE_GROUP)
+        layout = QHBoxLayout(self.RIGHT_GROUP)
         layout.setContentsMargins(5, 5, 5, 5)
 
         board_group = QWidget()
@@ -1346,6 +1390,7 @@ class MainWindow(QMainWindow):
         self.icon_snapshot_bw = QIcon((resources_path / 'snapshot_bw.png').as_posix())
         self.icon_rec_on = QIcon((resources_path / 'rec.png').as_posix())
         self.icon_rec_bw = QIcon((resources_path / 'rec_bw.png').as_posix())
+        self.icon_move_bw = QIcon((resources_path / 'move.png').as_posix())     # TODO make an icon - this is a temp one
 
         # States
         self.editing_disabled = True
@@ -1574,7 +1619,7 @@ class MainWindow(QMainWindow):
 
         # Status bar
         statusbar = QStatusBar()
-        statusbar.setStyleSheet(f"background-color: {'#157f7f7f'}; color: {'#ff7f7f7f'};")
+        # statusbar.setStyleSheet(f"background-color: {'#157f7f7f'}; color: {'#ff7f7f7f'};")
         self.setStatusBar(statusbar)
 
         mem_pressure_label = QLabel('Memory pressure: ')
