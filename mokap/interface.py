@@ -205,6 +205,7 @@ class CalibWorker(QObject):
 
     signal_TEST_EXTRINSICS_MODE = Signal(bool)      # TEMP
     signal_forward_detection = Signal(int, int, np.ndarray, np.ndarray)
+    signal_forward_pose = Signal(int, int, np.ndarray, np.ndarray)
 
     def __init__(self, calib_tool, cam_idx, parent=None):
         super().__init__(parent)
@@ -239,16 +240,13 @@ class CalibWorker(QObject):
 
         # 2- Auto-register samples
         if self.auto_sample:
-            if self._TEST_EXTRINSICS_MODE:
-                # print(f'EXTRINSICS MODE: {frame_id}, {self.camera_idx}, {self.calib_tool.detection}')
-                self.signal_forward_detection.emit(frame_id, self.camera_idx, *self.calib_tool.detection)
-            else:
-                self.calib_tool.auto_register_monocular(area_threshold=0.2, nb_points_threshold=4)
+            self.calib_tool.auto_register_monocular(area_threshold=0.2, nb_points_threshold=4)
 
         # 3- Auto-calibrate
         if self.auto_compute:
             if self._TEST_EXTRINSICS_MODE:
                 # print('EXTRINSICS MODE')
+                # self.signal_forward_detection.emit(frame_id, self.camera_idx, *self.calib_tool.detection)
                 pass
             else:
                 self.calib_tool.auto_compute_intrinsics(
@@ -260,6 +258,10 @@ class CalibWorker(QObject):
 
         # 4- Compute extrinsics (only works if we already have intrinsics)
         self.calib_tool.compute_extrinsics()
+
+        if self._TEST_EXTRINSICS_MODE and self.calib_tool.has_extrinsics:
+            # print(f'EXTRINSICS MODE: {frame_id}, {self.camera_idx}, {self.calib_tool.detection}')
+            self.signal_forward_pose.emit(frame_id, self.camera_idx, *self.calib_tool.extrinsics)
 
         # 5- Visualize (this returns the annotated image in full resolution) - TODO: maybe this should be scaled...
         annotated = self.calib_tool.visualise(errors_mm=True)
@@ -1182,6 +1184,7 @@ class VideoWindowCalib(VideoWindowBase):
         self.worker.signal_reprojection_error.connect(self.on_reprojection_error)
 
         self.worker.signal_forward_detection.connect(self.on_received_detection)
+        self.worker.signal_forward_pose.connect(self.on_received_camera_pose)
 
         #       Main thread --> Worker
         self.signal_new_frame.connect(self.worker.process_frame, type=Qt.QueuedConnection)
@@ -1589,6 +1592,11 @@ class MainWindow(QMainWindow):
         self.timer_update = QTimer(self)
         self.timer_update.timeout.connect(self._update_main)
         self.timer_update.start(100)
+
+        # TEMPORARY - Setup test timer
+        self.timer_update = QTimer(self)
+        self.timer_update.timeout.connect(self.multiview_calibrator.estimate_rig_poses)
+        self.timer_update.start(500)
 
         self._mem_baseline = psutil.virtual_memory().percent
 

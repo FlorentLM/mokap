@@ -6,6 +6,7 @@ import cv2
 import toml
 import scipy.stats as stats
 from scipy.spatial.distance import cdist
+from mokap import proj_geom, multicam
 
 
 class DetectionTool:
@@ -650,9 +651,10 @@ class MultiViewAggregator:
         Convenience class to aggregate multiple monocular detections into 'complete' multi-view samples
     """
 
-    def __init__(self, nb_cameras: int, max_poses=100, max_detections=100):
+    def __init__(self, nb_cameras: int, origin_camera=0, max_poses=100, max_detections=100):
 
         self.nb_cameras = nb_cameras
+        self._origin_idx = origin_camera
 
         self._detections_by_frame = defaultdict(dict)
         self._poses_by_frame = defaultdict(dict)
@@ -672,12 +674,21 @@ class MultiViewAggregator:
 
             pbf = self._poses_by_frame.pop(frame_idx)
 
+            # Remap the poses to a common origin
+            remapped_poses = []
+            for cidx in range(self.nb_cameras):
+                rvec, tvec = pbf[cidx]
+                print(rvec)
+                origin_rvec, origin_tvec = pbf[self._origin_idx]
+                remapped = proj_geom.remap_rtvecs(rvec, tvec, origin_rvec, origin_tvec)
+                remapped_poses.append(remapped)
+
             self._complete_pose_samples.append({
                 "frame_idx": frame_idx,
-                "poses": [pbf[cidx] for cidx in range(self.nb_cameras)]
+                "poses": remapped_poses
             })
 
-        print(f'Stored {len(self._complete_detection_samples)} complete multi-view poses')
+        print(f'Stored {len(self._complete_pose_samples)} complete multi-view poses')
 
     def register_detection(self, frame_idx: int, cam_idx: int, points2d: np.ndarray, points_ids: np.ndarray):
         """
@@ -702,11 +713,27 @@ class MultiViewAggregator:
             This will use the complete pose samples to compute a first best guess of the rig arrangement
         """
 
-        if len(self._complete_pose_samples) < 5:
+        M = len(self._complete_pose_samples)
+
+        if M < 15:
             return
 
         print(f"First approximation of cameras poses from {len(self._complete_pose_samples)} multi-view samples...")
-        # TODO
+
+        N = self.nb_cameras
+
+        n_m_rvecs = np.zeros((N, M, 3), dtype=np.float32)
+        n_m_tvecs = np.zeros((N, M, 3), dtype=np.float32)
+        # TODO - rewrite this so it's a bit more optimised
+        for m, sample in enumerate(self._complete_pose_samples):
+            poses = sample["poses"]
+            for n, (rvec, tvec) in enumerate(poses):
+                n_m_rvecs[n, m, :] = rvec
+                n_m_tvecs[n, m, :] = tvec
+
+        optimized_rvecs, optimized_tvecs = multicam.bestguess_rtvecs(n_m_rvecs, n_m_tvecs)
+
+        print(optimized_rvecs, optimized_tvecs)
 
     def refine_rig_poses(self):
         """
