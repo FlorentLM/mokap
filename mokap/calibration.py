@@ -651,3 +651,70 @@ class MonocularCalibrationTool:
         return frame_out
 
 
+class MultiViewAggregator:
+    """
+        Convenience class to aggregate multiple monocular detections into multi-view samples
+    """
+
+    def __init__(self, nb_cameras: int):
+
+        self.nb_cameras = nb_cameras
+
+        self._detections_by_frame = defaultdict(dict)
+        self._poses_by_frame = defaultdict(dict)
+
+        self._complete_detection_samples = []  # each is a dict {frame_idx:, detections: [(points2d0, points_ids0), (points2d1, points_ids1), ... ] }
+        self._complete_pose_samples = []  # each is a dict {frame_idx:, poses: [(rvec0, tvec0), (rvec1, tvec1), ... ] }
+
+    def register_extrinsics(self, frame_idx: int, cam_idx: int, rvec: np.ndarray, tvec: np.ndarray):
+        """
+            This registers estimated monocular camera poses and
+            stores them as complete pose samples if all cameras have a pose
+        """
+        self._poses_by_frame[frame_idx][cam_idx] = (rvec, tvec)
+
+        # Check if we have all cameras for that frame
+        if len(self._poses_by_frame[frame_idx]) == self.nb_cameras:
+
+            pbf = self._poses_by_frame.pop(frame_idx)
+
+            self._complete_pose_samples.append({
+                "frame_idx": frame_idx,
+                "poses": [pbf[cidx] for cidx in range(self.nb_cameras)]
+            })
+
+    def register_detections(self, frame_idx: int, cam_idx: int, points2d: np.ndarray, points_ids: np.ndarray):
+        """
+            This registers points detections from multiple cameras and
+            stores them as a complete detection samples if all cameras have one
+        """
+        self._detections_by_frame[frame_idx][cam_idx] = (points2d, points_ids)
+
+        # Check if we have all cameras for that frame
+        if len(self._detections_by_frame[frame_idx]) == self.nb_cameras:
+            dbf = self._detections_by_frame.pop(frame_idx)
+
+            self._complete_detection_samples.append({
+                "frame_idx": frame_idx,
+                "detections": [dbf[cidx] for cidx in range(self.nb_cameras)]
+            })
+
+    def estimate_rig_poses(self):
+        """
+            This will use the complete pose samples to compute a first best guess of the rig arrangement
+        """
+
+        if len(self._complete_pose_samples) < 5:
+            return
+
+        print(f"First approximation of cameras poses from {len(self._complete_pose_samples)} multi-view samples...")
+        # TODO
+
+    def refine_rig_poses(self):
+        """
+            This will use the complete detections samples to refine the poses with bundle adjustment
+        """
+
+        print(f"Refining cameras poses...")
+        # TODO
+
