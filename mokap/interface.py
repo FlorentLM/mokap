@@ -2,7 +2,6 @@ import os
 import subprocess
 import sys
 import platform
-from unittest.mock import right
 
 import psutil
 import screeninfo
@@ -19,9 +18,10 @@ from PySide6.QtCore import Qt, QTimer, QEvent, QDir, QObject, Signal, Slot, QThr
 from PySide6.QtGui import QIcon, QImage, QPixmap, QCursor, QBrush, QPen, QColor, QFont
 from PySide6.QtWidgets import (QApplication, QMainWindow, QStatusBar, QSlider, QGraphicsView, QGraphicsScene,
                                QGraphicsRectItem, QComboBox, QLineEdit, QProgressBar, QCheckBox, QScrollArea,
-                               QWidget, QLabel, QFrame, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout,
+                               QWidget, QLabel, QFrame, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout, QStackedLayout,
                                QPushButton, QSizePolicy, QGraphicsTextItem, QTextEdit, QFileDialog, QSpinBox,
-                               QDialog, QDoubleSpinBox, QDialogButtonBox, QToolButton)
+                               QDialog, QDoubleSpinBox, QDialogButtonBox, QToolButton, QGraphicsOpacityEffect)
+import pyqtgraph as pg
 
 ##
 
@@ -198,6 +198,7 @@ class CalibWorker(QObject):
     """
     signal_result_ready = Signal(np.ndarray)   # carry back the annotated image back to the main thread (to didplay it)
     signal_finished_processing = Signal()      # signals when this worker is busy / free
+    signal_reprojection_error = Signal(np.ndarray)  # Send current reprojection error back to main thread
 
     signal_auto_sample = Signal(bool)       # received when auto-sampling is toggled
     signal_auto_compute = Signal(bool)      # received when auto-copute is toggled
@@ -230,6 +231,7 @@ class CalibWorker(QObject):
         # Called for each new frame received from main thread to process
 
         if not self._running or self._paused:
+            print('aa')
             return
 
         # 1- Detect
@@ -260,6 +262,8 @@ class CalibWorker(QObject):
         # 5- Visualize (this returns the annotated image in full resolution) - TODO: maybe this should be scaled...
         annotated = self.calib_tool.visualise(errors_mm=True)
 
+        self.signal_reprojection_error.emit(self.calib_tool.last_best_errors)
+
         # 6- Emit the annotated frame to the main thread, and emit the 'done' signal
         self.signal_result_ready.emit(annotated)
         self.signal_finished_processing.emit()
@@ -285,8 +289,13 @@ class CalibWorker(QObject):
     def clear_samples(self):
         self.calib_tool.clear_stacks()
 
+    @Slot()
+    def clear_intrinsics(self):
+        self.calib_tool.clear_intrinsics()
+
     @Slot(str)
     def load_calib(self, file_path):
+        self.calib_tool.clear_stacks()
         self.calib_tool.readfile(file_path)
 
     @Slot(str)
@@ -373,15 +382,21 @@ class VideoWindowBase(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
+        self.video_container = QWidget()
+        self.video_container.setStyleSheet('background-color: black;')
+        self.video_container_layout = QHBoxLayout(self.video_container)
+        self.video_container_layout.setContentsMargins(0, 0, 0, 0)
+
         self.VIDEO_FEED = QLabel()
         self.VIDEO_FEED.setStyleSheet('background-color: black;')
         self.VIDEO_FEED.setMinimumSize(1, 1)  # Important! Otherwise it crashes when reducing the size of the window
         self.VIDEO_FEED.setAlignment(Qt.AlignCenter)
-        main_layout.addWidget(self.VIDEO_FEED, 1)
+        self.video_container_layout.addWidget(self.VIDEO_FEED, 1)
+        main_layout.addWidget(self.video_container, 1)
 
         self._blit_image()     # Call this once to initialise it
 
-        main_layout.addWidget(self.VIDEO_FEED, 1)
+        # main_layout.addWidget(self.VIDEO_FEED, 1)
 
         self.BOTTOM_PANEL = QWidget()
         bottom_panel_v_layout = QVBoxLayout(self.BOTTOM_PANEL)
@@ -737,7 +752,7 @@ class VideoWindowRec(VideoWindowBase):
         # This updater function should only run at 60 fps
         self.timer_video = QTimer(self)
         self.timer_video.timeout.connect(self._update_images)
-        self.timer_video.start(16)  # 60 FPS
+        self.timer_video.start(16)
 
         # Finish building the UI by calling the other constructors
         self._init_common_ui()
@@ -1126,6 +1141,7 @@ class VideoWindowCalib(VideoWindowBase):
     signal_save_calib = Signal(str)
     signal_add_sample = Signal()
     signal_clear_samples = Signal()
+    signal_clear_intrinsics = Signal()
 
     signal_TEST_EXTRINSICS_MODE = Signal(bool)
 
@@ -1145,7 +1161,10 @@ class VideoWindowCalib(VideoWindowBase):
             detectiontool=self.detection_tool,
             imsize=self._source_shape[:2]   # pass frame size so it can track coverage
         )
-        self.calib_tool.set_visualisation_scale(2)
+        self.calib_tool.set_visualisation_scale(1)
+
+        # Initialize reprojection error data
+        self.reprojection_errors = deque(maxlen=100)  # Store last 10 errors
 
         ##
 
@@ -1158,6 +1177,7 @@ class VideoWindowCalib(VideoWindowBase):
         #      Worker --> Main thread
         self.worker.signal_result_ready.connect(self.on_worker_result)
         self.worker.signal_finished_processing.connect(self.on_worker_finished)
+        self.worker.signal_reprojection_error.connect(self.on_reprojection_error)
 
         #       Main thread --> Worker
         self.signal_new_frame.connect(self.worker.process_frame, type=Qt.QueuedConnection)
@@ -1165,6 +1185,7 @@ class VideoWindowCalib(VideoWindowBase):
         self.signal_save_calib.connect(self.worker.save_calib)
         self.signal_add_sample.connect(self.worker.add_sample)
         self.signal_clear_samples.connect(self.worker.clear_samples)
+        self.signal_clear_intrinsics.connect(self.worker.clear_intrinsics)
         self.signal_auto_sample.connect(self.worker.signal_auto_sample)
         self.signal_auto_compute.connect(self.worker.signal_auto_compute)
 
@@ -1180,7 +1201,7 @@ class VideoWindowCalib(VideoWindowBase):
         # This updater function should only run at 60 fps
         self.timer_calib = QTimer(self)
         self.timer_calib.timeout.connect(self._update_images)
-        self.timer_calib.start(16)  # 60 FPS
+        self.timer_calib.start(16)
 
         # Finish building the UI by calling the other constructors
         self._init_common_ui()
@@ -1241,6 +1262,14 @@ class VideoWindowCalib(VideoWindowBase):
         self.auto_compute_check.stateChanged.connect(self.on_auto_compute_toggled)
         sampling_layout.addWidget(self.auto_compute_check)
 
+        intrinsics_btns_group = QWidget()
+        intrinsics_btns_layout = QHBoxLayout(intrinsics_btns_group)
+
+        self.clear_intrinsics = QPushButton("Clear intrinsics")
+        self.clear_intrinsics.clicked.connect(self.on_clear_intrinsics)
+        intrinsics_btns_layout.addWidget(self.clear_intrinsics)
+
+        sampling_layout.addWidget(intrinsics_btns_group)
 
         ## TEMPORARY
 
@@ -1252,6 +1281,20 @@ class VideoWindowCalib(VideoWindowBase):
         ##
 
         layout.addWidget(sampling_group)
+
+        ##
+
+        # Reprojection Error Plot
+        self.error_plot = pg.PlotWidget(title="Reprojection Error")
+        self.error_plot.setStyleSheet("background-color: black;")
+
+        self.error_plot.setLabel('left', 'Error (pixels)')
+        self.error_plot.setLabel('bottom', 'Sample')
+        self.error_plot.showGrid(x=True, y=True)
+        self.error_plot_curve = self.error_plot.plot(pen=pg.mkPen(color='y', width=2))
+        self.error_plot.setYRange(0.0, 5.0)
+
+        self.video_container_layout.addWidget(self.error_plot, 1)
 
         ##
 
@@ -1313,6 +1356,11 @@ class VideoWindowCalib(VideoWindowBase):
     def on_clear_samples(self):
         self.signal_clear_samples.emit()
 
+    def on_clear_intrinsics(self):
+        self.reprojection_errors.clear()
+        self.error_plot_curve.setData(self.reprojection_errors)
+        self.signal_clear_intrinsics.emit()
+
     def on_load_calib(self):
         file_path = self.file_dialog(self._main_window.mc.full_path.parent)
         if file_path is not None:
@@ -1336,6 +1384,19 @@ class VideoWindowCalib(VideoWindowBase):
         self.annotated_frame = annotated
 
     #  ============= Custom functions =============
+    @Slot(np.ndarray)
+    def on_reprojection_error(self, error):
+
+        m = np.mean(error)
+        # s = np.std(error)
+
+        self.reprojection_errors.append(m)
+        self.error_plot_curve.setData(self.reprojection_errors)
+
+        # if m < 2.0:
+        #     self.auto_sample_check.setChecked(False)
+        #     self.auto_compute_check.setChecked(False)
+
     def _update_board(self):
         self.charuco_board = calibration_utils.generate_charuco(
             board_rows=self.BOARD_ROWS,

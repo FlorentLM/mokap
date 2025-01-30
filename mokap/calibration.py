@@ -133,6 +133,8 @@ class MonocularCalibrationTool:
         if imsize is not None:
             self.imsize = np.array(imsize[:2])
             self._ideal_central_point = np.flip(self.imsize) / 2.0
+            # self._norm = np.sum(np.power(self.imsize, 2)) * 1e-6      # TODO test this more extensively
+            self._norm = 1
 
             self._frame_in = np.zeros((*self.imsize, 3), dtype=np.uint8)
             self._current_area_mask = np.zeros(self.imsize, dtype=bool)
@@ -227,6 +229,11 @@ class MonocularCalibrationTool:
         self._camera_matrix = camera_matrix
         self._dist_coeffs = dist_coeffs
 
+    def clear_intrinsics(self):
+        self._camera_matrix = None
+        self._dist_coeffs = None
+        self.last_best_errors = np.inf
+
     @staticmethod
     def _check_new_errors(errors_new, errors_prev, p_val=0.05, confidence_lvl=0.95):
         mean_new, se_new, l_new = np.mean(errors_new), stats.sem(errors_new), len(np.atleast_1d(errors_prev))
@@ -303,7 +310,8 @@ class MonocularCalibrationTool:
             raise AttributeError("Can't enable simple and complex distortion modes at the same time!")
 
         # If there is fewer than 5 images (no matter the self._min_stack value), this will NOT be enough
-        if len(self.stack_points2d) < 5:
+        # Also, OpenCV says DLT algorithm needs at least 6 points for pose estimation from 3D-2D point correspondences
+        if len(self.stack_points2d) < 6:
             return  # Abort and keep the stacks
 
         calib_flags = cv2.CALIB_USE_LU + cv2.CALIB_SAME_FOCAL_LENGTH
@@ -341,7 +349,7 @@ class MonocularCalibrationTool:
         new_dist_coeffs = new_dist_coeffs.squeeze()
         stack_rvecs = np.stack(stack_rvecs).squeeze()       # Unused for now
         stack_tvecs = np.stack(stack_tvecs).squeeze()       # Unused for now
-        stack_errors = stack_errors.squeeze()
+        stack_errors = stack_errors.squeeze() / self._norm  # Normalise errors on image diagonal
 
         # Note:
         # ---------------
@@ -433,7 +441,7 @@ class MonocularCalibrationTool:
             self.curr_error = np.inf
             return
 
-        self.curr_error = errors[0].squeeze().item()
+        self.curr_error = errors[0].squeeze().item() / self._norm   # Normalise errors on image diagonal
         rvec, tvec = rvecs[0], tvecs[0]
 
         if refine:
@@ -628,10 +636,10 @@ class MonocularCalibrationTool:
                                 f"Area: {self.coverage:.2f}% ({len(self.stack_points2d)} snapshots)",
                                 (30, 60 * self.SCALE), **self.text_params)
 
-        txt = f"{self.error:.2f} px" if self.error != np.inf else '-'
+        txt = f"{self.error:.3f} px" if self.error != np.inf else '-'
         frame_out = cv2.putText(frame_out, f"Current reprojection error: {txt}", (30, 90 * self.SCALE), **self.text_params)
 
-        txt = f"{self.stackerror:.2f} px" if self.stackerror != np.inf else '-'
+        txt = f"{self.stackerror:.3f} px" if self.stackerror != np.inf else '-'
         frame_out = cv2.putText(frame_out, f"Best average reprojection error: {txt}", (30, 120 * self.SCALE), **self.text_params)
 
         # if self.curr_error != float('inf'):
@@ -641,3 +649,5 @@ class MonocularCalibrationTool:
         # frame_out = cv2.addWeighted(frame_out, 1.0, overlay, 0.75, 1.0)
 
         return frame_out
+
+
