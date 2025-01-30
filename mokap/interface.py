@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 import numpy as np
 from mokap import utils, calibration_utils
-from mokap.calibration import DetectionTool, MonocularCalibrationTool
+from mokap.calibration import DetectionTool, MonocularCalibrationTool, MultiViewAggregator
 from PIL import Image
 from PySide6.QtCore import Qt, QTimer, QEvent, QDir, QObject, Signal, Slot, QThread, QPoint, QSize
 from PySide6.QtGui import QIcon, QImage, QPixmap, QCursor, QBrush, QPen, QColor, QFont
@@ -204,9 +204,11 @@ class CalibWorker(QObject):
     signal_auto_compute = Signal(bool)      # received when auto-copute is toggled
 
     signal_TEST_EXTRINSICS_MODE = Signal(bool)      # TEMP
+    signal_forward_detection = Signal(int, int, np.ndarray, np.ndarray)
 
-    def __init__(self, calib_tool, parent=None):
+    def __init__(self, calib_tool, cam_idx, parent=None):
         super().__init__(parent)
+        self.camera_idx = cam_idx
         self.calib_tool = calib_tool
 
         # Flags for worker state
@@ -227,11 +229,9 @@ class CalibWorker(QObject):
         self._paused = val
 
     @Slot(np.ndarray)
-    def process_frame(self, frame):
+    def process_frame(self, frame, frame_id):
         # Called for each new frame received from main thread to process
-
         if not self._running or self._paused:
-            print('aa')
             return
 
         # 1- Detect
@@ -240,14 +240,16 @@ class CalibWorker(QObject):
         # 2- Auto-register samples
         if self.auto_sample:
             if self._TEST_EXTRINSICS_MODE:
-                print('EXTRINSICS MODE')
+                # print(f'EXTRINSICS MODE: {frame_id}, {self.camera_idx}, {self.calib_tool.detection}')
+                self.signal_forward_detection.emit(frame_id, self.camera_idx, *self.calib_tool.detection)
             else:
                 self.calib_tool.auto_register_monocular(area_threshold=0.2, nb_points_threshold=4)
 
         # 3- Auto-calibrate
         if self.auto_compute:
             if self._TEST_EXTRINSICS_MODE:
-                print('EXTRINSICS MODE')
+                # print('EXTRINSICS MODE')
+                pass
             else:
                 self.calib_tool.auto_compute_intrinsics(
                     coverage_threshold=60,
@@ -1134,7 +1136,7 @@ class VideoWindowRec(VideoWindowBase):
 
 class VideoWindowCalib(VideoWindowBase):
 
-    signal_new_frame = Signal(np.ndarray)
+    signal_new_frame = Signal(np.ndarray, int)
     signal_auto_sample = Signal(bool)
     signal_auto_compute = Signal(bool)
     signal_load_calib = Signal(str)
@@ -1170,7 +1172,7 @@ class VideoWindowCalib(VideoWindowBase):
 
         # Setup worker
         self.worker_thread = QThread(self)
-        self.worker = CalibWorker(self.calib_tool)
+        self.worker = CalibWorker(self.calib_tool, self.idx)
         self.worker.moveToThread(self.worker_thread)
 
         # Setup signals
@@ -1178,6 +1180,8 @@ class VideoWindowCalib(VideoWindowBase):
         self.worker.signal_result_ready.connect(self.on_worker_result)
         self.worker.signal_finished_processing.connect(self.on_worker_finished)
         self.worker.signal_reprojection_error.connect(self.on_reprojection_error)
+
+        self.worker.signal_forward_detection.connect(self.on_received_detection)
 
         #       Main thread --> Worker
         self.signal_new_frame.connect(self.worker.process_frame, type=Qt.QueuedConnection)
@@ -1347,7 +1351,7 @@ class VideoWindowCalib(VideoWindowBase):
         self._blit_image()
 
     def _send_frame_to_worker(self, frame):
-        self.signal_new_frame.emit(frame)
+        self.signal_new_frame.emit(frame, int(self._main_window.mc.indices[self.idx]))
         self._worker_busy = True
 
     def on_add_sample(self):
@@ -1382,6 +1386,12 @@ class VideoWindowCalib(VideoWindowBase):
     def on_worker_result(self, annotated):
         # called in the main thread when worker finishes processing and emits 'result_ready'
         self.annotated_frame = annotated
+
+    def on_received_detection(self, frame_idx, cam_idx, points2d, points_ids):
+        self._main_window.multiview_calibrator.register_detection(frame_idx, cam_idx, points2d, points_ids)
+
+    def on_received_camera_pose(self, frame_idx, cam_idx, rvec, tvec):
+        self._main_window.multiview_calibrator.register_extrinsics(frame_idx, cam_idx, rvec, tvec)
 
     #  ============= Custom functions =============
     @Slot(np.ndarray)
@@ -1535,6 +1545,8 @@ class MainWindow(QMainWindow):
         self.gui_logger = gui_logger
 
         self.mc = mc
+
+        self.multiview_calibrator = MultiViewAggregator(nb_cameras=self.mc.nb_cameras)
 
         # Identify monitors
         self.selected_monitor = None

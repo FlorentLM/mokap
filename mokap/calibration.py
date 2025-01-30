@@ -642,29 +642,23 @@ class MonocularCalibrationTool:
         txt = f"{self.stackerror:.3f} px" if self.stackerror != np.inf else '-'
         frame_out = cv2.putText(frame_out, f"Best average reprojection error: {txt}", (30, 120 * self.SCALE), **self.text_params)
 
-        # if self.curr_error != float('inf'):
-        #     self.graph.update(self.curr_error)
-        # overlay = np.zeros(self.imsize, dtype=np.uint8)
-        # overlay[-5 - self.graph._h:-5, 5:5 + self.graph._w, :] = self.graph.render()
-        # frame_out = cv2.addWeighted(frame_out, 1.0, overlay, 0.75, 1.0)
-
         return frame_out
 
 
 class MultiViewAggregator:
     """
-        Convenience class to aggregate multiple monocular detections into multi-view samples
+        Convenience class to aggregate multiple monocular detections into 'complete' multi-view samples
     """
 
-    def __init__(self, nb_cameras: int):
+    def __init__(self, nb_cameras: int, max_poses=100, max_detections=100):
 
         self.nb_cameras = nb_cameras
 
         self._detections_by_frame = defaultdict(dict)
         self._poses_by_frame = defaultdict(dict)
 
-        self._complete_detection_samples = []  # each is a dict {frame_idx:, detections: [(points2d0, points_ids0), (points2d1, points_ids1), ... ] }
-        self._complete_pose_samples = []  # each is a dict {frame_idx:, poses: [(rvec0, tvec0), (rvec1, tvec1), ... ] }
+        self._complete_detection_samples = deque(maxlen=max_detections)
+        self._complete_pose_samples = deque(maxlen=max_poses)
 
     def register_extrinsics(self, frame_idx: int, cam_idx: int, rvec: np.ndarray, tvec: np.ndarray):
         """
@@ -683,7 +677,9 @@ class MultiViewAggregator:
                 "poses": [pbf[cidx] for cidx in range(self.nb_cameras)]
             })
 
-    def register_detections(self, frame_idx: int, cam_idx: int, points2d: np.ndarray, points_ids: np.ndarray):
+        print(f'Stored {len(self._complete_detection_samples)} complete multi-view poses')
+
+    def register_detection(self, frame_idx: int, cam_idx: int, points2d: np.ndarray, points_ids: np.ndarray):
         """
             This registers points detections from multiple cameras and
             stores them as a complete detection samples if all cameras have one
@@ -698,6 +694,8 @@ class MultiViewAggregator:
                 "frame_idx": frame_idx,
                 "detections": [dbf[cidx] for cidx in range(self.nb_cameras)]
             })
+
+        print(f'Stored {len(self._complete_detection_samples)} complete multi-view detections')
 
     def estimate_rig_poses(self):
         """
