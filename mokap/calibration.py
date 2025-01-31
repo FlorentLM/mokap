@@ -646,12 +646,12 @@ class MonocularCalibrationTool:
         return frame_out
 
 
-class MultiViewAggregator:
+class MultiviewCalibrationTool:
     """
         Convenience class to aggregate multiple monocular detections into 'complete' multi-view samples
     """
 
-    def __init__(self, nb_cameras: int, origin_camera=0, max_poses=100, max_detections=100):
+    def __init__(self, nb_cameras: int, origin_camera=0, min_poses=15, max_poses=100, min_detections=15, max_detections=100):
 
         self.nb_cameras = nb_cameras
         self._origin_idx = origin_camera
@@ -659,13 +659,42 @@ class MultiViewAggregator:
         self._detections_by_frame = defaultdict(dict)
         self._poses_by_frame = defaultdict(dict)
 
+        self._min_poses = min_poses
+        self._min_detections = min_detections
+
         self._complete_detection_samples = deque(maxlen=max_detections)
         self._complete_pose_samples = deque(maxlen=max_poses)
 
+        self._optimised_rvecs = None
+        self._optimised_tvecs = None
+        self._refined_rvecs = None
+        self._refined_tvecs = None
+
+    @property
+    def nb_detection_samples(self):
+        return len(self._complete_detection_samples)
+
+    @property
+    def nb_pose_samples(self):
+        return len(self._complete_pose_samples)
+
+    @property
+    def has_rig_pose(self):
+        return self._optimised_rvecs is not None and self._optimised_tvecs is not None
+
+    @property
+    def has_refined_rig_pose(self):
+        return self._refined_rvecs is not None and self._refined_tvecs is not None
+
+    def pose(self):
+        return self._optimised_rvecs, self._optimised_tvecs
+
+    def refined_pose(self):
+        return self._refined_rvecs, self._refined_tvecs
+
     def register_extrinsics(self, frame_idx: int, cam_idx: int, rvec: np.ndarray, tvec: np.ndarray):
         """
-            This registers estimated monocular camera poses and
-            stores them as complete pose samples if all cameras have a pose
+            This registers estimated monocular camera poses and stores them as complete pose samples if all cameras have a pose
         """
         self._poses_by_frame[frame_idx][cam_idx] = (rvec, tvec)
 
@@ -674,21 +703,17 @@ class MultiViewAggregator:
 
             pbf = self._poses_by_frame.pop(frame_idx)
 
+            remapped_poses = np.zeros((self.nb_cameras, 2, 3))
+
             # Remap the poses to a common origin
-            remapped_poses = []
             for cidx in range(self.nb_cameras):
                 rvec, tvec = pbf[cidx]
-                print(rvec)
                 origin_rvec, origin_tvec = pbf[self._origin_idx]
-                remapped = proj_geom.remap_rtvecs(rvec, tvec, origin_rvec, origin_tvec)
-                remapped_poses.append(remapped)
+                remapped_poses[cidx, 0, :], remapped_poses[cidx, 1, :] = proj_geom.remap_rtvecs(rvec, tvec, origin_rvec, origin_tvec)
 
-            self._complete_pose_samples.append({
-                "frame_idx": frame_idx,
-                "poses": remapped_poses
-            })
+            self._complete_pose_samples.append(remapped_poses)
 
-        print(f'Stored {len(self._complete_pose_samples)} complete multi-view poses')
+        print(f'[MultiviewCalibrationTool] Stored {len(self._complete_pose_samples)} complete multi-view poses')
 
     def register_detection(self, frame_idx: int, cam_idx: int, points2d: np.ndarray, points_ids: np.ndarray):
         """
@@ -700,46 +725,31 @@ class MultiViewAggregator:
         # Check if we have all cameras for that frame
         if len(self._detections_by_frame[frame_idx]) == self.nb_cameras:
             dbf = self._detections_by_frame.pop(frame_idx)
+            # list of lists of tuples of arrays: M[N[(P_points, P_ids)]] because the number of points P is variable
+            self._complete_detection_samples.append([dbf[cidx] for cidx in range(self.nb_cameras)])
 
-            self._complete_detection_samples.append({
-                "frame_idx": frame_idx,
-                "detections": [dbf[cidx] for cidx in range(self.nb_cameras)]
-            })
+        print( f'Stored {len(self._complete_detection_samples)} complete multi-view detections')
 
-        print(f'Stored {len(self._complete_detection_samples)} complete multi-view detections')
-
-    def estimate_rig_poses(self):
+    def compute_rig_poses(self):
         """
-            This will use the complete pose samples to compute a first best guess of the rig arrangement
+            This used the complete pose samples to compute a first best guess of the rig arrangement
         """
 
-        M = len(self._complete_pose_samples)
-
-        if M < 15:
+        if self.nb_pose_samples < self._min_poses:
             return
 
-        print(f"First approximation of cameras poses from {len(self._complete_pose_samples)} multi-view samples...")
+        # stack the poses in a array of shape (N, M, 2, 3) with N = nb of cameras and M = nb of samples
+        poses_array = np.stack(self._complete_pose_samples).swapaxes(0, 1)
+        # dim 2 is rvecs, tvecs
+        self._optimised_rvecs, self._optimised_tvecs = multicam.bestguess_rtvecs(poses_array[:, :, 0, :], poses_array[:, :, 1, :])
 
-        N = self.nb_cameras
-
-        n_m_rvecs = np.zeros((N, M, 3), dtype=np.float32)
-        n_m_tvecs = np.zeros((N, M, 3), dtype=np.float32)
-        # TODO - rewrite this so it's a bit more optimised
-        for m, sample in enumerate(self._complete_pose_samples):
-            poses = sample["poses"]
-            for n, (rvec, tvec) in enumerate(poses):
-                n_m_rvecs[n, m, :] = rvec
-                n_m_tvecs[n, m, :] = tvec
-
-        optimized_rvecs, optimized_tvecs = multicam.bestguess_rtvecs(n_m_rvecs, n_m_tvecs)
-
-        print(optimized_rvecs, optimized_tvecs)
+        print(f"[MultiviewCalibrationTool] Computed cameras poses from {self.nb_pose_samples} multi-view samples")
 
     def refine_rig_poses(self):
         """
             This will use the complete detections samples to refine the poses with bundle adjustment
         """
 
-        print(f"Refining cameras poses...")
+        print(f"[MultiviewCalibrationTool] Refining cameras poses...")
         # TODO
 
