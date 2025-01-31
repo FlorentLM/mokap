@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QStatusBar, QSlider, Q
                                QPushButton, QSizePolicy, QGraphicsTextItem, QTextEdit, QFileDialog, QSpinBox,
                                QDialog, QDoubleSpinBox, QDialogButtonBox, QToolButton, QGraphicsOpacityEffect)
 import pyqtgraph as pg
+from pyqtgraph.opengl import GLViewWidget, GLAxisItem, GLGridItem, GLLinePlotItem, GLScatterPlotItem
 
 ##
 
@@ -220,7 +221,7 @@ class MonocularCalibWorker(QObject):
         self.auto_sample = True
         self.auto_compute = True
 
-        self._CURRENT_MODE = 1
+        self._CURRENT_MODE = 0
 
         self.signal_auto_sample.connect(self.set_auto_sample)
         self.signal_auto_compute.connect(self.set_auto_compute)
@@ -327,10 +328,14 @@ class MultiCalibWorker(QObject):
         if self._paused:
             return
 
-        optimized_rvecs, optimized_tvecs = self.multiview_calib.estimate()
+        # Estimate extrinsics
+        self.multiview_calib.compute_estimation()
 
-        self.signal_computed_poses.emit(optimized_rvecs, optimized_tvecs)
+        rvecs, tvecs = self.multiview_calib.extrinsics
+        print(rvecs, tvecs)
 
+        # Send them back to the main thread
+        self.signal_computed_poses.emit(rvecs, tvecs)
 
 ##
 
@@ -363,11 +368,10 @@ class VideoWindowBase(QWidget):
         self.idx = idx
 
         self._camera = self._main_window.mc.cameras[self.idx]
-        self._source_shape = self._camera.shape
 
-        self._bg_colour = f'#{self._main_window.mc.colours[self._camera.name].lstrip("#")}'
-        self._fg_colour = self._main_window.col_white if utils.hex_to_hls(self._bg_colour)[
-                                                             1] < 60 else self._main_window.col_black
+        self._source_shape = self._main_window.sources_shapes_list[self.idx]
+        self._bg_colour = self._main_window.bg_colours_list[self.idx]
+        self._fg_colour = self._main_window.fg_colours_list[self.idx]
 
         # Where the frame data will be stored
         self._frame_buffer = np.zeros((*self._source_shape[:2], 3), dtype=np.uint8)
@@ -1296,15 +1300,6 @@ class VideoWindowCalib(VideoWindowBase):
 
         sampling_layout.addWidget(intrinsics_btns_group)
 
-        ## TEMPORARY
-
-        self.test_extrinsics_checkbox = QCheckBox("TEST _ EXTRINSICS MODE")
-        self.test_extrinsics_checkbox.setChecked(False)
-        self.test_extrinsics_checkbox.stateChanged.connect(self.on_TEST_EXTRINSICS_MODE_toggled)
-        sampling_layout.addWidget(self.test_extrinsics_checkbox)
-
-        ##
-
         layout.addWidget(sampling_group)
 
         # Reprojection Error Plot
@@ -1506,8 +1501,6 @@ class VideoWindowCalib(VideoWindowBase):
         return selected_path
 
 ##
-from pyqtgraph.opengl import GLViewWidget, GLAxisItem, GLGridItem, GLLinePlotItem, GLScatterPlotItem
-
 
 class ExtrinsicsWindow(QWidget):
     def __init__(self, main_window_ref):
@@ -1519,6 +1512,10 @@ class ExtrinsicsWindow(QWidget):
         self._main_window = main_window_ref
         self.nb_cams = main_window_ref.nb_cams
         self.idx = self.nb_cams + 1
+
+        self._cam_colours = [np.array((*utils.hex_to_rgb(c), 255))/255 for c in self._main_window.bg_colours_list]
+        self._cam_shapes = self._main_window.sources_shapes_list
+        self._depth = 130
 
         # Initialise where to store multi-intrinsics, and where to store worker results for extrinsics
 
@@ -1563,16 +1560,24 @@ class ExtrinsicsWindow(QWidget):
         # self.timer_update.start(500)
 
     def _init_ui(self):
-        # Set up the GL view
         self.view = GLViewWidget()
         self.view.setWindowTitle('Cameras arrangement')
         layout = QVBoxLayout(self)
         layout.addWidget(self.view)
         self.setLayout(layout)
 
-        self.estimate_button = QPushButton("Estimate")
+        buttons_group = QWidget()
+        buttons_group_layout = QHBoxLayout(buttons_group)
+
+        self.nextstage_button = QPushButton("TEST _ Next stage")
+        self.nextstage_button.clicked.connect(self._main_window.cycle_stage)
+        buttons_group_layout.addWidget(self.nextstage_button)
+
+        self.estimate_button = QPushButton("Estimate 3D pose")
         self.estimate_button.clicked.connect(self.worker.compute)
-        layout.addWidget(self.estimate_button)
+        buttons_group_layout.addWidget(self.estimate_button)
+
+        layout.addWidget(buttons_group)
 
         # If landscape screen
         if self._main_window.selected_monitor.height < self._main_window.selected_monitor.width:
@@ -1591,6 +1596,7 @@ class ExtrinsicsWindow(QWidget):
 
         # Add grid
         grid = GLGridItem()
+        grid.setSize(100, 100, 100)
         self.view.addItem(grid)
 
         # Set initial viewpoint position
@@ -1655,7 +1661,7 @@ class ExtrinsicsWindow(QWidget):
 
         return camera_position_item, frustum_item
 
-    def display_points(self, points3d, color=(1, 1, 1, 1), size=5):
+    def display_points(self, points3d, color=(1, 1, 1, 1), size=1):
         """
             Displays 3D points in the GLViewWidget
         """
@@ -1676,33 +1682,26 @@ class ExtrinsicsWindow(QWidget):
     @Slot(np.ndarray, np.ndarray)
     def update_poses(self, rvecs, tvecs):
 
-        # TESTING - these should be set on the class level at initialisation - TODO
-        DEPTH = 130
-        COLORS = [
-            ((i * 50) % 255 / 255.0, (i * 80) % 255 / 255.0, (i * 110) % 255 / 255.0, 1.0)
-            for i in range(len(rvecs))
-        ]
-        FRAME_SIZE = (1440, 1080)
+        if rvecs is not None and tvecs is not None:
+            for item in self.camera_items + self.frustum_items:
+                self.view.removeItem(item)
+            self.camera_items.clear()
+            self.frustum_items.clear()
 
-        for item in self.camera_items + self.frustum_items:
-            self.view.removeItem(item)
-        self.camera_items.clear()
-        self.frustum_items.clear()
+            for idx, (rvec, tvec, K) in enumerate(zip(rvecs, tvecs, self.multi_intrinsics)):
+                camera_pos_item, frustum_item = self.create_camera_item(
+                    rvec, tvec,
+                    camera_matrix=K,
+                    frame_size=self._cam_shapes[idx],
+                    depth=self._depth,
+                    color=self._cam_colours[idx]
+                )
 
-        for idx, (rvec, tvec, K) in enumerate(zip(rvecs, tvecs, self.multi_intrinsics)):
-            camera_pos_item, frustum_item = self.create_camera_item(
-                rvec, tvec,
-                camera_matrix=K,
-                frame_size=FRAME_SIZE,
-                depth=DEPTH,
-                color=COLORS[idx % len(COLORS)]
-            )
+                self.view.addItem(camera_pos_item)
+                self.view.addItem(frustum_item)
 
-            self.view.addItem(camera_pos_item)
-            self.view.addItem(frustum_item)
-
-            self.camera_items.append(camera_pos_item)
-            self.frustum_items.append(frustum_item)
+                self.camera_items.append(camera_pos_item)
+                self.frustum_items.append(frustum_item)
 
     @Slot(np.ndarray)
     def update_points(self, points3d):
@@ -1756,6 +1755,11 @@ class MainWindow(QMainWindow):
 
         self.mc = mc
         self.nb_cams = self.mc.nb_cameras
+
+        # Set cameras info
+        self.sources_shapes_list = [cam.shape for cam in self.mc.cameras]
+        self.bg_colours_list = [f'#{self.mc.colours[cam.name].lstrip("#")}' for cam in self.mc.cameras]
+        self.fg_colours_list = [self.col_white if utils.hex_to_hls(bg)[1] < 60 else self.col_black for bg in self.bg_colours_list]
 
         # Identify monitors
         self.selected_monitor = None
@@ -2060,6 +2064,15 @@ class MainWindow(QMainWindow):
         else:
             pass
 
+    def cycle_stage(self):
+        # TESTING - This should be done automatically on a per-camera basis - TODO
+        if self._is_calibrating:
+            for w in self.secondary_windows:
+                w.worker._CURRENT_MODE += 1
+                if w.worker._CURRENT_MODE > 2:
+                    w.worker._CURRENT_MODE = 0
+                print(w.worker._CURRENT_MODE)
+
     def _toggle_text_editing(self, override=None):
 
         if override is None:
@@ -2334,7 +2347,6 @@ class MainWindow(QMainWindow):
         return windows
 
     def _start_secondary_windows(self):
-
         if self._is_calibrating:
             # Create 3D visualization window
             self.extrinsics_window = ExtrinsicsWindow(self)

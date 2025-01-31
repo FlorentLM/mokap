@@ -699,9 +699,9 @@ class MultiviewCalibrationTool:
     @property
     def extrinsics(self):
         if self._refined:
-            return self._optimised_rvecs, self._optimised_tvecs
-        else:
             return self._refined_rvecs, self._refined_tvecs
+        else:
+            return self._optimised_rvecs, self._optimised_tvecs
 
     def intrinsics(self):
         if self._refined:
@@ -755,13 +755,13 @@ class MultiviewCalibrationTool:
         self._detections_stack.clear()
         self._detections_by_frame = defaultdict(dict)
 
-    def estimate(self):
+    def compute_estimation(self, clear_poses_stack=True):
         """
             This uses the complete pose samples to compute a first estimate of the cameras arrangement
         """
 
         if self.nb_pose_samples < self._min_poses:
-            return False
+            return
 
         # stack the poses in a array of shape (N, M, 2, 3) with N = nb of cameras and M = nb of samples
         poses_array = np.stack(self._poses_stack).swapaxes(0, 1)
@@ -769,19 +769,24 @@ class MultiviewCalibrationTool:
         self._optimised_rvecs, self._optimised_tvecs = multicam.bestguess_rtvecs(poses_array[:, :, 0, :], poses_array[:, :, 1, :])
 
         print(f"[MultiviewCalibrationTool] Computed cameras poses from {self.nb_pose_samples} multi-view samples")
-        return True
 
-    def refine(self):
+        if clear_poses_stack:
+            self.clear_poses()
+
+    def compute_refined(self, clear_detections_stack=True):
         """
             This uses the complete detections samples to refine the cameras poses and intrinsics with bundle adjustment
         """
 
         if not self.is_refined:
-            return False
+            return
 
         if self.nb_detection_samples < self._min_detections:
-            return False
+            return
 
         print(f"[MultiviewCalibrationTool] Refining cameras poses...")
         # TODO
+
+        # if clear_detections_stack:
+        #     self.clear_detections()
 
