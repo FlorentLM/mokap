@@ -162,7 +162,7 @@ class MainWorker(QObject):
     """
         This worker lives in its own thread and does stuff on the full resolution image
     """
-    # testing stuff for now, let's send bounding boxes of a fake detection:
+    # TESTING - send bounding boxes of a fake detection
     signal_result_ready = Signal(list)
     signal_finished_processing = Signal()
 
@@ -179,7 +179,7 @@ class MainWorker(QObject):
         if not self._running or self._paused:
             return
 
-        # 1- TODO: motiuon detection
+        # 1- TESTING - Fake motiuon detection
         bboxes = self._do_motion_detection(frame)
 
         # 2- Emit the results (metadata) back to the main thread, and emit 'done' signal
@@ -187,7 +187,7 @@ class MainWorker(QObject):
         self.signal_finished_processing.emit()
 
     def _do_motion_detection(self, frame):
-        # TODO. for now let's just assume we found one bounding box around (100,100) of size (50,40)
+        # TESTING - Fake bounding box around (100,100) of size (50,40)
         return [(100, 100, 50, 40)]
 
     def stop(self):
@@ -204,7 +204,6 @@ class MonocularCalibWorker(QObject):
     signal_auto_sample = Signal(bool)       # received when auto-sampling is toggled
     signal_auto_compute = Signal(bool)      # received when auto-copute is toggled
 
-    signal_TEST_EXTRINSICS_MODE = Signal(bool)      # TEMP
     signal_forward_detection = Signal(int, int, np.ndarray, np.ndarray)
     signal_forward_pose = Signal(int, int, np.ndarray, np.ndarray)
 
@@ -221,11 +220,10 @@ class MonocularCalibWorker(QObject):
         self.auto_sample = True
         self.auto_compute = True
 
-        self._TEST_EXTRINSICS_MODE = False
+        self._CURRENT_MODE = 1
 
         self.signal_auto_sample.connect(self.set_auto_sample)
         self.signal_auto_compute.connect(self.set_auto_compute)
-        self.signal_TEST_EXTRINSICS_MODE.connect(self.set_TEST_EXTRINSICS_MODE)
 
     def set_paused(self, val):
         self._paused = val
@@ -240,11 +238,11 @@ class MonocularCalibWorker(QObject):
         self.calib_tool.detect(frame)
 
         # 2- Auto-register samples
-        if self.auto_sample:
-            self.calib_tool.auto_register_monocular(area_threshold=0.2, nb_points_threshold=4)
+        if self._CURRENT_MODE == 0 and self.auto_sample:
+            self.calib_tool.auto_register_area_based(area_threshold=0.2, nb_points_threshold=4)
 
-        # 3- Auto-calibrate
-        if self.auto_compute:
+        # 3- Auto-calibrate intrinsics
+        if self._CURRENT_MODE == 0 and self.auto_compute:
             self.calib_tool.auto_compute_intrinsics(
                 coverage_threshold=60,
                 stack_length_threshold=15,
@@ -255,14 +253,14 @@ class MonocularCalibWorker(QObject):
         # 4- Compute extrinsics (only works if we already have intrinsics)
         self.calib_tool.compute_extrinsics()
 
-        if self._TEST_EXTRINSICS_MODE and self.calib_tool.has_extrinsics:
-            # print(f'EXTRINSICS MODE: {frame_id}, {self.camera_idx}, {self.calib_tool.detection}')
+        if self._CURRENT_MODE == 1 and self.calib_tool.has_extrinsics:
             self.signal_forward_pose.emit(frame_id, self.camera_idx, *self.calib_tool.extrinsics)
 
-        # 5- Visualize (this returns the annotated image in full resolution) - TODO: maybe this should be scaled...
+        # 5- Visualize (this returns the annotated image in full resolution)
         annotated = self.calib_tool.visualise(errors_mm=True)
 
-        self.signal_reprojection_error.emit(self.calib_tool.last_best_errors)
+        if self._CURRENT_MODE == 0:
+            self.signal_reprojection_error.emit(self.calib_tool.last_best_errors)
 
         # 6- Emit the annotated frame to the main thread, and emit the 'done' signal
         self.signal_result_ready.emit(annotated)
@@ -275,11 +273,6 @@ class MonocularCalibWorker(QObject):
     @Slot(bool)
     def set_auto_compute(self, value):
         self.auto_compute = value
-
-    @Slot(bool)
-    def set_TEST_EXTRINSICS_MODE(self, value):
-        self._TEST_EXTRINSICS_MODE = value
-        print(f"[CalibWorker] TEST_EXTRINSICS_MODE: {self._TEST_EXTRINSICS_MODE}")
 
     @Slot()
     def add_sample(self):
@@ -334,7 +327,7 @@ class MultiCalibWorker(QObject):
         if self._paused:
             return
 
-        optimized_rvecs, optimized_tvecs = self.multiview_calib.compute_rig_poses()
+        optimized_rvecs, optimized_tvecs = self.multiview_calib.estimate()
 
         self.signal_computed_poses.emit(optimized_rvecs, optimized_tvecs)
 
@@ -356,7 +349,6 @@ class VideoWindowBase(QWidget):
         TASKBAR_H = 48
         TOPBAR_H = 23
     else:
-        # TODO
         TASKBAR_H = 48
         TOPBAR_H = 23
     SPACING = 10
@@ -1064,7 +1056,7 @@ class VideoWindowRec(VideoWindowBase):
         if w < disp_w:
             self._display_buffer[:, w:] = 0
 
-        # # TODO - this is a test fake bounding box
+        # TESTING - fake bounding box
         # for (x, y, bw, bh) in self._bboxes:
         #     sx, sy = int(x*scale), int(y*scale)
         #     sw, sh = int(bw*scale), int(bh*scale)
@@ -1169,15 +1161,15 @@ class VideoWindowRec(VideoWindowBase):
 class VideoWindowCalib(VideoWindowBase):
 
     signal_new_frame = Signal(np.ndarray, int)
+
     signal_auto_sample = Signal(bool)
     signal_auto_compute = Signal(bool)
+
     signal_load_calib = Signal(str)
     signal_save_calib = Signal(str)
     signal_add_sample = Signal()
     signal_clear_samples = Signal()
     signal_clear_intrinsics = Signal()
-
-    signal_TEST_EXTRINSICS_MODE = Signal(bool)
 
     def __init__(self, main_window_ref, idx):
         super().__init__(main_window_ref, idx)
@@ -1188,7 +1180,7 @@ class VideoWindowCalib(VideoWindowBase):
         self.SQUARE_LENGTH_MM = 1.5
         self.MARKER_BITS = 4
 
-        # Setup Detection classes
+        # Setup Detection and monocular calib tools
         self._update_board()
         self.detection_tool = DetectionTool(self.charuco_board)
         self.mono_calib_tool = MonocularCalibrationTool(
@@ -1200,12 +1192,15 @@ class VideoWindowCalib(VideoWindowBase):
         # Initialize reprojection error data for plotting
         self.reprojection_errors = deque(maxlen=100)  # Store last 10 errors
 
-        ##
-
         # Setup worker
         self.worker_thread = QThread(self)
         self.worker = MonocularCalibWorker(self.mono_calib_tool, self.idx)
         self.worker.moveToThread(self.worker_thread)
+
+        # Initialise where to store worker results and state
+        self.annotated_frame = None
+        self._worker_busy = False
+        self._latest_frame = None
 
         # Setup signals
         #      Worker --> Main thread
@@ -1226,14 +1221,7 @@ class VideoWindowCalib(VideoWindowBase):
         self.signal_auto_sample.connect(self.worker.signal_auto_sample)
         self.signal_auto_compute.connect(self.worker.signal_auto_compute)
 
-        self.signal_TEST_EXTRINSICS_MODE.connect(self.worker.signal_TEST_EXTRINSICS_MODE)
-
         self.worker_thread.start()
-
-        # Initialise where to store worker results and state
-        self.annotated_frame = None
-        self._worker_busy = False
-        self._latest_frame = None
 
         # This updater function should only run at 60 fps
         self.timer_calib = QTimer(self)
@@ -1319,8 +1307,6 @@ class VideoWindowCalib(VideoWindowBase):
 
         layout.addWidget(sampling_group)
 
-        ##
-
         # Reprojection Error Plot
         self.error_plot = pg.PlotWidget(title="Reprojection Error")
         self.error_plot.setStyleSheet("background-color: black;")
@@ -1332,8 +1318,6 @@ class VideoWindowCalib(VideoWindowBase):
         self.error_plot.setYRange(0.0, 5.0)
 
         self.video_container_layout.addWidget(self.error_plot, 1)
-
-        ##
 
         calib_io_group = QGroupBox("Load/Save")
         calib_io_layout = QVBoxLayout(calib_io_group)
@@ -1443,7 +1427,7 @@ class VideoWindowCalib(VideoWindowBase):
         )
 
     def _reset_detector(self):
-        # TODO - this is not thread safe - it WILL crash if used
+        # TODO - this is not thread safe - it WILL crash if used - should use a signal
         self.detection_tool = DetectionTool(self.charuco_board)
         self.mono_calib_tool.dt = self.detection_tool
         self.mono_calib_tool.clear_stacks()
@@ -1503,10 +1487,6 @@ class VideoWindowCalib(VideoWindowBase):
     def on_auto_compute_toggled(self, checked):
         self.signal_auto_compute.emit(checked)
 
-    @Slot(bool)
-    def on_TEST_EXTRINSICS_MODE_toggled(self, checked):
-        self.signal_TEST_EXTRINSICS_MODE.emit(checked)
-
     def file_dialog(self, startpath):
         dial = QFileDialog(self)
         dial.setWindowTitle("Choose folder")
@@ -1540,11 +1520,18 @@ class ExtrinsicsWindow(QWidget):
         self.nb_cams = main_window_ref.nb_cams
         self.idx = self.nb_cams + 1
 
-        # Setup extrinsics calib tool
-        self.multi_calib_tool = MultiviewCalibrationTool(nb_cameras=self._main_window.nb_cams,
-                                                         min_poses=1)
+        # Initialise where to store multi-intrinsics, and where to store worker results for extrinsics
 
-        ##
+        # TESTING - Fake intrinsics - TODO
+        camera_matrix = np.array([[20636.86519082766, 0.0, 154.49737211847034],
+                                  [0.0, 20636.86519082766, 316.14917779456147],
+                                  [0.0, 0.0, 1.0]])
+        self.multi_intrinsics = np.array([camera_matrix] * self.nb_cams)
+
+        self.multi_cameras_poses = np.zeros((self.nb_cams, 2, 3), dtype=np.float32)
+
+        # Setup multiview calib tool
+        self.multi_calib_tool = MultiviewCalibrationTool(self.multi_intrinsics, min_poses=1)
 
         # Setup worker
         self.worker_thread = QThread(self)
@@ -1557,22 +1544,20 @@ class ExtrinsicsWindow(QWidget):
 
         self.worker_thread.start()
 
-        # Initialise where to store worker results
-        self.cameras_poses = np.zeros((self.nb_cams, 2, 3), dtype=np.float32)
         # Store references to 3D items
         self.camera_items = []
         self.frustum_items = []
-
-        self.point_item = None
+        self.points3d_item = None
 
         # Finish building the UI by calling the other constructors
         self._init_ui()
 
-        # TESTING
-        initial_points = np.random.normal(size=(100, 3))
+        # TESTING - Fake points - TODO
+        rng = np.random.default_rng()
+        initial_points = rng.uniform(low=-100.0, high=100.0, size=(100, 3))
         self.display_points(initial_points, color=(1, 1, 1, 1))  # White points
 
-        # # TEMPORARY - Setup test timer
+        # TESTING - Update timer - TODO
         # self.timer_update = QTimer(self)
         # self.timer_update.timeout.connect(self.multi_calib_tool.estimate_rig_poses)
         # self.timer_update.start(500)
@@ -1580,7 +1565,7 @@ class ExtrinsicsWindow(QWidget):
     def _init_ui(self):
         # Set up the GL view
         self.view = GLViewWidget()
-        self.view.setWindowTitle('3D Rig Pose Viewer')
+        self.view.setWindowTitle('Cameras arrangement')
         layout = QVBoxLayout(self)
         layout.addWidget(self.view)
         self.setLayout(layout)
@@ -1597,13 +1582,26 @@ class ExtrinsicsWindow(QWidget):
 
         self.resize(h, w)
 
-        # Initialize 3D scene
-        self.setup_scene()
+        self.view.setBackgroundColor('k')
+
+        # Add world coordinate system (fixed)
+        self.world_axes = GLAxisItem()
+        self.world_axes.setSize(100, 100, 100)
+        self.view.addItem(self.world_axes)
+
+        # Add grid
+        grid = GLGridItem()
+        self.view.addItem(grid)
+
+        # Set initial viewpoint position
+        self.view.setCameraPosition(distance=100, elevation=70, azimuth=45)
 
     def create_camera_item(self, rvec, tvec, camera_matrix, frame_size=(960, 1280), depth=130, color=(1, 0, 0, 1)):
         """
             Creates a visual representation of a camera using a frustum.
         """
+
+        # TODO - finish properly implementing this as a method - no need for all these arguments
 
         # 3D points of the camera frustum in camera coordinates
         h, w = frame_size
@@ -1662,41 +1660,42 @@ class ExtrinsicsWindow(QWidget):
             Displays 3D points in the GLViewWidget
         """
 
-        if self.point_item is not None:
-            self.view.removeItem(self.point_item)
-            self.point_item = None
+        if self.points3d_item is not None:
+            self.view.removeItem(self.points3d_item)
+            self.points3d_item = None
 
-        self.point_item = GLScatterPlotItem(
+        self.points3d_item = GLScatterPlotItem(
             pos=points3d,
             color=color,
             size=size,
-            pxMode=True  # True = size in pixels; False = size is in world units
+            pxMode=False  # True = size in pixels; False = size is in world units
         )
 
-        self.view.addItem(self.point_item)
+        self.view.addItem(self.points3d_item)
 
-    def display_camera_rig(self, rvecs, tvecs, camera_matrices, frame_size=(1440, 1080), depth=130, colors=None):
-        """
-            Displays the camera rig with camera positions and frustums.
-        """
-        if colors is None:
-            colors = [
-                ((i * 50) % 255 / 255.0, (i * 80) % 255 / 255.0, (i * 110) % 255 / 255.0, 1.0)
-                for i in range(len(rvecs))
-            ]
+    @Slot(np.ndarray, np.ndarray)
+    def update_poses(self, rvecs, tvecs):
+
+        # TESTING - these should be set on the class level at initialisation - TODO
+        DEPTH = 130
+        COLORS = [
+            ((i * 50) % 255 / 255.0, (i * 80) % 255 / 255.0, (i * 110) % 255 / 255.0, 1.0)
+            for i in range(len(rvecs))
+        ]
+        FRAME_SIZE = (1440, 1080)
 
         for item in self.camera_items + self.frustum_items:
             self.view.removeItem(item)
         self.camera_items.clear()
         self.frustum_items.clear()
 
-        for idx, (rvec, tvec, K) in enumerate(zip(rvecs, tvecs, camera_matrices)):
+        for idx, (rvec, tvec, K) in enumerate(zip(rvecs, tvecs, self.multi_intrinsics)):
             camera_pos_item, frustum_item = self.create_camera_item(
                 rvec, tvec,
                 camera_matrix=K,
-                frame_size=frame_size,
-                depth=depth,
-                color=colors[idx % len(colors)]
+                frame_size=FRAME_SIZE,
+                depth=DEPTH,
+                color=COLORS[idx % len(COLORS)]
             )
 
             self.view.addItem(camera_pos_item)
@@ -1705,37 +1704,9 @@ class ExtrinsicsWindow(QWidget):
             self.camera_items.append(camera_pos_item)
             self.frustum_items.append(frustum_item)
 
-    def setup_scene(self):
-
-        self.view.setBackgroundColor('k')
-
-        # Add world coordinate system (fixed)
-        self.world_axes = GLAxisItem()
-        self.world_axes.setSize(1, 1, 1)
-        self.view.addItem(self.world_axes)
-
-        # Add grid
-        grid = GLGridItem()
-        self.view.addItem(grid)
-
-        # Set initial viewpoint position
-        self.view.setCameraPosition(distance=5, elevation=30, azimuth=45)
-
-    @Slot(np.ndarray, np.ndarray)
-    def update_poses(self, cameras_rvecs, cameras_tvecs):
-
-        # TEMP
-        camera_matrix = np.array([[20636.86519082766, 0.0, 154.49737211847034],
-                         [0.0, 20636.86519082766, 316.14917779456147],
-                         [0.0, 0.0, 1.0]])
-        camera_matrices = [camera_matrix] * self.nb_cams
-
-        # Update camera rig
-        self.display_camera_rig(cameras_rvecs, cameras_tvecs, camera_matrices)
-
-        # # Update points if provided
-        # if points is not None:
-        #     self.display_points(points, color=(1, 0, 0, 1))  # Red points
+    @Slot(np.ndarray)
+    def update_points(self, points3d):
+        self.display_points(points3d, color=(1, 0, 0, 1))
 
 ##
 

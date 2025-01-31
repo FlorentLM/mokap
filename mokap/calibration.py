@@ -501,7 +501,7 @@ class MonocularCalibrationTool:
                                               refine_markers=True,
                                               refine_points=False)
 
-    def auto_register_monocular(self, area_threshold=0.2, nb_points_threshold=4):
+    def auto_register_area_based(self, area_threshold=0.2, nb_points_threshold=4):
 
         # Compute image area with detection
         overlap_area, novel_area = self._compute_new_area()
@@ -648,12 +648,14 @@ class MonocularCalibrationTool:
 
 class MultiviewCalibrationTool:
     """
-        Convenience class to aggregate multiple monocular detections into 'complete' multi-view samples
+        Class to aggregate multiple monocular detections into multi-view samples, compute, and refine cameras poses
     """
 
-    def __init__(self, nb_cameras: int, origin_camera=0, min_poses=15, max_poses=100, min_detections=15, max_detections=100):
+    def __init__(self, intrinsics, origin_camera=0, min_poses=15, max_poses=100, min_detections=15, max_detections=100):
 
-        self.nb_cameras = nb_cameras
+        self._intrinsics = np.array(intrinsics)
+        self.nb_cameras = self._intrinsics.shape[0]
+
         self._origin_idx = origin_camera
 
         self._detections_by_frame = defaultdict(dict)
@@ -662,35 +664,50 @@ class MultiviewCalibrationTool:
         self._min_poses = min_poses
         self._min_detections = min_detections
 
-        self._complete_detection_samples = deque(maxlen=max_detections)
-        self._complete_pose_samples = deque(maxlen=max_poses)
+        self._detections_stack = deque(maxlen=max_detections)
+        self._poses_stack = deque(maxlen=max_poses)
 
         self._optimised_rvecs = None
         self._optimised_tvecs = None
         self._refined_rvecs = None
         self._refined_tvecs = None
 
+        self._intrinsics_refined = None
+
+        self._refined = False
+
     @property
     def nb_detection_samples(self):
-        return len(self._complete_detection_samples)
+        return len(self._detections_stack)
 
     @property
     def nb_pose_samples(self):
-        return len(self._complete_pose_samples)
+        return len(self._poses_stack)
 
     @property
-    def has_rig_pose(self):
+    def has_extrinsics(self):
         return self._optimised_rvecs is not None and self._optimised_tvecs is not None
 
     @property
     def has_refined_rig_pose(self):
         return self._refined_rvecs is not None and self._refined_tvecs is not None
 
-    def pose(self):
-        return self._optimised_rvecs, self._optimised_tvecs
+    @property
+    def is_refined(self):
+        return self._refined
 
-    def refined_pose(self):
-        return self._refined_rvecs, self._refined_tvecs
+    @property
+    def extrinsics(self):
+        if self._refined:
+            return self._optimised_rvecs, self._optimised_tvecs
+        else:
+            return self._refined_rvecs, self._refined_tvecs
+
+    def intrinsics(self):
+        if self._refined:
+            return self._intrinsics_refined
+        else:
+            return self._intrinsics
 
     def register_extrinsics(self, frame_idx: int, cam_idx: int, rvec: np.ndarray, tvec: np.ndarray):
         """
@@ -711,9 +728,9 @@ class MultiviewCalibrationTool:
                 origin_rvec, origin_tvec = pbf[self._origin_idx]
                 remapped_poses[cidx, 0, :], remapped_poses[cidx, 1, :] = proj_geom.remap_rtvecs(rvec, tvec, origin_rvec, origin_tvec)
 
-            self._complete_pose_samples.append(remapped_poses)
+            self._poses_stack.append(remapped_poses)
 
-        print(f'[MultiviewCalibrationTool] Stored {len(self._complete_pose_samples)} complete multi-view poses')
+        print(f'[MultiviewCalibrationTool] Stored {len(self._poses_stack)} complete multi-view poses')
 
     def register_detection(self, frame_idx: int, cam_idx: int, points2d: np.ndarray, points_ids: np.ndarray):
         """
@@ -726,29 +743,44 @@ class MultiviewCalibrationTool:
         if len(self._detections_by_frame[frame_idx]) == self.nb_cameras:
             dbf = self._detections_by_frame.pop(frame_idx)
             # list of lists of tuples of arrays: M[N[(P_points, P_ids)]] because the number of points P is variable
-            self._complete_detection_samples.append([dbf[cidx] for cidx in range(self.nb_cameras)])
+            self._detections_stack.append([dbf[cidx] for cidx in range(self.nb_cameras)])
 
-        print( f'Stored {len(self._complete_detection_samples)} complete multi-view detections')
+        print( f'Stored {len(self._detections_stack)} complete multi-view detections')
 
-    def compute_rig_poses(self):
+    def clear_poses(self):
+        self._poses_stack.clear()
+        self._poses_by_frame = defaultdict(dict)
+
+    def clear_detections(self):
+        self._detections_stack.clear()
+        self._detections_by_frame = defaultdict(dict)
+
+    def estimate(self):
         """
-            This used the complete pose samples to compute a first best guess of the rig arrangement
+            This uses the complete pose samples to compute a first estimate of the cameras arrangement
         """
 
         if self.nb_pose_samples < self._min_poses:
-            return
+            return False
 
         # stack the poses in a array of shape (N, M, 2, 3) with N = nb of cameras and M = nb of samples
-        poses_array = np.stack(self._complete_pose_samples).swapaxes(0, 1)
+        poses_array = np.stack(self._poses_stack).swapaxes(0, 1)
         # dim 2 is rvecs, tvecs
         self._optimised_rvecs, self._optimised_tvecs = multicam.bestguess_rtvecs(poses_array[:, :, 0, :], poses_array[:, :, 1, :])
 
         print(f"[MultiviewCalibrationTool] Computed cameras poses from {self.nb_pose_samples} multi-view samples")
+        return True
 
-    def refine_rig_poses(self):
+    def refine(self):
         """
-            This will use the complete detections samples to refine the poses with bundle adjustment
+            This uses the complete detections samples to refine the cameras poses and intrinsics with bundle adjustment
         """
+
+        if not self.is_refined:
+            return False
+
+        if self.nb_detection_samples < self._min_detections:
+            return False
 
         print(f"[MultiviewCalibrationTool] Refining cameras poses...")
         # TODO
