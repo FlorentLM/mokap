@@ -314,3 +314,21 @@ def find_affine2(Ps, Ps_2):
     """
     Rt = cv2.estimateAffine3D(Ps, Ps_2, force_rotation=True)
     return Rt[:3, :3], Rt[:3]
+
+
+def focal_point_3d(camera_centers, direction_vectors):
+
+    n = len(camera_centers)
+    A = np.zeros([3 * n, 3])
+    b = np.zeros(3 * n)
+
+    for i in range(n):
+        d = direction_vectors[i]
+        C = camera_centers[i]
+        A_i = np.eye(3) - np.outer(d, d)
+        A[3 * i:3 * (i + 1), :] = A_i
+        b[3 * i:3 * (i + 1)] = A_i @ C
+
+    # Solve using least squares
+    P, residuals, rank, s = np.linalg.lstsq(A, b, rcond=None)
+    return P

@@ -651,10 +651,14 @@ class MultiviewCalibrationTool:
         Class to aggregate multiple monocular detections into multi-view samples, compute, and refine cameras poses
     """
 
-    def __init__(self, intrinsics, origin_camera=0, min_poses=15, max_poses=100, min_detections=15, max_detections=100):
+    def __init__(self, nb_cameras, origin_camera=0, min_poses=15, max_poses=100, min_detections=15, max_detections=100):
 
-        self._intrinsics = np.array(intrinsics)
-        self.nb_cameras = self._intrinsics.shape[0]
+        self.nb_cameras = nb_cameras
+
+        self._intrinsics = None
+        self._intrinsics_refined = None
+        self._dist_coeffs = None
+        self._dist_coeffs_refined = None
 
         self._origin_idx = origin_camera
 
@@ -672,7 +676,7 @@ class MultiviewCalibrationTool:
         self._refined_rvecs = None
         self._refined_tvecs = None
 
-        self._intrinsics_refined = None
+
 
         self._refined = False
 
@@ -683,6 +687,10 @@ class MultiviewCalibrationTool:
     @property
     def nb_pose_samples(self):
         return len(self._poses_stack)
+
+    @property
+    def has_intrinsics(self):
+        return self._intrinsics is not None and self._dist_coeffs is not None
 
     @property
     def has_extrinsics(self):
@@ -703,13 +711,17 @@ class MultiviewCalibrationTool:
         else:
             return self._optimised_rvecs, self._optimised_tvecs
 
+    def set_intrinsics(self, camera_matrices, dist_coeffs):
+        self._intrinsics = camera_matrices
+        self._dist_coeffs = dist_coeffs
+
     def intrinsics(self):
         if self._refined:
             return self._intrinsics_refined
         else:
             return self._intrinsics
 
-    def register_extrinsics(self, frame_idx: int, cam_idx: int, rvec: np.ndarray, tvec: np.ndarray):
+    def register_extrinsics(self, frame_idx: int, cam_idx: int, rvec: np.ndarray, tvec: np.ndarray, similarity_threshold=10.0):
         """
             This registers estimated monocular camera poses and stores them as complete pose samples if all cameras have a pose
         """
@@ -728,9 +740,17 @@ class MultiviewCalibrationTool:
                 origin_rvec, origin_tvec = pbf[self._origin_idx]
                 remapped_poses[cidx, 0, :], remapped_poses[cidx, 1, :] = proj_geom.remap_rtvecs(rvec, tvec, origin_rvec, origin_tvec)
 
-            self._poses_stack.append(remapped_poses)
+            # TODO - the similarity threshold probably needs to be a bit more elaborate (geodesic distance and separate rotation and translation similarities?) ...but that will do for now
 
-        print(f'[MultiviewCalibrationTool] Stored {len(self._poses_stack)} complete multi-view poses')
+            # Compute the similarity between the new pose and the already stored ones
+            if len(self._poses_stack) == 0:
+                deltas = np.ones(1) * np.inf
+            else:
+                deltas = np.array([np.linalg.norm(remapped_poses - pose) for pose in self._poses_stack])
+
+            # If the new pose is sufficiently different, add it
+            if np.all(deltas > similarity_threshold):
+                self._poses_stack.append(remapped_poses)
 
     def register_detection(self, frame_idx: int, cam_idx: int, points2d: np.ndarray, points_ids: np.ndarray):
         """
@@ -743,9 +763,28 @@ class MultiviewCalibrationTool:
         if len(self._detections_by_frame[frame_idx]) == self.nb_cameras:
             dbf = self._detections_by_frame.pop(frame_idx)
             # list of lists of tuples of arrays: M[N[(P_points, P_ids)]] because the number of points P is variable
-            self._detections_stack.append([dbf[cidx] for cidx in range(self.nb_cameras)])
+            sample = [dbf[cidx] for cidx in range(self.nb_cameras)]
+            self._detections_stack.append(sample)
 
-        print( f'Stored {len(self._detections_stack)} complete multi-view detections')
+            # Prepare data for triangulation
+            points2d_list = [det[0] for det in sample]
+            points2d_ids_list = [det[1] for det in sample]
+
+            # Only triangulate if extrinsics are available
+            if self._optimised_rvecs is not None and self._optimised_tvecs is not None:
+                points3d, points3d_ids = multicam.triangulation(
+                    points2d_list, points2d_ids_list,
+                    self._optimised_rvecs, self._optimised_tvecs,
+                    self._intrinsics, None
+                )
+                if points3d is not None:
+                    print("Triangulation succeeded, emitting 3D points.")
+                    # Emit the 3D points to update the 3D view.
+                    self.signal_points3d.emit(points3d)
+                else:
+                    print("Triangulation failed or returned no points.")
+            else:
+                print("Extrinsics not available yet; cannot triangulate.")
 
     def clear_poses(self):
         self._poses_stack.clear()
@@ -768,25 +807,26 @@ class MultiviewCalibrationTool:
         # dim 2 is rvecs, tvecs
         self._optimised_rvecs, self._optimised_tvecs = multicam.bestguess_rtvecs(poses_array[:, :, 0, :], poses_array[:, :, 1, :])
 
-        print(f"[MultiviewCalibrationTool] Computed cameras poses from {self.nb_pose_samples} multi-view samples")
-
         if clear_poses_stack:
             self.clear_poses()
 
-    def compute_refined(self, clear_detections_stack=True):
-        """
-            This uses the complete detections samples to refine the cameras poses and intrinsics with bundle adjustment
-        """
-
-        if not self.is_refined:
-            return
-
-        if self.nb_detection_samples < self._min_detections:
-            return
-
-        print(f"[MultiviewCalibrationTool] Refining cameras poses...")
-        # TODO
-
-        # if clear_detections_stack:
-        #     self.clear_detections()
+    # def compute_refined(self, clear_detections_stack=True):
+    #     """
+    #         This uses the complete detections samples to refine the cameras poses and intrinsics with bundle adjustment
+    #     """
+    #
+    #     if self.nb_detection_samples < self._min_detections:
+    #         return
+    #
+    #     print(f"[MultiviewCalibrationTool] Refining cameras poses...")
+    #
+    #     this_m_points2d = [cam.loc[fr] for cam in test_points_2d]
+    #     this_m_points2d_ids = [cam.loc[fr] for cam in test_points_2d_ids]
+    #
+    #     points3d_svd, points3d_ids = multicam.triangulation(this_m_points2d, this_m_points2d_ids,
+    #                                                         n_optimised_rvecs, n_optimised_tvecs,
+    #                                                         n_camera_matrices, n_dist_coeffs)
+    #
+    #     # if clear_detections_stack:
+    #     #     self.clear_detections()
 

@@ -7,7 +7,7 @@ import psutil
 import screeninfo
 import cv2
 from functools import partial
-from collections import deque
+from collections import deque, defaultdict
 from datetime import datetime
 from pathlib import Path
 import numpy as np
@@ -22,7 +22,11 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QStatusBar, QSlider, Q
                                QPushButton, QSizePolicy, QGraphicsTextItem, QTextEdit, QFileDialog, QSpinBox,
                                QDialog, QDoubleSpinBox, QDialogButtonBox, QToolButton, QGraphicsOpacityEffect)
 import pyqtgraph as pg
-from pyqtgraph.opengl import GLViewWidget, GLAxisItem, GLGridItem, GLLinePlotItem, GLScatterPlotItem
+from pyqtgraph.opengl import GLViewWidget, GLAxisItem, GLGridItem, GLLinePlotItem, GLScatterPlotItem, MeshData, GLMeshItem
+
+##
+
+DEBUG = True
 
 ##
 
@@ -204,7 +208,9 @@ class MonocularCalibWorker(QObject):
 
     signal_auto_sample = Signal(bool)       # received when auto-sampling is toggled
     signal_auto_compute = Signal(bool)      # received when auto-copute is toggled
+    signal_change_stage = Signal(int)       # received when calibration stage is changed
 
+    signal_intrinsics_update = Signal(np.ndarray, np.ndarray)
     signal_forward_detection = Signal(int, int, np.ndarray, np.ndarray)
     signal_forward_pose = Signal(int, int, np.ndarray, np.ndarray)
 
@@ -221,7 +227,7 @@ class MonocularCalibWorker(QObject):
         self.auto_sample = True
         self.auto_compute = True
 
-        self._CURRENT_MODE = 0
+        self._current_stage = 0
 
         self.signal_auto_sample.connect(self.set_auto_sample)
         self.signal_auto_compute.connect(self.set_auto_compute)
@@ -238,30 +244,40 @@ class MonocularCalibWorker(QObject):
         # 1- Detect
         self.calib_tool.detect(frame)
 
-        # 2- Auto-register samples
-        if self._CURRENT_MODE == 0 and self.auto_sample:
-            self.calib_tool.auto_register_area_based(area_threshold=0.2, nb_points_threshold=4)
-
-        # 3- Auto-calibrate intrinsics
-        if self._CURRENT_MODE == 0 and self.auto_compute:
-            self.calib_tool.auto_compute_intrinsics(
-                coverage_threshold=60,
-                stack_length_threshold=15,
-                simple_focal=True,
-                complex_distortion=True
-            )
+        # 2. Stage 0: Auto-sample and compute intrinsics
+        if self._current_stage == 0:
+            if self.auto_sample:
+                self.calib_tool.auto_register_area_based(area_threshold=0.2, nb_points_threshold=4)
+            if self.auto_compute:
+                r = self.calib_tool.auto_compute_intrinsics(
+                    coverage_threshold=60,
+                    stack_length_threshold=15,
+                    simple_focal=True,
+                    complex_distortion=True
+                )
+                if r:
+                    self.signal_reprojection_error.emit(self.calib_tool.last_best_errors)
 
         # 4- Compute extrinsics (only works if we already have intrinsics)
         self.calib_tool.compute_extrinsics()
 
-        if self._CURRENT_MODE == 1 and self.calib_tool.has_extrinsics:
-            self.signal_forward_pose.emit(frame_id, self.camera_idx, *self.calib_tool.extrinsics)
+        # 3. Stage 1: Compute extrinsics and forward poses
+        if self._current_stage == 1:
+            if self.calib_tool.has_extrinsics:
+                # Forward the pose to the aggregator
+                # it will registered it if it's sufficiently different from already collected ones
+                self.signal_forward_pose.emit(frame_id, self.camera_idx, *self.calib_tool.extrinsics)
+
+        # 4. Stage 2: Forward detections for triangulation
+        if self._current_stage == 2:
+            # Here we simply forward the raw 2D detections.
+            if self.calib_tool.has_detection:
+                self.signal_forward_detection.emit(frame_id, self.camera_idx,
+                                                   self.calib_tool._points2d,
+                                                   self.calib_tool._points_ids)
 
         # 5- Visualize (this returns the annotated image in full resolution)
         annotated = self.calib_tool.visualise(errors_mm=True)
-
-        if self._CURRENT_MODE == 0:
-            self.signal_reprojection_error.emit(self.calib_tool.last_best_errors)
 
         # 6- Emit the annotated frame to the main thread, and emit the 'done' signal
         self.signal_result_ready.emit(annotated)
@@ -286,6 +302,7 @@ class MonocularCalibWorker(QObject):
     @Slot()
     def clear_intrinsics(self):
         self.calib_tool.clear_intrinsics()
+        self.calib_tool.clear_stacks()
 
     @Slot(str)
     def load_calib(self, file_path):
@@ -296,13 +313,23 @@ class MonocularCalibWorker(QObject):
     def save_calib(self, file_path):
         self.calib_tool.writefile(file_path)
 
+    @Slot()
+    def return_intrinsics(self):
+        if self.calib_tool.has_intrinsics:
+            cam_mat, dist_coeffs = self.calib_tool.intrinsics
+            self.signal_intrinsics_update.emit(cam_mat.copy(), dist_coeffs.copy())
+
+    @Slot(int)
+    def change_stage(self, stage):
+        self._current_stage = stage
+
     def stop(self):
         self._running = False
-
 
 class MultiCalibWorker(QObject):
 
     signal_computed_poses = Signal(np.ndarray, np.ndarray)  # Send current camera poses back to main thread
+    signal_computed_points = Signal(np.ndarray)           # Send points 3d back to main thread
 
     def __init__(self, multiview_calib, parent=None):
         super().__init__(parent)
@@ -323,6 +350,10 @@ class MultiCalibWorker(QObject):
         # when we recieve a pose from the monocular worker
         self.multiview_calib.register_extrinsics(frame_idx, cam_idx, rvec, tvec)
 
+    @Slot(int, int, np.ndarray, np.ndarray)
+    def on_update_intrinsics(self, multi_cam_mat, multi_dist_coeff):
+        self.multiview_calib.set_intrinsics(multi_cam_mat, multi_dist_coeff)
+
     @Slot()
     def compute(self):
         if self._paused:
@@ -330,12 +361,10 @@ class MultiCalibWorker(QObject):
 
         # Estimate extrinsics
         self.multiview_calib.compute_estimation()
-
         rvecs, tvecs = self.multiview_calib.extrinsics
-        print(rvecs, tvecs)
-
-        # Send them back to the main thread
-        self.signal_computed_poses.emit(rvecs, tvecs)
+        if rvecs is not None and tvecs is not None:
+            # Send them back to the main thread
+            self.signal_computed_poses.emit(rvecs, tvecs)
 
 ##
 
@@ -426,8 +455,6 @@ class VideoWindowBase(QWidget):
 
         self._blit_image()     # Call this once to initialise it
 
-        # main_layout.addWidget(self.VIDEO_FEED, 1)
-
         self.BOTTOM_PANEL = QWidget()
         bottom_panel_v_layout = QVBoxLayout(self.BOTTOM_PANEL)
         bottom_panel_v_layout.setContentsMargins(0, 0, 0, 0)
@@ -499,7 +526,6 @@ class VideoWindowBase(QWidget):
 
         # Status bar
         statusbar = QStatusBar()
-        # statusbar.setStyleSheet(f"background-color: {'#157f7f7f'};")
 
         self.snap_button = QToolButton()
         # self.snap_button.setText("Snap to:")
@@ -658,7 +684,9 @@ class VideoWindowBase(QWidget):
 
     #  ============= Display-related common methods =============
     def _refresh_framebuffer(self):
-        """ Grabs a new frame from the cameras and stores it in the frame buffer """
+        """
+            Grabs a new frame from the cameras and stores it in the frame buffer
+        """
         if self._main_window.mc.acquiring:
             arr = self._main_window.mc.get_current_framebuffer(self.idx)
             if arr is not None:
@@ -1166,6 +1194,8 @@ class VideoWindowCalib(VideoWindowBase):
 
     signal_new_frame = Signal(np.ndarray, int)
 
+    signal_autostage_switch = Signal()
+
     signal_auto_sample = Signal(bool)
     signal_auto_compute = Signal(bool)
 
@@ -1191,10 +1221,10 @@ class VideoWindowCalib(VideoWindowBase):
             detectiontool=self.detection_tool,
             imsize=self._source_shape[:2]   # pass frame size so it can track coverage
         )
-        self.mono_calib_tool.set_visualisation_scale(1)
+        self.mono_calib_tool.set_visualisation_scale(2)
 
         # Initialize reprojection error data for plotting
-        self.reprojection_errors = deque(maxlen=100)  # Store last 10 errors
+        self.reprojection_errors = deque(maxlen=100)
 
         # Setup worker
         self.worker_thread = QThread(self)
@@ -1205,6 +1235,7 @@ class VideoWindowCalib(VideoWindowBase):
         self.annotated_frame = None
         self._worker_busy = False
         self._latest_frame = None
+        self._intrinsics_stable = False
 
         # Setup signals
         #      Worker --> Main thread
@@ -1224,6 +1255,8 @@ class VideoWindowCalib(VideoWindowBase):
         self.signal_clear_intrinsics.connect(self.worker.clear_intrinsics)
         self.signal_auto_sample.connect(self.worker.signal_auto_sample)
         self.signal_auto_compute.connect(self.worker.signal_auto_compute)
+
+        self.worker.signal_intrinsics_update.connect(self.on_intrinsics_update, type=Qt.QueuedConnection)
 
         self.worker_thread.start()
 
@@ -1333,6 +1366,20 @@ class VideoWindowCalib(VideoWindowBase):
         layout.addWidget(calib_io_group)
 
     #  ============= Update frame, and worker communication =============
+    def _annotate(self):
+
+        if self._intrinsics_stable:
+            # Get new coordinates
+            h, w = self._display_buffer.shape[:2]
+
+            x_centre, y_centre = w // 2, h // 2
+
+            font, txtsiz, txtth = cv2.FONT_HERSHEY_DUPLEX, 1.0, 2
+            textsize = cv2.getTextSize('Intrinsics stable', font, txtsiz, txtth)[0]
+            self._display_buffer = cv2.putText(self._display_buffer, self._main_window._recording_text,
+                                               (int(x_centre - textsize[0] / 2), int(1.5 * y_centre - textsize[1])),
+                                               font, txtsiz, self._main_window.col_green_rgb, txtth, cv2.LINE_AA)
+
     def _update_images(self):
         self._refresh_framebuffer()
         frame = self._frame_buffer.copy()
@@ -1360,6 +1407,8 @@ class VideoWindowCalib(VideoWindowBase):
         else:
             self._display_buffer.fill(0)
 
+        self._annotate()
+
         self._blit_image()
 
     def _send_frame_to_worker(self, frame):
@@ -1376,6 +1425,8 @@ class VideoWindowCalib(VideoWindowBase):
         self.reprojection_errors.clear()
         self.error_plot_curve.setData(self.reprojection_errors)
         self.signal_clear_intrinsics.emit()
+        self._intrinsics_stable = False
+        self.load_save_message.setText('')
 
     def on_load_calib(self):
         file_path = self.file_dialog(self._main_window.mc.full_path.parent)
@@ -1388,6 +1439,14 @@ class VideoWindowCalib(VideoWindowBase):
         self.signal_save_calib.emit(file_path.as_posix())
         self.load_save_message.setText(f"<b>Intrinsics saved:</b>\n{file_path}")
 
+    @Slot(np.ndarray, np.ndarray)
+    def on_intrinsics_update(self, camera_matrix, dist_coeffs):
+        self._main_window.extrinsics_window.multi_cam_mat[self.idx] = camera_matrix
+        self._main_window.extrinsics_window.multi_dist_coeffs[self.idx] = dist_coeffs
+        self.load_save_message.setText(f"Intrinsics <b>not</b> saved")
+        if DEBUG:
+            print(f'[DEBUG] Intrinsics updated for camera {self.idx}')
+
     def on_worker_finished(self):
         self._worker_busy = False
         if self._latest_frame is not None:
@@ -1396,7 +1455,7 @@ class VideoWindowCalib(VideoWindowBase):
             self._send_frame_to_worker(f)
 
     def on_worker_result(self, annotated):
-        # called in the main thread when worker finishes processing and emits 'result_ready'
+        # called in the main thread when worker finishes processing and emits 'result ready'
         self.annotated_frame = annotated
 
     #  ============= Custom functions =============
@@ -1409,9 +1468,30 @@ class VideoWindowCalib(VideoWindowBase):
         self.reprojection_errors.append(m)
         self.error_plot_curve.setData(self.reprojection_errors)
 
-        # if m < 2.0:
-        #     self.auto_sample_check.setChecked(False)
-        #     self.auto_compute_check.setChecked(False)
+        # check for plateau when we have 10+ errors
+        if len(self.reprojection_errors) >= 10:
+            errors_list = np.array(self.reprojection_errors)
+
+            last5 = errors_list[-5:]
+            prev5 = errors_list[-10:-5]
+
+            mean_last5 = np.mean(last5)
+            mean_prev5 = np.mean(prev5)
+
+            if np.isnan(mean_last5) or np.isnan(mean_prev5) or mean_last5 == np.inf or mean_prev5 == np.inf:
+                return
+
+            se_last5 = np.std(last5, ddof=1) / np.sqrt(len(last5))
+            se_prev5 = np.std(prev5, ddof=1) / np.sqrt(len(prev5))
+
+            # relative improvement from the previous 5 samples to the last 5
+            improvement = (mean_prev5 - mean_last5) / mean_prev5
+
+            improvement_threshold = 0.01
+            se_threshold = 0.05
+
+            if improvement > improvement_threshold and se_last5 < se_threshold:
+                self._intrinsics_stable = True
 
     def _update_board(self):
         self.charuco_board = calibration_utils.generate_charuco(
@@ -1503,6 +1583,9 @@ class VideoWindowCalib(VideoWindowBase):
 ##
 
 class ExtrinsicsWindow(QWidget):
+
+    signal_update_intrinsics = Signal(np.ndarray, np.ndarray)
+
     def __init__(self, main_window_ref):
         super().__init__()
 
@@ -1518,17 +1601,13 @@ class ExtrinsicsWindow(QWidget):
         self._depth = 130
 
         # Initialise where to store multi-intrinsics, and where to store worker results for extrinsics
-
-        # TESTING - Fake intrinsics - TODO
-        camera_matrix = np.array([[20636.86519082766, 0.0, 154.49737211847034],
-                                  [0.0, 20636.86519082766, 316.14917779456147],
-                                  [0.0, 0.0, 1.0]])
-        self.multi_intrinsics = np.array([camera_matrix] * self.nb_cams)
+        self.multi_cam_mat = [None] * self.nb_cams
+        self.multi_dist_coeffs = [None] * self.nb_cams
 
         self.multi_cameras_poses = np.zeros((self.nb_cams, 2, 3), dtype=np.float32)
 
         # Setup multiview calib tool
-        self.multi_calib_tool = MultiviewCalibrationTool(self.multi_intrinsics, min_poses=1)
+        self.multi_calib_tool = MultiviewCalibrationTool(self.nb_cams, min_poses=3)
 
         # Setup worker
         self.worker_thread = QThread(self)
@@ -1538,6 +1617,10 @@ class ExtrinsicsWindow(QWidget):
         # Setup signals
         #      Worker --> Main thread
         self.worker.signal_computed_poses.connect(self.update_poses)
+        self.worker.signal_computed_points.connect(self.update_points)
+
+        #       Main thread --> Worker
+        self.signal_update_intrinsics.connect(self.worker.on_update_intrinsics)
 
         self.worker_thread.start()
 
@@ -1555,23 +1638,24 @@ class ExtrinsicsWindow(QWidget):
         self.display_points(initial_points, color=(1, 1, 1, 1))  # White points
 
         # TESTING - Update timer - TODO
-        # self.timer_update = QTimer(self)
-        # self.timer_update.timeout.connect(self.multi_calib_tool.estimate_rig_poses)
-        # self.timer_update.start(500)
+        self.timer_update = QTimer(self)
+        self.timer_update.timeout.connect(self.worker.compute)
+        self.timer_update.start(500)
 
     def _init_ui(self):
         self.view = GLViewWidget()
         self.view.setWindowTitle('Cameras arrangement')
         layout = QVBoxLayout(self)
-        layout.addWidget(self.view)
+        layout.addWidget(self.view, 1)
         self.setLayout(layout)
 
         buttons_group = QWidget()
         buttons_group_layout = QHBoxLayout(buttons_group)
 
-        self.nextstage_button = QPushButton("TEST _ Next stage")
-        self.nextstage_button.clicked.connect(self._main_window.cycle_stage)
-        buttons_group_layout.addWidget(self.nextstage_button)
+        self.calibration_stage_combo = QComboBox()
+        self.calibration_stage_combo.addItems(['Intrinsics', 'Extrinsics', 'Refinement'])
+        self.calibration_stage_combo.currentIndexChanged.connect(self._switch_stage)
+        buttons_group_layout.addWidget(self.calibration_stage_combo)
 
         self.estimate_button = QPushButton("Estimate 3D pose")
         self.estimate_button.clicked.connect(self.worker.compute)
@@ -1602,64 +1686,147 @@ class ExtrinsicsWindow(QWidget):
         # Set initial viewpoint position
         self.view.setCameraPosition(distance=100, elevation=70, azimuth=45)
 
-    def create_camera_item(self, rvec, tvec, camera_matrix, frame_size=(960, 1280), depth=130, color=(1, 0, 0, 1)):
+    def _switch_stage(self):
+        self._main_window.calibration_stage = self.calibration_stage_combo.currentIndex()
+
+    def update_intrinsics(self):
+        self.signal_update_intrinsics.emit(self.multi_cam_mat, self.multi_dist_coeffs)
+
+    def plot_cube_gl(self, center, size=(25, 25, 25), color=(0, 0, 0, 1)):
         """
-            Creates a visual representation of a camera using a frustum.
+        Draw a wireframe cube at the given center with the given size.
         """
+        cx, cy, cz = center
+        sx, sy, sz = size
 
-        # TODO - finish properly implementing this as a method - no need for all these arguments
+        # Define the eight vertices of the cube
+        vertices = np.array([
+            [cx - sx / 2, cy - sy / 2, cz - sz / 2],
+            [cx + sx / 2, cy - sy / 2, cz - sz / 2],
+            [cx + sx / 2, cy + sy / 2, cz - sz / 2],
+            [cx - sx / 2, cy + sy / 2, cz - sz / 2],
+            [cx - sx / 2, cy - sy / 2, cz + sz / 2],
+            [cx + sx / 2, cy - sy / 2, cz + sz / 2],
+            [cx + sx / 2, cy + sy / 2, cz + sz / 2],
+            [cx - sx / 2, cy + sy / 2, cz + sz / 2],
+        ])
 
-        # 3D points of the camera frustum in camera coordinates
-        h, w = frame_size
-        frustum_2d = np.array([
-            [0, 0],
-            [w, 0],
-            [w, h],
-            [0, h]
-        ], dtype=np.float32)
-
-        # Back-project the 2D frustum points to 3D using the camera matrix and desired depth
-        frustum_3d = proj_geom.back_projection(frustum_2d, depth, camera_matrix, proj_geom.extrinsics_matrix(rvec, tvec))
-
-        # Create lines for the frustum edges
-        frustum_lines = []
-        # Define edges between frustum corners
+        # Define the 12 edges as pairs of vertex indices
         edges = [
-            (0, 1), (1, 2), (2, 3), (3, 0),  # Near plane
-            (0, 4), (1, 5), (2, 6), (3, 7)  # Sides
+            (0, 1), (1, 2), (2, 3), (3, 0),
+            (4, 5), (5, 6), (6, 7), (7, 4),
+            (0, 4), (1, 5), (2, 6), (3, 7)
         ]
 
-        # Define frustum in 3D space
-        # Assume frustum_3d has 4 points (maybe extend to 8 by adding far plane points?)
-        origin = tvec.reshape(1, 3)
-        frustum_far = frustum_3d
+        for edge in edges:
+            pts = vertices[list(edge)]
+            line = GLLinePlotItem(pos=pts, color=color, width=1, antialias=True)
+            self.view.addItem(line)
+            self.camera_items.append(line)
 
-        lines = np.vstack([origin.repeat(4, axis=0), frustum_far]).reshape(-1, 3)
+    def display_cameras(self, rvecs, tvecs, camera_matrices, show_theoretical_frustum=False, directions_depth=None, show_volume=False):
 
-        line_segments = []
-        for corner in frustum_far:
-            line_segments.append([origin[0], corner])
+        directions_normalised = []
 
-        # GLLinePlotItem wants it flattened
-        lines_array = np.array(line_segments).reshape(-1, 3)
+        if None in camera_matrices.values():
+            return
 
-        # Show the lines
-        frustum_item = GLLinePlotItem(
-            pos=lines_array,
-            color=color,
-            width=1.0,
-            antialias=True
-        )
+        for n in range(self.nb_cams):
+            cam_pos = tvecs[n]
+            this_color = self._cam_colours[n]
+            h, w = self._cam_shapes[n]
+            # Define the 2D image corners (frustum in image space)
+            frustum_points2d = np.array([[0, 0],
+                                         [w, 0],
+                                         [w, h],
+                                         [0, h]], dtype=np.float32)
 
-        # Show the points
-        camera_position_item = GLScatterPlotItem(
-            pos=tvec,
-            color=color,
-            size=5,
-            pxMode=True
-        )
 
-        return camera_position_item, frustum_item
+            # Plot the camera position (as a scatter point)
+            scatter = GLScatterPlotItem(pos=np.array([cam_pos]), color=np.array([this_color]),
+                                           size=10, pxMode=False)
+            self.view.addItem(scatter)
+            self.camera_items.append(scatter)
+
+            # Compute the extrinsic matrix from rotation and translation.
+            E = proj_geom.extrinsics_matrix(rvecs[n], tvecs[n])
+
+            # Compute the 3D coordinates of the image frustum’s corners
+            frustum_points3d = proj_geom.back_projection(frustum_points2d, self._depth, camera_matrices[n], E)
+
+            # Create a mesh (two triangles) for the frustum polygon.
+            faces = np.array([[0, 1, 2],
+                              [0, 2, 3]])
+            meshdata = MeshData(vertexes=frustum_points3d, faces=faces)
+            # Use a very transparent face color (alpha=0.05)
+            face_color = list(this_color)
+            face_color[-1] = 0.05
+            frustum_mesh = GLMeshItem(meshdata=meshdata, smooth=False,
+                                         color=face_color,
+                                         shader='shaded',
+                                         drawEdges=True,
+                                         edgeColor=this_color)
+            self.view.addItem(frustum_mesh)
+            self.frustum_items.append(frustum_mesh)
+
+            # Draw the outline of the frustum (cycle back to the first point)
+            outline_pts = np.vstack([frustum_points3d, frustum_points3d[0]])
+            line_outline = GLLinePlotItem(pos=outline_pts, color=this_color,
+                                             width=1, antialias=True)
+            self.view.addItem(line_outline)
+            self.frustum_items.append(line_outline)
+
+            # Draw lines connecting the camera center to each frustum corner
+            for corner in frustum_points3d:
+                line = GLLinePlotItem(pos=np.array([cam_pos, corner]), color=this_color,
+                                         width=1, antialias=True)
+                self.view.addItem(line)
+                self.frustum_items.append(line)
+
+            # Compute the “centre” of the frustum (back-projecting the image center)
+            if directions_depth is None:
+                directions_depth = self._depth
+            centre = proj_geom.back_projection(np.array([w / 2, h / 2]), directions_depth,
+                                               camera_matrices[n], E)
+
+            # Compute and store the normalized camera direction
+            cam_dir = centre - cam_pos
+            cam_dir_normalized = cam_dir / np.linalg.norm(cam_dir)
+            directions_normalised.append(cam_dir_normalized)
+
+            # Draw the camera direction line (from the camera position to the centre)
+            dir_line = GLLinePlotItem(pos=np.array([cam_pos, centre]), color=this_color,
+                                         width=1, antialias=True)
+            self.view.addItem(dir_line)
+            self.camera_items.append(dir_line)
+
+            if show_theoretical_frustum:
+                # Compute a “perfect” camera matrix
+                perfect_mat = np.eye(3)
+                perfect_mat[0, 0] = perfect_mat[1, 1] = camera_matrices[n][:2, :2].sum() / 2.0
+                perfect_mat[:2, 2] = (w / 2, h / 2)
+                frustum_points3d_perfect = proj_geom.back_projection(frustum_points2d, self._depth, perfect_mat, E)
+                # Outline of the theoretical frustum
+                outline_pts_perfect = np.vstack([frustum_points3d_perfect, frustum_points3d_perfect[0]])
+                line_perfect = GLLinePlotItem(pos=outline_pts_perfect, color=this_color,
+                                                 width=1, antialias=True)
+                self.view.addItem(line_perfect)
+                # Lines from camera center to each theoretical frustum corner
+                for corner in frustum_points3d_perfect:
+                    line_theo = GLLinePlotItem(pos=np.array([cam_pos, corner]),
+                                                  color=this_color, width=1, antialias=True)
+                    self.view.addItem(line_theo)
+                    self.frustum_items.append(line_theo)
+
+        # Compute the focal point
+        P = proj_geom.focal_point_3d(tvecs, directions_normalised)
+        focal_scatter = GLScatterPlotItem(pos=np.array([P]),
+                                             color=np.array((1, 1, 1, 1)), size=15)
+        self.view.addItem(focal_scatter)
+        self.camera_items.append(focal_scatter)
+
+        if show_volume:
+            self.plot_cube_gl(P, size=(25, 25, 25), color=(1, 1, 1, 1))
 
     def display_points(self, points3d, color=(1, 1, 1, 1), size=1):
         """
@@ -1688,24 +1855,12 @@ class ExtrinsicsWindow(QWidget):
             self.camera_items.clear()
             self.frustum_items.clear()
 
-            for idx, (rvec, tvec, K) in enumerate(zip(rvecs, tvecs, self.multi_intrinsics)):
-                camera_pos_item, frustum_item = self.create_camera_item(
-                    rvec, tvec,
-                    camera_matrix=K,
-                    frame_size=self._cam_shapes[idx],
-                    depth=self._depth,
-                    color=self._cam_colours[idx]
-                )
-
-                self.view.addItem(camera_pos_item)
-                self.view.addItem(frustum_item)
-
-                self.camera_items.append(camera_pos_item)
-                self.frustum_items.append(frustum_item)
+        self.display_cameras(rvecs, tvecs, self.multi_cam_mat)
 
     @Slot(np.ndarray)
     def update_points(self, points3d):
         self.display_points(points3d, color=(1, 0, 0, 1))
+
 
 ##
 
@@ -1780,6 +1935,7 @@ class MainWindow(QMainWindow):
         # States
         self.editing_disabled = True
         self._is_calibrating = False
+        self.calibration_stage = 0
 
         self._recording_text = ''
 
@@ -2063,15 +2219,6 @@ class MainWindow(QMainWindow):
 
         else:
             pass
-
-    def cycle_stage(self):
-        # TESTING - This should be done automatically on a per-camera basis - TODO
-        if self._is_calibrating:
-            for w in self.secondary_windows:
-                w.worker._CURRENT_MODE += 1
-                if w.worker._CURRENT_MODE > 2:
-                    w.worker._CURRENT_MODE = 0
-                print(w.worker._CURRENT_MODE)
 
     def _toggle_text_editing(self, override=None):
 
