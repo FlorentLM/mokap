@@ -202,17 +202,18 @@ class MonocularCalibWorker(QObject):
     """
         This worker lives in its own thread and does monocular detection/calibration
     """
-    signal_result_ready = Signal(np.ndarray)   # carry back the annotated image back to the main thread (to didplay it)
-    signal_finished_processing = Signal()      # signals when this worker is busy / free
-    signal_reprojection_error = Signal(np.ndarray)  # Send current reprojection error back to main thread
 
-    signal_auto_sample = Signal(bool)       # received when auto-sampling is toggled
-    signal_auto_compute = Signal(bool)      # received when auto-copute is toggled
-    signal_change_stage = Signal(int)       # received when calibration stage is changed
+    signal_send_annotated_frame = Signal(np.ndarray)   # carry back the annotated image back to the main thread (to didplay it)
+    signal_send_finished = Signal()      # signals when this worker is busy / free
 
-    signal_intrinsics_update = Signal(np.ndarray, np.ndarray)
-    signal_forward_detection = Signal(int, int, np.ndarray, np.ndarray)
-    signal_forward_pose = Signal(int, int, np.ndarray, np.ndarray)
+    # signal_auto_sample = Signal(bool)       # received when auto-sampling is toggled
+    # signal_auto_compute = Signal(bool)      # received when auto-copute is toggled
+    # signal_change_stage = Signal(int)       # received when calibration stage is changed
+
+    signal_return_reprojection_error = Signal(np.ndarray)          # Send current reprojection error back to main thread
+    signal_return_intrinsics = Signal(np.ndarray, np.ndarray, bool)         # Send intrinsics to the main thread
+    signal_return_detection = Signal(int, int, np.ndarray, np.ndarray)
+    signal_return_pose = Signal(int, int, np.ndarray, np.ndarray)
 
     def __init__(self, calib_tool, cam_idx, parent=None):
         super().__init__(parent)
@@ -228,9 +229,6 @@ class MonocularCalibWorker(QObject):
         self.auto_compute = True
 
         self._current_stage = 0
-
-        self.signal_auto_sample.connect(self.set_auto_sample)
-        self.signal_auto_compute.connect(self.set_auto_compute)
 
     def set_paused(self, val):
         self._paused = val
@@ -256,7 +254,12 @@ class MonocularCalibWorker(QObject):
                     complex_distortion=True
                 )
                 if r:
-                    self.signal_reprojection_error.emit(self.calib_tool.last_best_errors)
+                    # If the intrinsics have been updated, return the new errors...
+                    self.signal_return_reprojection_error.emit(self.calib_tool.last_best_errors)
+
+                    # ...and the intrinsics themselves
+                    cam_mat, dist_coeffs = self.calib_tool.intrinsics
+                    self.signal_return_intrinsics.emit(cam_mat.copy(), dist_coeffs.copy())
 
         # 4- Compute extrinsics (only works if we already have intrinsics)
         self.calib_tool.compute_extrinsics()
@@ -266,22 +269,20 @@ class MonocularCalibWorker(QObject):
             if self.calib_tool.has_extrinsics:
                 # Forward the pose to the aggregator
                 # it will registered it if it's sufficiently different from already collected ones
-                self.signal_forward_pose.emit(frame_id, self.camera_idx, *self.calib_tool.extrinsics)
+                self.signal_return_pose.emit(frame_id, self.camera_idx, *self.calib_tool.extrinsics)
 
         # 4. Stage 2: Forward detections for triangulation
         if self._current_stage == 2:
             # Here we simply forward the raw 2D detections.
             if self.calib_tool.has_detection:
-                self.signal_forward_detection.emit(frame_id, self.camera_idx,
-                                                   self.calib_tool._points2d,
-                                                   self.calib_tool._points_ids)
+                self.signal_return_detection.emit(frame_id, self.camera_idx, *self.calib_tool.detection)
 
         # 5- Visualize (this returns the annotated image in full resolution)
         annotated = self.calib_tool.visualise(errors_mm=True)
 
         # 6- Emit the annotated frame to the main thread, and emit the 'done' signal
-        self.signal_result_ready.emit(annotated)
-        self.signal_finished_processing.emit()
+        self.signal_send_annotated_frame.emit(annotated)
+        self.signal_send_finished.emit()
 
     @Slot(bool)
     def set_auto_sample(self, value):
@@ -306,30 +307,30 @@ class MonocularCalibWorker(QObject):
 
     @Slot(str)
     def load_calib(self, file_path):
-        self.calib_tool.clear_stacks()
-        self.calib_tool.readfile(file_path)
+        r = self.calib_tool.readfile(file_path)
+        if r:
+            self.calib_tool.clear_stacks()
+
+            # Also send the loaded intrinsics to the other classes
+            cam_mat, dist_coeffs = self.calib_tool.intrinsics
+            self.signal_return_intrinsics.emit(cam_mat.copy(), dist_coeffs.copy(), False)   # Dont update message
 
     @Slot(str)
     def save_calib(self, file_path):
         self.calib_tool.writefile(file_path)
 
-    @Slot()
-    def return_intrinsics(self):
-        if self.calib_tool.has_intrinsics:
-            cam_mat, dist_coeffs = self.calib_tool.intrinsics
-            self.signal_intrinsics_update.emit(cam_mat.copy(), dist_coeffs.copy())
-
     @Slot(int)
     def change_stage(self, stage):
         self._current_stage = stage
+        self.calib_tool.clear_stacks()
 
     def stop(self):
         self._running = False
 
 class MultiCalibWorker(QObject):
 
-    signal_computed_poses = Signal(np.ndarray, np.ndarray)  # Send current camera poses back to main thread
-    signal_computed_points = Signal(np.ndarray)           # Send points 3d back to main thread
+    signal_return_computed_poses = Signal(np.ndarray, np.ndarray)  # Send current camera poses back to main thread
+    signal_return_computed_points = Signal(np.ndarray)           # Send points 3d back to main thread
 
     def __init__(self, multiview_calib, parent=None):
         super().__init__(parent)
@@ -350,9 +351,9 @@ class MultiCalibWorker(QObject):
         # when we recieve a pose from the monocular worker
         self.multiview_calib.register_extrinsics(frame_idx, cam_idx, rvec, tvec)
 
-    @Slot(int, int, np.ndarray, np.ndarray)
-    def on_update_intrinsics(self, multi_cam_mat, multi_dist_coeff):
-        self.multiview_calib.set_intrinsics(multi_cam_mat, multi_dist_coeff)
+    @Slot(int, np.ndarray, np.ndarray)
+    def on_updated_intrinsics(self, cam_idx, cam_mat, dist_coeff):
+        self.multiview_calib.register_intrinsics(cam_idx, cam_mat, dist_coeff)
 
     @Slot()
     def compute(self):
@@ -364,7 +365,7 @@ class MultiCalibWorker(QObject):
         rvecs, tvecs = self.multiview_calib.extrinsics
         if rvecs is not None and tvecs is not None:
             # Send them back to the main thread
-            self.signal_computed_poses.emit(rvecs, tvecs)
+            self.signal_return_computed_poses.emit(rvecs, tvecs)
 
 ##
 
@@ -1193,17 +1194,13 @@ class VideoWindowRec(VideoWindowBase):
 class VideoWindowCalib(VideoWindowBase):
 
     signal_new_frame = Signal(np.ndarray, int)
-
-    signal_autostage_switch = Signal()
-
-    signal_auto_sample = Signal(bool)
-    signal_auto_compute = Signal(bool)
-
     signal_load_calib = Signal(str)
     signal_save_calib = Signal(str)
     signal_add_sample = Signal()
     signal_clear_samples = Signal()
     signal_clear_intrinsics = Signal()
+    signal_auto_sample = Signal(bool)
+    signal_auto_compute = Signal(bool)
 
     def __init__(self, main_window_ref, idx):
         super().__init__(main_window_ref, idx)
@@ -1239,12 +1236,12 @@ class VideoWindowCalib(VideoWindowBase):
 
         # Setup signals
         #      Worker --> Main thread
-        self.worker.signal_result_ready.connect(self.on_worker_result)
-        self.worker.signal_finished_processing.connect(self.on_worker_finished)
-        self.worker.signal_reprojection_error.connect(self.on_reprojection_error)
-
-        self.worker.signal_forward_detection.connect(self._main_window.extrinsics_window.worker.on_received_detection)
-        self.worker.signal_forward_pose.connect(self._main_window.extrinsics_window.worker.on_received_camera_pose)
+        self.worker.signal_send_annotated_frame.connect(self.on_worker_result)
+        self.worker.signal_send_finished.connect(self.on_worker_finished)
+        self.worker.signal_return_reprojection_error.connect(self.on_reprojection_error)
+        self.worker.signal_return_detection.connect(self._main_window.extrinsics_window.worker.on_received_detection)
+        self.worker.signal_return_pose.connect(self._main_window.extrinsics_window.worker.on_received_camera_pose)
+        self.worker.signal_return_intrinsics.connect(self.on_intrinsics_update, type=Qt.QueuedConnection)
 
         #       Main thread --> Worker
         self.signal_new_frame.connect(self.worker.process_frame, type=Qt.QueuedConnection)
@@ -1253,10 +1250,8 @@ class VideoWindowCalib(VideoWindowBase):
         self.signal_add_sample.connect(self.worker.add_sample)
         self.signal_clear_samples.connect(self.worker.clear_samples)
         self.signal_clear_intrinsics.connect(self.worker.clear_intrinsics)
-        self.signal_auto_sample.connect(self.worker.signal_auto_sample)
-        self.signal_auto_compute.connect(self.worker.signal_auto_compute)
-
-        self.worker.signal_intrinsics_update.connect(self.on_intrinsics_update, type=Qt.QueuedConnection)
+        self.signal_auto_sample.connect(self.worker.set_auto_sample)
+        self.signal_auto_compute.connect(self.worker.set_auto_compute)
 
         self.worker_thread.start()
 
@@ -1359,7 +1354,7 @@ class VideoWindowCalib(VideoWindowBase):
         calib_io_layout.addWidget(self.save_calib_button)
 
         self.load_save_message = QLabel("")
-        self.load_save_message.setMaximumWidth(200)
+        self.load_save_message.setMaximumWidth(180)
         self.load_save_message.setWordWrap(True)
         calib_io_layout.addWidget(self.load_save_message)
 
@@ -1432,18 +1427,18 @@ class VideoWindowCalib(VideoWindowBase):
         file_path = self.file_dialog(self._main_window.mc.full_path.parent)
         if file_path is not None:
             self.signal_load_calib.emit(file_path.as_posix())
-            self.load_save_message.setText(f"<b>Intrinsics loaded:</b>\n{file_path}")
+            self.load_save_message.setText(f"Intrinsics <b>loaded</b> from {file_path.parent}")
 
     def on_save_calib(self):
         file_path = self._main_window.mc.full_path / f"{self._camera.name}_intrinsics.toml"
         self.signal_save_calib.emit(file_path.as_posix())
-        self.load_save_message.setText(f"<b>Intrinsics saved:</b>\n{file_path}")
+        self.load_save_message.setText(f"Intrinsics <b>saved</b> as \r{file_path}")
 
-    @Slot(np.ndarray, np.ndarray)
-    def on_intrinsics_update(self, camera_matrix, dist_coeffs):
-        self._main_window.extrinsics_window.multi_cam_mat[self.idx] = camera_matrix
-        self._main_window.extrinsics_window.multi_dist_coeffs[self.idx] = dist_coeffs
-        self.load_save_message.setText(f"Intrinsics <b>not</b> saved")
+    @Slot(np.ndarray, np.ndarray, bool)
+    def on_intrinsics_update(self, camera_matrix, dist_coeffs, update_message=True):
+        self._main_window.extrinsics_window.update_intrinsics(self.idx, camera_matrix, dist_coeffs)
+        if update_message:
+            self.load_save_message.setText(f"Intrinsics <b>not</b> saved!")
         if DEBUG:
             print(f'[DEBUG] Intrinsics updated for camera {self.idx}')
 
@@ -1584,7 +1579,7 @@ class VideoWindowCalib(VideoWindowBase):
 
 class ExtrinsicsWindow(QWidget):
 
-    signal_update_intrinsics = Signal(np.ndarray, np.ndarray)
+    signal_update_intrinsics = Signal(int, np.ndarray, np.ndarray)
 
     def __init__(self, main_window_ref):
         super().__init__()
@@ -1601,8 +1596,8 @@ class ExtrinsicsWindow(QWidget):
         self._depth = 130
 
         # Initialise where to store multi-intrinsics, and where to store worker results for extrinsics
-        self.multi_cam_mat = [None] * self.nb_cams
-        self.multi_dist_coeffs = [None] * self.nb_cams
+        self.multi_cam_mat = np.zeros((self.nb_cams, 3, 3))
+        self.multi_dist_coeffs = np.zeros((self.nb_cams, 14))
 
         self.multi_cameras_poses = np.zeros((self.nb_cams, 2, 3), dtype=np.float32)
 
@@ -1616,11 +1611,11 @@ class ExtrinsicsWindow(QWidget):
 
         # Setup signals
         #      Worker --> Main thread
-        self.worker.signal_computed_poses.connect(self.update_poses)
-        self.worker.signal_computed_points.connect(self.update_points)
+        self.worker.signal_return_computed_poses.connect(self.update_poses)
+        self.worker.signal_return_computed_points.connect(self.update_points)
 
         #       Main thread --> Worker
-        self.signal_update_intrinsics.connect(self.worker.on_update_intrinsics)
+        self.signal_update_intrinsics.connect(self.worker.on_updated_intrinsics)
 
         self.worker_thread.start()
 
@@ -1689,8 +1684,12 @@ class ExtrinsicsWindow(QWidget):
     def _switch_stage(self):
         self._main_window.calibration_stage = self.calibration_stage_combo.currentIndex()
 
-    def update_intrinsics(self):
-        self.signal_update_intrinsics.emit(self.multi_cam_mat, self.multi_dist_coeffs)
+    def update_intrinsics(self, cam_idx, camera_matrix, dist_coeffs):
+        # Update internal copy of the intrinsics (for plotting)
+        self.multi_cam_mat[cam_idx, :, :] = camera_matrix
+        self.multi_dist_coeffs[cam_idx, :] = dist_coeffs
+        # And forward to the multiview worker
+        self.signal_update_intrinsics.emit(cam_idx, camera_matrix, dist_coeffs)
 
     def plot_cube_gl(self, center, size=(25, 25, 25), color=(0, 0, 0, 1)):
         """

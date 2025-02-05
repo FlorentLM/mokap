@@ -559,9 +559,11 @@ class MonocularCalibrationTool:
             self._stack_error = np.mean(self.last_best_errors)
 
             print(f"Loaded intrinsics from {filepath}")
+            return True
 
         else:
             print(f"File not found: {filepath}")
+            return False
 
     def visualise(self, errors_mm=False):
 
@@ -655,10 +657,10 @@ class MultiviewCalibrationTool:
 
         self.nb_cameras = nb_cameras
 
-        self._intrinsics = None
-        self._intrinsics_refined = None
-        self._dist_coeffs = None
-        self._dist_coeffs_refined = None
+        self._multi_intrinsics = np.zeros((nb_cameras, 3, 3))
+        self._multi_intrinsics_refined = np.zeros((nb_cameras, 3, 3))
+        self._multi_dist_coeffs = np.zeros((nb_cameras, 14))
+        self._multi_dist_coeffs_refined = np.zeros((nb_cameras, 14))
 
         self._origin_idx = origin_camera
 
@@ -676,8 +678,6 @@ class MultiviewCalibrationTool:
         self._refined_rvecs = None
         self._refined_tvecs = None
 
-
-
         self._refined = False
 
     @property
@@ -687,10 +687,6 @@ class MultiviewCalibrationTool:
     @property
     def nb_pose_samples(self):
         return len(self._poses_stack)
-
-    @property
-    def has_intrinsics(self):
-        return self._intrinsics is not None and self._dist_coeffs is not None
 
     @property
     def has_extrinsics(self):
@@ -711,15 +707,15 @@ class MultiviewCalibrationTool:
         else:
             return self._optimised_rvecs, self._optimised_tvecs
 
-    def set_intrinsics(self, camera_matrices, dist_coeffs):
-        self._intrinsics = camera_matrices
-        self._dist_coeffs = dist_coeffs
+    def register_intrinsics(self, cam_idx: int, camera_matrix: np.ndarray, dist_coeffs: np.ndarray):
+        self._multi_intrinsics[cam_idx, :, :] = camera_matrix
+        self._multi_dist_coeffs[cam_idx, :] = dist_coeffs
 
     def intrinsics(self):
         if self._refined:
-            return self._intrinsics_refined
+            return self._multi_intrinsics_refined
         else:
-            return self._intrinsics
+            return self._multi_intrinsics
 
     def register_extrinsics(self, frame_idx: int, cam_idx: int, rvec: np.ndarray, tvec: np.ndarray, similarity_threshold=10.0):
         """
@@ -775,12 +771,12 @@ class MultiviewCalibrationTool:
                 points3d, points3d_ids = multicam.triangulation(
                     points2d_list, points2d_ids_list,
                     self._optimised_rvecs, self._optimised_tvecs,
-                    self._intrinsics, None
+                    self._multi_intrinsics,  self._multi_dist_coeffs
                 )
                 if points3d is not None:
                     print("Triangulation succeeded, emitting 3D points.")
                     # Emit the 3D points to update the 3D view.
-                    self.signal_points3d.emit(points3d)
+                    # self.signal_forward_points3d.emit(points3d)
                 else:
                     print("Triangulation failed or returned no points.")
             else:
