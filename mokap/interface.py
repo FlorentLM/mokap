@@ -259,7 +259,9 @@ class MonocularCalibWorker(QObject):
 
                     # ...and the intrinsics themselves
                     cam_mat, dist_coeffs = self.calib_tool.intrinsics
-                    self.signal_return_intrinsics.emit(cam_mat.copy(), dist_coeffs.copy())
+                    self.signal_return_intrinsics.emit(cam_mat.copy(),
+                                                       dist_coeffs.copy(),
+                                                       True)                    # bool to update the message in the UI
 
         # 4- Compute extrinsics (only works if we already have intrinsics)
         self.calib_tool.compute_extrinsics()
@@ -320,7 +322,7 @@ class MonocularCalibWorker(QObject):
         self.calib_tool.writefile(file_path)
 
     @Slot(int)
-    def change_stage(self, stage):
+    def set_stage(self, stage):
         self._current_stage = stage
         self.calib_tool.clear_stacks()
 
@@ -345,21 +347,28 @@ class MultiCalibWorker(QObject):
     def on_received_detection(self, frame_idx, cam_idx, points2d, points_ids):
         # when we recieve a detection from the monocular worker
         self.multiview_calib.register_detection(frame_idx, cam_idx, points2d, points_ids)
+        if DEBUG:
+            print(f"[MultiCalibWorker] Registered detection for cam {cam_idx}")
 
     @Slot(int, int, np.ndarray, np.ndarray)
     def on_received_camera_pose(self, frame_idx, cam_idx, rvec, tvec):
         # when we recieve a pose from the monocular worker
         self.multiview_calib.register_extrinsics(frame_idx, cam_idx, rvec, tvec)
+        # if DEBUG:
+        #     print(f"[MultiCalibWorker] Registered extrinsics for cam {cam_idx}")
 
     @Slot(int, np.ndarray, np.ndarray)
     def on_updated_intrinsics(self, cam_idx, cam_mat, dist_coeff):
         self.multiview_calib.register_intrinsics(cam_idx, cam_mat, dist_coeff)
+        if DEBUG:
+            print(f"[MultiCalibWorker] Updated intrinsics for cam {cam_idx}")
 
     @Slot()
     def compute(self):
         if self._paused:
             return
 
+        print(f"Pose samples: {self.multiview_calib.nb_pose_samples}")
         # Estimate extrinsics
         self.multiview_calib.compute_estimation()
         rvecs, tvecs = self.multiview_calib.extrinsics
@@ -1201,6 +1210,7 @@ class VideoWindowCalib(VideoWindowBase):
     signal_clear_intrinsics = Signal()
     signal_auto_sample = Signal(bool)
     signal_auto_compute = Signal(bool)
+    signal_set_stage = Signal(int)
 
     def __init__(self, main_window_ref, idx):
         super().__init__(main_window_ref, idx)
@@ -1252,6 +1262,7 @@ class VideoWindowCalib(VideoWindowBase):
         self.signal_clear_intrinsics.connect(self.worker.clear_intrinsics)
         self.signal_auto_sample.connect(self.worker.set_auto_sample)
         self.signal_auto_compute.connect(self.worker.set_auto_compute)
+        self.signal_set_stage.connect(self.worker.set_stage)
 
         self.worker_thread.start()
 
@@ -1409,6 +1420,9 @@ class VideoWindowCalib(VideoWindowBase):
     def _send_frame_to_worker(self, frame):
         self.signal_new_frame.emit(frame, int(self._main_window.mc.indices[self.idx]))
         self._worker_busy = True
+
+    def on_stage_change(self, stage):
+        self.signal_set_stage.emit(stage)
 
     def on_add_sample(self):
         self.signal_add_sample.emit()
@@ -1584,14 +1598,14 @@ class ExtrinsicsWindow(QWidget):
     def __init__(self, main_window_ref):
         super().__init__()
 
-        self._force_destroy = False  # This is used to defined whether we only hide or destroy the window
+        self._force_destroy = False         # This is used to defined whether we only hide or destroy the window
         self.setAttribute(Qt.WA_DeleteOnClose, True)  # force PySide to destroy the windows on mode change
 
         self._main_window = main_window_ref
         self.nb_cams = main_window_ref.nb_cams
         self.idx = self.nb_cams + 1
 
-        self._cam_colours = [np.array((*utils.hex_to_rgb(c), 255))/255 for c in self._main_window.bg_colours_list]
+        self._cam_colours = np.stack([np.array((*utils.hex_to_rgb(c), 255))/255 for c in self._main_window.bg_colours_list])
         self._cam_shapes = self._main_window.sources_shapes_list
         self._depth = 130
 
@@ -1628,9 +1642,9 @@ class ExtrinsicsWindow(QWidget):
         self._init_ui()
 
         # TESTING - Fake points - TODO
-        rng = np.random.default_rng()
-        initial_points = rng.uniform(low=-100.0, high=100.0, size=(100, 3))
-        self.display_points(initial_points, color=(1, 1, 1, 1))  # White points
+        # rng = np.random.default_rng()
+        # initial_points = rng.uniform(low=-100.0, high=100.0, size=(100, 3))
+        # self.display_points(initial_points, color=(1, 1, 1, 1))  # White points
 
         # TESTING - Update timer - TODO
         self.timer_update = QTimer(self)
@@ -1679,17 +1693,12 @@ class ExtrinsicsWindow(QWidget):
         self.view.addItem(grid)
 
         # Set initial viewpoint position
-        self.view.setCameraPosition(distance=100, elevation=70, azimuth=45)
+        # self.view.setCameraPosition(distance=100, elevation=70, azimuth=45)
+        self.view.setCameraPosition(distance=100, elevation=-70, azimuth=45)
 
     def _switch_stage(self):
-        self._main_window.calibration_stage = self.calibration_stage_combo.currentIndex()
-
-    def update_intrinsics(self, cam_idx, camera_matrix, dist_coeffs):
-        # Update internal copy of the intrinsics (for plotting)
-        self.multi_cam_mat[cam_idx, :, :] = camera_matrix
-        self.multi_dist_coeffs[cam_idx, :] = dist_coeffs
-        # And forward to the multiview worker
-        self.signal_update_intrinsics.emit(cam_idx, camera_matrix, dist_coeffs)
+        for w in self._main_window.secondary_windows:
+            w.on_stage_change(self.calibration_stage_combo.currentIndex())
 
     def plot_cube_gl(self, center, size=(25, 25, 25), color=(0, 0, 0, 1)):
         """
@@ -1723,15 +1732,27 @@ class ExtrinsicsWindow(QWidget):
             self.view.addItem(line)
             self.camera_items.append(line)
 
-    def display_cameras(self, rvecs, tvecs, camera_matrices, show_theoretical_frustum=False, directions_depth=None, show_volume=False):
+    def display_cameras(self, show_theoretical_frustum=False, directions_depth=None, show_volume=False):
+
+        for item in self.camera_items + self.frustum_items:
+            self.view.removeItem(item)
+        self.camera_items.clear()
+        self.frustum_items.clear()
 
         directions_normalised = []
 
-        if None in camera_matrices.values():
-            return
-
         for n in range(self.nb_cams):
-            cam_pos = tvecs[n]
+            cam_pos = self.multi_cameras_poses[n, 1, :]
+            cam_pos[2] *= -1
+
+            cam_dir = self.multi_cameras_poses[n, 0, :]
+
+            flip_z = np.array([[1, 0, 0],
+                               [0, 1, 0],
+                               [0, 0, -1]])
+
+            cam_dir = cv2.Rodrigues(np.dot(cv2.Rodrigues(cam_dir)[0], flip_z))[0]
+
             this_color = self._cam_colours[n]
             h, w = self._cam_shapes[n]
             # Define the 2D image corners (frustum in image space)
@@ -1742,23 +1763,22 @@ class ExtrinsicsWindow(QWidget):
 
 
             # Plot the camera position (as a scatter point)
-            scatter = GLScatterPlotItem(pos=np.array([cam_pos]), color=np.array([this_color]),
-                                           size=10, pxMode=False)
+            scatter = GLScatterPlotItem(pos=cam_pos, color=this_color, size=10, pxMode=False)
             self.view.addItem(scatter)
             self.camera_items.append(scatter)
 
             # Compute the extrinsic matrix from rotation and translation.
-            E = proj_geom.extrinsics_matrix(rvecs[n], tvecs[n])
+            E = proj_geom.extrinsics_matrix(cam_dir, cam_pos)
 
             # Compute the 3D coordinates of the image frustum’s corners
-            frustum_points3d = proj_geom.back_projection(frustum_points2d, self._depth, camera_matrices[n], E)
+            frustum_points3d = proj_geom.back_projection(frustum_points2d, self._depth, self.multi_cam_mat[n], E)
 
             # Create a mesh (two triangles) for the frustum polygon.
             faces = np.array([[0, 1, 2],
                               [0, 2, 3]])
             meshdata = MeshData(vertexes=frustum_points3d, faces=faces)
-            # Use a very transparent face color (alpha=0.05)
-            face_color = list(this_color)
+
+            face_color = np.copy(this_color)
             face_color[-1] = 0.05
             frustum_mesh = GLMeshItem(meshdata=meshdata, smooth=False,
                                          color=face_color,
@@ -1770,23 +1790,20 @@ class ExtrinsicsWindow(QWidget):
 
             # Draw the outline of the frustum (cycle back to the first point)
             outline_pts = np.vstack([frustum_points3d, frustum_points3d[0]])
-            line_outline = GLLinePlotItem(pos=outline_pts, color=this_color,
-                                             width=1, antialias=True)
+            line_outline = GLLinePlotItem(pos=outline_pts, color=this_color, width=1, antialias=True)
             self.view.addItem(line_outline)
             self.frustum_items.append(line_outline)
 
             # Draw lines connecting the camera center to each frustum corner
             for corner in frustum_points3d:
-                line = GLLinePlotItem(pos=np.array([cam_pos, corner]), color=this_color,
-                                         width=1, antialias=True)
+                line = GLLinePlotItem(pos=np.stack([cam_pos, corner]), color=this_color, width=1, antialias=True)
                 self.view.addItem(line)
                 self.frustum_items.append(line)
 
             # Compute the “centre” of the frustum (back-projecting the image center)
             if directions_depth is None:
                 directions_depth = self._depth
-            centre = proj_geom.back_projection(np.array([w / 2, h / 2]), directions_depth,
-                                               camera_matrices[n], E)
+            centre = proj_geom.back_projection(np.array([w / 2, h / 2]), directions_depth, self.multi_cam_mat[n], E)
 
             # Compute and store the normalized camera direction
             cam_dir = centre - cam_pos
@@ -1794,15 +1811,14 @@ class ExtrinsicsWindow(QWidget):
             directions_normalised.append(cam_dir_normalized)
 
             # Draw the camera direction line (from the camera position to the centre)
-            dir_line = GLLinePlotItem(pos=np.array([cam_pos, centre]), color=this_color,
-                                         width=1, antialias=True)
+            dir_line = GLLinePlotItem(pos=np.array([cam_pos, centre]), color=this_color, width=1, antialias=True)
             self.view.addItem(dir_line)
             self.camera_items.append(dir_line)
 
             if show_theoretical_frustum:
                 # Compute a “perfect” camera matrix
                 perfect_mat = np.eye(3)
-                perfect_mat[0, 0] = perfect_mat[1, 1] = camera_matrices[n][:2, :2].sum() / 2.0
+                perfect_mat[0, 0] = perfect_mat[1, 1] = self.multi_cam_mat[n][:2, :2].sum() / 2.0
                 perfect_mat[:2, 2] = (w / 2, h / 2)
                 frustum_points3d_perfect = proj_geom.back_projection(frustum_points2d, self._depth, perfect_mat, E)
                 # Outline of the theoretical frustum
@@ -1817,15 +1833,14 @@ class ExtrinsicsWindow(QWidget):
                     self.view.addItem(line_theo)
                     self.frustum_items.append(line_theo)
 
-        # Compute the focal point
-        P = proj_geom.focal_point_3d(tvecs, directions_normalised)
-        focal_scatter = GLScatterPlotItem(pos=np.array([P]),
-                                             color=np.array((1, 1, 1, 1)), size=15)
-        self.view.addItem(focal_scatter)
-        self.camera_items.append(focal_scatter)
+        # # Compute the focal point
+        # P = proj_geom.focal_point_3d(self.multi_cameras_poses[:, 1, :], directions_normalised)
+        # focal_scatter = GLScatterPlotItem(pos=P, color=np.array((1, 1, 1, 1)), size=15)
+        # self.view.addItem(focal_scatter)
+        # self.camera_items.append(focal_scatter)
 
-        if show_volume:
-            self.plot_cube_gl(P, size=(25, 25, 25), color=(1, 1, 1, 1))
+        # if show_volume:
+        #     self.plot_cube_gl(P, size=(25, 25, 25), color=(1, 1, 1, 1))
 
     def display_points(self, points3d, color=(1, 1, 1, 1), size=1):
         """
@@ -1849,12 +1864,21 @@ class ExtrinsicsWindow(QWidget):
     def update_poses(self, rvecs, tvecs):
 
         if rvecs is not None and tvecs is not None:
-            for item in self.camera_items + self.frustum_items:
-                self.view.removeItem(item)
-            self.camera_items.clear()
-            self.frustum_items.clear()
+            self.multi_cameras_poses[:, 0, :] = rvecs
+            self.multi_cameras_poses[:, 1, :] = tvecs
 
-        self.display_cameras(rvecs, tvecs, self.multi_cam_mat)
+            self.display_cameras()
+
+    def update_intrinsics(self, cam_idx, camera_matrix, dist_coeffs):
+        # Update internal copy of the intrinsics (for plotting)
+        self.multi_cam_mat[cam_idx, :, :] = camera_matrix
+        self.multi_dist_coeffs[cam_idx, :] = dist_coeffs
+
+        if self.multi_cameras_poses.sum() != 0:     # TODO - a better check than this
+            self.display_cameras()
+
+        # And forward to the multiview worker
+        self.signal_update_intrinsics.emit(cam_idx, camera_matrix, dist_coeffs)
 
     @Slot(np.ndarray)
     def update_points(self, points3d):

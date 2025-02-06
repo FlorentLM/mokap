@@ -745,7 +745,8 @@ class MultiviewCalibrationTool:
                 deltas = np.array([np.linalg.norm(remapped_poses - pose) for pose in self._poses_stack])
 
             # If the new pose is sufficiently different, add it
-            if np.all(deltas > similarity_threshold):
+            # if np.all(deltas > similarity_threshold):
+            if np.all(deltas > 0):
                 self._poses_stack.append(remapped_poses)
 
     def register_detection(self, frame_idx: int, cam_idx: int, points2d: np.ndarray, points_ids: np.ndarray):
