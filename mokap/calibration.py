@@ -6,7 +6,7 @@ import cv2
 import toml
 import scipy.stats as stats
 from scipy.spatial.distance import cdist
-from mokap import proj_geom, multicam
+from mokap import proj_geom, multiview_functions
 
 
 class DetectionTool:

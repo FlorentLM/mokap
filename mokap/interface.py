@@ -408,7 +408,7 @@ class VideoWindowBase(QWidget):
 
         self._camera = self._main_window.mc.cameras[self.idx]
 
-        self._source_shape = self._main_window.sources_shapes_list[self.idx]
+        self._source_shape = self._main_window.sources_shapes[self.idx]
         self._bg_colour = self._main_window.bg_colours_list[self.idx]
         self._fg_colour = self._main_window.fg_colours_list[self.idx]
 
@@ -1605,18 +1605,18 @@ class ExtrinsicsWindow(QWidget):
         self.nb_cams = main_window_ref.nb_cams
         self.idx = self.nb_cams + 1
 
-        self._cam_colours = np.stack([np.array((*utils.hex_to_rgb(c), 255))/255 for c in self._main_window.bg_colours_list])
-        self._cam_shapes = self._main_window.sources_shapes_list
-        self._depth = 130
-
-        # Initialise where to store multi-intrinsics, and where to store worker results for extrinsics
-        self.multi_cam_mat = np.zeros((self.nb_cams, 3, 3))
-        self.multi_dist_coeffs = np.zeros((self.nb_cams, 14))
-
-        self.multi_cameras_poses = np.zeros((self.nb_cams, 2, 3), dtype=np.float32)
+        # Initialise where to store intrinsics and extrinsics for all cams
+        self._multi_intrinsics_matrices = np.zeros((self.nb_cams, 3, 3), dtype=np.float32)
+        self._multi_dist_coeffs = np.zeros((self.nb_cams, 14), dtype=np.float32)
+        self._multi_extrinsics_matrices = np.zeros((self.nb_cams, 3, 4), dtype=np.float32)
 
         # Setup multiview calib tool
         self.multi_calib_tool = MultiviewCalibrationTool(self.nb_cams, min_poses=3)
+
+        # Global arrangement coords
+        self._cameras_pos_rot = np.zeros((self.nb_cams, 3), dtype=np.float32)
+        self.optical_axes = np.zeros((self.nb_cams, 3), dtype=np.float32)
+        self.focal_point = np.zeros(3, dtype=np.float32)
 
         # Setup worker
         self.worker_thread = QThread(self)
@@ -1633,27 +1633,113 @@ class ExtrinsicsWindow(QWidget):
 
         self.worker_thread.start()
 
-        # Store references to 3D items
-        self.camera_items = []
-        self.frustum_items = []
-        self.points3d_item = None
+        ##
+        # ================= Stuff for OpenGL below =================
 
-        # Finish building the UI by calling the other constructors
+        # References to displayed items
+        self.kept_items = []
+        self.clearable_items = []
+
+        self._cam_colours_rgba = np.vstack([(*utils.hex_to_rgb(c), 255) for c in self._main_window.bg_colours_list])
+        self._cam_colours_rgba_norm = self._cam_colours_rgba / 255
+        self._frames_sizes = self._main_window.sources_shapes
+
+        self._frustum_depth = 200
+
+        self._antialiasing = True
+
+        # Finish building the UI and initialise the 3D scene
         self._init_ui()
 
-        # TESTING - Fake points - TODO
-        # rng = np.random.default_rng()
-        # initial_points = rng.uniform(low=-100.0, high=100.0, size=(100, 3))
-        # self.display_points(initial_points, color=(1, 1, 1, 1))  # White points
+        self.view.setBackgroundColor('k')
+
+        # Add the grid now bc no need to update it later
+        self._gridsize = 100
+        self.grid = GLGridItem()
+        self.grid.setSize(self._gridsize * 2, self._gridsize * 2, self._gridsize * 2)
+        self.grid.setSpacing(self._gridsize * 0.1, self._gridsize * 0.1, self._gridsize * 0.1)
+        self.view.addItem(self.grid)
+
+        # Define some constants
+        self._frustums_points2d = np.stack([np.array([[0, 0], [w, 0], [w, h], [0, h]], dtype=np.int32) for (h, w) in self._frames_sizes])
+        self._centres_points2d = self._frustums_points2d[:, 2, :] / 2
+        # faces as triangles
+        self._frustum_faces = np.array([[0, 1, 2], [0, 2, 3]])
+        self._volume_verts = np.array([
+            [-1., -1., -1.],
+            [1., -1., -1.],
+            [1., 1., -1.],
+            [-1., 1., -1.],
+            [-1., -1., 1.],
+            [1., -1., 1.],
+            [1., 1., 1.],
+            [-1., 1., 1.]
+        ], dtype=np.float32)
+        self._volume_faces = np.array([
+            [0, 1, 2], [0, 2, 3],  # Bottom
+            [4, 5, 6], [4, 6, 7],  # Top
+            [0, 1, 5], [0, 5, 4],  # Front
+            [1, 2, 6], [1, 6, 5],  # Right
+            [2, 3, 7], [2, 7, 6],  # Back
+            [3, 0, 4], [3, 4, 7]  # Left
+        ], dtype=np.int32)
+
+        ##
+        # ============================================ TEMPORARY TEST VALUES ===========================================
+
+        self._cam_colours_rgba_norm = np.array([(218, 20, 29, 255), (122, 156, 33, 255), (243, 213, 134, 255), (68, 62, 147, 255),
+                           (239, 238, 231, 255)]) / 255
+
+        n_optimised_rvecs = np.array([[0.45200041476980235, 0.8771147275087425, 2.251746546223581],
+                                      [0.5005899848817629, -0.40415125297412524, -1.7664028088411652],
+                                      [0.8488376012023714, 0.840477261793214, 1.4946774627106294],
+                                      [-0.0003631347110473988, 0.00021406779771240513, -0.0026958147664326733],
+                                      [0.7003948435159923, 0.30747234763007686, 0.95309397614152]
+                                      ])
+
+        n_optimised_tvecs = np.array([[-110.00946411872877, -107.07056980084768, 53.335528134397805],
+                                      [126.41534461953935, -13.321909590625866, -6.39879794280635],
+                                      [-192.4985924773089, -11.06001204792536, 97.57202285958193],
+                                      [-0.657915548760298, -0.03441274672931003, 4.499012937051807],
+                                      [-108.4554173475389, 77.11590331140114, 42.40017779935506]])
+
+        for n in range(self.nb_cams):
+            self._multi_extrinsics_matrices[n, :, :] = proj_geom.extrinsics_matrix(n_optimised_rvecs[n], n_optimised_tvecs[n])
+
+        self._multi_intrinsics_matrices = np.array([
+            [[17707.67747316224, 0.0, 790.5587621784158],
+             [0.0, 17707.67747316224, 983.864989843142],
+             [0.0, 0.0, 1.0]],
+            [[19151.7271090595, 0.0, 1012.4168885068306],
+             [0.0, 19151.7271090595, 398.77269888563404],
+             [0.0, 0.0, 1.0]],
+            [[20136.8295090655, 0.0, 1141.4955218160396],
+             [0.0, 20136.8295090655, 1002.6488556447825],
+             [0.0, 0.0, 1.0]],
+            [[17913.718172333134, 0.0, 405.2813966335253],
+             [0.0, 17913.718172333134, 1126.343479359868],
+             [0.0, 0.0, 1.0]],
+            [[18794.177986152907, 0.0, 736.9062486680083],
+             [0.0, 18794.177986152907, 585.4228956792946],
+             [0.0, 0.0, 1.0]]
+        ])
+
+        # ==============================================================================================================
+        ##
+
+        self.view.opts['distance'] = self._gridsize
+        # self.view.opts['center'] = pg.Vector(*self.focal_point)
 
         # TESTING - Update timer - TODO
         self.timer_update = QTimer(self)
-        self.timer_update.timeout.connect(self.worker.compute)
+        # self.timer_update.timeout.connect(self.worker.compute)
+        self.timer_update.timeout.connect(self.update_scene)
         self.timer_update.start(500)
 
     def _init_ui(self):
         self.view = GLViewWidget()
-        self.view.setWindowTitle('Cameras arrangement')
+        self.view.setWindowTitle('3D viewer')
+
         layout = QVBoxLayout(self)
         layout.addWidget(self.view, 1)
         self.setLayout(layout)
@@ -1680,209 +1766,240 @@ class ExtrinsicsWindow(QWidget):
 
         self.resize(h, w)
 
-        self.view.setBackgroundColor('k')
+        self.show()
 
-        # Add world coordinate system (fixed)
-        self.world_axes = GLAxisItem()
-        self.world_axes.setSize(100, 100, 100)
-        self.view.addItem(self.world_axes)
+    # -------------- OpenGL rendering -related methods -----------------
 
-        # Add grid
-        grid = GLGridItem()
-        grid.setSize(100, 100, 100)
-        self.view.addItem(grid)
+    def clear_scene(self):
+        for item in self.clearable_items:
+            try:
+                self.view.removeItem(item)
+            except ValueError:
+                pass
+        self.clearable_items.clear()
 
-        # Set initial viewpoint position
-        # self.view.setCameraPosition(distance=100, elevation=70, azimuth=45)
-        self.view.setCameraPosition(distance=100, elevation=-70, azimuth=45)
+    def update_scene(self):
 
+        # Clear previous elements
+        self.clear_scene()
+
+        for cam_idx in range(self.nb_cams):
+            color = self._cam_colours_rgba_norm[cam_idx]
+
+            points2d = np.array([720, 540])  # test points
+
+            points2d = np.array([
+                [360., 400.],
+                [439.524, 478.521],
+                [519.444, 537.722],
+                [599.400, 577.200],
+                [679.852, 597.283],
+                [760.000, 597.283],
+                [839.160, 577.200],
+                [919.548, 537.722],
+                [999.468, 478.521],
+                [1080., 400.]
+            ])
+
+            self.add_camera(cam_idx, color=color)
+            # self.add_points2d(cam_idx, points2d, color=color)
+
+        self.add_focal_point()
+
+        # draw everything
+        for item in self.clearable_items:
+            self.view.addItem(item)
+
+    def add_camera(self, cam_idx, color=(1, 0, 0, 1)):
+        """
+            Add a camera to the OpenGL scene
+        """
+
+        color = np.asarray(color)
+        color_translucent_80 = color * np.array([1, 1, 1, 0.8])
+        color_translucent_50 = np.asarray(color) * np.array([1, 1, 1, 0.5])
+
+        # Apply the 180° rotation around Y axis so the rig appears the right way up
+        ext_mat_rot = proj_geom.rotate_extrinsics_matrix(self._multi_extrinsics_matrices[cam_idx, :, :], 180, axis='y',)
+
+        # Add camera center as a point
+        center_scatter = GLScatterPlotItem(pos=ext_mat_rot[:3, 3], color=color, size=10)
+        self.clearable_items.append(center_scatter)
+
+        # Back-project the 2D image corners to 3D
+        frustum_points3d = proj_geom.back_projection(self._frustums_points2d[cam_idx],
+                                                     self._frustum_depth,
+                                                     self._multi_intrinsics_matrices[cam_idx],
+                                                     self._multi_extrinsics_matrices[cam_idx, :, :])    # we use the non-rotated points, and rotate below
+        frustum_points3d = proj_geom.rotate_points3d(frustum_points3d, 180, axis='y')
+
+        # Draw the frustum planes
+        frustum_meshdata = MeshData(vertexes=frustum_points3d, faces=self._frustum_faces)
+        frustum_mesh = GLMeshItem(meshdata=frustum_meshdata,
+                                  smooth=self._antialiasing,
+                                  shader='shaded',
+                                  glOptions='translucent',
+                                  drawEdges=True,
+                                  edgeColor=color_translucent_80,
+                                  color=color_translucent_50)
+        self.clearable_items.append(frustum_mesh)
+
+        # Draw lines from the camera to each frustum corner
+        colors = np.array([color, color])       # Both vertices need to have a colour explicitely defined
+        for corner in frustum_points3d:
+            line = GLLinePlotItem(pos=np.array([ext_mat_rot[:3, 3], corner]),
+                                  color=colors,
+                                  width=1,
+                                  antialias=self._antialiasing)
+            self.clearable_items.append(line)
+
+        # Compute and draw the optical axis (from camera center toward the image center)
+        centre3d = proj_geom.back_projection(self._centres_points2d[cam_idx],
+                                             self._frustum_depth,
+                                             self._multi_intrinsics_matrices[cam_idx],
+                                             self._multi_extrinsics_matrices[cam_idx, :, :])         # we use the non-rotated points, and rotate below
+        centre3d = proj_geom.rotate_points3d(centre3d, 180, axis='y')
+
+        self.add_dashed_line(ext_mat_rot[:3, 3], centre3d,
+                             dash_length=2.0,
+                             gap_length=2.0,
+                             color=color,
+                             antialias=self._antialiasing,
+                             width=1)
+
+        # Store the rotated camera center
+        self._cameras_pos_rot[cam_idx] = ext_mat_rot[:3, 3]
+
+        # Compute and store the (normalized) optical axis direction
+        axis_vec = centre3d - ext_mat_rot[:3, 3]
+        norm = np.linalg.norm(axis_vec)
+        if norm > 0:
+            axis_vec = axis_vec / norm
+        self.optical_axes[cam_idx] = axis_vec
+
+        prev_focal = np.copy(self.focal_point)
+        self.focal_point = proj_geom.focal_point_3d(self._cameras_pos_rot, self.optical_axes)
+        self.grid.translate(*self.focal_point - prev_focal)
+
+    def add_points3d(self, points3d, errors=None, color=(0, 0, 0, 1)):
+        """
+            Add 3D points to the OpenGL scene
+            If errors are provided, they are mapped to colors
+        """
+
+        color = np.asarray(color)
+
+        points3d_rot = proj_geom.rotate_points3d(points3d, 180, axis='y')
+
+        if errors is not None:
+            # TODO - use a fixed scale gfrom green to red instead
+            # normalize error values to [0, 1]
+            min_e = errors - np.nanmin(errors)
+            norm_errors = min_e / np.nanmax(min_e)
+            # pg.intColor returns QColor objects so we convert them to RGBA tuples
+            colors_array = np.array([pg.mkColor(pg.intColor(int(e * 255), 256)).getRgbF() for e in norm_errors])
+
+            scatter = GLScatterPlotItem(pos=points3d_rot, color=colors_array, size=5)
+        else:
+            scatter = GLScatterPlotItem(pos=points3d_rot, color=color, size=5)
+
+        self.clearable_items.append(scatter)
+
+    def add_points2d(self, cam_idx, points2d, color=(1, 1, 0, 1)):
+        """
+            Back-project 2D points into 3D and add them to the scene
+        """
+
+        color = np.asarray(color)
+
+        points3d = proj_geom.back_projection(points2d,
+                                             self._frustum_depth,
+                                             self._multi_intrinsics_matrices[cam_idx],
+                                             self._multi_extrinsics_matrices[cam_idx, :, :])
+        points3d = proj_geom.rotate_points3d(points3d, 180, axis='y')
+
+        scatter = GLScatterPlotItem(pos=points3d, color=color, size=5)
+
+        self.clearable_items.append(scatter)
+
+    def add_cube(self, center, size, color=(1, 1, 1, 0.5)):
+        """
+            Add a cube centered at "center" with the given "size"
+        """
+
+        color = np.asarray(color)
+        color_translucent_50 = np.asarray(color) * np.array([1, 1, 1, 0.5])
+
+        hsize = np.asarray(size) * 0.5
+        if hsize.shape == ():
+            hsize = np.array([hsize, hsize, hsize])
+        if len(hsize) != 3:
+            raise AttributeError("Volume size must be a scalar or a vector 3!")
+
+        vertices = (self._volume_verts * hsize) + np.asarray(center)
+        meshdata = MeshData(vertexes=vertices, faces=self._volume_faces)
+        cube = GLMeshItem(meshdata=meshdata,
+                             smooth=self._antialiasing,
+                             shader='shaded',
+                             glOptions='translucent',
+                             drawEdges=True,
+                             edgeColor=color,
+                             color=color_translucent_50)
+        self.clearable_items.append(cube)
+
+    def add_focal_point(self, color=(1, 1, 1, 1)):
+        focal_scatter = GLScatterPlotItem(pos=self.focal_point.reshape(1, 3), color=color, size=5)
+        self.clearable_items.append(focal_scatter)
+
+    def add_dashed_line(self, start, end, dash_length=5.0, gap_length=5.0, color=(1, 1, 1, 1), width=1, antialias=True):
+        start = np.array(start, dtype=float)
+        end = np.array(end, dtype=float)
+        vec = end - start
+        total_length = np.linalg.norm(vec)
+        if total_length == 0:
+            return
+        direction = vec / total_length
+        step = dash_length + gap_length
+
+        num_steps = int(total_length // step)
+
+        colors = np.array([color, color])  # Both vertices need to have a colour explicitely defined
+
+        for i in range(num_steps + 1):
+            seg_start = start + i * step * direction
+            seg_end = seg_start + dash_length * direction
+
+            # clamp the segment end so it doesn't overshoot
+            if np.linalg.norm(seg_end - start) > total_length:
+                seg_end = end
+            line_seg = GLLinePlotItem(pos=np.array([seg_start, seg_end]),
+                                         color=colors,
+                                         width=width,
+                                         antialias=antialias)
+            self.clearable_items.append(line_seg)
+
+    # -------------- Other methods --------------------
     def _switch_stage(self):
         for w in self._main_window.secondary_windows:
             w.on_stage_change(self.calibration_stage_combo.currentIndex())
 
-    def plot_cube_gl(self, center, size=(25, 25, 25), color=(0, 0, 0, 1)):
-        """
-        Draw a wireframe cube at the given center with the given size.
-        """
-        cx, cy, cz = center
-        sx, sy, sz = size
-
-        # Define the eight vertices of the cube
-        vertices = np.array([
-            [cx - sx / 2, cy - sy / 2, cz - sz / 2],
-            [cx + sx / 2, cy - sy / 2, cz - sz / 2],
-            [cx + sx / 2, cy + sy / 2, cz - sz / 2],
-            [cx - sx / 2, cy + sy / 2, cz - sz / 2],
-            [cx - sx / 2, cy - sy / 2, cz + sz / 2],
-            [cx + sx / 2, cy - sy / 2, cz + sz / 2],
-            [cx + sx / 2, cy + sy / 2, cz + sz / 2],
-            [cx - sx / 2, cy + sy / 2, cz + sz / 2],
-        ])
-
-        # Define the 12 edges as pairs of vertex indices
-        edges = [
-            (0, 1), (1, 2), (2, 3), (3, 0),
-            (4, 5), (5, 6), (6, 7), (7, 4),
-            (0, 4), (1, 5), (2, 6), (3, 7)
-        ]
-
-        for edge in edges:
-            pts = vertices[list(edge)]
-            line = GLLinePlotItem(pos=pts, color=color, width=1, antialias=True)
-            self.view.addItem(line)
-            self.camera_items.append(line)
-
-    def display_cameras(self, show_theoretical_frustum=False, directions_depth=None, show_volume=False):
-
-        for item in self.camera_items + self.frustum_items:
-            self.view.removeItem(item)
-        self.camera_items.clear()
-        self.frustum_items.clear()
-
-        directions_normalised = []
-
-        for n in range(self.nb_cams):
-            cam_pos = self.multi_cameras_poses[n, 1, :]
-            cam_pos[2] *= -1
-
-            cam_dir = self.multi_cameras_poses[n, 0, :]
-
-            flip_z = np.array([[1, 0, 0],
-                               [0, 1, 0],
-                               [0, 0, -1]])
-
-            cam_dir = cv2.Rodrigues(np.dot(cv2.Rodrigues(cam_dir)[0], flip_z))[0]
-
-            this_color = self._cam_colours[n]
-            h, w = self._cam_shapes[n]
-            # Define the 2D image corners (frustum in image space)
-            frustum_points2d = np.array([[0, 0],
-                                         [w, 0],
-                                         [w, h],
-                                         [0, h]], dtype=np.float32)
-
-
-            # Plot the camera position (as a scatter point)
-            scatter = GLScatterPlotItem(pos=cam_pos, color=this_color, size=10, pxMode=False)
-            self.view.addItem(scatter)
-            self.camera_items.append(scatter)
-
-            # Compute the extrinsic matrix from rotation and translation.
-            E = proj_geom.extrinsics_matrix(cam_dir, cam_pos)
-
-            # Compute the 3D coordinates of the image frustum’s corners
-            frustum_points3d = proj_geom.back_projection(frustum_points2d, self._depth, self.multi_cam_mat[n], E)
-
-            # Create a mesh (two triangles) for the frustum polygon.
-            faces = np.array([[0, 1, 2],
-                              [0, 2, 3]])
-            meshdata = MeshData(vertexes=frustum_points3d, faces=faces)
-
-            face_color = np.copy(this_color)
-            face_color[-1] = 0.05
-            frustum_mesh = GLMeshItem(meshdata=meshdata, smooth=False,
-                                         color=face_color,
-                                         shader='shaded',
-                                         drawEdges=True,
-                                         edgeColor=this_color)
-            self.view.addItem(frustum_mesh)
-            self.frustum_items.append(frustum_mesh)
-
-            # Draw the outline of the frustum (cycle back to the first point)
-            outline_pts = np.vstack([frustum_points3d, frustum_points3d[0]])
-            line_outline = GLLinePlotItem(pos=outline_pts, color=this_color, width=1, antialias=True)
-            self.view.addItem(line_outline)
-            self.frustum_items.append(line_outline)
-
-            # Draw lines connecting the camera center to each frustum corner
-            for corner in frustum_points3d:
-                line = GLLinePlotItem(pos=np.stack([cam_pos, corner]), color=this_color, width=1, antialias=True)
-                self.view.addItem(line)
-                self.frustum_items.append(line)
-
-            # Compute the “centre” of the frustum (back-projecting the image center)
-            if directions_depth is None:
-                directions_depth = self._depth
-            centre = proj_geom.back_projection(np.array([w / 2, h / 2]), directions_depth, self.multi_cam_mat[n], E)
-
-            # Compute and store the normalized camera direction
-            cam_dir = centre - cam_pos
-            cam_dir_normalized = cam_dir / np.linalg.norm(cam_dir)
-            directions_normalised.append(cam_dir_normalized)
-
-            # Draw the camera direction line (from the camera position to the centre)
-            dir_line = GLLinePlotItem(pos=np.array([cam_pos, centre]), color=this_color, width=1, antialias=True)
-            self.view.addItem(dir_line)
-            self.camera_items.append(dir_line)
-
-            if show_theoretical_frustum:
-                # Compute a “perfect” camera matrix
-                perfect_mat = np.eye(3)
-                perfect_mat[0, 0] = perfect_mat[1, 1] = self.multi_cam_mat[n][:2, :2].sum() / 2.0
-                perfect_mat[:2, 2] = (w / 2, h / 2)
-                frustum_points3d_perfect = proj_geom.back_projection(frustum_points2d, self._depth, perfect_mat, E)
-                # Outline of the theoretical frustum
-                outline_pts_perfect = np.vstack([frustum_points3d_perfect, frustum_points3d_perfect[0]])
-                line_perfect = GLLinePlotItem(pos=outline_pts_perfect, color=this_color,
-                                                 width=1, antialias=True)
-                self.view.addItem(line_perfect)
-                # Lines from camera center to each theoretical frustum corner
-                for corner in frustum_points3d_perfect:
-                    line_theo = GLLinePlotItem(pos=np.array([cam_pos, corner]),
-                                                  color=this_color, width=1, antialias=True)
-                    self.view.addItem(line_theo)
-                    self.frustum_items.append(line_theo)
-
-        # # Compute the focal point
-        # P = proj_geom.focal_point_3d(self.multi_cameras_poses[:, 1, :], directions_normalised)
-        # focal_scatter = GLScatterPlotItem(pos=P, color=np.array((1, 1, 1, 1)), size=15)
-        # self.view.addItem(focal_scatter)
-        # self.camera_items.append(focal_scatter)
-
-        # if show_volume:
-        #     self.plot_cube_gl(P, size=(25, 25, 25), color=(1, 1, 1, 1))
-
-    def display_points(self, points3d, color=(1, 1, 1, 1), size=1):
-        """
-            Displays 3D points in the GLViewWidget
-        """
-
-        if self.points3d_item is not None:
-            self.view.removeItem(self.points3d_item)
-            self.points3d_item = None
-
-        self.points3d_item = GLScatterPlotItem(
-            pos=points3d,
-            color=color,
-            size=size,
-            pxMode=False  # True = size in pixels; False = size is in world units
-        )
-
-        self.view.addItem(self.points3d_item)
-
     @Slot(np.ndarray, np.ndarray)
     def update_poses(self, rvecs, tvecs):
-
         if rvecs is not None and tvecs is not None:
-            self.multi_cameras_poses[:, 0, :] = rvecs
-            self.multi_cameras_poses[:, 1, :] = tvecs
-
-            self.display_cameras()
+            for n in range(self.nb_cams):
+                self._multi_extrinsics_matrices[n, :, :] = proj_geom.extrinsics_matrix(rvecs[n], tvecs[n])
 
     def update_intrinsics(self, cam_idx, camera_matrix, dist_coeffs):
         # Update internal copy of the intrinsics (for plotting)
-        self.multi_cam_mat[cam_idx, :, :] = camera_matrix
-        self.multi_dist_coeffs[cam_idx, :] = dist_coeffs
-
-        if self.multi_cameras_poses.sum() != 0:     # TODO - a better check than this
-            self.display_cameras()
+        self._multi_intrinsics_matrices[cam_idx, :, :] = camera_matrix
+        self._multi_dist_coeffs[cam_idx, :] = dist_coeffs
 
         # And forward to the multiview worker
         self.signal_update_intrinsics.emit(cam_idx, camera_matrix, dist_coeffs)
 
     @Slot(np.ndarray)
     def update_points(self, points3d):
-        self.display_points(points3d, color=(1, 0, 0, 1))
+        self.add_points3d(points3d, color=(1, 0, 0, 1))
 
 
 ##
@@ -1935,7 +2052,7 @@ class MainWindow(QMainWindow):
         self.nb_cams = self.mc.nb_cameras
 
         # Set cameras info
-        self.sources_shapes_list = [cam.shape for cam in self.mc.cameras]
+        self.sources_shapes = np.vstack([np.array(cam.shape)[:2] for cam in self.mc.cameras])
         self.bg_colours_list = [f'#{self.mc.colours[cam.name].lstrip("#")}' for cam in self.mc.cameras]
         self.fg_colours_list = [self.col_white if utils.hex_to_hls(bg)[1] < 60 else self.col_black for bg in self.bg_colours_list]
 

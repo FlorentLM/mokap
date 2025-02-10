@@ -2,6 +2,9 @@ import numpy as np
 np.set_printoptions(precision=3, suppress=True, threshold=150)
 import cv2
 from scipy.linalg import svd
+from scipy.spatial.transform import Rotation
+from mokap import multiview_functions
+from typing import Iterable
 
 # All the projective geometry related functions used throughout the project
 
@@ -169,7 +172,7 @@ def remap_points3d(points3d, orig_rvec, orig_tvec):
     return np.dot(new_points3d, np.linalg.inv(origin_mat)[:3, :3])
 
 
-def back_projection(points2d, depth, intrinsics_mat, ext_mat):
+def back_projection(points2d, depth, intrinsics_mat, ext_mat, dist_coeffs=None):
     """
     Performs back-projection from 2D image coordinates to 3D world coordinates.
 
@@ -182,7 +185,10 @@ def back_projection(points2d, depth, intrinsics_mat, ext_mat):
         Returns: Array of the 3D world coordinates for given depth
 
     """
-    # TODO - Add (optional) undistortion using dist_coeffs
+    points2d = np.asarray(points2d)
+
+    if dist_coeffs is not None:
+        points2d = multiview_functions.undistort_points(points2d, intrinsics_mat, dist_coeffs)
 
     if not (isinstance(depth, int) or isinstance(depth, float)) and np.atleast_1d(depth).shape[0] != points2d.shape[0]:
         raise AssertionError('Depth vector length does not match 2D points array')
@@ -192,8 +198,13 @@ def back_projection(points2d, depth, intrinsics_mat, ext_mat):
         homogeneous_2dcoords = np.array([*points2d, 1])
     else:
         homogeneous_2dcoords = np.c_[points2d, np.ones(points2d.shape[0])]
-
     normalised_coords = np.linalg.inv(intrinsics_mat) @ homogeneous_2dcoords.T
+
+    # normalize the ray so that the third coordinate is always 1
+    if points2d.ndim == 1:
+        normalised_coords = normalised_coords / normalised_coords[2]
+    else:
+        normalised_coords = normalised_coords / normalised_coords[2, :]
 
     # Depth
     normalised_coords *= depth
@@ -332,3 +343,71 @@ def focal_point_3d(camera_centers, direction_vectors):
     # Solve using least squares
     P, residuals, rank, s = np.linalg.lstsq(A, b, rcond=None)
     return P
+
+
+def create_rot_object(angle_degrees: float, axis: [str | Iterable[float]]):
+    # TODO - Maybe use cv2.Rodrigues here too instead or Scipy's Rotation? Not super important tho
+
+    if isinstance(axis, str):
+        axis = axis.lower()
+        if axis not in ['x', 'y', 'z']:
+            raise ValueError("Axis must be 'x', 'y', 'z' or a 3-element vector.")
+        rot = Rotation.from_euler(axis, angle_degrees, degrees=True)
+    else:
+        axis = np.asarray(axis, dtype=np.float64)
+        if axis.shape != (3,):
+            raise ValueError("Axis must be a 3-element vector.")
+        axis = axis / np.linalg.norm(axis)
+        rot = Rotation.from_rotvec(axis * np.deg2rad(angle_degrees))
+
+    return rot
+
+
+def rotate_points3d(points3d, angle_degrees, axis='y'):
+    """
+        Rotate a set of 3D points about the given axis
+    """
+
+    rot_global = create_rot_object(angle_degrees, axis)
+
+    rotated_points = rot_global.apply(points3d)
+    return rotated_points
+
+
+def rotate_pose(rvecs, tvecs, angle_degrees, axis='y'):
+    """
+        Rotate a set of poses (rotation and translation vectors) about the given axis
+    """
+
+    rot_global = create_rot_object(angle_degrees, axis)
+
+    # Rotate the rvecs
+    rotations = rot_global * Rotation.from_rotvec(rvecs)
+    rvecs_rotated = rotations.as_rotvec()
+
+    # Rotate the tvecs
+    tvecs_rotated = rot_global.apply(tvecs)
+
+    return rvecs_rotated, tvecs_rotated
+
+
+def rotate_extrinsics_matrix(E, angle_degrees, axis='y', hom=False):
+    """
+        Rotate an extrinsics matrix by a given angle around a given axis
+    """
+
+    rot_global = create_rot_object(angle_degrees, axis)
+
+    Q = rot_global.as_matrix()
+
+    R_new = Q @ E[:3, :3] # apply rot to R mat
+    t_new = Q @ E[:3, 3]  # and to original tvec
+
+    E_new = np.hstack([R_new, t_new.reshape(-1, 1)])
+
+    if hom:
+        E_new = np.vstack([E_new, np.array([0, 0, 0, 1])])
+
+    return E_new
+
+

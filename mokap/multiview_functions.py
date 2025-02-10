@@ -4,7 +4,7 @@ import cv2
 from functools import reduce
 from scipy.optimize import minimize
 from scipy.spatial.distance import cdist
-from mokap import proj_geom
+from mokap import proj_geom, monocular_functions
 
 # Defines functions that relate to processing stuff from N cameras
 
@@ -103,15 +103,8 @@ def undistortion(n_p_points2d, n_cam_mats, n_dist_coeffs):
     """
     nb_cameras = len(n_cam_mats)
 
-    points2d_undist = []    # List because not necessarily the same number of points in all cameras
-
-    for n in range(nb_cameras):
-        points_undist = cv2.undistortPoints(n_p_points2d[n],
-                                            cameraMatrix=n_cam_mats[n],
-                                            distCoeffs=n_dist_coeffs[n],
-                                            P=n_cam_mats[n])
-
-        points2d_undist.append(points_undist.squeeze())
+    # we use a list here because it's not necessarily the same number of points in all cameras
+    points2d_undist = [monocular_functions.undistortion(n_p_points2d[n], n_cam_mats[n], n_dist_coeffs) for n in range(nb_cameras)]
 
     return points2d_undist
 
