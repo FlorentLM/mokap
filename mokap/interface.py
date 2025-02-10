@@ -2658,10 +2658,14 @@ class MainWindow(QMainWindow):
 
     def _stop_secondary_windows(self):
         for w in self.secondary_windows:
+            w.worker_thread.quit()
+            w.worker_thread.wait()
             w._force_destroy = True
             w.close()
 
         if self.extrinsics_window is not None:
+            self.extrinsics_window.worker_thread.quit()
+            self.extrinsics_window.worker_thread.wait()
             self.extrinsics_window._force_destroy = True
             self.extrinsics_window.close()
             self.extrinsics_window = None
