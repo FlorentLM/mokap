@@ -1651,8 +1651,6 @@ class ExtrinsicsWindow(QWidget):
         # Finish building the UI and initialise the 3D scene
         self._init_ui()
 
-        self.view.setBackgroundColor('k')
-
         # Add the grid now bc no need to update it later
         self._gridsize = 100
         self.grid = GLGridItem()
@@ -1739,6 +1737,7 @@ class ExtrinsicsWindow(QWidget):
     def _init_ui(self):
         self.view = GLViewWidget()
         self.view.setWindowTitle('3D viewer')
+        self.view.setBackgroundColor('k')
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.view, 1)
@@ -1802,7 +1801,7 @@ class ExtrinsicsWindow(QWidget):
             ])
 
             self.add_camera(cam_idx, color=color)
-            # self.add_points2d(cam_idx, points2d, color=color)
+            self.add_points2d(cam_idx, points2d, color=color)
 
         self.add_focal_point()
 
@@ -2666,6 +2665,9 @@ class MainWindow(QMainWindow):
         if self.extrinsics_window is not None:
             self.extrinsics_window.worker_thread.quit()
             self.extrinsics_window.worker_thread.wait()
+
+            self.extrinsics_window.timer_update.stop()
+
             self.extrinsics_window._force_destroy = True
             self.extrinsics_window.close()
             self.extrinsics_window = None
