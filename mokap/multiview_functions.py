@@ -56,8 +56,8 @@ def bestguess_rtvecs(n_m_rvecs, n_m_tvecs):
         all_rvecs = filter_outliers(m_rvecs)
         all_tvecs = filter_outliers(m_tvecs)
 
-        mean_rvecs = np.mean(all_rvecs, axis=0)
-        mean_tvecs = np.mean(all_tvecs, axis=0)
+        mean_rvecs = np.median(all_rvecs, axis=0)
+        mean_tvecs = np.median(all_tvecs, axis=0)
 
         cov_matrix_rvecs = np.cov(mean_rvecs, rowvar=False)
         cov_matrix_tvecs = np.cov(mean_tvecs, rowvar=False)
@@ -186,7 +186,7 @@ def compute_3d_errors(points2d, points2d_ids,
     # but it can be a different set of points for each camera
     for n in range(nb_cameras):
         common_indices, i_3d, i_2d = np.intersect1d(points3d_ids, points2d_ids[n], return_indices=True)
-        errors_2d_reproj[n, common_indices, :] = reprojected_points[n, :, :] - points2d[n][i_2d, :]
+        errors_2d_reproj[n, common_indices, :] = reprojected_points[n, i_3d, :] - points2d[n][i_2d, :]
 
     sq_idx = np.ix_(points3d_ids, points3d_ids)
 
@@ -221,3 +221,26 @@ def compute_3d_errors(points2d, points2d_ids,
 
     return errors_2d_reproj, errors_3d_consistency
 
+
+def interpolate_missing_points3d(points3d_svd, points3d_ids, points3d_theoretical):
+    """
+        Use triangulated 3D points and theoretical board layout to interpolate missing points
+    """
+    detected_theoretical = points3d_theoretical[points3d_ids]
+
+    # Build a design matrix by appending a column of ones to account for translation
+    # Each row is [x, y, z, 1] for a detected theoretical point
+    N_detected = detected_theoretical.shape[0]
+    A = np.hstack([detected_theoretical, np.ones((N_detected, 1), dtype=detected_theoretical.dtype)])
+
+    # Solve for the transformation matrix T (a 4x3 matrix) that best maps
+    # [theoretical_point, 1] * T  to measured point (i.e. tje SVD result)
+    T, residuals, rank, s = np.linalg.lstsq(A, points3d_svd, rcond=None)
+
+    # then apply T to all the theoretical board points
+    N_total = points3d_theoretical.shape[0]
+    A_full = np.hstack([points3d_theoretical, np.ones((N_total, 1), dtype=points3d_theoretical.dtype)])
+    points3d_full = A_full.dot(T)
+
+    points3d_ids_full = np.arange(N_total)
+    return points3d_full, points3d_ids_full

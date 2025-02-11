@@ -677,7 +677,6 @@ class MultiviewCalibrationTool:
         self._optimised_tvecs = None
         self._refined_rvecs = None
         self._refined_tvecs = None
-
         self._refined = False
 
     @property
@@ -746,7 +745,7 @@ class MultiviewCalibrationTool:
 
             # If the new pose is sufficiently different, add it
             # if np.all(deltas > similarity_threshold):
-            if np.all(deltas > 0):
+            if np.all(deltas > 0):  # 0 threshold for testing
                 self._poses_stack.append(remapped_poses)
 
     def register_detection(self, frame_idx: int, cam_idx: int, points2d: np.ndarray, points_ids: np.ndarray):
@@ -769,7 +768,7 @@ class MultiviewCalibrationTool:
 
             # Only triangulate if extrinsics are available
             if self._optimised_rvecs is not None and self._optimised_tvecs is not None:
-                points3d, points3d_ids = multicam.triangulation(
+                points3d, points3d_ids = multiview_functions.triangulation(
                     points2d_list, points2d_ids_list,
                     self._optimised_rvecs, self._optimised_tvecs,
                     self._multi_intrinsics,  self._multi_dist_coeffs
@@ -802,7 +801,7 @@ class MultiviewCalibrationTool:
         # stack the poses in a array of shape (N, M, 2, 3) with N = nb of cameras and M = nb of samples
         poses_array = np.stack(self._poses_stack).swapaxes(0, 1)
         # dim 2 is rvecs, tvecs
-        self._optimised_rvecs, self._optimised_tvecs = multicam.bestguess_rtvecs(poses_array[:, :, 0, :], poses_array[:, :, 1, :])
+        self._optimised_rvecs, self._optimised_tvecs = multiview_functions.bestguess_rtvecs(poses_array[:, :, 0, :], poses_array[:, :, 1, :])
 
         if clear_poses_stack:
             self.clear_poses()
