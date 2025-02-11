@@ -1616,7 +1616,7 @@ class ExtrinsicsWindow(QWidget):
         # Global arrangement coords
         self._cameras_pos_rot = np.zeros((self.nb_cams, 3), dtype=np.float32)
         self.optical_axes = np.zeros((self.nb_cams, 3), dtype=np.float32)
-        self.focal_point = np.zeros(3, dtype=np.float32)
+        self.focal_point = np.zeros((1, 3), dtype=np.float32)
 
         # Setup worker
         self.worker_thread = QThread(self)
@@ -1785,23 +1785,9 @@ class ExtrinsicsWindow(QWidget):
         for cam_idx in range(self.nb_cams):
             color = self._cam_colours_rgba_norm[cam_idx]
 
-            points2d = np.array([720, 540])  # test points
-
-            points2d = np.array([
-                [360., 400.],
-                [439.524, 478.521],
-                [519.444, 537.722],
-                [599.400, 577.200],
-                [679.852, 597.283],
-                [760.000, 597.283],
-                [839.160, 577.200],
-                [919.548, 537.722],
-                [999.468, 478.521],
-                [1080., 400.]
-            ])
-
             self.add_camera(cam_idx, color=color)
-            self.add_points2d(cam_idx, points2d, color=color)
+
+            # self.add_points2d(cam_idx, points2d, color=color)
 
         self.add_focal_point()
 
@@ -1814,15 +1800,22 @@ class ExtrinsicsWindow(QWidget):
             Add a camera to the OpenGL scene
         """
 
-        color = np.asarray(color)
-        color_translucent_80 = color * np.array([1, 1, 1, 0.8])
-        color_translucent_50 = np.asarray(color) * np.array([1, 1, 1, 0.5])
+        color_translucent_80 = np.copy(color)
+        color_translucent_80[3] *= 0.8
+
+        color_translucent_50 = np.copy(color)
+        color_translucent_50[3] *= 0.5
+
+        # Make sure colors are tuples (needed by pyqtgraph)
+        color = tuple(color)
+        color_translucent_80 = tuple(color_translucent_80)
+        color_translucent_50 = tuple(color_translucent_50)
 
         # Apply the 180° rotation around Y axis so the rig appears the right way up
         ext_mat_rot = proj_geom.rotate_extrinsics_matrix(self._multi_extrinsics_matrices[cam_idx, :, :], 180, axis='y',)
 
         # Add camera center as a point
-        center_scatter = GLScatterPlotItem(pos=ext_mat_rot[:3, 3], color=color, size=10)
+        center_scatter = GLScatterPlotItem(pos=ext_mat_rot[:3, 3].reshape(1, -1), color=color, size=10)
         self.clearable_items.append(center_scatter)
 
         # Back-project the 2D image corners to 3D
@@ -1844,10 +1837,9 @@ class ExtrinsicsWindow(QWidget):
         self.clearable_items.append(frustum_mesh)
 
         # Draw lines from the camera to each frustum corner
-        colors = np.array([color, color])       # Both vertices need to have a colour explicitely defined
         for corner in frustum_points3d:
             line = GLLinePlotItem(pos=np.array([ext_mat_rot[:3, 3], corner]),
-                                  color=colors,
+                                  color=color,
                                   width=1,
                                   antialias=self._antialiasing)
             self.clearable_items.append(line)
@@ -1877,8 +1869,8 @@ class ExtrinsicsWindow(QWidget):
         self.optical_axes[cam_idx] = axis_vec
 
         prev_focal = np.copy(self.focal_point)
-        self.focal_point = proj_geom.focal_point_3d(self._cameras_pos_rot, self.optical_axes)
-        self.grid.translate(*self.focal_point - prev_focal)
+        self.focal_point[0, :] = proj_geom.focal_point_3d(self._cameras_pos_rot, self.optical_axes)
+        self.grid.translate(*(self.focal_point - prev_focal)[0])
 
     def add_points3d(self, points3d, errors=None, color=(0, 0, 0, 1)):
         """
@@ -1886,7 +1878,7 @@ class ExtrinsicsWindow(QWidget):
             If errors are provided, they are mapped to colors
         """
 
-        color = np.asarray(color)
+        color = tuple(color)
 
         points3d_rot = proj_geom.rotate_points3d(points3d, 180, axis='y')
 
@@ -1909,7 +1901,7 @@ class ExtrinsicsWindow(QWidget):
             Back-project 2D points into 3D and add them to the scene
         """
 
-        color = np.asarray(color)
+        color = tuple(color)
 
         points3d = proj_geom.back_projection(points2d,
                                              self._frustum_depth,
@@ -1917,7 +1909,9 @@ class ExtrinsicsWindow(QWidget):
                                              self._multi_extrinsics_matrices[cam_idx, :, :])
         points3d = proj_geom.rotate_points3d(points3d, 180, axis='y')
 
-        scatter = GLScatterPlotItem(pos=points3d, color=color, size=5)
+        scatter = GLScatterPlotItem(pos=points3d,
+                                    color=color,
+                                    size=5)
 
         self.clearable_items.append(scatter)
 
@@ -1926,8 +1920,11 @@ class ExtrinsicsWindow(QWidget):
             Add a cube centered at "center" with the given "size"
         """
 
-        color = np.asarray(color)
-        color_translucent_50 = np.asarray(color) * np.array([1, 1, 1, 0.5])
+        color_translucent_50 = np.copy(color)
+        color_translucent_50[3] *= 0.5
+
+        color = tuple(color)
+        color_translucent_50 = tuple(color_translucent_50)
 
         hsize = np.asarray(size) * 0.5
         if hsize.shape == ():
@@ -1947,10 +1944,14 @@ class ExtrinsicsWindow(QWidget):
         self.clearable_items.append(cube)
 
     def add_focal_point(self, color=(1, 1, 1, 1)):
-        focal_scatter = GLScatterPlotItem(pos=self.focal_point.reshape(1, 3), color=color, size=5)
+        color = tuple(color)
+        focal_scatter = GLScatterPlotItem(pos=self.focal_point, color=color, size=5)
         self.clearable_items.append(focal_scatter)
 
     def add_dashed_line(self, start, end, dash_length=5.0, gap_length=5.0, color=(1, 1, 1, 1), width=1, antialias=True):
+
+        color = tuple(color)
+
         start = np.array(start, dtype=float)
         end = np.array(end, dtype=float)
         vec = end - start
@@ -1962,8 +1963,6 @@ class ExtrinsicsWindow(QWidget):
 
         num_steps = int(total_length // step)
 
-        colors = np.array([color, color])  # Both vertices need to have a colour explicitely defined
-
         for i in range(num_steps + 1):
             seg_start = start + i * step * direction
             seg_end = seg_start + dash_length * direction
@@ -1972,7 +1971,7 @@ class ExtrinsicsWindow(QWidget):
             if np.linalg.norm(seg_end - start) > total_length:
                 seg_end = end
             line_seg = GLLinePlotItem(pos=np.array([seg_start, seg_end]),
-                                         color=colors,
+                                         color=color,
                                          width=width,
                                          antialias=antialias)
             self.clearable_items.append(line_seg)
