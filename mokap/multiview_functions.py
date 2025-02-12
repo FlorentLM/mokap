@@ -8,7 +8,7 @@ from mokap import proj_geom, monocular_functions
 
 # Defines functions that relate to processing stuff from N cameras
 
-def filter_outliers(values):
+def filter_outliers(values, strong=False):
 
     # Use z score to find outliers
     if (values == 0).all():
@@ -21,8 +21,12 @@ def filter_outliers(values):
         outliers_z = (np.abs(z) > 2.5).any(axis=1)
 
         # Use IQR to find outliers
-        q_1 = np.quantile(values, 0.25, axis=0)
-        q_3 = np.quantile(values, 0.75, axis=0)
+        if strong:
+            q_1 = np.quantile(values, 0.125, axis=0)
+            q_3 = np.quantile(values, 0.875, axis=0)
+        else:
+            q_1 = np.quantile(values, 0.25, axis=0)
+            q_3 = np.quantile(values, 0.75, axis=0)
 
         iqr = q_3 - q_1
         lower = q_1 - 1.5 * iqr
@@ -41,41 +45,72 @@ def bestguess_rtvecs(n_m_rvecs, n_m_tvecs):
     """
         Finds a first best guess, for N cameras, of their real extrinsics parameters, from M samples per camera
     """
-    N = n_m_rvecs.shape[0]
+
+    N = len(n_m_rvecs)
 
     n_optimised_rvecs = np.zeros((N, 3))
     n_optimised_tvecs = np.zeros((N, 3))
 
-    def objective_func(estimated_values, observed_values, covariance_matrix):
-        cov_inv = np.linalg.inv(covariance_matrix)
-        residuals = observed_values - estimated_values
-        return np.sum(np.einsum('ij,jk,ik->i', residuals, cov_inv, residuals))
+    # Huber loss instead of simply doing mahalanobis distance makes the influence of 'flipped' detections less strong
+    # (flipped detections being the ones resulting from an ambiguity in the monocular pose estimation)
+    def robust_loss(residual, delta=0.0):
+        # delta is the threshold between quadratic and linear behavior
+        abs_r = np.abs(residual)
+        quadratic = np.minimum(abs_r, delta)
+        linear = abs_r - quadratic
+        return 0.5 * quadratic ** 2 + delta * linear
 
-    for n, (m_rvecs, m_tvecs) in enumerate(zip(n_m_rvecs, n_m_tvecs)):
+    def objective_func(estimated, observed, cov):
+        # regularize covariance matrix to avoid singularities
+        cov_reg = cov + np.eye(cov.shape[0]) * 1e-6
+        cov_inv = np.linalg.inv(cov_reg)
+        residuals = observed - estimated
+        # Mahalanobis residuals
+        mahal = np.sqrt(np.einsum('ij,jk,ik->i', residuals, cov_inv, residuals))
 
-        all_rvecs = filter_outliers(m_rvecs)
-        all_tvecs = filter_outliers(m_tvecs)
+        loss = robust_loss(mahal)
+        return np.sum(loss)
 
-        mean_rvecs = np.median(all_rvecs, axis=0)
-        mean_tvecs = np.median(all_tvecs, axis=0)
+    for i in range(N):
+        if n_m_rvecs[i].size == 0:  # no samples -> skip
+            continue
 
-        cov_matrix_rvecs = np.cov(mean_rvecs, rowvar=False)
-        cov_matrix_tvecs = np.cov(mean_tvecs, rowvar=False)
+        all_rvecs = filter_outliers(n_m_rvecs[i])
+        all_tvecs = filter_outliers(n_m_tvecs[i])
+
+        median_rvecs = np.median(all_rvecs, axis=0)
+        median_tvecs = np.median(all_tvecs, axis=0)
+
+        # covariance matrices
+        # if not enough samples, use identity matrix
+        if all_rvecs.shape[0] > 1:
+            cov_r = np.cov(all_rvecs, rowvar=False)
+        else:
+            cov_r = np.eye(3)
+        if all_tvecs.shape[0] > 1:
+            cov_t = np.cov(all_tvecs, rowvar=False)
+        else:
+            cov_t = np.eye(3)
 
         try:
-            result = minimize(objective_func, x0=mean_tvecs, args=(all_tvecs, cov_matrix_tvecs))
-            optimized_tvecs = result.x
-        except np.linalg.LinAlgError:
-            optimized_tvecs = mean_tvecs
-
+            # We can use L-BFGS-B here even though it's quite sensitive - because the robust_loss should take care of
+            # problematic values
+            res_r = minimize(objective_func, x0=median_rvecs, args=(all_rvecs, cov_r), method='L-BFGS-B')
+            opt_r = res_r.x
+        # except np.linalg.LinAlgError:
+        except Exception as e:
+            print("Optimization error for rvec:", e)
+            opt_r = median_rvecs
         try:
-            result = minimize(objective_func, x0=mean_rvecs, args=(all_rvecs, cov_matrix_rvecs))
-            optimized_rvecs = result.x
-        except np.linalg.LinAlgError:
-            optimized_rvecs = mean_rvecs
+            res_t = minimize(objective_func, x0=median_tvecs, args=(all_tvecs, cov_t), method='L-BFGS-B')
+            opt_t = res_t.x
+        # except np.linalg.LinAlgError:
+        except Exception as e:
+            print("Optimization error for tvec:", e)
+            opt_t = median_tvecs
 
-        n_optimised_rvecs[n, :] = optimized_rvecs
-        n_optimised_tvecs[n, :] = optimized_tvecs
+        n_optimised_rvecs[i, :] = opt_r
+        n_optimised_tvecs[i, :] = opt_t
 
     return n_optimised_rvecs, n_optimised_tvecs
 
