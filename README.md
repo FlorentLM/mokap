@@ -10,7 +10,7 @@
 
 <h3 align="center">Mokap</h3>
 
-  <p align="center">
+  <p>
     An easy to use but powerful multi-camera acquisition software
     <br />
     <br />
@@ -46,7 +46,7 @@
 <!-- ABOUT THE PROJECT -->
 ## About The Project
 
-[![Product Name Screen Shot][product-screenshot]]
+![Product Name Screen Shot][product-screenshot]
 
 Mokap is an easy to use multi-camera acquisition software developed for animal behaviour recording using hardware-triggered (synchronised) machine vision cameras.
 
@@ -56,7 +56,7 @@ Mokap is an easy to use multi-camera acquisition software developed for animal b
 * Supports encoding to individual frames or straight to video (with or without GPU encoding)
 * (Coming soon) Live camera calibration for 3D triangulation 
 
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
+<p>(<a href="#readme-top">back to top</a>)</p>
 
 
 <!-- GETTING STARTED -->
@@ -84,10 +84,10 @@ If you wish to use straight-to-video encoding, you will need [ffmpeg](https://ww
    ```
 If you do not want to use ffmpeg, you can still use Mokap in image mode (videos will be written as individual frames)
 
-#### Miniconda:
+#### uv:
 
-We recommend using Miniconda to manage Python environments and install Mokap easily.
-* If you don't have Miniconda installed, see [here](https://docs.conda.io/projects/miniconda/en/latest/).
+We recommend using uv to manage Python environments and install Mokap easily.
+* If you don't have uv installed, see [here](https://github.com/astral-sh/uv).
 
 ### Installation
 
@@ -117,9 +117,9 @@ We recommend using Miniconda to manage Python environments and install Mokap eas
    ```
 2. Create environment:
    ```sh
-   cd mokap && conda env create --file=environment.yml
+   cd mokap && uv sync
    ```
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
+<p>(<a href="#readme-top">back to top</a>)</p>
 
 <!-- USAGE EXAMPLES -->
 ## Usage
@@ -196,12 +196,10 @@ mc = MultiCam(config='./config.yml', triggered=False, silent=False)
 - [x] Replace Tk with Qt as the GUI framework
 - [ ] Finish calibration mode
 - [ ] Add support for other camera brands (FLIR, etc)
-- [ ] Add support for other kinds of triggers (Master/slaves cameras, Arduino, etc)
+- [ ] Add support for other kinds of triggers (primary/secondary cameras, Arduino, etc)
 - [ ] Remember settings set with the GUI instead of using hardcoded values in `main.py`
 
-See the [open issues](https://github.com/FlorentLM/mokap/issues) for a full list of proposed features (and known issues).
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
+<p>(<a href="#readme-top">back to top</a>)</p>
 
 ## Troubleshooting
 
@@ -240,7 +238,7 @@ _Note_: mokap normally does this automatically
 
 Distributed under the MIT License. See `LICENSE.txt` for more information.
 
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
+<p>(<a href="#readme-top">back to top</a>)</p>
 
 
 <!-- CONTACT -->
@@ -250,7 +248,7 @@ Florent Le Moel - [@optic_flo](https://twitter.com/optic_flo)
 
 Project Link: [https://github.com/FlorentLM/mokap](https://github.com/github_username/mokap)
 
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
+<p>(<a href="#readme-top">back to top</a>)</p>
 
 
 <!-- MARKDOWN LINKS & IMAGES -->

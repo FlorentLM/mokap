@@ -11,7 +11,7 @@ from collections import deque, defaultdict
 from datetime import datetime
 from pathlib import Path
 import numpy as np
-from mokap import utils, calibration_utils, proj_geom
+from mokap import utils, calibration_utils, proj_geom, monocular_functions
 from mokap.calibration import DetectionTool, MonocularCalibrationTool, MultiviewCalibrationTool
 from PIL import Image
 from PySide6.QtCore import Qt, QTimer, QEvent, QDir, QObject, Signal, Slot, QThread, QPoint, QSize
@@ -368,7 +368,8 @@ class MultiCalibWorker(QObject):
         if self._paused:
             return
 
-        print(f"Pose samples: {self.multiview_calib.nb_pose_samples}")
+        # print(f"Pose samples: {self.multiview_calib.nb_pose_samples}")
+
         # Estimate extrinsics
         self.multiview_calib.compute_estimation()
         rvecs, tvecs = self.multiview_calib.extrinsics
@@ -1354,6 +1355,8 @@ class VideoWindowCalib(VideoWindowBase):
         self.video_container_layout.addWidget(self.error_plot, 1)
 
         calib_io_group = QGroupBox("Load/Save")
+        calib_io_group.setMinimumWidth(250)
+        calib_io_group.setMaximumWidth(250)
         calib_io_layout = QVBoxLayout(calib_io_group)
 
         self.load_calib_button = QPushButton("Load intrinsics")
@@ -1605,13 +1608,15 @@ class ExtrinsicsWindow(QWidget):
         self.nb_cams = main_window_ref.nb_cams
         self.idx = self.nb_cams + 1
 
+        self._have_extrinsics = False
+
         # Initialise where to store intrinsics and extrinsics for all cams
         self._multi_intrinsics_matrices = np.zeros((self.nb_cams, 3, 3), dtype=np.float32)
         self._multi_dist_coeffs = np.zeros((self.nb_cams, 14), dtype=np.float32)
         self._multi_extrinsics_matrices = np.zeros((self.nb_cams, 3, 4), dtype=np.float32)
 
         # Setup multiview calib tool
-        self.multi_calib_tool = MultiviewCalibrationTool(self.nb_cams, min_poses=3)
+        self.multi_calib_tool = MultiviewCalibrationTool(self.nb_cams, origin_camera=3, min_poses=3)
 
         # Global arrangement coords
         self._cameras_pos_rot = np.zeros((self.nb_cams, 3), dtype=np.float32)
@@ -1703,25 +1708,31 @@ class ExtrinsicsWindow(QWidget):
 
         for n in range(self.nb_cams):
             self._multi_extrinsics_matrices[n, :, :] = proj_geom.extrinsics_matrix(n_optimised_rvecs[n], n_optimised_tvecs[n])
+        #
+        # self._multi_intrinsics_matrices = np.array([
+        #     [[17707.67747316224, 0.0, 790.5587621784158],
+        #      [0.0, 17707.67747316224, 983.864989843142],
+        #      [0.0, 0.0, 1.0]],
+        #     [[19151.7271090595, 0.0, 1012.4168885068306],
+        #      [0.0, 19151.7271090595, 398.77269888563404],
+        #      [0.0, 0.0, 1.0]],
+        #     [[20136.8295090655, 0.0, 1141.4955218160396],
+        #      [0.0, 20136.8295090655, 1002.6488556447825],
+        #      [0.0, 0.0, 1.0]],
+        #     [[17913.718172333134, 0.0, 405.2813966335253],
+        #      [0.0, 17913.718172333134, 1126.343479359868],
+        #      [0.0, 0.0, 1.0]],
+        #     [[18794.177986152907, 0.0, 736.9062486680083],
+        #      [0.0, 18794.177986152907, 585.4228956792946],
+        #      [0.0, 0.0, 1.0]]
+        # ])
 
-        self._multi_intrinsics_matrices = np.array([
-            [[17707.67747316224, 0.0, 790.5587621784158],
-             [0.0, 17707.67747316224, 983.864989843142],
-             [0.0, 0.0, 1.0]],
-            [[19151.7271090595, 0.0, 1012.4168885068306],
-             [0.0, 19151.7271090595, 398.77269888563404],
-             [0.0, 0.0, 1.0]],
-            [[20136.8295090655, 0.0, 1141.4955218160396],
-             [0.0, 20136.8295090655, 1002.6488556447825],
-             [0.0, 0.0, 1.0]],
-            [[17913.718172333134, 0.0, 405.2813966335253],
-             [0.0, 17913.718172333134, 1126.343479359868],
-             [0.0, 0.0, 1.0]],
-            [[18794.177986152907, 0.0, 736.9062486680083],
-             [0.0, 18794.177986152907, 585.4228956792946],
-             [0.0, 0.0, 1.0]]
-        ])
-
+        focal = 60
+        s_size = np.flip(monocular_functions.SENSOR_SIZES['1/2.9"'])
+        self._multi_intrinsics_matrices = np.stack([monocular_functions.estimate_camera_matrix(focal,
+                                                                                     s_size,
+                                                                                     self._frames_sizes[n]) for n in range(self.nb_cams)])
+        # self._have_extrinsics = True
         # ==============================================================================================================
         ##
 
@@ -1730,8 +1741,8 @@ class ExtrinsicsWindow(QWidget):
 
         # TESTING - Update timer - TODO
         self.timer_update = QTimer(self)
-        # self.timer_update.timeout.connect(self.worker.compute)
-        self.timer_update.timeout.connect(self.update_scene)
+        self.timer_update.timeout.connect(self.worker.compute)
+        # self.timer_update.timeout.connect(self.update_scene)
         self.timer_update.start(500)
 
     def _init_ui(self):
@@ -1743,19 +1754,34 @@ class ExtrinsicsWindow(QWidget):
         layout.addWidget(self.view, 1)
         self.setLayout(layout)
 
-        buttons_group = QWidget()
-        buttons_group_layout = QHBoxLayout(buttons_group)
+        buttons_row1 = QWidget()
+        buttons_row1_layout = QHBoxLayout(buttons_row1)
 
         self.calibration_stage_combo = QComboBox()
         self.calibration_stage_combo.addItems(['Intrinsics', 'Extrinsics', 'Refinement'])
         self.calibration_stage_combo.currentIndexChanged.connect(self._switch_stage)
-        buttons_group_layout.addWidget(self.calibration_stage_combo)
+        buttons_row1_layout.addWidget(self.calibration_stage_combo)
 
         self.estimate_button = QPushButton("Estimate 3D pose")
         self.estimate_button.clicked.connect(self.worker.compute)
-        buttons_group_layout.addWidget(self.estimate_button)
+        buttons_row1_layout.addWidget(self.estimate_button)
 
-        layout.addWidget(buttons_group)
+        layout.addWidget(buttons_row1)
+
+        buttons_row_2 = QWidget()
+        buttons_row2_layout = QHBoxLayout(buttons_row_2)
+
+        self.calibration_stage_combo = QComboBox()
+        self.calibration_stage_combo.addItems(['Intrinsics', 'Extrinsics', 'Refinement'])
+        self.calibration_stage_combo.currentIndexChanged.connect(self._switch_stage)
+        buttons_row2_layout.addWidget(self.calibration_stage_combo)
+
+        self.estimate_button = QPushButton("Estimate 3D pose")
+        self.estimate_button.clicked.connect(self.worker.compute)
+        buttons_row2_layout.addWidget(self.estimate_button)
+
+        layout.addWidget(buttons_row_2)
+
 
         # If landscape screen
         if self._main_window.selected_monitor.height < self._main_window.selected_monitor.width:
@@ -1782,14 +1808,15 @@ class ExtrinsicsWindow(QWidget):
         # Clear previous elements
         self.clear_scene()
 
-        for cam_idx in range(self.nb_cams):
-            color = self._cam_colours_rgba_norm[cam_idx]
+        if self._have_extrinsics:
+            for cam_idx in range(self.nb_cams):
+                color = self._cam_colours_rgba_norm[cam_idx]
 
-            self.add_camera(cam_idx, color=color)
+                self.add_camera(cam_idx, color=color)
 
-            # self.add_points2d(cam_idx, points2d, color=color)
+                # self.add_points2d(cam_idx, points2d, color=color)
 
-        self.add_focal_point()
+            self.add_focal_point()
 
         # draw everything
         for item in self.clearable_items:
@@ -1986,13 +2013,14 @@ class ExtrinsicsWindow(QWidget):
         if rvecs is not None and tvecs is not None:
             for n in range(self.nb_cams):
                 self._multi_extrinsics_matrices[n, :, :] = proj_geom.extrinsics_matrix(rvecs[n], tvecs[n])
+        self._have_extrinsics = True
 
     def update_intrinsics(self, cam_idx, camera_matrix, dist_coeffs):
         # Update internal copy of the intrinsics (for plotting)
         self._multi_intrinsics_matrices[cam_idx, :, :] = camera_matrix
         self._multi_dist_coeffs[cam_idx, :] = dist_coeffs
 
-        # And forward to the multiview worker
+        # And forward new intrinsics to the multiview worker
         self.signal_update_intrinsics.emit(cam_idx, camera_matrix, dist_coeffs)
 
     @Slot(np.ndarray)

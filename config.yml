@@ -8,21 +8,21 @@ gpu: true
 sources:
     strawberry:
         type: basler
-        serial: 401xxxxx
+        serial: 40182542
         color: da141d
     avocado:
         type: basler
-        serial: 401xxxxx
+        serial: 40166059
         color: 7a9c21
     banana:
         type: basler
-        serial: 401xxxxx
+        serial: 40182207
         color: f3d586
     blueberry:
         type: basler
-        serial: 401xxxxx
+        serial: 40189363
         color: 443e93
     coconut:
         type: basler
-        serial: 401xxxxx
+        serial: 40166127
         color: efeee7

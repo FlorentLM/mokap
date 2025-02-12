@@ -671,7 +671,8 @@ class MultiviewCalibrationTool:
         self._min_detections = min_detections
 
         self._detections_stack = deque(maxlen=max_detections)
-        self._poses_stack = deque(maxlen=max_poses)
+        # self._poses_stack = deque(maxlen=max_poses)
+        self._poses_per_camera = {i: [] for i in range(nb_cameras)}
 
         self._optimised_rvecs = None
         self._optimised_tvecs = None
@@ -683,9 +684,9 @@ class MultiviewCalibrationTool:
     def nb_detection_samples(self):
         return len(self._detections_stack)
 
-    @property
-    def nb_pose_samples(self):
-        return len(self._poses_stack)
+    # @property
+    # def nb_pose_samples(self):
+    #     return len(self._poses_stack)
 
     @property
     def has_extrinsics(self):
@@ -722,31 +723,29 @@ class MultiviewCalibrationTool:
         """
         self._poses_by_frame[frame_idx][cam_idx] = (rvec, tvec)
 
-        # Check if we have all cameras for that frame
-        if len(self._poses_by_frame[frame_idx]) == self.nb_cameras:
+        # Check if we have the reference camera and at least another one
+        if self._origin_idx in self._poses_by_frame[frame_idx].keys() and len(self._poses_by_frame[frame_idx]) > 1:
+            print('yes')
+            sample = self._poses_by_frame.pop(frame_idx)
+            origin_rvec, origin_tvec = sample[self._origin_idx]
 
-            pbf = self._poses_by_frame.pop(frame_idx)
+            # Remap the poses to a common origin (i.e. the reference camera)
+            for cam, (rvec, tvec) in sample.items():
+                remapped_rvec, remapped_tvec = proj_geom.remap_rtvecs(rvec, tvec, origin_rvec, origin_tvec)
+                self._poses_per_camera[cam].append((remapped_rvec, remapped_tvec))
 
-            remapped_poses = np.zeros((self.nb_cameras, 2, 3))
-
-            # Remap the poses to a common origin
-            for cidx in range(self.nb_cameras):
-                rvec, tvec = pbf[cidx]
-                origin_rvec, origin_tvec = pbf[self._origin_idx]
-                remapped_poses[cidx, 0, :], remapped_poses[cidx, 1, :] = proj_geom.remap_rtvecs(rvec, tvec, origin_rvec, origin_tvec)
-
-            # TODO - the similarity threshold probably needs to be a bit more elaborate (geodesic distance and separate rotation and translation similarities?) ...but that will do for now
-
-            # Compute the similarity between the new pose and the already stored ones
-            if len(self._poses_stack) == 0:
-                deltas = np.ones(1) * np.inf
-            else:
-                deltas = np.array([np.linalg.norm(remapped_poses - pose) for pose in self._poses_stack])
-
-            # If the new pose is sufficiently different, add it
-            # if np.all(deltas > similarity_threshold):
-            if np.all(deltas > 0):  # 0 threshold for testing
-                self._poses_stack.append(remapped_poses)
+            # # TODO - the similarity threshold probably needs to be a bit more elaborate (geodesic distance and separate rotation and translation similarities?) ...but that will do for now
+            #
+            # # Compute the similarity between the new pose and the already stored ones
+            # if len(self._poses_stack) == 0:
+            #     deltas = np.ones(1) * np.inf
+            # else:
+            #     deltas = np.array([np.linalg.norm(remapped_poses - pose) for pose in self._poses_stack])
+            #
+            # # If the new pose is sufficiently different, add it
+            # # if np.all(deltas > similarity_threshold):
+            # if np.all(deltas > 0):  # 0 threshold for testing
+            #     self._poses_stack.append(remapped_poses)
 
     def register_detection(self, frame_idx: int, cam_idx: int, points2d: np.ndarray, points_ids: np.ndarray):
         """
@@ -783,7 +782,7 @@ class MultiviewCalibrationTool:
                 print("Extrinsics not available yet; cannot triangulate.")
 
     def clear_poses(self):
-        self._poses_stack.clear()
+        self._poses_per_camera = {i: [] for i in range(self.nb_cameras)}
         self._poses_by_frame = defaultdict(dict)
 
     def clear_detections(self):
@@ -795,13 +794,28 @@ class MultiviewCalibrationTool:
             This uses the complete pose samples to compute a first estimate of the cameras arrangement
         """
 
-        if self.nb_pose_samples < self._min_poses:
+        if not all(len(self._poses_per_camera[cam]) >= self._min_poses for cam in range(self.nb_cameras)):
+            print(f"Waiting for at least {self._min_poses} samples per camera; "
+                  f"current counts: {[len(self._poses_per_camera[cam]) for cam in range(self.nb_cameras)]}")
             return
 
-        # stack the poses in a array of shape (N, M, 2, 3) with N = nb of cameras and M = nb of samples
-        poses_array = np.stack(self._poses_stack).swapaxes(0, 1)
-        # dim 2 is rvecs, tvecs
-        self._optimised_rvecs, self._optimised_tvecs = multiview_functions.bestguess_rtvecs(poses_array[:, :, 0, :], poses_array[:, :, 1, :])
+        # Each camera’s list is converted to an array of shape (M, 3) where M varies
+        n_m_rvecs = []
+        n_m_tvecs = []
+        for cam in range(self.nb_cameras):
+            samples = self._poses_per_camera.get(cam, [])
+            if not samples:
+                # If no samples are available for this camera -> empty array
+                n_m_rvecs.append(np.empty((0, 3)))
+                n_m_tvecs.append(np.empty((0, 3)))
+            else:
+                samples_arr = np.array(samples)  # shape: (M, 2, 3) because each sample is (rvec, tvec)
+                m_rvecs = samples_arr[:, 0, :]
+                m_tvecs = samples_arr[:, 1, :]
+                n_m_rvecs.append(m_rvecs)
+                n_m_tvecs.append(m_tvecs)
+
+        self._optimised_rvecs, self._optimised_tvecs = multiview_functions.bestguess_rtvecs(n_m_rvecs, n_m_tvecs)
 
         if clear_poses_stack:
             self.clear_poses()
