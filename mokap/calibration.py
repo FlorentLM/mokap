@@ -689,6 +689,15 @@ class MultiviewCalibrationTool:
     #     return len(self._poses_stack)
 
     @property
+    def origin_camera(self):
+        return self._origin_idx
+
+    @origin_camera.setter
+    def origin_camera(self, value: int):
+        self._origin_idx = value
+        self.clear_poses()
+
+    @property
     def has_extrinsics(self):
         return self._optimised_rvecs is not None and self._optimised_tvecs is not None
 
@@ -725,7 +734,6 @@ class MultiviewCalibrationTool:
 
         # Check if we have the reference camera and at least another one
         if self._origin_idx in self._poses_by_frame[frame_idx].keys() and len(self._poses_by_frame[frame_idx]) > 1:
-            print('yes')
             sample = self._poses_by_frame.pop(frame_idx)
             origin_rvec, origin_tvec = sample[self._origin_idx]
 

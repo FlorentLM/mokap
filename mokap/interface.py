@@ -372,10 +372,15 @@ class MultiCalibWorker(QObject):
 
         # Estimate extrinsics
         self.multiview_calib.compute_estimation()
+
         rvecs, tvecs = self.multiview_calib.extrinsics
         if rvecs is not None and tvecs is not None:
             # Send them back to the main thread
             self.signal_return_computed_poses.emit(rvecs, tvecs)
+
+    @Slot(int)
+    def set_origin_camera(self, value: int):
+        self.multiview_calib.origin_camera = value
 
 ##
 
@@ -1360,7 +1365,7 @@ class VideoWindowCalib(VideoWindowBase):
         calib_io_layout = QVBoxLayout(calib_io_group)
 
         self.load_calib_button = QPushButton("Load intrinsics")
-        self.load_calib_button.clicked.connect(self.on_load_calib)
+        self.load_calib_button.clicked.connect(self.on_load_intrinsics)
         calib_io_layout.addWidget(self.load_calib_button)
 
         self.save_calib_button = QPushButton("Save intrinsics")
@@ -1440,11 +1445,24 @@ class VideoWindowCalib(VideoWindowBase):
         self._intrinsics_stable = False
         self.load_save_message.setText('')
 
-    def on_load_calib(self):
-        file_path = self.file_dialog(self._main_window.mc.full_path.parent)
-        if file_path is not None:
-            self.signal_load_calib.emit(file_path.as_posix())
-            self.load_save_message.setText(f"Intrinsics <b>loaded</b> from {file_path.parent}")
+    def on_load_intrinsics(self, file_path=None):
+        print(file_path)
+        if file_path is None:
+            file_path = self.file_dialog(self._main_window.mc.full_path.parent)
+        else:
+            file_path = Path(file_path)
+
+        if file_path is not None:   # Might still be None if the picker did not succeed
+
+            if file_path.is_dir():
+                file = file_path / f"{self._camera.name}_intrinsics.toml"
+                if file.exists():
+                    self.signal_load_calib.emit(file.as_posix())
+                    self.load_save_message.setText(f"Intrinsics <b>loaded</b> from {file.parent}")
+
+            elif file_path.is_file():
+                self.signal_load_calib.emit(file_path.as_posix())
+                self.load_save_message.setText(f"Intrinsics <b>loaded</b> from {file_path}")
 
     def on_save_calib(self):
         file_path = self._main_window.mc.full_path / f"{self._camera.name}_intrinsics.toml"
@@ -1587,15 +1605,15 @@ class VideoWindowCalib(VideoWindowBase):
             selected = dial.selectedFiles()
             if selected:
                 folder = Path(selected[0])
-                file_path = folder / f"{self._camera.name}_intrinsics.toml"
-                if file_path.exists():
-                    selected_path = file_path
+                if folder.exists():
+                    selected_path = folder
         return selected_path
 
 ##
 
 class ExtrinsicsWindow(QWidget):
 
+    signal_update_origin_camera = Signal(int)
     signal_update_intrinsics = Signal(int, np.ndarray, np.ndarray)
 
     def __init__(self, main_window_ref):
@@ -1607,6 +1625,8 @@ class ExtrinsicsWindow(QWidget):
         self._main_window = main_window_ref
         self.nb_cams = main_window_ref.nb_cams
         self.idx = self.nb_cams + 1
+        self._cameras = [c.name for c in self._main_window.mc.cameras]
+        self._origin_camera = self._cameras[0]
 
         self._have_extrinsics = False
 
@@ -1616,7 +1636,7 @@ class ExtrinsicsWindow(QWidget):
         self._multi_extrinsics_matrices = np.zeros((self.nb_cams, 3, 4), dtype=np.float32)
 
         # Setup multiview calib tool
-        self.multi_calib_tool = MultiviewCalibrationTool(self.nb_cams, origin_camera=3, min_poses=3)
+        self.multi_calib_tool = MultiviewCalibrationTool(self.nb_cams, origin_camera=0, min_poses=3)
 
         # Global arrangement coords
         self._cameras_pos_rot = np.zeros((self.nb_cams, 3), dtype=np.float32)
@@ -1634,6 +1654,7 @@ class ExtrinsicsWindow(QWidget):
         self.worker.signal_return_computed_points.connect(self.update_points)
 
         #       Main thread --> Worker
+        self.signal_update_origin_camera.connect(self.worker.set_origin_camera)
         self.signal_update_intrinsics.connect(self.worker.on_updated_intrinsics)
 
         self.worker_thread.start()
@@ -1690,24 +1711,24 @@ class ExtrinsicsWindow(QWidget):
         ##
         # ============================================ TEMPORARY TEST VALUES ===========================================
 
-        self._cam_colours_rgba_norm = np.array([(218, 20, 29, 255), (122, 156, 33, 255), (243, 213, 134, 255), (68, 62, 147, 255),
-                           (239, 238, 231, 255)]) / 255
+        # self._cam_colours_rgba_norm = np.array([(218, 20, 29, 255), (122, 156, 33, 255), (243, 213, 134, 255), (68, 62, 147, 255),
+        #                    (239, 238, 231, 255)]) / 255
+        #
+        # n_optimised_rvecs = np.array([[0.45200041476980235, 0.8771147275087425, 2.251746546223581],
+        #                               [0.5005899848817629, -0.40415125297412524, -1.7664028088411652],
+        #                               [0.8488376012023714, 0.840477261793214, 1.4946774627106294],
+        #                               [-0.0003631347110473988, 0.00021406779771240513, -0.0026958147664326733],
+        #                               [0.7003948435159923, 0.30747234763007686, 0.95309397614152]
+        #                               ])
+        #
+        # n_optimised_tvecs = np.array([[-110.00946411872877, -107.07056980084768, 53.335528134397805],
+        #                               [126.41534461953935, -13.321909590625866, -6.39879794280635],
+        #                               [-192.4985924773089, -11.06001204792536, 97.57202285958193],
+        #                               [-0.657915548760298, -0.03441274672931003, 4.499012937051807],
+        #                               [-108.4554173475389, 77.11590331140114, 42.40017779935506]])
 
-        n_optimised_rvecs = np.array([[0.45200041476980235, 0.8771147275087425, 2.251746546223581],
-                                      [0.5005899848817629, -0.40415125297412524, -1.7664028088411652],
-                                      [0.8488376012023714, 0.840477261793214, 1.4946774627106294],
-                                      [-0.0003631347110473988, 0.00021406779771240513, -0.0026958147664326733],
-                                      [0.7003948435159923, 0.30747234763007686, 0.95309397614152]
-                                      ])
-
-        n_optimised_tvecs = np.array([[-110.00946411872877, -107.07056980084768, 53.335528134397805],
-                                      [126.41534461953935, -13.321909590625866, -6.39879794280635],
-                                      [-192.4985924773089, -11.06001204792536, 97.57202285958193],
-                                      [-0.657915548760298, -0.03441274672931003, 4.499012937051807],
-                                      [-108.4554173475389, 77.11590331140114, 42.40017779935506]])
-
-        for n in range(self.nb_cams):
-            self._multi_extrinsics_matrices[n, :, :] = proj_geom.extrinsics_matrix(n_optimised_rvecs[n], n_optimised_tvecs[n])
+        # for n in range(self.nb_cams):
+        #     self._multi_extrinsics_matrices[n, :, :] = proj_geom.extrinsics_matrix(n_optimised_rvecs[n], n_optimised_tvecs[n])
         #
         # self._multi_intrinsics_matrices = np.array([
         #     [[17707.67747316224, 0.0, 790.5587621784158],
@@ -1762,26 +1783,25 @@ class ExtrinsicsWindow(QWidget):
         self.calibration_stage_combo.currentIndexChanged.connect(self._switch_stage)
         buttons_row1_layout.addWidget(self.calibration_stage_combo)
 
-        self.estimate_button = QPushButton("Estimate 3D pose")
-        self.estimate_button.clicked.connect(self.worker.compute)
-        buttons_row1_layout.addWidget(self.estimate_button)
+        # self.estimate_button = QPushButton("Estimate 3D pose")
+        # self.estimate_button.clicked.connect(self.worker.compute)
+        # buttons_row1_layout.addWidget(self.estimate_button)
+
+        self.origin_camera_combo = QComboBox()
+        self.origin_camera_combo.addItems(self._cameras)
+        self.origin_camera_combo.currentIndexChanged.connect(self._switch_origin_camera)
+        buttons_row1_layout.addWidget(self.origin_camera_combo)
 
         layout.addWidget(buttons_row1)
 
         buttons_row_2 = QWidget()
         buttons_row2_layout = QHBoxLayout(buttons_row_2)
 
-        self.calibration_stage_combo = QComboBox()
-        self.calibration_stage_combo.addItems(['Intrinsics', 'Extrinsics', 'Refinement'])
-        self.calibration_stage_combo.currentIndexChanged.connect(self._switch_stage)
-        buttons_row2_layout.addWidget(self.calibration_stage_combo)
-
-        self.estimate_button = QPushButton("Estimate 3D pose")
-        self.estimate_button.clicked.connect(self.worker.compute)
-        buttons_row2_layout.addWidget(self.estimate_button)
+        load_multi = QPushButton("Load all intrinsics")
+        load_multi.clicked.connect(self.load_all_intrinsics)
+        buttons_row2_layout.addWidget(load_multi)
 
         layout.addWidget(buttons_row_2)
-
 
         # If landscape screen
         if self._main_window.selected_monitor.height < self._main_window.selected_monitor.width:
@@ -2008,12 +2028,40 @@ class ExtrinsicsWindow(QWidget):
         for w in self._main_window.secondary_windows:
             w.on_stage_change(self.calibration_stage_combo.currentIndex())
 
+    def _switch_origin_camera(self):
+        self._origin_camera = int(self.origin_camera_combo.currentIndex())
+        print(f"[ExtrinsicsWindow] Origin camera set to {self._cameras[self._origin_camera]}")
+        self.signal_update_origin_camera.emit(self._origin_camera)
+
+    def file_dialog(self, startpath):
+        dial = QFileDialog(self)
+        dial.setWindowTitle("Choose folder")
+        dial.setFileMode(QFileDialog.FileMode.Directory)
+        dial.setOption(QFileDialog.Option.ShowDirsOnly, False)
+        dial.setViewMode(QFileDialog.ViewMode.Detail)
+        dial.setDirectory(QDir(startpath.resolve()))
+
+        selected_path = None
+        if dial.exec():
+            selected = dial.selectedFiles()
+            if selected:
+                folder = Path(selected[0])
+                if folder.exists():
+                    selected_path = folder
+        return selected_path
+
+    def load_all_intrinsics(self):
+        folder = self.file_dialog(self._main_window.mc.full_path.parent)
+        for w in self._main_window.secondary_windows:
+            w.on_load_intrinsics(folder)
+
     @Slot(np.ndarray, np.ndarray)
     def update_poses(self, rvecs, tvecs):
         if rvecs is not None and tvecs is not None:
             for n in range(self.nb_cams):
                 self._multi_extrinsics_matrices[n, :, :] = proj_geom.extrinsics_matrix(rvecs[n], tvecs[n])
         self._have_extrinsics = True
+        self.update_scene()
 
     def update_intrinsics(self, cam_idx, camera_matrix, dist_coeffs):
         # Update internal copy of the intrinsics (for plotting)
