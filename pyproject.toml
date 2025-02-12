@@ -1,0 +1,22 @@
+[project]
+name = "mokap"
+version = "0.9"
+description = "An easy to use but powerful multi-camera acquisition software"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["numpy",
+                "paramiko",
+                "pillow",
+                "psutil",
+                "scipy",
+                "toml",
+                "python-dotenv",
+                "pyyaml",
+                "opencv-contrib-python",
+                "pypylon",
+                "scikit-image",
+                "screeninfo",
+                "pyside6",
+                "pyopengl",
+                "pyqtgraph"]
+
