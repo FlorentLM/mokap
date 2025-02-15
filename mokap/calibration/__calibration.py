@@ -227,7 +227,7 @@ class MonocularCalibrationTool:
         if self.has_intrinsics:
             return (self._camera_matrix[0, 0] + self._camera_matrix[1, 1])/2.0
 
-    def load_intrinsics(self, camera_matrix, dist_coeffs):
+    def set_intrinsics(self, camera_matrix, dist_coeffs):
         self._camera_matrix = camera_matrix
         self._dist_coeffs = dist_coeffs
 

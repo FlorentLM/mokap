@@ -25,6 +25,7 @@ from mokap.utils import geometry
 from mokap.calibration import monocular
 from mokap.utils import hex_to_rgb, hex_to_hls, pretty_size, generate_charuco
 from mokap.calibration import DetectionTool, MonocularCalibrationTool, MultiviewCalibrationTool
+from mokap.utils import fileio
 
 ##
 
@@ -217,9 +218,10 @@ class MonocularCalibWorker(QObject):
     signal_return_detection = Signal(int, int, np.ndarray, np.ndarray)
     signal_return_pose = Signal(int, int, np.ndarray, np.ndarray)
 
-    def __init__(self, calib_tool, cam_idx, parent=None):
+    def __init__(self, calib_tool, cam_idx, cam_name, parent=None):
         super().__init__(parent)
         self.camera_idx = cam_idx
+        self.cam_name = cam_name
         self.calib_tool = calib_tool
 
         # Flags for worker state
@@ -311,7 +313,8 @@ class MonocularCalibWorker(QObject):
 
     @Slot(str)
     def load_calib(self, file_path):
-        r = self.calib_tool.readfile(file_path)
+        d = fileio.read_intrinsics(file_path, self.cam_name)
+        r = self.calib_tool.set_intrinsics(d['camera_matrix'], d['distortion_coefficients'])
         if r:
             self.calib_tool.clear_stacks()
 
@@ -321,7 +324,7 @@ class MonocularCalibWorker(QObject):
 
     @Slot(str)
     def save_calib(self, file_path):
-        self.calib_tool.writefile(file_path)
+        fileio.write_intrinsics(*self.calib_tool.intrinsics)
 
     @Slot(int)
     def set_stage(self, stage):
@@ -413,8 +416,8 @@ class VideoWindowBase(QWidget):
 
         self._main_window = main_window_ref
         self.idx = idx
-
         self._camera = self._main_window.mc.cameras[self.idx]
+        self._cam_name = self._camera.name
 
         self._source_shape = self._main_window.sources_shapes[self.idx]
         self._bg_colour = self._main_window.bg_colours_list[self.idx]
@@ -592,7 +595,7 @@ class VideoWindowBase(QWidget):
     #  ============= Some useful attributes =============
     @property
     def name(self) -> str:
-        return self._camera.name
+        return self._cam_name
 
     @property
     def colour(self) -> str:
@@ -1243,7 +1246,7 @@ class VideoWindowCalib(VideoWindowBase):
 
         # Setup worker
         self.worker_thread = QThread(self)
-        self.worker = MonocularCalibWorker(self.mono_calib_tool, self.idx)
+        self.worker = MonocularCalibWorker(self.mono_calib_tool, self.idx, self.name)
         self.worker.moveToThread(self.worker_thread)
 
         # Initialise where to store worker results and state
@@ -1448,8 +1451,7 @@ class VideoWindowCalib(VideoWindowBase):
         self.load_save_message.setText('')
 
     def on_load_intrinsics(self, file_path=None):
-        print(file_path)
-        if file_path is None:
+        if file_path is None or file_path is False:
             file_path = self.file_dialog(self._main_window.mc.full_path.parent)
         else:
             file_path = Path(file_path)
