@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 import sys
 from mokap.core import MultiCam
-from mokap.interface import QApplication, MainWindow
+from mokap.gui import QApplication, MainWindow
 
 mc = MultiCam(config='./config_example.yaml', triggered=True, silent=False)
 
