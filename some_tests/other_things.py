@@ -6,7 +6,7 @@ from pathlib import Path
 import time
 import numpy as np
 import pypylon.pylon as py
-import mokap.files_op as files_op
+import mokap.fileio as files_op
 from collections import deque
 from mokap.hardware import SSHTrigger, BaslerCamera, setup_ulimit, enumerate_basler_devices
 from mokap.utils import ensure_list

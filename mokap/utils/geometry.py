@@ -3,10 +3,12 @@ np.set_printoptions(precision=3, suppress=True, threshold=150)
 import cv2
 from scipy.linalg import svd
 from scipy.spatial.transform import Rotation
-from mokap import multiview_functions
 from typing import Iterable
+from mokap.calibration import multiview
+
 
 # All the projective geometry related functions used throughout the project
+
 
 def extrinsics_matrix(rvec, tvec, hom=False):
     """

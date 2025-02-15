@@ -6,23 +6,23 @@ gpu: true
 
 # Add your sources below
 sources:
-    strawberry:
+    strawberry:         # Choose a name
         type: basler
-        serial: 40182542
+        serial: xxxxxxxx
         color: da141d
     avocado:
         type: basler
-        serial: 40166059
+        serial: xxxxxxxx
         color: 7a9c21
     banana:
         type: basler
-        serial: 40182207
+        serial: xxxxxxxx
         color: f3d586
     blueberry:
         type: basler
-        serial: 40189363
+        serial: xxxxxxxx
         color: 443e93
     coconut:
         type: basler
-        serial: 40166127
+        serial: xxxxxxxx
         color: efeee7

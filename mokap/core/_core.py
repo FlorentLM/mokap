@@ -1,25 +1,24 @@
 import subprocess
-from threading import Thread, Event, get_ident
+from threading import Thread, Event
 from multiprocessing import RawArray
 from typing import NoReturn, Union, List
 from pathlib import Path
-import time
 from datetime import datetime
 import cv2
 import numpy as np
 import pypylon.pylon as py
-import mokap.files_op as files_op
 from collections import deque
-from mokap.hardware import SSHTrigger, BaslerCamera, setup_ulimit, enumerate_basler_devices, enumerate_flir_devices
 from PIL import Image
 import platform
 import json
 import os
 import fnmatch
-from subprocess import Popen, PIPE, STDOUT
+from subprocess import Popen, PIPE
 import shlex
-import sys
 import re
+
+from mokap.utils import fileio
+from mokap.core.hardware import SSHTrigger, BaslerCamera, setup_ulimit, enumerate_basler_devices
 
 
 class MultiCam:
@@ -32,7 +31,7 @@ class MultiCam:
                  triggered=False,
                  silent=True):
 
-        self.config_dict = files_op.read_config(config)
+        self.config_dict = fileio.read_config(config)
 
         self._ffmpeg_path = 'ffmpeg'
 
@@ -66,7 +65,7 @@ class MultiCam:
         if re.match(r'[A-Z]:', self._base_folder.parts[0]) and 'Darwin' in platform.system():
             self._base_folder = Path(self._base_folder.as_posix()[2:].lstrip('/'))
         self._base_folder.mkdir(parents=True, exist_ok=True)
-        files_op.clean_root_folder(self._base_folder)
+        fileio.clean_root_folder(self._base_folder)
 
         self._session_name: str = ''
         self._saving_ext = self.config_dict.get('save_format', 'bmp').lower()
@@ -675,7 +674,7 @@ class MultiCam:
                 self.trigger.stop()
 
         # Clean up the acquisition folder if nothing was written in it
-        files_op.rm_if_empty(self._base_folder / self._session_name)
+        fileio.rm_if_empty(self._base_folder / self._session_name)
 
         # Reset everything for next acquisition
         self._session_name = ''
@@ -709,12 +708,12 @@ class MultiCam:
 
         # Cleanup old folder if needed
         if old_name != '' and old_name is not None:
-            files_op.rm_if_empty(self._base_folder / old_name)
+            fileio.rm_if_empty(self._base_folder / old_name)
 
         if new_name == '' or new_name is None:
             new_name = datetime.now().strftime('%y%m%d-%H%M')
 
-        new_folder = files_op.exists_check(self._base_folder / new_name)
+        new_folder = fileio.exists_check(self._base_folder / new_name)
         new_folder.mkdir(parents=True, exist_ok=False)
 
         self._session_name = new_folder.name

@@ -2,7 +2,6 @@ import os
 import subprocess
 import sys
 import platform
-
 import psutil
 import screeninfo
 import cv2
@@ -11,8 +10,6 @@ from collections import deque, defaultdict
 from datetime import datetime
 from pathlib import Path
 import numpy as np
-from mokap import utils, calibration_utils, proj_geom, monocular_functions
-from mokap.calibration import DetectionTool, MonocularCalibrationTool, MultiviewCalibrationTool
 from PIL import Image
 from PySide6.QtCore import Qt, QTimer, QEvent, QDir, QObject, Signal, Slot, QThread, QPoint, QSize
 from PySide6.QtGui import QIcon, QImage, QPixmap, QCursor, QBrush, QPen, QColor, QFont
@@ -23,6 +20,11 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QStatusBar, QSlider, Q
                                QDialog, QDoubleSpinBox, QDialogButtonBox, QToolButton, QGraphicsOpacityEffect)
 import pyqtgraph as pg
 from pyqtgraph.opengl import GLViewWidget, GLAxisItem, GLGridItem, GLLinePlotItem, GLScatterPlotItem, MeshData, GLMeshItem
+
+from mokap.utils import geometry
+from mokap.calibration import monocular
+from mokap.utils import hex_to_rgb, hex_to_hls, pretty_size, generate_charuco
+from mokap.calibration import DetectionTool, MonocularCalibrationTool, MultiviewCalibrationTool
 
 ##
 
@@ -1524,7 +1526,7 @@ class VideoWindowCalib(VideoWindowBase):
                 self._intrinsics_stable = True
 
     def _update_board(self):
-        self.charuco_board = calibration_utils.generate_charuco(
+        self.charuco_board = generate_charuco(
             board_rows=self.BOARD_ROWS,
             board_cols=self.BOARD_COLS,
             square_length_mm=self.SQUARE_LENGTH_MM,
@@ -1666,7 +1668,7 @@ class ExtrinsicsWindow(QWidget):
         self.kept_items = []
         self.clearable_items = []
 
-        self._cam_colours_rgba = np.vstack([(*utils.hex_to_rgb(c), 255) for c in self._main_window.bg_colours_list])
+        self._cam_colours_rgba = np.vstack([(*hex_to_rgb(c), 255) for c in self._main_window.bg_colours_list])
         self._cam_colours_rgba_norm = self._cam_colours_rgba / 255
         self._frames_sizes = self._main_window.sources_shapes
 
@@ -1728,7 +1730,7 @@ class ExtrinsicsWindow(QWidget):
         #                               [-108.4554173475389, 77.11590331140114, 42.40017779935506]])
 
         # for n in range(self.nb_cams):
-        #     self._multi_extrinsics_matrices[n, :, :] = proj_geom.extrinsics_matrix(n_optimised_rvecs[n], n_optimised_tvecs[n])
+        #     self._multi_extrinsics_matrices[n, :, :] = geometry.extrinsics_matrix(n_optimised_rvecs[n], n_optimised_tvecs[n])
         #
         # self._multi_intrinsics_matrices = np.array([
         #     [[17707.67747316224, 0.0, 790.5587621784158],
@@ -1749,8 +1751,8 @@ class ExtrinsicsWindow(QWidget):
         # ])
 
         focal = 60
-        s_size = np.flip(monocular_functions.SENSOR_SIZES['1/2.9"'])
-        self._multi_intrinsics_matrices = np.stack([monocular_functions.estimate_camera_matrix(focal,
+        s_size = np.flip(monocular.SENSOR_SIZES['1/2.9"'])
+        self._multi_intrinsics_matrices = np.stack([monocular.estimate_camera_matrix(focal,
                                                                                      s_size,
                                                                                      self._frames_sizes[n]) for n in range(self.nb_cams)])
         # self._have_extrinsics = True
@@ -1859,18 +1861,18 @@ class ExtrinsicsWindow(QWidget):
         color_translucent_50 = tuple(color_translucent_50)
 
         # Apply the 180° rotation around Y axis so the rig appears the right way up
-        ext_mat_rot = proj_geom.rotate_extrinsics_matrix(self._multi_extrinsics_matrices[cam_idx, :, :], 180, axis='y',)
+        ext_mat_rot = geometry.rotate_extrinsics_matrix(self._multi_extrinsics_matrices[cam_idx, :, :], 180, axis='y',)
 
         # Add camera center as a point
         center_scatter = GLScatterPlotItem(pos=ext_mat_rot[:3, 3].reshape(1, -1), color=color, size=10)
         self.clearable_items.append(center_scatter)
 
         # Back-project the 2D image corners to 3D
-        frustum_points3d = proj_geom.back_projection(self._frustums_points2d[cam_idx],
+        frustum_points3d = geometry.back_projection(self._frustums_points2d[cam_idx],
                                                      self._frustum_depth,
                                                      self._multi_intrinsics_matrices[cam_idx],
                                                      self._multi_extrinsics_matrices[cam_idx, :, :])    # we use the non-rotated points, and rotate below
-        frustum_points3d = proj_geom.rotate_points3d(frustum_points3d, 180, axis='y')
+        frustum_points3d = geometry.rotate_points3d(frustum_points3d, 180, axis='y')
 
         # Draw the frustum planes
         frustum_meshdata = MeshData(vertexes=frustum_points3d, faces=self._frustum_faces)
@@ -1892,11 +1894,11 @@ class ExtrinsicsWindow(QWidget):
             self.clearable_items.append(line)
 
         # Compute and draw the optical axis (from camera center toward the image center)
-        centre3d = proj_geom.back_projection(self._centres_points2d[cam_idx],
+        centre3d = geometry.back_projection(self._centres_points2d[cam_idx],
                                              self._frustum_depth,
                                              self._multi_intrinsics_matrices[cam_idx],
                                              self._multi_extrinsics_matrices[cam_idx, :, :])         # we use the non-rotated points, and rotate below
-        centre3d = proj_geom.rotate_points3d(centre3d, 180, axis='y')
+        centre3d = geometry.rotate_points3d(centre3d, 180, axis='y')
 
         self.add_dashed_line(ext_mat_rot[:3, 3], centre3d,
                              dash_length=2.0,
@@ -1916,7 +1918,7 @@ class ExtrinsicsWindow(QWidget):
         self.optical_axes[cam_idx] = axis_vec
 
         prev_focal = np.copy(self.focal_point)
-        self.focal_point[0, :] = proj_geom.focal_point_3d(self._cameras_pos_rot, self.optical_axes)
+        self.focal_point[0, :] = geometry.focal_point_3d(self._cameras_pos_rot, self.optical_axes)
         self.grid.translate(*(self.focal_point - prev_focal)[0])
 
     def add_points3d(self, points3d, errors=None, color=(0, 0, 0, 1)):
@@ -1927,7 +1929,7 @@ class ExtrinsicsWindow(QWidget):
 
         color = tuple(color)
 
-        points3d_rot = proj_geom.rotate_points3d(points3d, 180, axis='y')
+        points3d_rot = geometry.rotate_points3d(points3d, 180, axis='y')
 
         if errors is not None:
             # TODO - use a fixed scale gfrom green to red instead
@@ -1950,11 +1952,11 @@ class ExtrinsicsWindow(QWidget):
 
         color = tuple(color)
 
-        points3d = proj_geom.back_projection(points2d,
+        points3d = geometry.back_projection(points2d,
                                              self._frustum_depth,
                                              self._multi_intrinsics_matrices[cam_idx],
                                              self._multi_extrinsics_matrices[cam_idx, :, :])
-        points3d = proj_geom.rotate_points3d(points3d, 180, axis='y')
+        points3d = geometry.rotate_points3d(points3d, 180, axis='y')
 
         scatter = GLScatterPlotItem(pos=points3d,
                                     color=color,
@@ -2059,7 +2061,7 @@ class ExtrinsicsWindow(QWidget):
     def update_poses(self, rvecs, tvecs):
         if rvecs is not None and tvecs is not None:
             for n in range(self.nb_cams):
-                self._multi_extrinsics_matrices[n, :, :] = proj_geom.extrinsics_matrix(rvecs[n], tvecs[n])
+                self._multi_extrinsics_matrices[n, :, :] = geometry.extrinsics_matrix(rvecs[n], tvecs[n])
         self._have_extrinsics = True
         self.update_scene()
 
@@ -2086,35 +2088,35 @@ class MainWindow(QMainWindow):
 
     # Colours
     col_white = "#ffffff"
-    col_white_rgb = utils.hex_to_rgb(col_white)
+    col_white_rgb = hex_to_rgb(col_white)
     col_black = "#000000"
-    col_black_rgb = utils.hex_to_rgb(col_black)
+    col_black_rgb = hex_to_rgb(col_black)
     col_lightgray = "#e3e3e3"
-    col_lightgray_rgb = utils.hex_to_rgb(col_lightgray)
+    col_lightgray_rgb = hex_to_rgb(col_lightgray)
     col_midgray = "#c0c0c0"
-    col_midgray_rgb = utils.hex_to_rgb(col_midgray)
+    col_midgray_rgb = hex_to_rgb(col_midgray)
     col_darkgray = "#515151"
-    col_darkgray_rgb = utils.hex_to_rgb(col_darkgray)
+    col_darkgray_rgb = hex_to_rgb(col_darkgray)
     col_red = "#FF3C3C"
-    col_red_rgb = utils.hex_to_rgb(col_red)
+    col_red_rgb = hex_to_rgb(col_red)
     col_darkred = "#bc2020"
-    col_darkred_rgb = utils.hex_to_rgb(col_darkred)
+    col_darkred_rgb = hex_to_rgb(col_darkred)
     col_orange = "#FF9B32"
-    col_orange_rgb = utils.hex_to_rgb(col_orange)
+    col_orange_rgb = hex_to_rgb(col_orange)
     col_darkorange = "#cb782d"
-    col_darkorange_rgb = utils.hex_to_rgb(col_darkorange)
+    col_darkorange_rgb = hex_to_rgb(col_darkorange)
     col_yellow = "#FFEB1E"
-    col_yellow_rgb = utils.hex_to_rgb(col_yellow)
+    col_yellow_rgb = hex_to_rgb(col_yellow)
     col_yelgreen = "#A5EB14"
-    col_yelgreen_rgb = utils.hex_to_rgb(col_yelgreen)
+    col_yelgreen_rgb = hex_to_rgb(col_yelgreen)
     col_green = "#00E655"
-    col_green_rgb = utils.hex_to_rgb(col_green)
+    col_green_rgb = hex_to_rgb(col_green)
     col_darkgreen = "#39bd50"
-    col_darkgreen_rgb = utils.hex_to_rgb(col_green)
+    col_darkgreen_rgb = hex_to_rgb(col_green)
     col_blue = "#5ac3f5"
-    col_blue_rgb = utils.hex_to_rgb(col_blue)
+    col_blue_rgb = hex_to_rgb(col_blue)
     col_purple = "#c887ff"
-    col_purple_rgb = utils.hex_to_rgb(col_purple)
+    col_purple_rgb = hex_to_rgb(col_purple)
 
     def __init__(self, mc):
         super().__init__()
@@ -2128,7 +2130,7 @@ class MainWindow(QMainWindow):
         # Set cameras info
         self.sources_shapes = np.vstack([np.array(cam.shape)[:2] for cam in self.mc.cameras])
         self.bg_colours_list = [f'#{self.mc.colours[cam.name].lstrip("#")}' for cam in self.mc.cameras]
-        self.fg_colours_list = [self.col_white if utils.hex_to_hls(bg)[1] < 60 else self.col_black for bg in self.bg_colours_list]
+        self.fg_colours_list = [self.col_white if hex_to_hls(bg)[1] < 60 else self.col_black for bg in self.bg_colours_list]
 
         # Identify monitors
         self.selected_monitor = None
@@ -2758,11 +2760,11 @@ class MainWindow(QMainWindow):
         elif self.mc._estim_file_size == -1:
             size = sum(sum(os.path.getsize(os.path.join(res[0], element)) for element in res[2]) for res in
                        os.walk(self.mc.full_path))
-            self.frames_saved_label.setText(f'Saved frames: {self.mc.saved} ({utils.pretty_size(size)})')
+            self.frames_saved_label.setText(f'Saved frames: {self.mc.saved} ({pretty_size(size)})')
         else:
             saved = self.mc.saved
             size = sum(self.mc._estim_file_size * saved)
-            self.frames_saved_label.setText(f'Saved frames: {saved} ({utils.pretty_size(size)})')
+            self.frames_saved_label.setText(f'Saved frames: {saved} ({pretty_size(size)})')
 
         # Update memory pressure estimation
         self._mem_pressure += (psutil.virtual_memory().percent - self._mem_baseline) / self._mem_baseline * 100

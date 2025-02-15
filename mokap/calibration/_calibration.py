@@ -6,7 +6,8 @@ import cv2
 import toml
 import scipy.stats as stats
 from scipy.spatial.distance import cdist
-from mokap import proj_geom, multiview_functions
+from mokap.utils import geometry
+from mokap.calibration import multiview
 
 
 class DetectionTool:
@@ -739,7 +740,7 @@ class MultiviewCalibrationTool:
 
             # Remap the poses to a common origin (i.e. the reference camera)
             for cam, (rvec, tvec) in sample.items():
-                remapped_rvec, remapped_tvec = proj_geom.remap_rtvecs(rvec, tvec, origin_rvec, origin_tvec)
+                remapped_rvec, remapped_tvec = geometry.remap_rtvecs(rvec, tvec, origin_rvec, origin_tvec)
                 self._poses_per_camera[cam].append((remapped_rvec, remapped_tvec))
 
             # # TODO - the similarity threshold probably needs to be a bit more elaborate (geodesic distance and separate rotation and translation similarities?) ...but that will do for now
@@ -775,7 +776,7 @@ class MultiviewCalibrationTool:
 
             # Only triangulate if extrinsics are available
             if self._optimised_rvecs is not None and self._optimised_tvecs is not None:
-                points3d, points3d_ids = multiview_functions.triangulation(
+                points3d, points3d_ids = multiview.triangulation(
                     points2d_list, points2d_ids_list,
                     self._optimised_rvecs, self._optimised_tvecs,
                     self._multi_intrinsics,  self._multi_dist_coeffs
@@ -823,7 +824,7 @@ class MultiviewCalibrationTool:
                 n_m_rvecs.append(m_rvecs)
                 n_m_tvecs.append(m_tvecs)
 
-        self._optimised_rvecs, self._optimised_tvecs = multiview_functions.bestguess_rtvecs(n_m_rvecs, n_m_tvecs)
+        self._optimised_rvecs, self._optimised_tvecs = multiview.bestguess_rtvecs(n_m_rvecs, n_m_tvecs)
 
         if clear_poses_stack:
             self.clear_poses()

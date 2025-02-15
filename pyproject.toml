@@ -4,7 +4,8 @@ version = "0.9"
 description = "An easy to use but powerful multi-camera acquisition software"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["numpy",
+dependencies = [
+    "numpy",
                 "paramiko",
                 "pillow",
                 "psutil",
@@ -18,5 +19,7 @@ dependencies = ["numpy",
                 "screeninfo",
                 "pyside6",
                 "pyopengl",
-                "pyqtgraph"]
+                "pyqtgraph",
+                "sleap-io>=0.2.0",
+]
 

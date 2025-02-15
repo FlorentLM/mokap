@@ -124,7 +124,7 @@ We recommend using uv to manage Python environments and install Mokap easily.
 <!-- USAGE EXAMPLES -->
 ## Usage
 
-1. Customise `config.yml`
+1. Customise `config_example.yaml` and rename it to `config.yaml` (or whatever you want)
 
 Starting example for 5 cameras (replace the xxxxx by your cameras' serial numbers):
 ```yaml
@@ -161,11 +161,11 @@ sources:
 ### Start GUI
 
 1. Activate the conda environment `conda activate mokap`
-2. Run `./main.py`
+2. Run `./mokap.py`
 
-*Note: There are some default values hardcoded in `main.py`, but they can be changed with the GUI*
+*Note: There are some default values hardcoded in `mokap.py`, but they can be changed with the GUI*
 
-**Important**: The default in `main.py` is to use a hardware trigger (Raspberry Pi). For this, you **_MUST_** have three environment variables defined.
+**Important**: The default in `mokap.py` is to use a hardware trigger (Raspberry Pi). For this, you **_MUST_** have three environment variables defined.
 The recommended way is to create a file named `.env` that contains the three variables:
 
 For example (replace with your trigger's IP or hostname, username and passsword):
@@ -175,10 +175,10 @@ TRIGGER_USER=pi
 TRIGGER_PASS=hunter2
 ```
 
-You can disable the hardware trigger by editing the `main.py` file line 6:
+You can disable the hardware trigger by editing the `mokap.py` file line 6:
 ```python
-mc = MultiCam(config='./config.yml', triggered=False, silent=False)
-```
+mc = MultiCam(config='./config.yaml', triggered=False, silent=False)
+``` (or the name you chose for the config file)
 
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
@@ -197,7 +197,7 @@ mc = MultiCam(config='./config.yml', triggered=False, silent=False)
 - [ ] Finish calibration mode
 - [ ] Add support for other camera brands (FLIR, etc)
 - [ ] Add support for other kinds of triggers (primary/secondary cameras, Arduino, etc)
-- [ ] Remember settings set with the GUI instead of using hardcoded values in `main.py`
+- [ ] Remember settings set with the GUI instead of using hardcoded values in `mokap.py`
 
 <p>(<a href="#readme-top">back to top</a>)</p>
 
@@ -205,9 +205,9 @@ mc = MultiCam(config='./config.yml', triggered=False, silent=False)
 
 ### Linux
 
-    permission denied: ./main.py
+    permission denied: ./mokap.py
 
-**Fix**: make the file executable `chmod u+x ./main.py`
+**Fix**: make the file executable `chmod u+x ./mokap.py`
 
 ---
 

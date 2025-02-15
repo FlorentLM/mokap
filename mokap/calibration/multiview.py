@@ -4,7 +4,8 @@ import cv2
 from functools import reduce
 from scipy.optimize import minimize
 from scipy.spatial.distance import cdist
-from mokap import proj_geom, monocular_functions
+from mokap.utils import geometry
+from mokap.calibration import monocular
 
 # Defines functions that relate to processing stuff from N cameras
 
@@ -139,7 +140,7 @@ def undistortion(n_p_points2d, n_cam_mats, n_dist_coeffs):
     nb_cameras = len(n_cam_mats)
 
     # we use a list here because it's not necessarily the same number of points in all cameras
-    points2d_undist = [monocular_functions.undistortion(n_p_points2d[n], n_cam_mats[n], n_dist_coeffs) for n in range(nb_cameras)]
+    points2d_undist = [monocular.undistortion(n_p_points2d[n], n_cam_mats[n], n_dist_coeffs) for n in range(nb_cameras)]
 
     return points2d_undist
 
@@ -151,8 +152,8 @@ def triangulation(n_p_points2d, n_p_points_ids, n_rvecs_world, n_tvecs_world, n_
     """
     nb_cameras = len(n_rvecs_world)
 
-    P_mats = [proj_geom.projection_matrix(n_cam_mats[n], proj_geom.invert_extrinsics_matrix(
-        proj_geom.extrinsics_matrix(n_rvecs_world[n], n_tvecs_world[n]))) for n in range(nb_cameras)]
+    P_mats = [geometry.projection_matrix(n_cam_mats[n], geometry.invert_extrinsics_matrix(
+        geometry.extrinsics_matrix(n_rvecs_world[n], n_tvecs_world[n]))) for n in range(nb_cameras)]
 
     common_points2d, common_points_ids = common_points(n_p_points2d, n_p_points_ids)
 
@@ -161,7 +162,7 @@ def triangulation(n_p_points2d, n_p_points_ids, n_rvecs_world, n_tvecs_world, n_
 
     points2d_undist = undistortion(common_points2d, n_cam_mats, n_dist_coeffs)
 
-    points3d_svd = proj_geom.triangulate_points_svd(points2d_undist, P_mats)
+    points3d_svd = geometry.triangulate_points_svd(points2d_undist, P_mats)
 
     return points3d_svd, common_points_ids
 
@@ -176,7 +177,7 @@ def reprojection(points3d_world, n_rvecs_world, n_tvecs_world, n_cam_mats, n_dis
     for n in range(nb_cameras):
 
         # Need to be n-camera-centric, so we invert them from world-centric
-        cam_rvec, cam_tvec = proj_geom.invert_extrinsics_2(n_rvecs_world[n], n_tvecs_world[n])
+        cam_rvec, cam_tvec = geometry.invert_extrinsics_2(n_rvecs_world[n], n_tvecs_world[n])
 
         reproj, jacobian = cv2.projectPoints(points3d_world,
                                              rvec=cam_rvec, tvec=cam_tvec,
