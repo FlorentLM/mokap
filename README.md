@@ -5,7 +5,7 @@
 <br />
 <div align="center">
   <a href="https://github.com/github_username/repo_name">
-    <img src="mokap/icons/mokap.png" alt="Logo" width="80" height="80">
+    <img src="mokap/gui/icons/mokap.png" alt="Logo" width="80" height="80">
   </a>
 
 <h3 align="center">Mokap</h3>
@@ -45,8 +45,7 @@
 
 <!-- ABOUT THE PROJECT -->
 ## About The Project
-
-![Product Name Screen Shot][product-screenshot]
+![Screenshot](screenshot.png)
 
 Mokap is an easy to use multi-camera acquisition software developed for animal behaviour recording using hardware-triggered (synchronised) machine vision cameras.
 
