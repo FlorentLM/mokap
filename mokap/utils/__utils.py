@@ -1,9 +1,38 @@
+import sys
 import subprocess
 from typing import List, Optional, Set, Tuple, Union
 import colorsys
 import cv2
 from pathlib import Path
 import numpy as np
+from alive_progress import alive_bar
+from tempfile import mkdtemp
+
+
+class CallbackOutputStream:
+    """
+        Simple class to capture stdout and use it with alive_progress
+    """
+    def __init__(self, callback, keep_stdout=True):
+        self.callback = callback
+        self.original_stdout = sys.stdout
+        self.keep_stdout = keep_stdout
+
+    def __enter__(self):
+        sys.stdout = self
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        sys.stdout = self.original_stdout
+
+    def write(self, data):
+        if '\n' in data:
+            self.callback()
+        if self.keep_stdout:
+            self.original_stdout.write(data)
+
+    def flush(self):
+        self.original_stdout.flush()
 
 
 def hex_to_rgb(hex_str: str):
@@ -97,15 +126,56 @@ def pretty_size(value: int, verbose=False, decimal=False) -> str:
 
 def probe_video(video_path):
     video_path = Path(video_path)
+
     if not video_path.exists():
         raise FileNotFoundError(video_path.resolve())
+
     cap = cv2.VideoCapture(video_path.as_posix())
     r, frame = cap.read()
     if not r:
         raise IOError(f"Can't read video {video_path.resolve()}")
+
     nb_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     cap.release()
+
     return frame.shape, nb_frames
+
+
+def load_full_video(video_path):
+    video_path = Path(video_path)
+
+    if not video_path.exists():
+        raise FileNotFoundError(video_path.resolve())
+
+    cap = cv2.VideoCapture(video_path.as_posix())
+    nb_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    r, frame = cap.read()
+    if not r:
+        raise IOError(f"Can't read video {video_path.resolve()}")
+    else:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+    try:
+        full_video = np.zeros((nb_frames, *frame.shape), dtype=np.uint8)
+    except np.core._exceptions._ArrayMemoryError:
+        temp_file = Path(mkdtemp()) / f'{video_path.stem}.dat'
+        full_video = np.memmap(temp_file, dtype=np.uint8, mode='w+', shape=(nb_frames, *frame.shape))
+        print(f"Allocated disk-mapped file: {temp_file}")
+
+    with alive_bar(nb_frames, force_tty=True) as bar:
+        for i in range(nb_frames):
+            r, frame = cap.read()
+            if r:
+                np.copyto(full_video[i, ...], frame)
+            bar()
+
+    cap.release()
+
+    if isinstance(full_video, np.memmap):
+        # Flush and reopen in read-only
+        full_video.flush()
+        full_video = np.memmap(temp_file, dtype=np.uint8, mode='r', shape=(nb_frames, *frame.shape))
+    return full_video
 
 
 def generate_charuco(board_rows, board_cols, square_length_mm=5.0, marker_bits=4, margin=1):

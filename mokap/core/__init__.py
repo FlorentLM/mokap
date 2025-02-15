@@ -1,1 +1,1 @@
-from _core import *
+from __core import *

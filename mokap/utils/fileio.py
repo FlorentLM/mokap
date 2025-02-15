@@ -1,6 +1,10 @@
 import re
 from pathlib import Path
 import yaml
+import toml
+import numpy as np
+import pandas as pd
+
 
 ##
 
@@ -87,12 +91,6 @@ def clean_root_folder(path):
 def natural_sort_key(s):
     _nsre = re.compile('([0-9]+)')
     return [int(text) if text.isdigit() else text.lower() for text in re.split(_nsre, s)]
-
-
-import toml
-import numpy as np
-import pandas as pd
-import track_matching
 
 
 def toml_formatter(dictionary):
@@ -366,15 +364,14 @@ def merge_multiview_df(list_of_dfs):
                        }, inplace=True)
     multiview_df.columns = pd.MultiIndex.from_tuples([col.split('.') for col in multiview_df.columns])
 
-    # Compute (confidence-weighted) centroid coordinates
-    multiview_df = track_matching.compute_centroids(multiview_df)
-
     # Tweak the columns order a little
     columns_order = multiview_df.columns
     columns_order = pd.MultiIndex.from_tuples(list(columns_order[-2:]) + list(columns_order[1:-2]) + [columns_order[0]])
     multiview_df = multiview_df.reindex(columns=columns_order)
 
     return multiview_df
+
+
 ## These functions below are not to be used anymore - will be deleted
 #
 # def videos_from_frames(input_folder, output_folder=None, delete_source=False, force=False):

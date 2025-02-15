@@ -9,3 +9,8 @@ wheels/
 # Virtual environments
 .venv
 /config.yml
+uv.lock
+
+# Mokap files
+.env
+config.yaml
