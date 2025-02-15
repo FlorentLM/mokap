@@ -177,7 +177,8 @@ TRIGGER_PASS=hunter2
 You can disable the hardware trigger by editing the `mokap.py` file line 6:
 ```python
 mc = MultiCam(config='./config.yaml', triggered=False, silent=False)
-``` (or the name you chose for the config file)
+```
+(or the name you chose for the config file)
 
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
