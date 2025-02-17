@@ -130,12 +130,12 @@ def file_writer(mode, filepath, camera_name, *args):
         newfile = True
         data = {}
 
-    if mode == 'intrinsics':
+    if mode.lower() == 'intrinsics':
         new_dict = intrinsics_to_dict(*args)
-        text = 'Intrinsics'
-    else:
+    elif mode.lower() == 'extrinsics':
         new_dict = extrinsics_to_dict(*args)
-        text = 'Extrinsics'
+    else:
+        raise AttributeError('File writing mode must be intrinsics or extrinsics!')
 
     if camera_name in data:
         update = True
@@ -148,12 +148,12 @@ def file_writer(mode, filepath, camera_name, *args):
         f.write(toml_formatter(data))
 
     if update:
-        print(f'{text} updated in {filepath}')
+        print(f'{mode.title()} for camera {camera_name} updated in {filepath}')
     else:
         if newfile:
-            print(f'{text} written to {filepath}')
+            print(f'{mode.title()} for camera {camera_name} written to {filepath}')
         else:
-            print(f'{text} added to {filepath}')
+            print(f'{mode.title()} for camera {camera_name} added to {filepath}')
 
 
 def write_intrinsics(filepath, camera_name, camera_matrix, dist_coeffs, errors=None):
@@ -261,7 +261,7 @@ def read_SLEAP(slp_path):
 
     keypoints = slp_content.skeleton.node_names
 
-    columns = ['track', 'instance.score', 'instance.tracking_score'] + [f"{k}.{a}" for k in keypoints for a in ['x', 'y', 'score']]
+    columns = ['track', 'instance.instance_score', 'instance.tracking_score'] + [f"{k}.{a}" for k in keypoints for a in ['x', 'y', 'score']]
     index = []
     rows = []
     for frame_idx, frame_content in enumerate(slp_content.labeled_frames):
@@ -317,6 +317,8 @@ def load_session(path, session=''):
         parent_folder = path
 
     files_match = sorted(parent_folder.glob(f'*{session}.*'))
+    if len(files_match) == 0:
+        raise FileNotFoundError(f"Can't find any tracking result files in {parent_folder}!")
 
     dfs = []
     loaded_slp = 0

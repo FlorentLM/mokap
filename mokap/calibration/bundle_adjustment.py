@@ -34,9 +34,17 @@ def flatten_intrinsics(n_camera_matrices, n_distortion_coeffs, simple_focal=True
     if simple_focal:
         cm = cm[:, [0, 1, 3]]
 
-    if simple_dist:
+    if simple_dist and complex_dist:
+        raise AssertionError('Distortion cannot be both simple and complex.')
+    elif simple_dist and not complex_dist:
         dc = dc[:, :2]
-
+    elif complex_dist and not simple_dist:
+        if dc.shape[1] < 8:
+            compl_dc = np.zeros((dc.shape[0], 8))
+            compl_dc[:, :dc.shape[1]] = dc
+            dc = compl_dc
+    else:
+        dc = dc[:, :5]
     return np.hstack([cm, dc]).ravel()
 
 
@@ -46,7 +54,15 @@ def unflatten_intrinsics(params, simple_focal=True, simple_dist=False, complex_d
     """
 
     n_cm = 3 if simple_focal else 4
-    n_dc = 2 if simple_dist else 5
+
+    if simple_dist and complex_dist:
+        raise AssertionError('Distortion cannot be both simple and complex.')
+    elif simple_dist and not complex_dist:
+        n_dc = 2
+    elif complex_dist and not simple_dist:
+        n_dc = 8
+    else:
+        n_dc = 5
 
     cm_params, dc_params = np.split(params.reshape(-1, n_cm + n_dc), [n_cm], axis=1)
 
@@ -56,19 +72,20 @@ def unflatten_intrinsics(params, simple_focal=True, simple_dist=False, complex_d
     cm_sparse[:, -1] = 1
     n_camera_matrices = cm_sparse.reshape(-1, 3, 3)
 
-    n_dist_coeffs = np.zeros((dc_params.shape[0], 5))
+    n_dist_coeffs = np.zeros((dc_params.shape[0], n_dc))
     n_dist_coeffs[:, :n_dc] = dc_params
 
     return n_camera_matrices, n_dist_coeffs
 
 
-def flatten_params(n_camera_matrices, n_distortion_coeffs, m_rvecs, m_tvecs, simple_focal=True, simple_dist=False, complex_dist=False):
+def flatten_params(n_camera_matrices, n_distortion_coeffs, rvecs, tvecs, simple_focal=True, simple_dist=False, complex_dist=False):
     """
-        Takes camera_matrices and distortion_coeffs from n cameras, and rvecs and tvecs for m observations
-         and returns a flattened vector of (m*n*9) parameters
+        Takes camera_matrices, distortion_coeffs, and rvecs and tvecs from n cameras
+        OR camera_matrices and distortion_coeffs from n cameras, and rvecs and tvecs for m observations
+        and returns a flattened vector of (m*n*9) parameters
     """
     intrinsics = flatten_intrinsics(n_camera_matrices, n_distortion_coeffs, simple_focal=simple_focal, simple_dist=simple_dist, complex_dist=complex_dist)
-    extrinsics = flatten_extrinsics(m_rvecs, m_tvecs)
+    extrinsics = flatten_extrinsics(rvecs, tvecs)
 
     return np.concatenate([intrinsics, extrinsics])
 
@@ -80,11 +97,18 @@ def unflatten_params(params, nb_cams, simple_focal=True, simple_dist=False, comp
     """
 
     n_cm = 3 if simple_focal else 4
-    n_dc = 2 if simple_dist else 5
+    if simple_dist and complex_dist:
+        raise AssertionError('Distortion cannot be both simple and complex.')
+    elif simple_dist and not complex_dist:
+        n_dc = 2
+    elif complex_dist and not simple_dist:
+        n_dc = 8
+    else:
+        n_dc = 5
     split = (n_cm + n_dc) * nb_cams
 
-    n_camera_matrices, n_distortion_coeffs = unflatten_intrinsics(params[-split:], simple_focal=simple_focal, simple_dist=simple_dist, complex_dist=complex_dist)
-    m_rvecs, m_tvecs = unflatten_extrinsics(params[:-split])
+    n_camera_matrices, n_distortion_coeffs = unflatten_intrinsics(params[:split], simple_focal=simple_focal, simple_dist=simple_dist, complex_dist=complex_dist)
+    m_rvecs, m_tvecs = unflatten_extrinsics(params[split:])
 
     return n_camera_matrices, n_distortion_coeffs, m_rvecs, m_tvecs
 
@@ -104,17 +128,17 @@ def cost_func(params, points_2d, points_2d_ids, points_3d_th, weight_2d_reproj=1
     all_errors_reproj = np.zeros((M, N, max_nb_points, 2))
     all_errors_consistency = np.zeros((M, max_nb_dists))
 
-    fs = (camera_matrices[:, 0, 0] + camera_matrices[:, 1, 1]) / 2.0
-    camera_matrices[:, 0, 0] = fs
-    camera_matrices[:, 1, 1] = fs
+    # fs = (camera_matrices[:, 0, 0] + camera_matrices[:, 1, 1]) / 2.0
+    # camera_matrices[:, 0, 0] = fs
+    # camera_matrices[:, 1, 1] = fs
 
     for m in range(M):
         this_m_points2d = [cam[m] for cam in points_2d]
         this_m_points2d_ids = [cam[m] for cam in points_2d_ids]
 
         points3d_svd, points3d_ids = multiview.triangulation(this_m_points2d, this_m_points2d_ids,
-                                                                    rvecs, tvecs,
-                                                                    camera_matrices, distortion_coeffs)
+                                                             rvecs, tvecs,
+                                                             camera_matrices, distortion_coeffs)
 
         if points3d_svd is not None:
             # points3d_svd, points3d_ids = multiview.interpolate_missing_points3d(points3d_svd, points3d_ids, points_3d_th)

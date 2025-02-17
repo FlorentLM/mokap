@@ -316,15 +316,15 @@ class MonocularCalibrationTool:
         if len(self.stack_points2d) < 6:
             return  # Abort and keep the stacks
 
-        calib_flags = cv2.CALIB_USE_LU + cv2.CALIB_SAME_FOCAL_LENGTH
-        if simple_focal:
-            calib_flags += cv2.CALIB_FIX_ASPECT_RATIO   # This is recommended (unless you use an anamorphic lens?)
-        if simple_distortion or not self.has_intrinsics:   # The first iteration will use the simple model - this helps
-            calib_flags += cv2.CALIB_FIX_K3 + cv2.CALIB_ZERO_TANGENT_DIST
+        calib_flags = cv2.CALIB_USE_LU
+        # if simple_focal:
+        #     calib_flags = calib_flags | cv2.CALIB_FIX_ASPECT_RATIO      # This locks the ration of fx and fy
+        if simple_distortion or not self.has_intrinsics:        # The first iteration will use the simple model - this helps
+            calib_flags = calib_flags | (cv2.CALIB_FIX_K3 | cv2.CALIB_ZERO_TANGENT_DIST)
         if complex_distortion:
-            calib_flags += cv2.CALIB_RATIONAL_MODEL
+            calib_flags = calib_flags | cv2.CALIB_RATIONAL_MODEL
         if self.has_intrinsics:
-            calib_flags += cv2.CALIB_USE_INTRINSIC_GUESS    # Important, otherwise it ignores the passed intrinsics
+            calib_flags = calib_flags | cv2.CALIB_USE_INTRINSIC_GUESS        # Important, otherwise it ignores the passed intrinsics
 
         # We need to copy to a new array, because OpenCV uses these as Input/Output buffers
         if self.has_intrinsics:
@@ -514,7 +514,7 @@ class MonocularCalibrationTool:
         else:
             return False
 
-    def auto_compute_intrinsics(self, coverage_threshold=60, stack_length_threshold=15, simple_focal=True, simple_distortion=False, complex_distortion=False):
+    def auto_compute_intrinsics(self, coverage_threshold=60, stack_length_threshold=15, simple_focal=False, simple_distortion=False, complex_distortion=False):
         # Check if stack is big enough and / or if cumul coverage is good enough
         if self.coverage >= coverage_threshold and self.nb_samples > stack_length_threshold:
             self.compute_intrinsics(simple_focal=simple_focal, simple_distortion=simple_distortion, complex_distortion=complex_distortion)

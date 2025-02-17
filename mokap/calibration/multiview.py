@@ -140,7 +140,7 @@ def undistortion(n_p_points2d, n_cam_mats, n_dist_coeffs):
     nb_cameras = len(n_cam_mats)
 
     # we use a list here because it's not necessarily the same number of points in all cameras
-    points2d_undist = [monocular.undistortion(n_p_points2d[n], n_cam_mats[n], n_dist_coeffs) for n in range(nb_cameras)]
+    points2d_undist = [monocular.undistortion(n_p_points2d[n], n_cam_mats[n], n_dist_coeffs[n]) for n in range(nb_cameras)]
 
     return points2d_undist
 
