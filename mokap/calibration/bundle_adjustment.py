@@ -167,6 +167,10 @@ def run_bundle_adjustment(camera_matrices, distortion_coeffs, rvecs, tvecs, poin
 
     nb_cams = len(camera_matrices)
 
+    if any([len(d) > 5 for d in distortion_coeffs]):
+        simple_distortion = False
+        complex_distortion = True
+
     # Flatten all the optimisable variables into a 1-D array
     x0 = flatten_params(camera_matrices, distortion_coeffs, rvecs, tvecs, simple_focal=simple_focal, simple_dist=simple_distortion, complex_dist=complex_distortion)
 
