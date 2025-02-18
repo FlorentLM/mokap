@@ -163,7 +163,7 @@ def cost_func(params, points_2d, points_2d_ids, points_3d_th, weight_2d_reproj=1
     return np.concatenate([all_errors_reproj.ravel() * weight_2d_reproj, all_errors_consistency.ravel() * weight_3d_consistency])
 
 
-def run_bundle_adjustment(camera_matrices, distortion_coeffs, rvecs, tvecs, points_2d, points_ids, points_3d, reproj_weight=1.0, consistency_weight=2.0, simple_focal=True, simple_distortion=False, complex_dist=False):
+def run_bundle_adjustment(camera_matrices, distortion_coeffs, rvecs, tvecs, points_2d, points_ids, points_3d, reproj_weight=1.0, consistency_weight=2.0, simple_focal=True, simple_distortion=False, complex_distortion=False):
 
     nb_cams = len(camera_matrices)
 
