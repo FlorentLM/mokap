@@ -34,11 +34,11 @@ def flatten_intrinsics(n_camera_matrices, n_distortion_coeffs, simple_focal=True
     if simple_focal:
         cm = cm[:, [0, 1, 3]]
 
-    if simple_dist and complex_dist:
+    if simple_dist and complex_distortion:
         raise AssertionError('Distortion cannot be both simple and complex.')
-    elif simple_dist and not complex_dist:
+    elif simple_dist and not complex_distortion:
         dc = dc[:, :2]
-    elif complex_dist and not simple_dist:
+    elif complex_distortion and not simple_dist:
         if dc.shape[1] < 8:
             compl_dc = np.zeros((dc.shape[0], 8))
             compl_dc[:, :dc.shape[1]] = dc
@@ -55,11 +55,11 @@ def unflatten_intrinsics(params, simple_focal=True, simple_dist=False, complex_d
 
     n_cm = 3 if simple_focal else 4
 
-    if simple_dist and complex_dist:
+    if simple_dist and complex_distortion:
         raise AssertionError('Distortion cannot be both simple and complex.')
-    elif simple_dist and not complex_dist:
+    elif simple_dist and not complex_distortion:
         n_dc = 2
-    elif complex_dist and not simple_dist:
+    elif complex_distortion and not simple_dist:
         n_dc = 8
     else:
         n_dc = 5
@@ -84,7 +84,7 @@ def flatten_params(n_camera_matrices, n_distortion_coeffs, rvecs, tvecs, simple_
         OR camera_matrices and distortion_coeffs from n cameras, and rvecs and tvecs for m observations
         and returns a flattened vector of (m*n*9) parameters
     """
-    intrinsics = flatten_intrinsics(n_camera_matrices, n_distortion_coeffs, simple_focal=simple_focal, simple_dist=simple_dist, complex_distortion=complex_dist)
+    intrinsics = flatten_intrinsics(n_camera_matrices, n_distortion_coeffs, simple_focal=simple_focal, simple_dist=simple_dist, complex_distortion=complex_distortion)
     extrinsics = flatten_extrinsics(rvecs, tvecs)
 
     return np.concatenate([intrinsics, extrinsics])
@@ -97,17 +97,17 @@ def unflatten_params(params, nb_cams, simple_focal=True, simple_dist=False, comp
     """
 
     n_cm = 3 if simple_focal else 4
-    if simple_dist and complex_dist:
+    if simple_dist and complex_distortion:
         raise AssertionError('Distortion cannot be both simple and complex.')
-    elif simple_dist and not complex_dist:
+    elif simple_dist and not complex_distortion:
         n_dc = 2
-    elif complex_dist and not simple_dist:
+    elif complex_distortion and not simple_dist:
         n_dc = 8
     else:
         n_dc = 5
     split = (n_cm + n_dc) * nb_cams
 
-    n_camera_matrices, n_distortion_coeffs = unflatten_intrinsics(params[:split], simple_focal=simple_focal, simple_dist=simple_dist, complex_distortion=complex_dist)
+    n_camera_matrices, n_distortion_coeffs = unflatten_intrinsics(params[:split], simple_focal=simple_focal, simple_dist=simple_dist, complex_distortion=complex_distortion)
     m_rvecs, m_tvecs = unflatten_extrinsics(params[split:])
 
     return n_camera_matrices, n_distortion_coeffs, m_rvecs, m_tvecs
@@ -124,7 +124,7 @@ def cost_func(params, points_2d, points_2d_ids, points_3d_th, weight_2d_reproj=1
                                                                         nb_cams=N,
                                                                         simple_focal=simple_focal,
                                                                         simple_dist=simple_dist,
-                                                                        complex_distortion=complex_dist)
+                                                                        complex_distortion=complex_distortion)
 
     all_errors_reproj = np.zeros((M, N, max_nb_points, 2))
     all_errors_consistency = np.zeros((M, max_nb_dists))
@@ -168,6 +168,7 @@ def run_bundle_adjustment(camera_matrices, distortion_coeffs, rvecs, tvecs, poin
     nb_cams = len(camera_matrices)
 
     if any([len(d) > 5 for d in distortion_coeffs]):
+        print('Complex distortion parameters detected.')
         simple_distortion = False
         complex_distortion = True
 
@@ -189,7 +190,7 @@ def run_bundle_adjustment(camera_matrices, distortion_coeffs, rvecs, tvecs, poin
                                          points_ids,    # Passed as a fixed parameters
                                          points_3d,     # Passed as a fixed parameters
                                          reproj_weight, consistency_weight,     # Weights for the two types of errors
-                                         simple_focal, simple_distortion))
+                                         simple_focal, simple_distortion, complex_distortion))
 
     camera_matrices_opt, distortion_coeffs_opt, rvecs_opt, tvecs_opt = unflatten_params(result.x, nb_cams=nb_cams, simple_focal=simple_focal, simple_dist=simple_distortion)
 
