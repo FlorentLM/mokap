@@ -20,7 +20,7 @@ def unflatten_extrinsics(params):
     return m_rvecs, m_tvecs
 
 
-def flatten_intrinsics(n_camera_matrices, n_distortion_coeffs, simple_focal=True, simple_dist=False, complex_dist=False):
+def flatten_intrinsics(n_camera_matrices, n_distortion_coeffs, simple_focal=True, simple_dist=False, complex_distortion=False):
     """
         Takes camera_matrices and distortion_coeffs from n cameras and returns a flattened vector.
 
@@ -48,7 +48,7 @@ def flatten_intrinsics(n_camera_matrices, n_distortion_coeffs, simple_focal=True
     return np.hstack([cm, dc]).ravel()
 
 
-def unflatten_intrinsics(params, simple_focal=True, simple_dist=False, complex_dist=False):
+def unflatten_intrinsics(params, simple_focal=True, simple_dist=False, complex_distortion=False):
     """
         Takes a flattened vector of (n*9) parameters and returns camera_matrices and distortion_coeffs for the n observations
     """
@@ -78,19 +78,19 @@ def unflatten_intrinsics(params, simple_focal=True, simple_dist=False, complex_d
     return n_camera_matrices, n_dist_coeffs
 
 
-def flatten_params(n_camera_matrices, n_distortion_coeffs, rvecs, tvecs, simple_focal=True, simple_dist=False, complex_dist=False):
+def flatten_params(n_camera_matrices, n_distortion_coeffs, rvecs, tvecs, simple_focal=True, simple_dist=False, complex_distortion=False):
     """
         Takes camera_matrices, distortion_coeffs, and rvecs and tvecs from n cameras
         OR camera_matrices and distortion_coeffs from n cameras, and rvecs and tvecs for m observations
         and returns a flattened vector of (m*n*9) parameters
     """
-    intrinsics = flatten_intrinsics(n_camera_matrices, n_distortion_coeffs, simple_focal=simple_focal, simple_dist=simple_dist, complex_dist=complex_dist)
+    intrinsics = flatten_intrinsics(n_camera_matrices, n_distortion_coeffs, simple_focal=simple_focal, simple_dist=simple_dist, complex_distortion=complex_dist)
     extrinsics = flatten_extrinsics(rvecs, tvecs)
 
     return np.concatenate([intrinsics, extrinsics])
 
 
-def unflatten_params(params, nb_cams, simple_focal=True, simple_dist=False, complex_dist=False):
+def unflatten_params(params, nb_cams, simple_focal=True, simple_dist=False, complex_distortion=False):
     """
         Takes a flattened vector of (m*n*9) parameters, and the number n of cameras;
          returns camera_matrices and distortion_coeffs for the n observations, and rvecs and tvecs for m observations
@@ -107,13 +107,13 @@ def unflatten_params(params, nb_cams, simple_focal=True, simple_dist=False, comp
         n_dc = 5
     split = (n_cm + n_dc) * nb_cams
 
-    n_camera_matrices, n_distortion_coeffs = unflatten_intrinsics(params[:split], simple_focal=simple_focal, simple_dist=simple_dist, complex_dist=complex_dist)
+    n_camera_matrices, n_distortion_coeffs = unflatten_intrinsics(params[:split], simple_focal=simple_focal, simple_dist=simple_dist, complex_distortion=complex_dist)
     m_rvecs, m_tvecs = unflatten_extrinsics(params[split:])
 
     return n_camera_matrices, n_distortion_coeffs, m_rvecs, m_tvecs
 
 
-def cost_func(params, points_2d, points_2d_ids, points_3d_th, weight_2d_reproj=1.0, weight_3d_consistency=1.0, simple_focal=True, simple_dist=False, complex_dist=False):
+def cost_func(params, points_2d, points_2d_ids, points_3d_th, weight_2d_reproj=1.0, weight_3d_consistency=1.0, simple_focal=True, simple_dist=False, complex_distortion=False):
     N = len(points_2d)
     M = len(points_2d[0])
 
@@ -124,7 +124,7 @@ def cost_func(params, points_2d, points_2d_ids, points_3d_th, weight_2d_reproj=1
                                                                         nb_cams=N,
                                                                         simple_focal=simple_focal,
                                                                         simple_dist=simple_dist,
-                                                                        complex_dist=complex_dist)
+                                                                        complex_distortion=complex_dist)
 
     all_errors_reproj = np.zeros((M, N, max_nb_points, 2))
     all_errors_consistency = np.zeros((M, max_nb_dists))
@@ -172,7 +172,7 @@ def run_bundle_adjustment(camera_matrices, distortion_coeffs, rvecs, tvecs, poin
         complex_distortion = True
 
     # Flatten all the optimisable variables into a 1-D array
-    x0 = flatten_params(camera_matrices, distortion_coeffs, rvecs, tvecs, simple_focal=simple_focal, simple_dist=simple_distortion, complex_dist=complex_distortion)
+    x0 = flatten_params(camera_matrices, distortion_coeffs, rvecs, tvecs, simple_focal=simple_focal, simple_dist=simple_distortion, complex_distortion=complex_distortion)
 
     # Note: Points 2D, points 3D and points IDs are fixed - We do not optimise those!
 
