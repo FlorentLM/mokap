@@ -175,7 +175,7 @@ def load_full_video(video_path):
         # Flush and reopen in read-only
         full_video.flush()
         full_video = np.memmap(temp_file, dtype=np.uint8, mode='r', shape=(nb_frames, *frame.shape))
-    return full_video
+    return full_video, temp_file
 
 
 def generate_charuco(board_rows, board_cols, square_length_mm=5.0, marker_bits=4, margin=1):

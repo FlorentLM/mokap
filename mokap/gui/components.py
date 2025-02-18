@@ -263,9 +263,10 @@ class MonocularCalibWorker(QObject):
 
                     # ...and the intrinsics themselves
                     cam_mat, dist_coeffs = self.calib_tool.intrinsics
-                    self.signal_return_intrinsics.emit(cam_mat.copy(),
-                                                       dist_coeffs.copy(),
-                                                       True)                    # bool to update the message in the UI
+                    if cam_mat is not None and dist_coeffs is not None:
+                        self.signal_return_intrinsics.emit(cam_mat.copy(),
+                                                           dist_coeffs.copy(),
+                                                           True)                    # bool to update the message in the UI
 
         # 4- Compute extrinsics (only works if we already have intrinsics)
         self.calib_tool.compute_extrinsics()
@@ -314,7 +315,7 @@ class MonocularCalibWorker(QObject):
     @Slot(str)
     def load_calib(self, file_path):
         d = fileio.read_intrinsics(file_path, self.cam_name)
-        r = self.calib_tool.set_intrinsics(d['camera_matrix'], d['distortion_coefficients'])
+        r = self.calib_tool.set_intrinsics(d['camera_matrix'], d['dist_coeffs'])
         if r:
             self.calib_tool.clear_stacks()
 
@@ -324,7 +325,7 @@ class MonocularCalibWorker(QObject):
 
     @Slot(str)
     def save_calib(self, file_path):
-        fileio.write_intrinsics(*self.calib_tool.intrinsics)
+        fileio.write_intrinsics(file_path, self.cam_name, *self.calib_tool.intrinsics)
 
     @Slot(int)
     def set_stage(self, stage):
@@ -1457,9 +1458,8 @@ class VideoWindowCalib(VideoWindowBase):
             file_path = Path(file_path)
 
         if file_path is not None:   # Might still be None if the picker did not succeed
-
             if file_path.is_dir():
-                file = file_path / f"{self._camera.name}_intrinsics.toml"
+                file = file_path / "parameters.toml"
                 if file.exists():
                     self.signal_load_calib.emit(file.as_posix())
                     self.load_save_message.setText(f"Intrinsics <b>loaded</b> from {file.parent}")
@@ -1469,7 +1469,7 @@ class VideoWindowCalib(VideoWindowBase):
                 self.load_save_message.setText(f"Intrinsics <b>loaded</b> from {file_path}")
 
     def on_save_calib(self):
-        file_path = self._main_window.mc.full_path / f"{self._camera.name}_intrinsics.toml"
+        file_path = self._main_window.mc.full_path / "parameters.toml"
         self.signal_save_calib.emit(file_path.as_posix())
         self.load_save_message.setText(f"Intrinsics <b>saved</b> as \r{file_path}")
 

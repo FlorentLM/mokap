@@ -90,7 +90,7 @@ def estimate_camera_matrix(f_mm, sensor_wh_mm, image_wh_px):
     """
 
     sensor_w_mm, sensor_h_mm = sensor_wh_mm
-    image_w_px, image_h_px = image_wh_px
+    image_w_px, image_h_px = np.asarray(image_wh_px)[:2]
     pixel_size_x = sensor_w_mm / image_w_px
     pixel_size_y = sensor_h_mm / image_h_px
 

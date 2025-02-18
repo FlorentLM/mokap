@@ -7,7 +7,7 @@ import toml
 import scipy.stats as stats
 from scipy.spatial.distance import cdist
 from mokap.utils import geometry
-from mokap.calibration import multiview
+from mokap.calibration import monocular, multiview
 
 
 class DetectionTool:
@@ -112,7 +112,7 @@ class MonocularCalibrationTool:
     """
         This object is stateful for the intrinsics *only*
     """
-    def __init__(self, detectiontool, imsize=None, min_stack=15, max_stack=100):
+    def __init__(self, detectiontool, imsize=None, min_stack=15, max_stack=100, focal_mm=None, sensor_size=None):
 
         self.dt = detectiontool
 
@@ -133,9 +133,11 @@ class MonocularCalibrationTool:
 
         # Coverage (We initialise these arrays later once we know the frame size)
         if imsize is not None:
-            self.imsize = np.array(imsize[:2])
-            self._ideal_central_point = np.flip(self.imsize) / 2.0
-            # self._norm = np.sum(np.power(self.imsize, 2)) * 1e-6      # TODO test this more extensively
+            self.imsize = np.array(imsize[:2])  # OpenCV format (height, width)
+            self._ideal_central_point = np.flip(self.imsize) / 2.0  # format (width, height)
+
+            # Error normalisation on image diagonal - TODO test this more extensively, disabled for now
+            # self._norm = np.sum(np.power(self.imsize, 2)) * 1e-6
             self._norm = 1
 
             self._frame_in = np.zeros((*self.imsize, 3), dtype=np.uint8)
@@ -148,14 +150,29 @@ class MonocularCalibrationTool:
             self.imsize = None
             self._ideal_central_point = None
 
+            self._norm = 1  # see above
+
             self._frame_in = None
             self._current_area_mask = None
             self._cumul_coverage_mask = None
             self._current_area_px = None
             self._cumul_coverage_px = None
 
+        # Compute ideal camera_matrix from passed physical dimensions
+        if type(sensor_size) == str:
+            sensor_size = monocular.SENSOR_SIZES.get(f'''{sensor_size.strip('"')}"''', None)
+        elif type(sensor_size) == tuple or type(sensor_size) == list or type(sensor_size) == np.ndarray:
+            sensor_size = np.asarray(sensor_size)
+        else:
+            sensor_size = None
+        if focal_mm is not None and sensor_size is not None and imsize is not None:
+            self._ideal_camera_matrix = monocular.estimate_camera_matrix(focal_mm, sensor_size, image_wh_px=imsize)
+            self._ideal_focal = self._ideal_camera_matrix[0, 0]
+        else:
+            self._ideal_camera_matrix = None
+            self._ideal_focal = None
 
-        # Samples stack
+            # Samples stack
         self._min_stack = min_stack
         self._max_stack = max_stack
         self.stack_points2d = deque(maxlen=self._max_stack)
@@ -378,14 +395,21 @@ class MonocularCalibrationTool:
             return
 
         # Update the intrinsics if this stack's errors are better (or if it is the very first stack computed)
-        if not self.has_intrinsics or (self.last_best_errors == np.inf).any():
+        if not self.has_intrinsics or np.any(self.last_best_errors == np.inf):
             self._camera_matrix = new_camera_matrix
             self._dist_coeffs = new_dist_coeffs
             self.last_best_errors = stack_errors
             self._stack_error = np.mean(self.last_best_errors)
 
-            # For the first iteration, set the central point to the real image centre - that helps A LOT
+            # For the first iteration, replace the central point with the real image centre - that helps A LOT
             self._camera_matrix[:2, 2] = self._ideal_central_point
+
+            # For the first iteration, replace the focal with the ideal focal length if available
+            if self._ideal_focal is not None:
+                self._camera_matrix[0, 0] = self._ideal_focal
+                self._camera_matrix[1, 1] = self._ideal_focal
+
+            # TODO - should we just instead use the ideal camera matrix and null dist coeffs?
 
             print(f"---Computed intrinsics---")
 
