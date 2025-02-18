@@ -113,7 +113,7 @@ def unflatten_params(params, nb_cams, simple_focal=True, simple_dist=False, comp
     return n_camera_matrices, n_distortion_coeffs, m_rvecs, m_tvecs
 
 
-def cost_func(params, points_2d, points_2d_ids, points_3d_th, weight_2d_reproj=1.0, weight_3d_consistency=1.0, simple_focal=True, simple_dist=False):
+def cost_func(params, points_2d, points_2d_ids, points_3d_th, weight_2d_reproj=1.0, weight_3d_consistency=1.0, simple_focal=True, simple_dist=False, complex_dist=False):
     N = len(points_2d)
     M = len(points_2d[0])
 
@@ -123,7 +123,8 @@ def cost_func(params, points_2d, points_2d_ids, points_3d_th, weight_2d_reproj=1
     camera_matrices, distortion_coeffs, rvecs, tvecs = unflatten_params(params,
                                                                         nb_cams=N,
                                                                         simple_focal=simple_focal,
-                                                                        simple_dist=simple_dist)
+                                                                        simple_dist=simple_dist,
+                                                                        complex_dist=complex_dist)
 
     all_errors_reproj = np.zeros((M, N, max_nb_points, 2))
     all_errors_consistency = np.zeros((M, max_nb_dists))
@@ -162,12 +163,12 @@ def cost_func(params, points_2d, points_2d_ids, points_3d_th, weight_2d_reproj=1
     return np.concatenate([all_errors_reproj.ravel() * weight_2d_reproj, all_errors_consistency.ravel() * weight_3d_consistency])
 
 
-def run_bundle_adjustment(camera_matrices, distortion_coeffs, rvecs, tvecs, points_2d, points_ids, points_3d, reproj_weight=1.0, consistency_weight=2.0, simple_focal=True, simple_distortion=False):
+def run_bundle_adjustment(camera_matrices, distortion_coeffs, rvecs, tvecs, points_2d, points_ids, points_3d, reproj_weight=1.0, consistency_weight=2.0, simple_focal=True, simple_distortion=False, complex_dist=False):
 
     nb_cams = len(camera_matrices)
 
     # Flatten all the optimisable variables into a 1-D array
-    x0 = flatten_params(camera_matrices, distortion_coeffs, rvecs, tvecs, simple_focal=simple_focal, simple_dist=simple_distortion)
+    x0 = flatten_params(camera_matrices, distortion_coeffs, rvecs, tvecs, simple_focal=simple_focal, simple_dist=simple_distortion, complex_dist=complex_dist)
 
     # Note: Points 2D, points 3D and points IDs are fixed - We do not optimise those!
 
