@@ -168,7 +168,7 @@ def run_bundle_adjustment(camera_matrices, distortion_coeffs, rvecs, tvecs, poin
     nb_cams = len(camera_matrices)
 
     # Flatten all the optimisable variables into a 1-D array
-    x0 = flatten_params(camera_matrices, distortion_coeffs, rvecs, tvecs, simple_focal=simple_focal, simple_dist=simple_distortion, complex_dist=complex_dist)
+    x0 = flatten_params(camera_matrices, distortion_coeffs, rvecs, tvecs, simple_focal=simple_focal, simple_dist=simple_distortion, complex_dist=complex_distortion)
 
     # Note: Points 2D, points 3D and points IDs are fixed - We do not optimise those!
 
