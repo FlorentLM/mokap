@@ -74,6 +74,18 @@ SENSOR_SIZES = {'1/4"': [3.20, 2.40],
                 }
 
 
+def is_sharp(image, threshold=80.0):
+    # TODO - Improve this
+    if image.ndim == 3:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image
+    gauss = cv2.GaussianBlur(gray, (13, 13), 0)
+    laplacian = cv2.Laplacian(gauss, cv2.CV_64F)
+    variance = laplacian.var() * 10
+    return variance >= threshold
+
+
 def estimate_camera_matrix(f_mm, sensor_wh_mm, image_wh_px):
     """
         Estimate the camera matrix K (a 3x3 matrix of the camera intrinsics parameters) using real-world values

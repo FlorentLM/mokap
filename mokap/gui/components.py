@@ -176,7 +176,7 @@ class MainWorker(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._running = True
+        # self._running = True
         self._paused = False
 
     def set_paused(self, val):
@@ -184,7 +184,8 @@ class MainWorker(QObject):
 
     @Slot(np.ndarray)
     def process_frame(self, frame):
-        if not self._running or self._paused:
+        # if not self._running or self._paused:
+        if self._paused:
             return
 
         # 1- TESTING - Fake motiuon detection
@@ -198,8 +199,8 @@ class MainWorker(QObject):
         # TESTING - Fake bounding box around (100,100) of size (50,40)
         return [(100, 100, 50, 40)]
 
-    def stop(self):
-        self._running = False
+    # def stop(self):
+    #     self._running = False
 
 class MonocularCalibWorker(QObject):
     """
@@ -209,23 +210,23 @@ class MonocularCalibWorker(QObject):
     signal_send_annotated_frame = Signal(np.ndarray)   # carry back the annotated image back to the main thread (to didplay it)
     signal_send_finished = Signal()      # signals when this worker is busy / free
 
-    # signal_auto_sample = Signal(bool)       # received when auto-sampling is toggled
-    # signal_auto_compute = Signal(bool)      # received when auto-copute is toggled
-    # signal_change_stage = Signal(int)       # received when calibration stage is changed
+    signal_computation_started = Signal()
+    signal_computation_finished = Signal()
 
     signal_return_reprojection_error = Signal(np.ndarray)          # Send current reprojection error back to main thread
     signal_return_intrinsics = Signal(np.ndarray, np.ndarray, bool)         # Send intrinsics to the main thread
     signal_return_detection = Signal(int, int, np.ndarray, np.ndarray)
     signal_return_pose = Signal(int, int, np.ndarray, np.ndarray)
 
-    def __init__(self, calib_tool, cam_idx, cam_name, parent=None):
+    def __init__(self, charuco_board, cam_idx, cam_name, cam_shape, parent=None):
         super().__init__(parent)
         self.camera_idx = cam_idx
         self.cam_name = cam_name
-        self.calib_tool = calib_tool
+        self.cam_shape = cam_shape
+
+        self.init_mct(charuco_board)
 
         # Flags for worker state
-        self._running = True
         self._paused = False
 
         # Flags for worker function
@@ -234,58 +235,77 @@ class MonocularCalibWorker(QObject):
 
         self._current_stage = 0
 
+    def init_mct(self, charuco_board):
+        self.detection_tool = DetectionTool(charuco_board)
+        self.monocular_tool = MonocularCalibrationTool(
+            detectiontool=self.detection_tool,
+            imsize_hw=self.cam_shape[:2],           # pass frame size so it can track coverage
+            focal_mm=60,                            # TODO - UI field for these
+            sensor_size='1/2.9"'                    #
+        )
+        self.monocular_tool.set_visualisation_scale(2)
+
     def set_paused(self, val):
         self._paused = val
 
     @Slot(np.ndarray)
     def process_frame(self, frame, frame_id):
         # Called for each new frame received from main thread to process
-        if not self._running or self._paused:
+        if self._paused:
             return
 
         # 1- Detect
-        self.calib_tool.detect(frame)
+        self.monocular_tool.detect(frame)
 
         # 2. Stage 0: Auto-sample and compute intrinsics
         if self._current_stage == 0:
             if self.auto_sample:
-                self.calib_tool.auto_register_area_based(area_threshold=0.2, nb_points_threshold=4)
+                self.monocular_tool.auto_register_area_based(area_threshold=0.2, nb_points_threshold=4)
+
             if self.auto_compute:
-                r = self.calib_tool.auto_compute_intrinsics(
-                    coverage_threshold=60,
-                    stack_length_threshold=15,
+                # TODO - expose these in the UI
+                coverage_threshold = 80
+                stack_length_threshold = 20
+
+                if self.monocular_tool.coverage >= coverage_threshold and self.monocular_tool.nb_samples > stack_length_threshold:
+                    self.signal_computation_started.emit()
+
+                r = self.monocular_tool.auto_compute_intrinsics(
+                    coverage_threshold=coverage_threshold,
+                    stack_length_threshold=stack_length_threshold,
                     simple_focal=True,
                     complex_distortion=True
                 )
                 if r:
                     # If the intrinsics have been updated, return the new errors...
-                    self.signal_return_reprojection_error.emit(self.calib_tool.last_best_errors)
+                    self.signal_return_reprojection_error.emit(self.monocular_tool.last_best_errors)
 
                     # ...and the intrinsics themselves
-                    cam_mat, dist_coeffs = self.calib_tool.intrinsics
+                    cam_mat, dist_coeffs = self.monocular_tool.intrinsics
                     if cam_mat is not None and dist_coeffs is not None:
                         self.signal_return_intrinsics.emit(cam_mat.copy(),
                                                            dist_coeffs.copy(),
                                                            True)                    # bool to update the message in the UI
+            self.signal_computation_finished.emit()
 
         # 4- Compute extrinsics (only works if we already have intrinsics)
-        self.calib_tool.compute_extrinsics()
+        self.monocular_tool.compute_extrinsics()
 
         # 3. Stage 1: Compute extrinsics and forward poses
         if self._current_stage == 1:
-            if self.calib_tool.has_extrinsics:
+            if self.monocular_tool.has_extrinsics:
                 # Forward the pose to the aggregator
                 # it will registered it if it's sufficiently different from already collected ones
-                self.signal_return_pose.emit(frame_id, self.camera_idx, *self.calib_tool.extrinsics)
+                self.signal_return_pose.emit(frame_id, self.camera_idx, *self.monocular_tool.extrinsics)
 
         # 4. Stage 2: Forward detections for triangulation
         if self._current_stage == 2:
             # Here we simply forward the raw 2D detections.
-            if self.calib_tool.has_detection:
-                self.signal_return_detection.emit(frame_id, self.camera_idx, *self.calib_tool.detection)
+            if self.monocular_tool.has_detection:
+                self.signal_return_detection.emit(frame_id, self.camera_idx, *self.monocular_tool.detection)
 
         # 5- Visualize (this returns the annotated image in full resolution)
-        annotated = self.calib_tool.visualise(errors_mm=True)
+        annotated = self.monocular_tool.visualise(errors_mm=True)
 
         # 6- Emit the annotated frame to the main thread, and emit the 'done' signal
         self.signal_send_annotated_frame.emit(annotated)
@@ -301,39 +321,37 @@ class MonocularCalibWorker(QObject):
 
     @Slot()
     def add_sample(self):
-        self.calib_tool.register_sample()
+        self.monocular_tool.register_sample()
 
     @Slot()
     def clear_samples(self):
-        self.calib_tool.clear_stacks()
+        self.monocular_tool.clear_stacks()
 
     @Slot()
     def clear_intrinsics(self):
-        self.calib_tool.clear_intrinsics()
-        self.calib_tool.clear_stacks()
+        self.monocular_tool.clear_intrinsics()
+        self.monocular_tool.clear_stacks()
 
     @Slot(str)
     def load_calib(self, file_path):
         d = fileio.read_intrinsics(file_path, self.cam_name)
-        r = self.calib_tool.set_intrinsics(d['camera_matrix'], d['dist_coeffs'])
+        r = self.monocular_tool.set_intrinsics(d['camera_matrix'], d['dist_coeffs'])
         if r:
-            self.calib_tool.clear_stacks()
+            self.monocular_tool.clear_stacks()
 
             # Also send the loaded intrinsics to the other classes
-            cam_mat, dist_coeffs = self.calib_tool.intrinsics
+            cam_mat, dist_coeffs = self.monocular_tool.intrinsics
             self.signal_return_intrinsics.emit(cam_mat.copy(), dist_coeffs.copy(), False)   # Dont update message
 
     @Slot(str)
     def save_calib(self, file_path):
-        fileio.write_intrinsics(file_path, self.cam_name, *self.calib_tool.intrinsics)
+        fileio.write_intrinsics(file_path, self.cam_name, *self.monocular_tool.intrinsics)
 
     @Slot(int)
     def set_stage(self, stage):
         self._current_stage = stage
-        self.calib_tool.clear_stacks()
+        self.monocular_tool.clear_stacks()
 
-    def stop(self):
-        self._running = False
 
 class MultiCalibWorker(QObject):
 
@@ -589,7 +607,7 @@ class VideoWindowBase(QWidget):
 
     def _stop_worker(self):
         if self.worker is not None and self.worker_thread is not None:
-            self.worker.stop()
+            self.pause_worker()
             self.worker_thread.quit()
             self.worker_thread.wait()
 
@@ -1235,24 +1253,19 @@ class VideoWindowCalib(VideoWindowBase):
 
         # Setup Detection and monocular calib tools
         self._update_board()
-        self.detection_tool = DetectionTool(self.charuco_board)
-        self.mono_calib_tool = MonocularCalibrationTool(
-            detectiontool=self.detection_tool,
-            imsize=self._source_shape[:2]   # pass frame size so it can track coverage
-        )
-        self.mono_calib_tool.set_visualisation_scale(2)
 
         # Initialize reprojection error data for plotting
         self.reprojection_errors = deque(maxlen=100)
 
         # Setup worker
         self.worker_thread = QThread(self)
-        self.worker = MonocularCalibWorker(self.mono_calib_tool, self.idx, self.name)
+        self.worker = MonocularCalibWorker(self.charuco_board, self.idx, self.name, self.source_shape)
         self.worker.moveToThread(self.worker_thread)
 
         # Initialise where to store worker results and state
         self.annotated_frame = None
-        self._worker_busy = False
+        self._worker_busy = False           # Any worker job (including detection, etc)
+        self._worker_computing = False      # Only heavy worker job that blocks
         self._latest_frame = None
         self._intrinsics_stable = False
 
@@ -1260,6 +1273,10 @@ class VideoWindowCalib(VideoWindowBase):
         #      Worker --> Main thread
         self.worker.signal_send_annotated_frame.connect(self.on_worker_result)
         self.worker.signal_send_finished.connect(self.on_worker_finished)
+
+        self.worker.signal_computation_started.connect(self.on_computation_started)
+        self.worker.signal_computation_finished.connect(self.on_computation_finished)
+
         self.worker.signal_return_reprojection_error.connect(self.on_reprojection_error)
         self.worker.signal_return_detection.connect(self._main_window.extrinsics_window.worker.on_received_detection)
         self.worker.signal_return_pose.connect(self._main_window.extrinsics_window.worker.on_received_camera_pose)
@@ -1413,6 +1430,21 @@ class VideoWindowCalib(VideoWindowBase):
 
         # Now scale + display the last annotated frame we got from the worker
         disp_h, disp_w = self._display_buffer.shape[:2]
+
+        if self._worker_computing:
+            blurred = cv2.GaussianBlur(frame.copy(), (15, 15), 0)
+            # Overlay "Computing..." text in the center of the blurred image
+            h, w = blurred.shape[:2]
+            text = "Computing..."
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 1.5
+            thickness = 3
+            text_size, baseline = cv2.getTextSize(text, font, font_scale, thickness)
+            text_x = (w - text_size[0]) // 2
+            text_y = (h + text_size[1]) // 2
+            cv2.putText(blurred, text, (text_x, text_y), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+            self.annotated_frame = blurred.copy()
+
         if self.annotated_frame is not None and self.annotated_frame.size > 0:
             scale = min(disp_w / self.annotated_frame.shape[1],
                         disp_h / self.annotated_frame.shape[0])
@@ -1492,6 +1524,14 @@ class VideoWindowCalib(VideoWindowBase):
         # called in the main thread when worker finishes processing and emits 'result ready'
         self.annotated_frame = annotated
 
+    @Slot()
+    def on_computation_started(self):
+        self._worker_computing = True
+
+    @Slot()
+    def on_computation_finished(self):
+        self._worker_computing = False
+
     #  ============= Custom functions =============
     @Slot(np.ndarray)
     def on_reprojection_error(self, error):
@@ -1535,12 +1575,6 @@ class VideoWindowCalib(VideoWindowBase):
             marker_bits=self.MARKER_BITS
         )
 
-    def _reset_detector(self):
-        # TODO - this is not thread safe - it WILL crash if used - should use a signal
-        self.detection_tool = DetectionTool(self.charuco_board)
-        self.mono_calib_tool.dt = self.detection_tool
-        self.mono_calib_tool.clear_stacks()
-
     def show_board_params_dialog(self):
         """
             Opens the small BoardParamsDialog to let the user set board parameters
@@ -1564,7 +1598,6 @@ class VideoWindowCalib(VideoWindowBase):
                         w.BOARD_COLS = cols
                         w.SQUARE_LENGTH_MM = sq
                         w._update_board()
-                        w._reset_detector()
                         w._update_board_preview()
             else:
                 self.BOARD_ROWS = rows
@@ -1572,7 +1605,6 @@ class VideoWindowCalib(VideoWindowBase):
                 self.SQUARE_LENGTH_MM = sq
 
                 self._update_board()
-                self._reset_detector()
                 self._update_board_preview()
 
     def _update_board_preview(self):
@@ -2053,6 +2085,16 @@ class ExtrinsicsWindow(QWidget):
                 if folder.exists():
                     selected_path = folder
         return selected_path
+
+    def auto_size(self):
+        # Do nothing on the extrinsics window for now
+        # TODO - implement this
+        pass
+
+    def auto_move(self):
+        # Do nothing on the extrinsics window for now
+        # TODO - implement this
+        pass
 
     def load_all_intrinsics(self):
         folder = self.file_dialog(self._main_window.mc.full_path.parent)

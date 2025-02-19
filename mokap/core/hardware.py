@@ -279,7 +279,7 @@ class BaslerCamera:
 
         self._width = 0
         self._height = 0
-        self._probe_frame_shape = None
+        self._probe_frame_shape = None  # (height, width)
 
         self._framerate = framerate
         self._exposure = exposure
@@ -648,6 +648,7 @@ class BaslerCamera:
 
     @property
     def shape(self) -> np.array:
+        # (height, width)
         return self._probe_frame_shape
 
     @property
