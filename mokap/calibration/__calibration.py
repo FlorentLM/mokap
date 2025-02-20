@@ -541,7 +541,6 @@ class MonocularCalibrationTool:
         # Load frame
         np.copyto(self._frame_in[:], frame)
 
-        print(np.allclose(frame, self._frame_in))
         # Detect
         self._points2d, self._points_ids = self.dt.detect(self._frame_in,
                                               camera_matrix=self._camera_matrix,
