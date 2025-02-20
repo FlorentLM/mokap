@@ -121,6 +121,20 @@ def estimate_camera_matrix(f_mm, sensor_wh_mm, image_wh_px):
     return K
 
 
+def reprojection(points3d, camera_matrix, dist_coeffs, rvec, tvec):
+
+    if dist_coeffs is not None and len(dist_coeffs) < 4:
+        dist_coeffs_minimal = np.zeros(4, dtype=np.float32)
+        dist_coeffs_minimal[:len(dist_coeffs)] = dist_coeffs
+        dist_coeffs = dist_coeffs_minimal
+
+    reproj, jacobian = cv2.projectPoints(points3d,
+                                         rvec=rvec, tvec=tvec,
+                                         cameraMatrix=camera_matrix,
+                                         distCoeffs=dist_coeffs)
+    return reproj.squeeze()
+
+
 def undistortion(points2d, cam_mat, dist_coeffs):
     """
         Simple wrapper around OpenCV's undistortPoints
@@ -132,6 +146,10 @@ def undistortion(points2d, cam_mat, dist_coeffs):
     if not (points2d.ndim == 3 and points2d.shape[1:] == (1, 2)):
         points2d = points2d.reshape(-1, 1, 2)
 
+    if len(dist_coeffs) < 4:
+        dist_coeffs_minimal = np.zeros(4, dtype=np.float32)
+        dist_coeffs_minimal[:len(dist_coeffs)] = dist_coeffs
+        dist_coeffs = dist_coeffs_minimal
     points_undist = cv2.undistortPoints(points2d, cameraMatrix=cam_mat, distCoeffs=dist_coeffs, P=cam_mat)
 
     return points_undist.squeeze()

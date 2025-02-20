@@ -132,7 +132,7 @@ def common_points(n_p_points, n_p_points_ids):
 
     return common_points, common_points_ids
 
-
+# (n_p_points2d, n_cam_mats, n_dist_coeffs) = (common_points2d, n_cam_mats, n_dist_coeffs)
 def undistortion(n_p_points2d, n_cam_mats, n_dist_coeffs):
     """
         Undistort 2D points for each of N cameras (each camera can have a different number of points)
@@ -144,7 +144,7 @@ def undistortion(n_p_points2d, n_cam_mats, n_dist_coeffs):
 
     return points2d_undist
 
-
+# (n_p_points2d, n_p_points_ids, n_rvecs_world, n_tvecs_world, n_cam_mats, n_dist_coeffs) = (this_m_points2d, this_m_points2d_ids, rvecs, tvecs, camera_matrices, distortion_coeffs)
 def triangulation(n_p_points2d, n_p_points_ids, n_rvecs_world, n_tvecs_world, n_cam_mats, n_dist_coeffs):
     """
         Triangulate observations from N cameras, with each camera having its own number of points P,
@@ -179,12 +179,7 @@ def reprojection(points3d_world, n_rvecs_world, n_tvecs_world, n_cam_mats, n_dis
         # Need to be n-camera-centric, so we invert them from world-centric
         cam_rvec, cam_tvec = geometry.invert_extrinsics_2(n_rvecs_world[n], n_tvecs_world[n])
 
-        reproj, jacobian = cv2.projectPoints(points3d_world,
-                                             rvec=cam_rvec, tvec=cam_tvec,
-                                             cameraMatrix=n_cam_mats[n],
-                                             distCoeffs=n_dist_coeffs[n])
-
-        points2d_reproj[n, :, :] = reproj.squeeze()
+        points2d_reproj[n, :, :] = monocular.reprojection(points3d_world, n_cam_mats[n], n_dist_coeffs[n], cam_rvec, cam_tvec)
 
     return points2d_reproj
 

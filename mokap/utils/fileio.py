@@ -106,7 +106,9 @@ def intrinsics_to_dict(camera_matrix, dist_coeffs, errors=None):
     intrinsics_dict = {'camera_matrix': np.array(camera_matrix).squeeze().tolist(),
          'dist_coeffs': np.array(dist_coeffs).squeeze().tolist()}
     if errors is not None:
-        intrinsics_dict['errors'] = np.array(errors).tolist()
+        errors_arr = np.array(errors)
+        if not np.all(errors_arr == np.inf):
+            intrinsics_dict['errors'] = errors_arr.tolist()
     return intrinsics_dict
 
 

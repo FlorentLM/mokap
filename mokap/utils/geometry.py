@@ -190,7 +190,7 @@ def back_projection(points2d, depth, intrinsics_mat, ext_mat, dist_coeffs=None):
     points2d = np.asarray(points2d)
 
     if dist_coeffs is not None:
-        points2d = multiview.undistort_points(points2d, intrinsics_mat, dist_coeffs)
+        points2d = multiview.undistortion(points2d, intrinsics_mat, dist_coeffs)
 
     if not (isinstance(depth, int) or isinstance(depth, float)) and np.atleast_1d(depth).shape[0] != points2d.shape[0]:
         raise AssertionError('Depth vector length does not match 2D points array')

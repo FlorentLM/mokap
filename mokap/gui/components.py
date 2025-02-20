@@ -274,7 +274,8 @@ class MonocularCalibWorker(QObject):
                     coverage_threshold=coverage_threshold,
                     stack_length_threshold=stack_length_threshold,
                     simple_focal=True,
-                    complex_distortion=True
+                    simple_distortion=True,
+                    complex_distortion=False
                 )
                 if r:
                     # If the intrinsics have been updated, return the new errors...
@@ -335,7 +336,7 @@ class MonocularCalibWorker(QObject):
     @Slot(str)
     def load_calib(self, file_path):
         d = fileio.read_intrinsics(file_path, self.cam_name)
-        r = self.monocular_tool.set_intrinsics(d['camera_matrix'], d['dist_coeffs'])
+        r = self.monocular_tool.set_intrinsics(d['camera_matrix'], d['dist_coeffs'], d.get('errors', None))
         if r:
             self.monocular_tool.clear_stacks()
 
@@ -345,7 +346,7 @@ class MonocularCalibWorker(QObject):
 
     @Slot(str)
     def save_calib(self, file_path):
-        fileio.write_intrinsics(file_path, self.cam_name, *self.monocular_tool.intrinsics)
+        fileio.write_intrinsics(file_path, self.cam_name, *self.monocular_tool.intrinsics, self.monocular_tool.last_best_errors)
 
     @Slot(int)
     def set_stage(self, stage):
@@ -372,20 +373,20 @@ class MultiCalibWorker(QObject):
         # when we recieve a detection from the monocular worker
         self.multiview_calib.register_detection(frame_idx, cam_idx, points2d, points_ids)
         if DEBUG:
-            print(f"[MultiCalibWorker] Registered detection for cam {cam_idx}")
+            print(f"[DEBUG] [MultiCalibWorker] Registered detection for cam {cam_idx}\r")
 
     @Slot(int, int, np.ndarray, np.ndarray)
     def on_received_camera_pose(self, frame_idx, cam_idx, rvec, tvec):
         # when we recieve a pose from the monocular worker
         self.multiview_calib.register_extrinsics(frame_idx, cam_idx, rvec, tvec)
-        # if DEBUG:
-        #     print(f"[MultiCalibWorker] Registered extrinsics for cam {cam_idx}")
+        if DEBUG:
+            print(f"[DEBUG] [MultiCalibWorker] Registered extrinsics for cam {cam_idx}\r")
 
     @Slot(int, np.ndarray, np.ndarray)
     def on_updated_intrinsics(self, cam_idx, cam_mat, dist_coeff):
         self.multiview_calib.register_intrinsics(cam_idx, cam_mat, dist_coeff)
         if DEBUG:
-            print(f"[MultiCalibWorker] Updated intrinsics for cam {cam_idx}")
+            print(f'[DEBUG] [MultiCalibWorker] Intrinsics updated for camera {cam_idx}\r')
 
     @Slot()
     def compute(self):
@@ -1432,7 +1433,7 @@ class VideoWindowCalib(VideoWindowBase):
         disp_h, disp_w = self._display_buffer.shape[:2]
 
         if self._worker_computing:
-            blurred = cv2.GaussianBlur(frame.copy(), (15, 15), 0)
+            blurred = cv2.GaussianBlur(frame.copy(), (25, 25), 0)
             # Overlay "Computing..." text in the center of the blurred image
             h, w = blurred.shape[:2]
             text = "Computing..."
@@ -1511,7 +1512,7 @@ class VideoWindowCalib(VideoWindowBase):
         if update_message:
             self.load_save_message.setText(f"Intrinsics <b>not</b> saved!")
         if DEBUG:
-            print(f'[DEBUG] Intrinsics updated for camera {self.idx}')
+            print(f'[DEBUG] [MainThread] Intrinsics updated for {self.name} camera (idx={self.idx})\r')
 
     def on_worker_finished(self):
         self._worker_busy = False
@@ -2112,7 +2113,7 @@ class ExtrinsicsWindow(QWidget):
     def update_intrinsics(self, cam_idx, camera_matrix, dist_coeffs):
         # Update internal copy of the intrinsics (for plotting)
         self._multi_intrinsics_matrices[cam_idx, :, :] = camera_matrix
-        self._multi_dist_coeffs[cam_idx, :] = dist_coeffs
+        self._multi_dist_coeffs[cam_idx, :len(dist_coeffs)] = dist_coeffs
 
         # And forward new intrinsics to the multiview worker
         self.signal_update_intrinsics.emit(cam_idx, camera_matrix, dist_coeffs)

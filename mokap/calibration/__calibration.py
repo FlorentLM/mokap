@@ -93,13 +93,16 @@ class DetectionTool:
                 minMarkers=1)
 
             if refine_points and chessboard_points is not None:
-                # Refine the chessboard corners
-                crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 75, 0.01)
+                try:
+                    # Refine the chessboard corners
+                    crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 75, 0.01)
 
-                chessboard_points = cv2.cornerSubPix(frame, chessboard_points,
-                                                     winSize=(11, 11),
-                                                     zeroZone=(-1, -1),
-                                                     criteria=crit)
+                    chessboard_points = cv2.cornerSubPix(frame, chessboard_points,
+                                                         winSize=(11, 11),
+                                                         zeroZone=(-1, -1),
+                                                         criteria=crit)
+                except cv2.error as e:
+                    print(e)
 
             if chessboard_points is not None and len(chessboard_points_ids[:, 0]) > 1:
                 points2d_coords = chessboard_points[:, 0, :]
@@ -183,6 +186,9 @@ class MonocularCalibrationTool:
         self._coverage_grid_shape = (nb_cells, int(np.round((self.imsize[1] / self.imsize[0]) * nb_cells)))
         self._coverage_grid = np.zeros(self._coverage_grid_shape, dtype=bool)
 
+        # Create a weight grid for the coverage cells
+        self._coverage_weight_grid = self._create_weight_grid()
+
     def set_visualisation_scale(self, scale=1):
         self.BIT_SHIFT = 4
         self.SCALE = scale
@@ -262,9 +268,11 @@ class MonocularCalibrationTool:
 
         return (f_mm_x + f_mm_y) / 2.0
 
-    def set_intrinsics(self, camera_matrix, dist_coeffs):
+    def set_intrinsics(self, camera_matrix, dist_coeffs, errors=None):
         self._camera_matrix = camera_matrix
         self._dist_coeffs = dist_coeffs
+        if errors is not None:
+            self.last_best_errors = errors
 
     def clear_intrinsics(self):
         if self._ideal_camera_matrix is not None:
@@ -332,6 +340,31 @@ class MonocularCalibrationTool:
         self.stack_points2d.clear()
         self.stack_points_ids.clear()
 
+    def _create_weight_grid(self, gamma=2, min_weight=0.5):
+        """
+            Creates a grid of weights for the coverage cells based on distance from the image center
+        """
+        h, w = self.imsize
+        grid_h, grid_w = self._coverage_grid_shape
+        cell_h = h / grid_h
+        cell_w = w / grid_w
+
+        # Coordinates for cell centers
+        xs = (np.arange(grid_w) + 0.5) * cell_w
+        ys = (np.arange(grid_h) + 0.5) * cell_h
+        grid_x, grid_y = np.meshgrid(xs, ys)
+
+        # Calculate distance from the center of the image
+        center_x, center_y = w / 2, h / 2
+        distances = np.sqrt((grid_x - center_x) ** 2 + (grid_y - center_y) ** 2)
+        # Maximum distance is from center to one of the corners
+        max_distance = np.sqrt(center_x ** 2 + center_y ** 2)
+        norm_dist = distances / max_distance
+
+        # Weight: cells at the center (norm_dist near 0) get ~min_weight, and those at the edge get near 1.
+        weights = min_weight + (1 - min_weight) * (norm_dist ** gamma)
+        return weights
+
     def _map_point_to_grid(self, point):
         h, w = self.imsize
         nb_rows, nb_cols = self._coverage_grid_shape
@@ -359,8 +392,8 @@ class MonocularCalibrationTool:
             fix_aspect_ratio = False
 
         # calib_flags = cv2.CALIB_USE_LU
-        calib_flags = cv2.CALIB_USE_QR
-        # calib_flags = 0
+        # calib_flags = cv2.CALIB_USE_QR
+        calib_flags = 0
         if fix_aspect_ratio:
             calib_flags |= cv2.CALIB_FIX_ASPECT_RATIO           # This locks the ratio of fx and fy
         if simple_distortion or not self.has_intrinsics:        # The first iteration will use the simple model - this helps
@@ -369,6 +402,8 @@ class MonocularCalibrationTool:
             calib_flags |= cv2.CALIB_RATIONAL_MODEL
         if self.has_intrinsics:
             calib_flags |= cv2.CALIB_USE_INTRINSIC_GUESS        # Important, otherwise it ignores the passed intrinsics
+
+        calib_flags |= cv2.CALIB_FIX_PRINCIPAL_POINT
 
         # We need to copy to a new array, because OpenCV uses these as Input/Output buffers
         if self.has_intrinsics:
@@ -437,7 +472,7 @@ class MonocularCalibrationTool:
                 self._stack_error = np.mean(self.last_best_errors)
                 print(f"---Updated intrinsics---")
 
-        except Exception as e:
+        except cv2.error as e:
             print(e)
 
         if clear_stack:
@@ -517,12 +552,16 @@ class MonocularCalibrationTool:
                 current_grid[row, col] = True
 
             # Novel area: cells that are in current_grid but not in cumulative grid
-            novel_cells = current_grid & (~self._coverage_grid)
-            novel_area_pct = 100.0 * novel_cells.sum() / self._coverage_grid.size
+            # novel_cells = current_grid & (~self._coverage_grid)
+            # novel_area_pct = 100.0 * novel_cells.sum() / self._coverage_grid.size
 
-            # Overlap: cells that were already covered
-            overlap_cells = current_grid & self._coverage_grid
-            overlap_area_pct = 100.0 * overlap_cells.sum() / self._coverage_grid.size
+            # Novel cells are those not previously covered.
+            novel_cells = current_grid & (~self._coverage_grid)
+            # Instead of counting cells, sum the weights of the novel cells.
+            novel_weight = np.sum(self._coverage_weight_grid[novel_cells])
+            total_weight = np.sum(self._coverage_weight_grid)
+            novel_area_pct = 100.0 * novel_weight / total_weight
+
 
             # Update the cumulative coverage grid
             self._coverage_grid |= current_grid
@@ -605,10 +644,11 @@ class MonocularCalibrationTool:
 
         if self.has_intrinsics and self.has_extrinsics:
             # Display reprojected points: currently detected corners as yellow dots, the others as white dots
-            reproj_points, _ = cv2.projectPoints(self.dt.points3d,
-                                                 self._rvec, self._tvec,
-                                                 self._camera_matrix, self._dist_coeffs)
-            reproj_points = reproj_points.squeeze()
+            reproj_points = monocular.reprojection(self.dt.points3d,
+                                   camera_matrix=self._camera_matrix,
+                                   dist_coeffs=self._dist_coeffs,
+                                   rvec=self._rvec,
+                                   tvec=self._tvec)
 
             reproj_points_int = (reproj_points * self.shift_factor).astype(np.int32)
 
@@ -657,9 +697,10 @@ class MonocularCalibrationTool:
             if self.has_extrinsics:
                 # we also need to undistort the corner points with the undistorted ("optimal") camera matrix
                 # Note: NO dist coeffs, since they are "included" in the optimal camera matrix
-                corners2d, _ = cv2.projectPoints(self.dt.corners3d,
-                                                 self._rvec, self._tvec,
-                                                 optimal_camera_matrix, None)
+                corners2d = monocular.reprojection(self.dt.corners3d,
+                                       camera_matrix=optimal_camera_matrix,
+                                       dist_coeffs=None,
+                                       rvec=self._rvec, tvec=self._tvec)
 
                 pts_int = (corners2d * self.shift_factor).astype(np.int32)
                 frame_out = cv2.polylines(frame_out, [pts_int], True, (255, 0, 255), 1 * self.SCALE, **self.draw_params)
@@ -678,11 +719,12 @@ class MonocularCalibrationTool:
         frame_out = cv2.putText(frame_out, f"Best average reprojection error: {txt}", (30, 120 * self.SCALE), **self.text_params)
 
         f_mm = self.focal_mm
-        txt = f"{f_mm:.3f} mm" if f_mm is not None else '-'
+        txt = f"{f_mm:.2f} mm" if f_mm is not None else '-'
         frame_out = cv2.putText(frame_out, f"Estimated focal: {txt}", (30, 150 * self.SCALE),
                                 **self.text_params)
 
         return frame_out
+
 
 class MultiviewCalibrationTool:
     """
@@ -754,7 +796,7 @@ class MultiviewCalibrationTool:
 
     def register_intrinsics(self, cam_idx: int, camera_matrix: np.ndarray, dist_coeffs: np.ndarray):
         self._multi_intrinsics[cam_idx, :, :] = camera_matrix
-        self._multi_dist_coeffs[cam_idx, :] = dist_coeffs
+        self._multi_dist_coeffs[cam_idx, :len(dist_coeffs)] = dist_coeffs
 
     def intrinsics(self):
         if self._refined:
