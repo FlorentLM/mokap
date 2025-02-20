@@ -64,6 +64,7 @@ class DetectionTool:
 
         # Detect and refine aruco markers
         markers_coords, marker_ids, rejected = self.detector.detectMarkers(frame)
+
         if refine_markers:
             markers_coords, marker_ids, rejected, recovered = cv2.aruco.refineDetectedMarkers(
                 image=frame,
@@ -128,16 +129,10 @@ class MonocularCalibrationTool:
 
         # Image size and related arrays
         if imsize_hw is not None:
-            self.imsize = np.array(imsize_hw[:2])   # OpenCV format (height, width)
-            self._frame_in = np.zeros((*self.imsize, 3), dtype=np.uint8)
-            self._err_norm = 1  # TODO - Error normalisation, disabled for now, use image diag np.sum(np.power(self.imsize, 2)) * 1e-6
-
-            # Initialize coverage grid to track which cells have been covered
-            nb_cells = 15
-            self._coverage_grid_shape = (nb_cells, int(np.round((self.imsize[1] / self.imsize[0]) * nb_cells)))
-            self._coverage_grid = np.zeros(self._coverage_grid_shape, dtype=bool)
+            self.imsize = np.asarray(imsize_hw)[:2]  # OpenCV format (height, width)
+            self._update_imsize(self.imsize)    # Initialise the related arrays
         else:
-            self.imsize = None
+            self.imsize = None      # If not known, can't initialise related arrays, they will be on the first detection
 
         # Process sensor size input
         if isinstance(sensor_size, str):
@@ -149,8 +144,8 @@ class MonocularCalibrationTool:
         self._sensor_size = sensor_size
 
         # Compute ideal camera matrix if possible - this allows to fix the fx/fy ration, and helps the first guess
-        if all([v is not None for v in (focal_mm, sensor_size, imsize_hw)]):
-            self._ideal_camera_matrix = monocular.estimate_camera_matrix(focal_mm, sensor_size, image_wh_px=np.flip(imsize_hw))
+        if all([v is not None for v in (focal_mm, self._sensor_size, self.imsize)]):
+            self._ideal_camera_matrix = monocular.estimate_camera_matrix(focal_mm, sensor_size, image_wh_px=np.flip(self.imsize))
         else:
             self._ideal_camera_matrix = None
 
@@ -174,6 +169,19 @@ class MonocularCalibrationTool:
         self.curr_error = np.inf
 
         self.set_visualisation_scale(scale=1)
+
+    def _update_imsize(self, new_size):
+
+        new_size = np.asarray(new_size)[:2]
+
+        self.imsize = new_size
+        self._frame_in = np.zeros((*self.imsize, 3), dtype=np.uint8)
+        self._err_norm = 1  # TODO - Error normalisation, disabled for now, use image diag np.sum(np.power(self.imsize, 2)) * 1e-6
+
+        # Initialize coverage grid to track which cells have been covered
+        nb_cells = 15
+        self._coverage_grid_shape = (nb_cells, int(np.round((self.imsize[1] / self.imsize[0]) * nb_cells)))
+        self._coverage_grid = np.zeros(self._coverage_grid_shape, dtype=bool)
 
     def set_visualisation_scale(self, scale=1):
         self.BIT_SHIFT = 4
@@ -525,24 +533,21 @@ class MonocularCalibrationTool:
 
     def detect(self, frame):
 
-        # Load frame
-        if self._frame_in is None or frame.size != self._frame_in.size:
-            self.imsize = np.array(frame.shape[:2])
-            self._ideal_central_point = np.flip(self.imsize) / 2.0
-            self._frame_in = np.zeros((*self.imsize, 3), dtype=np.uint8)
-            self._current_area_mask = np.zeros(self.imsize, dtype=bool)
-            self._cumul_coverage_mask = np.zeros(self.imsize, dtype=bool)
-            self._current_area_px = np.zeros(self.imsize, dtype=np.uint8)
-            self._cumul_coverage_px = np.zeros((*self.imsize, 3), dtype=np.uint8)
+        # Initialise or update framesize-related stuff
+        new_size = np.asarray(frame.shape)[:2]
+        if self.imsize is None or np.any(self.imsize != new_size):
+            self._update_imsize(new_size)
 
+        # Load frame
         np.copyto(self._frame_in[:], frame)
 
+        print(np.allclose(frame, self._frame_in))
         # Detect
-        self._points2d, self._points_ids = self.dt.detect(frame,
+        self._points2d, self._points_ids = self.dt.detect(self._frame_in,
                                               camera_matrix=self._camera_matrix,
                                               dist_coeffs=self._dist_coeffs,
                                               refine_markers=True,
-                                              refine_points=False)
+                                              refine_points=True)
 
     def auto_register_area_based(self, area_threshold=0.2, nb_points_threshold=4):
 
