@@ -135,7 +135,7 @@ def reprojection(points3d, camera_matrix, dist_coeffs, rvec, tvec):
     return reproj.squeeze()
 
 
-def undistortion(points2d, cam_mat, dist_coeffs):
+def undistortion(points2d, camera_matrix, dist_coeffs):
     """
         Simple wrapper around OpenCV's undistortPoints
     """
@@ -150,6 +150,6 @@ def undistortion(points2d, cam_mat, dist_coeffs):
         dist_coeffs_minimal = np.zeros(4, dtype=np.float32)
         dist_coeffs_minimal[:len(dist_coeffs)] = dist_coeffs
         dist_coeffs = dist_coeffs_minimal
-    points_undist = cv2.undistortPoints(points2d, cameraMatrix=cam_mat, distCoeffs=dist_coeffs, P=cam_mat)
+    points_undist = cv2.undistortPoints(points2d, cameraMatrix=camera_matrix, distCoeffs=dist_coeffs, P=camera_matrix)
 
     return points_undist.squeeze()

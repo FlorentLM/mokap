@@ -269,7 +269,11 @@ class MonocularCalibrationTool:
         return (f_mm_x + f_mm_y) / 2.0
 
     def set_intrinsics(self, camera_matrix, dist_coeffs, errors=None):
-        self._camera_matrix = camera_matrix
+        self._camera_matrix = np.asarray(camera_matrix)
+        dist_coeffs = np.asarray(dist_coeffs)
+        if len(dist_coeffs) < 4:
+            self._dist_coeffs = np.zeros(5, dtype=np.float32)
+            self._dist_coeffs[:len(dist_coeffs)] = dist_coeffs
         self._dist_coeffs = dist_coeffs
         if errors is not None:
             self.last_best_errors = errors

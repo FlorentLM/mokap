@@ -37,8 +37,8 @@ def flatten_intrinsics(n_camera_matrices, n_distortion_coeffs, simple_focal=True
     if simple_distortion and complex_distortion:
         raise AssertionError('Distortion cannot be both simple and complex.')
     elif simple_distortion and not complex_distortion:
-        dc = dc[:, :2]
-    elif complex_distortion and not simple_dist:
+        dc = dc[:, :2]      # k1 and k2 only
+    elif complex_distortion and not simple_distortion:
         if dc.shape[1] < 8:
             compl_dc = np.zeros((dc.shape[0], 8))
             compl_dc[:, :dc.shape[1]] = dc
@@ -58,7 +58,7 @@ def unflatten_intrinsics(params, simple_focal=True, simple_distortion=False, com
     if simple_distortion and complex_distortion:
         raise AssertionError('Distortion cannot be both simple and complex.')
     elif simple_distortion and not complex_distortion:
-        n_dc = 2
+        n_dc = 2        # k1 and k2 only
     elif complex_distortion and not simple_distortion:
         n_dc = 8
     else:
@@ -113,7 +113,7 @@ def unflatten_params(params, nb_cams, simple_focal=True, simple_distortion=False
     return n_camera_matrices, n_distortion_coeffs, m_rvecs, m_tvecs
 
 # params, points_3d_th = x0, detector.points3d
-def cost_func(params, points_2d, points_ids, points_3d_th, weight_2d_reproj=1.0, weight_3d_consistency=1.0, simple_focal=True, simple_distortion=False, complex_distortion=False):
+def cost_func(params, points_2d, points_ids, points_3d_th, weight_2d_reproj=1.0, weight_3d_consistency=1.0, simple_focal=True, simple_distortion=False, complex_distortion=False, interpolate=False):
     N = len(points_2d)
     M = len(points_2d[0])
 
@@ -129,10 +129,6 @@ def cost_func(params, points_2d, points_ids, points_3d_th, weight_2d_reproj=1.0,
     all_errors_reproj = np.zeros((M, N, max_nb_points, 2))
     all_errors_consistency = np.zeros((M, max_nb_dists))
 
-    # fs = (camera_matrices[:, 0, 0] + camera_matrices[:, 1, 1]) / 2.0
-    # camera_matrices[:, 0, 0] = fs
-    # camera_matrices[:, 1, 1] = fs
-
     for m in range(M):
         this_m_points2d = [cam[m] for cam in points_2d]
         this_m_points2d_ids = [cam[m] for cam in points_ids]
@@ -142,18 +138,20 @@ def cost_func(params, points_2d, points_ids, points_3d_th, weight_2d_reproj=1.0,
                                                              camera_matrices, distortion_coeffs)
 
         if points3d_svd is not None:
-            # points3d_svd, points3d_ids = multiview.interpolate_missing_points3d(points3d_svd, points3d_ids, points_3d_th)
+
+            if interpolate:
+                points3d_svd, points3d_ids = multiview.interpolate3d(points3d_svd, points3d_ids, points_3d_th)
 
             errors_reproj, errors_consistency = multiview.compute_3d_errors(this_m_points2d,
-                                                                                 this_m_points2d_ids,
-                                                                                 points3d_svd,
-                                                                                 points3d_ids,
-                                                                                 points_3d_th,
-                                                                                 rvecs,
-                                                                                 tvecs,
-                                                                                 camera_matrices,
-                                                                                 distortion_coeffs,
-                                                                                 fill_value='median')
+                                                                            this_m_points2d_ids,
+                                                                            points3d_svd,
+                                                                            points3d_ids,
+                                                                            points_3d_th,
+                                                                            rvecs,
+                                                                            tvecs,
+                                                                            camera_matrices,
+                                                                            distortion_coeffs,
+                                                                            fill_value='median')
             all_errors_reproj[m, :, :, :] = errors_reproj
             all_errors_consistency[m, :] = errors_consistency
         else:
@@ -163,7 +161,7 @@ def cost_func(params, points_2d, points_ids, points_3d_th, weight_2d_reproj=1.0,
     return np.concatenate([all_errors_reproj.ravel() * weight_2d_reproj, all_errors_consistency.ravel() * weight_3d_consistency])
 
 
-def run_bundle_adjustment(camera_matrices, distortion_coeffs, rvecs, tvecs, points_2d, points_ids, points_3d, reproj_weight=1.0, consistency_weight=2.0, simple_focal=True, simple_distortion=False, complex_distortion=False):
+def run_bundle_adjustment(camera_matrices, distortion_coeffs, rvecs, tvecs, points_2d, points_ids, points_3d, reproj_weight=1.0, consistency_weight=2.0, simple_focal=True, simple_distortion=False, complex_distortion=False, interpolate=False):
 
     nb_cams = len(camera_matrices)
 
@@ -185,7 +183,8 @@ def run_bundle_adjustment(camera_matrices, distortion_coeffs, rvecs, tvecs, poin
                                          points_ids,    # Passed as a fixed parameters
                                          points_3d,     # Passed as a fixed parameters
                                          reproj_weight, consistency_weight,     # Weights for the two types of errors
-                                         simple_focal, simple_distortion, complex_distortion))
+                                         simple_focal, simple_distortion, complex_distortion,
+                                         interpolate))
 
     camera_matrices_opt, distortion_coeffs_opt, rvecs_opt, tvecs_opt = unflatten_params(result.x, nb_cams=nb_cams, simple_focal=simple_focal, simple_distortion=simple_distortion)
 

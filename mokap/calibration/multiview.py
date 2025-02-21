@@ -253,7 +253,7 @@ def compute_3d_errors(points2d, points2d_ids,
     return errors_2d_reproj, errors_3d_consistency
 
 
-def interpolate_missing_points3d(points3d_svd, points3d_ids, points3d_theoretical):
+def interpolate3d(points3d_svd, points3d_ids, points3d_theoretical):
     """
         Use triangulated 3D points and theoretical board layout to interpolate missing points
     """
