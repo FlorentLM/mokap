@@ -37,7 +37,7 @@ def flatten_intrinsics(n_camera_matrices, n_distortion_coeffs, simple_focal=True
     if simple_distortion and complex_distortion:
         raise AssertionError('Distortion cannot be both simple and complex.')
     elif simple_distortion and not complex_distortion:
-        dc = dc[:, :2]      # k1 and k2 only
+        dc = dc[:, :4]      # k1, k2, p1 and p2 only (k3 is fixed)
     elif complex_distortion and not simple_distortion:
         if dc.shape[1] < 8:
             compl_dc = np.zeros((dc.shape[0], 8))
@@ -58,7 +58,7 @@ def unflatten_intrinsics(params, simple_focal=True, simple_distortion=False, com
     if simple_distortion and complex_distortion:
         raise AssertionError('Distortion cannot be both simple and complex.')
     elif simple_distortion and not complex_distortion:
-        n_dc = 2        # k1 and k2 only
+        n_dc = 4        # k1, k2, p1 and p2 only (k3 is fixed)
     elif complex_distortion and not simple_distortion:
         n_dc = 8
     else:
@@ -100,7 +100,7 @@ def unflatten_params(params, nb_cams, simple_focal=True, simple_distortion=False
     if simple_distortion and complex_distortion:
         raise AssertionError('Distortion cannot be both simple and complex.')
     elif simple_distortion and not complex_distortion:
-        n_dc = 2
+        n_dc = 4        # k1, k2, p1 and p2 only (k3 is fixed)
     elif complex_distortion and not simple_distortion:
         n_dc = 8
     else:
