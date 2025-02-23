@@ -264,11 +264,11 @@ def triangulate_points_svd(points2d, projection_matrices, weights=None, lambda_r
 
     if weights is not None:
         weights = np.array(weights)
-        if weights.shape[0] != nb_points:
+        if weights.shape[1] != nb_points:
             raise ValueError("Number of weights must match the number of 2D points!")
         weights[weights <= 0] = np.nan
     else:
-        weights = np.ones(nb_points)
+        weights = np.ones((nb_views, nb_points))
 
     points_3d = np.full((nb_points, 3), np.nan)
 
@@ -278,9 +278,9 @@ def triangulate_points_svd(points2d, projection_matrices, weights=None, lambda_r
 
         for i, ii in enumerate(range(0, nb_views * 2, 2)):
             P = projection_matrices[i]
-            u, v = points2d[i, p]
-            A[ii, :] = (u * P[2, :] - P[0, :]) * weights[p]
-            A[ii + 1, :] = (v * P[2, :] - P[1, :]) * weights[p]
+            u, v = points2d[i, p, :]
+            A[ii, :] = (u * P[2, :] - P[0, :]) * weights[i, p]
+            A[ii + 1, :] = (v * P[2, :] - P[1, :]) * weights[i, p]
 
         A = A[~np.isnan(A).any(axis=1), :]
 
