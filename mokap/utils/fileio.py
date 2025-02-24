@@ -246,7 +246,7 @@ def read_parameters(filepath, camera_name=None):
             data[cam_name] = {k: np.array(v).squeeze() for k, v in cam_data.items()}
         return data
 
-
+slp_path = 'C:/Users/flolm/Desktop/3d_ant_data/240809-1240/inputs/tracking/240809-1240_cam2_banana_session13.predictions.slp'
 def read_SLEAP(slp_path):
     import sleap_io
 
@@ -343,8 +343,10 @@ def load_session(path, session=''):
         and_txt = ' and ' if (loaded_slp > 0 and loaded_csv > 0) else ''
         print(f'Loaded {slp_txt}{and_txt}{csv_txt} files.')
 
-    merged = merge_multiview_df(dfs)
-    return merged
+    merged_df = merge_multiview_df(dfs)
+    sorted_df = sort_multiview_df(merged_df, cameras_order=None, keypoints_order=None)
+
+    return sorted_df
 
 
 def merge_multiview_df(list_of_dfs):
@@ -374,6 +376,36 @@ def merge_multiview_df(list_of_dfs):
     multiview_df = multiview_df.reindex(columns=columns_order)
 
     return multiview_df
+
+
+def sort_multiview_df(df, cameras_order=None, keypoints_order=None):
+    df = df.reorder_levels(['camera', 'track', 'frame']).sort_index()
+
+    if keypoints_order is None:
+        keypoints_order = [col[0] for col in df.columns if col[1] == 'score']
+    second_level_order = ['x', 'y', 'score']
+
+    desired_order = [
+        (kp, measures)
+        for kp in keypoints_order
+        for measures in second_level_order
+        if (kp, measures) in df.columns
+    ]
+
+    ordered_columns = df.reindex(columns=pd.MultiIndex.from_tuples(desired_order))
+
+    if cameras_order is None:
+        cameras_order = sorted(ordered_columns.index.levels[0])
+
+    ordered_columns.index = ordered_columns.index.set_levels(
+        pd.CategoricalIndex(ordered_columns.index.levels[0],
+                            categories=cameras_order,
+                            ordered=True), level=0)
+
+    ordered_both = ordered_columns.sort_index(level=['camera', 'track', 'frame'])
+
+    return ordered_both
+
 
 
 ## These functions below are not to be used anymore - will be deleted
