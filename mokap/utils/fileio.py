@@ -392,6 +392,17 @@ def sort_multiview_df(df, cameras_order=None, keypoints_order=None):
         if (kp, measures) in df.columns
     ]
 
+    other_columns = [
+        ('centroid', 'x'),
+        ('centroid', 'y'),
+        ('displacement', 'x'),
+        ('displacement', 'y'),
+        ('comments', 'tracking_score'),
+        ('comments', 'instance_score')
+    ]
+
+    desired_order += [col for col in other_columns if col in df.columns]
+
     ordered_columns = df.reindex(columns=pd.MultiIndex.from_tuples(desired_order))
 
     if cameras_order is None:
