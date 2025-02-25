@@ -246,7 +246,22 @@ def read_parameters(filepath, camera_name=None):
             data[cam_name] = {k: np.array(v).squeeze() for k, v in cam_data.items()}
         return data
 
-slp_path = 'C:/Users/flolm/Desktop/3d_ant_data/240809-1240/inputs/tracking/240809-1240_cam2_banana_session13.predictions.slp'
+
+# slp_path = 'C:/Users/flolm/Desktop/3d_ant_data/240905-1616/inputs/tracking/240905-1616_cam2_banana_session13.predictions.slp'
+
+
+def load_skeleton_SLEAP(slp_path, indices=False):
+    import sleap_io
+
+    slp_path = Path(slp_path)
+    slp_content = sleap_io.load_file(slp_path.as_posix())
+
+    if indices:
+        return slp_content.skeleton.node_names, slp_content.skeleton.edge_inds
+    else:
+        return slp_content.skeleton.node_names, slp_content.skeleton.edge_names
+
+
 def read_SLEAP(slp_path):
     import sleap_io
 
@@ -344,9 +359,8 @@ def load_session(path, session=''):
         print(f'Loaded {slp_txt}{and_txt}{csv_txt} files.')
 
     merged_df = merge_multiview_df(dfs)
-    sorted_df = sort_multiview_df(merged_df, cameras_order=None, keypoints_order=None)
 
-    return sorted_df
+    return merged_df
 
 
 def merge_multiview_df(list_of_dfs):
@@ -365,7 +379,7 @@ def merge_multiview_df(list_of_dfs):
     multiview_df = pd.concat(dfs, join='outer')
     multiview_df.index = multiview_df.index.rename({'frame_idx': 'frame'})
     multiview_df.rename(columns={
-        'instance.score': 'comments.instance_score',
+        'instance.instance_score': 'comments.instance_score',
         'instance.tracking_score': 'comments.tracking_score',
                        }, inplace=True)
     multiview_df.columns = pd.MultiIndex.from_tuples([col.split('.') for col in multiview_df.columns])
@@ -374,16 +388,19 @@ def merge_multiview_df(list_of_dfs):
     columns_order = multiview_df.columns
     columns_order = pd.MultiIndex.from_tuples(list(columns_order[-2:]) + list(columns_order[1:-2]) + [columns_order[0]])
     multiview_df = multiview_df.reindex(columns=columns_order)
+    sorted_df = sort_multiview_df(multiview_df)
+    return sorted_df
 
-    return multiview_df
 
+def sort_multiview_df(in_df, cameras_order=None, keypoints_order=None):
 
-def sort_multiview_df(df, cameras_order=None, keypoints_order=None):
+    df = in_df.copy()
+
     df = df.reorder_levels(['camera', 'track', 'frame']).sort_index()
 
     if keypoints_order is None:
-        keypoints_order = [col[0] for col in df.columns if col[1] == 'score']
-    second_level_order = ['x', 'y', 'score']
+        keypoints_order = df.xs('score', level=1, axis=1)
+    second_level_order = ['x', 'y', 'score', 'disp']
 
     desired_order = [
         (kp, measures)
@@ -395,10 +412,10 @@ def sort_multiview_df(df, cameras_order=None, keypoints_order=None):
     other_columns = [
         ('centroid', 'x'),
         ('centroid', 'y'),
-        ('displacement', 'x'),
-        ('displacement', 'y'),
+        ('centroid', 'disp'),
         ('comments', 'tracking_score'),
-        ('comments', 'instance_score')
+        ('comments', 'instance_score'),
+        ('comments', 'track_sleap'),
     ]
 
     desired_order += [col for col in other_columns if col in df.columns]
