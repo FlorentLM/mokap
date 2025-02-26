@@ -248,6 +248,7 @@ def read_parameters(filepath, camera_name=None):
 
 
 # slp_path = 'C:/Users/flolm/Desktop/3d_ant_data/240905-1616/inputs/tracking/240905-1616_cam2_banana_session13.predictions.slp'
+# slp_path = 'C:/Users/flolm/Desktop/labels.v005.slp'
 
 
 def load_skeleton_SLEAP(slp_path, indices=False):
@@ -262,18 +263,27 @@ def load_skeleton_SLEAP(slp_path, indices=False):
         return slp_content.skeleton.node_names, slp_content.skeleton.edge_names
 
 
-def read_SLEAP(slp_path):
+def read_SLEAP(slp_path, cam_name=None):
     import sleap_io
 
     def instance_to_row(instance):
         track = instance.track.name if instance.track else ''
         score = float(instance.score) if hasattr(instance, 'score') else 0.0
-        tracking_score = float(instance.tracking_score) if hasattr(instance, 'tracking_score') else 0.0
-        values = np.array([[instance.points[node].x, instance.points[node].y, instance.points[node].score] for node in instance.skeleton.nodes])
-        return [track, score, tracking_score] + values.ravel().tolist()
+        tracking_score = float(instance.tracking_score) if hasattr(instance, 'tracking_score') else 1.0
+        values = []
+        for node in instance.skeleton.nodes:
+            x = float(instance.points[node].x) if hasattr(instance.points[node], 'x') else np.nan
+            y = float(instance.points[node].y) if hasattr(instance.points[node], 'y') else np.nan
+            s = float(instance.points[node].score) if hasattr(instance.points[node], 'score') else 1.0
+            values.extend([x, y, s])
+        return [track, score, tracking_score] + values
 
     slp_path = Path(slp_path)
-    cam_name = slp_path.stem.split('_')[2]
+    if cam_name is None:
+        try:
+            cam_name = slp_path.stem.split('_')[2]   # TODO - This needs to be more robust
+        except:
+            raise Exception(f'Impossible to infer camera name from {slp_path.stem}!')
     slp_content = sleap_io.load_file(slp_path.as_posix())
 
     keypoints = slp_content.skeleton.node_names
@@ -282,8 +292,11 @@ def read_SLEAP(slp_path):
     index = []
     rows = []
     for frame_idx, frame_content in enumerate(slp_content.labeled_frames):
-        for instance in frame_content.instances:
-            rows.append(instance_to_row(instance))
+        for i, instance in enumerate(frame_content.instances):
+            row = instance_to_row(instance)
+            if row[0] == '':
+                row[0] = f'instance_{i}'
+            rows.append(row)
             index.append(frame_idx)
 
     df = pd.DataFrame(rows, columns=columns)
