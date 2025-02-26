@@ -267,8 +267,8 @@ def read_SLEAP(slp_path, cam_name=None):
     import sleap_io
 
     def instance_to_row(instance):
-        track = instance.track.name if instance.track else ''
-        score = float(instance.score) if hasattr(instance, 'score') else 1.0
+        original_track = instance.track.name if instance.track else ''
+        instance_score = float(instance.score) if hasattr(instance, 'score') else 1.0
         tracking_score = float(instance.tracking_score) if hasattr(instance, 'tracking_score') else 1.0
         values = []
         for node in instance.skeleton.nodes:
@@ -276,7 +276,7 @@ def read_SLEAP(slp_path, cam_name=None):
             y = float(instance.points[node].y) if hasattr(instance.points[node], 'y') else np.nan
             s = float(instance.points[node].score) if hasattr(instance.points[node], 'score') else 1.0
             values.extend([x, y, s])
-        return [track, score, tracking_score] + values
+        return  values + [instance_score, tracking_score, original_track]
 
     slp_path = Path(slp_path)
     if cam_name is None:
@@ -288,20 +288,22 @@ def read_SLEAP(slp_path, cam_name=None):
 
     keypoints = slp_content.skeleton.node_names
 
-    columns = ['track', 'instance.instance_score', 'instance.tracking_score'] + [f"{k}.{a}" for k in keypoints for a in ['x', 'y', 'score']]
-    index = []
+    columns = (['camera.', 'frame.']
+               + [f"{k}.{a}" for k in keypoints for a in ['x', 'y', 'score']]
+               + ['comments.instance_score', 'comments.tracking_score', 'comments.track_sleap'])
+
     rows = []
-    for frame_idx, frame_content in enumerate(slp_content.labeled_frames):
+    for frame_content in slp_content.labeled_frames:
         for i, instance in enumerate(frame_content.instances):
             row = instance_to_row(instance)
-            if row[0] == '':
-                row[0] = f'instance_{i}'
+            if row[-1] == '':
+                row[-1] = f'instance_{i}'
+            row = [cam_name, frame_content.frame_idx] + row
             rows.append(row)
-            index.append(frame_idx)
 
     df = pd.DataFrame(rows, columns=columns)
-    df.insert(1, "frame", index)
-    df.insert(0, "camera", cam_name)
+    df.columns = pd.MultiIndex.from_tuples([col.split('.') for col in df.columns])
+
     return df
 
 
@@ -377,42 +379,33 @@ def load_session(path, session=''):
 
 
 def merge_multiview_df(list_of_dfs):
-    dfs = []
 
-    # TODO - Check if the csv files contain a track ID or not
-
-    last_nb_tracks = 0
+    last_nb_tracks = 1
     for df in list_of_dfs:
-        df['comments.track_sleap'] = df['track']
-        df['track'] = df['track'].factorize()[0] + last_nb_tracks + 1
-        last_nb_tracks = df['track'].max()
-        df.set_index(['frame', 'camera', 'track'], inplace=True)
-        dfs.append(df)
+        df['track'] = df[('comments', 'track_sleap')].factorize()[0] + last_nb_tracks
+        last_nb_tracks = int(df['track'].max())
 
-    multiview_df = pd.concat(dfs, join='outer')
-    multiview_df.index = multiview_df.index.rename({'frame_idx': 'frame'})
-    multiview_df.rename(columns={
-        'instance.instance_score': 'comments.instance_score',
-        'instance.tracking_score': 'comments.tracking_score',
-                       }, inplace=True)
-    multiview_df.columns = pd.MultiIndex.from_tuples([col.split('.') for col in multiview_df.columns])
+    multiview_df = pd.concat(list_of_dfs, join='outer')
+    multiview_df.set_index(['camera', 'track', 'frame'], inplace=True)
 
-    # Tweak the columns order a little
-    columns_order = multiview_df.columns
-    columns_order = pd.MultiIndex.from_tuples(list(columns_order[-2:]) + list(columns_order[1:-2]) + [columns_order[0]])
-    multiview_df = multiview_df.reindex(columns=columns_order)
-    sorted_df = sort_multiview_df(multiview_df)
-    return sorted_df
+    # Set the cameras level as a categorical
+    multiview_df.index = multiview_df.index.set_levels(
+        pd.CategoricalIndex(multiview_df.index.levels[0],
+                            categories=sorted(multiview_df.index.levels[0]), ordered=True), level=0)
+
+    # And apply the sorted categorical index for the cameras
+    multiview_df = multiview_df.sort_index()
+
+    return multiview_df
 
 
 def sort_multiview_df(in_df, cameras_order=None, keypoints_order=None):
 
     df = in_df.copy()
 
-    df = df.reorder_levels(['camera', 'track', 'frame']).sort_index()
-
     if keypoints_order is None:
-        keypoints_order = df.xs('score', level=1, axis=1)
+        keypoints_order = df.xs('score', level=1, axis=1).columns
+
     second_level_order = ['x', 'y', 'score', 'disp']
 
     desired_order = [
@@ -433,19 +426,25 @@ def sort_multiview_df(in_df, cameras_order=None, keypoints_order=None):
 
     desired_order += [col for col in other_columns if col in df.columns]
 
-    ordered_columns = df.reindex(columns=pd.MultiIndex.from_tuples(desired_order))
+    # Apply the columns order
+    df = df.reindex(columns=pd.MultiIndex.from_tuples(desired_order))
 
+    # Reorder the levels themselves to the preferred one
+    df = df.reorder_levels(['camera', 'track', 'frame'])
+    
     if cameras_order is None:
-        cameras_order = sorted(ordered_columns.index.levels[0])
+        # If no custom ordering is passsed we sort alphabetically
+        cameras_order = sorted(df.index.levels[0])
 
-    ordered_columns.index = ordered_columns.index.set_levels(
-        pd.CategoricalIndex(ordered_columns.index.levels[0],
-                            categories=cameras_order,
-                            ordered=True), level=0)
+    # Set the cameras index as a categorical
+    df.index = df.index.set_levels(
+        pd.CategoricalIndex(df.index.levels[0],
+                            categories=cameras_order, ordered=True), level=0)
+    
+    # And apply the sorted categorical index for the cameras
+    df_ordered = df.sort_index()
 
-    ordered_both = ordered_columns.sort_index(level=['camera', 'track', 'frame'])
-
-    return ordered_both
+    return df_ordered
 
 
 
