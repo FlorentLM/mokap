@@ -268,7 +268,7 @@ def read_SLEAP(slp_path, cam_name=None):
 
     def instance_to_row(instance):
         track = instance.track.name if instance.track else ''
-        score = float(instance.score) if hasattr(instance, 'score') else 0.0
+        score = float(instance.score) if hasattr(instance, 'score') else 1.0
         tracking_score = float(instance.tracking_score) if hasattr(instance, 'tracking_score') else 1.0
         values = []
         for node in instance.skeleton.nodes:
