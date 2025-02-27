@@ -310,11 +310,6 @@ def SLP_to_df(slp_content, camera_name=None, session=None):
 
     return df
 
-slp_path = 'C:/Users/flolm/Desktop/240905-1616_cam0_avocado_session6.predictions.slp'
-slp_path = 'C:/Users/flolm/Desktop/avocado.slp'
-camera_name = 'avocado'
-session = 'session31'
-session = 'session6'
 
 def read_SLEAP(slp_path):
     import sleap_io
