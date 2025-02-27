@@ -265,15 +265,22 @@ def load_skeleton_SLEAP(slp_path, indices=False):
 
 def SLP_to_df(slp_content, camera_name=None, session=None):
 
-    def instance_to_row(instance):
+    def instance_to_row(instance, is_manual):
+
         original_track = instance.track.name if instance.track else ''
-        instance_score = float(instance.score) if hasattr(instance, 'score') else 1.0
-        tracking_score = float(instance.tracking_score) if hasattr(instance, 'tracking_score') else 1.0
+        instance_score = float(instance.score) if hasattr(instance, 'score') else int(is_manual)
+        tracking_score = float(instance.tracking_score) if hasattr(instance, 'tracking_score') else int(is_manual)
+
         values = []
         for node in instance.skeleton.nodes:
-            x = float(instance.points[node].x) if hasattr(instance.points[node], 'x') else np.nan
-            y = float(instance.points[node].y) if hasattr(instance.points[node], 'y') else np.nan
-            s = float(instance.points[node].score) if hasattr(instance.points[node], 'score') else 1.0
+            if not instance.points[node].visible:
+                x = np.nan
+                y = np.nan
+                s = 0.0
+            else:
+                x = float(instance.points[node].x) if hasattr(instance.points[node], 'x') else np.nan
+                y = float(instance.points[node].y) if hasattr(instance.points[node], 'y') else np.nan
+                s = float(instance.points[node].score) if hasattr(instance.points[node], 'score') else 1.0
             values.extend([x, y, s])
         return  values + [instance_score, tracking_score, original_track]
 
@@ -289,7 +296,8 @@ def SLP_to_df(slp_content, camera_name=None, session=None):
         if camera_name in source_video.stem or camera_name is None:   # if name is not passed, assume we load everything
             if session in source_video.stem or session is None:
                 for i, instance in enumerate(frame_content.instances):
-                    row = instance_to_row(instance)
+                    is_manual = instance in frame_content.user_instances
+                    row = instance_to_row(instance, is_manual)
                     if row[-1] == '':
                         row[-1] = f'instance_{i}'
                     if session is not None:
@@ -302,6 +310,11 @@ def SLP_to_df(slp_content, camera_name=None, session=None):
 
     return df
 
+slp_path = 'C:/Users/flolm/Desktop/240905-1616_cam0_avocado_session6.predictions.slp'
+slp_path = 'C:/Users/flolm/Desktop/avocado.slp'
+camera_name = 'avocado'
+session = 'session31'
+session = 'session6'
 
 def read_SLEAP(slp_path):
     import sleap_io
