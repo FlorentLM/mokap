@@ -8,6 +8,7 @@ import scipy.stats as stats
 from scipy.spatial.distance import cdist
 from mokap.utils import geometry, generate_charuco
 from mokap.calibration import monocular, multiview
+from typing import List
 
 
 class DetectionTool:
@@ -26,8 +27,8 @@ class DetectionTool:
         self.detector = cv2.aruco.ArucoDetector(aruco_dict, detectorParams=self.detector_parameters)
 
         # Maximum number of board points and distances
-        self._total_points = len(self.board.getChessboardCorners())
-        self._total_distances = int((self._total_points * (self._total_points - 1)) / 2.0)
+        self._total_points: int = len(self.board.getChessboardCorners())
+        self._total_distances: int = int((self._total_points * (self._total_points - 1)) / 2.0)
 
         # Create 3D coordinates for board corners (in board-centric coordinates)
         self._n_cols, self._n_rows = self.board.getChessboardSize()
@@ -174,9 +175,9 @@ class MonocularCalibrationTool:
         self.stack_points_ids = deque(maxlen=self._max_stack)
 
         # Error metrics
-        self.last_best_errors = np.inf
-        self._stack_error = np.inf      # This will be the mean of the last_best_errors
-        self.curr_error = np.inf
+        self.last_best_errors: List[float] = [np.inf]
+        self._stack_error: float = np.inf      # This will be the mean of the last_best_errors
+        self.curr_error: float = np.inf
 
         self.set_visualisation_scale(scale=1)
 
@@ -292,7 +293,7 @@ class MonocularCalibrationTool:
         else:
             self._camera_matrix = None
             self._dist_coeffs = None
-        self.last_best_errors = np.inf
+        self.last_best_errors = [np.inf]
 
     @staticmethod
     def _check_new_errors(errors_new, errors_prev, p_val=0.05, confidence_lvl=0.95):
