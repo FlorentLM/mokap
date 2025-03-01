@@ -24,7 +24,8 @@ from pyqtgraph.opengl import GLViewWidget, GLAxisItem, GLGridItem, GLLinePlotIte
 from mokap.utils import geometry
 from mokap.calibration import monocular
 from mokap.utils import hex_to_rgb, hex_to_hls, pretty_size, generate_charuco
-from mokap.calibration import DetectionTool, MonocularCalibrationTool, MultiviewCalibrationTool
+
+from mokap.calibration import MonocularCalibrationTool, MultiviewCalibrationTool
 from mokap.utils import fileio
 
 ##
@@ -100,14 +101,12 @@ class SnapPopup(QFrame):
 
 class BoardParamsDialog(QDialog):
 
-    def __init__(self, rows=6, cols=5, square_length=1.5, parent=None):
+    def __init__(self, board_params, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Calibration Board Settings")
         self.setModal(True)
 
-        self._rows = rows
-        self._cols = cols
-        self._square_length = square_length
+        self._board_params = board_params
 
         self._init_ui()
 
@@ -120,7 +119,7 @@ class BoardParamsDialog(QDialog):
         self.row_spin = QSpinBox()
         self.row_spin.setMinimum(2)
         self.row_spin.setMaximum(30)
-        self.row_spin.setValue(self._rows)
+        self.row_spin.setValue(self._board_params['rows'])
         row_layout.addWidget(row_label)
         row_layout.addWidget(self.row_spin)
         main_layout.addLayout(row_layout)
@@ -131,7 +130,7 @@ class BoardParamsDialog(QDialog):
         self.col_spin = QSpinBox()
         self.col_spin.setMinimum(2)
         self.col_spin.setMaximum(30)
-        self.col_spin.setValue(self._cols)
+        self.col_spin.setValue(self._board_params['cols'])
         col_layout.addWidget(col_label)
         col_layout.addWidget(self.col_spin)
         main_layout.addLayout(col_layout)
@@ -143,7 +142,7 @@ class BoardParamsDialog(QDialog):
         self.sq_spin.setMinimum(0.01)
         self.sq_spin.setMaximum(1000.0)
         self.sq_spin.setDecimals(2)
-        self.sq_spin.setValue(self._square_length)
+        self.sq_spin.setValue(self._board_params['square_length'])
         sq_layout.addWidget(sq_label)
         sq_layout.addWidget(self.sq_spin)
         main_layout.addLayout(sq_layout)
@@ -161,7 +160,7 @@ class BoardParamsDialog(QDialog):
         self.setLayout(main_layout)
 
     def get_values(self):
-        return self.row_spin.value(), self.col_spin.value(), self.sq_spin.value(), self.apply_all_checkbox.isChecked()
+        return self._board_params, self.apply_all_checkbox.isChecked()
 
 
 ##
@@ -218,13 +217,13 @@ class MonocularCalibWorker(QObject):
     signal_return_detection = Signal(int, int, np.ndarray, np.ndarray)
     signal_return_pose = Signal(int, int, np.ndarray, np.ndarray)
 
-    def __init__(self, charuco_board, cam_idx, cam_name, cam_shape, parent=None):
+    def __init__(self, board_params, cam_idx, cam_name, cam_shape, parent=None):
         super().__init__(parent)
         self.camera_idx = cam_idx
         self.cam_name = cam_name
         self.cam_shape = cam_shape
 
-        self.init_mct(charuco_board)
+        self.init_mct(board_params)
 
         # Flags for worker state
         self._paused = False
@@ -235,10 +234,9 @@ class MonocularCalibWorker(QObject):
 
         self._current_stage = 0
 
-    def init_mct(self, charuco_board):
-        self.detection_tool = DetectionTool(charuco_board)
+    def init_mct(self, board_params):
         self.monocular_tool = MonocularCalibrationTool(
-            detectiontool=self.detection_tool,
+            board_params=board_params,
             imsize_hw=self.cam_shape[:2],           # pass frame size so it can track coverage
             focal_mm=60,                            # TODO - UI field for these
             sensor_size='1/2.9"'                    #
@@ -1247,20 +1245,17 @@ class VideoWindowCalib(VideoWindowBase):
         super().__init__(main_window_ref, idx)
 
         # Default board params - TODO: Needs to be loaded from config file
-        self.BOARD_ROWS = 6
-        self.BOARD_COLS = 5
-        self.SQUARE_LENGTH_MM = 1.5
-        self.MARKER_BITS = 4
-
-        # Setup Detection and monocular calib tools
-        self._update_board()
+        self.board_params = {'rows': 6,
+                             'cols': 5,
+                             'square_length': 1.5,
+                             'markers_size': 4}
 
         # Initialize reprojection error data for plotting
         self.reprojection_errors = deque(maxlen=100)
 
         # Setup worker
         self.worker_thread = QThread(self)
-        self.worker = MonocularCalibWorker(self.charuco_board, self.idx, self.name, self.source_shape)
+        self.worker = MonocularCalibWorker(self.board_params, self.idx, self.name, self.source_shape)
         self.worker.moveToThread(self.worker_thread)
 
         # Initialise where to store worker results and state
@@ -1568,52 +1563,37 @@ class VideoWindowCalib(VideoWindowBase):
             if improvement > improvement_threshold and se_last5 < se_threshold:
                 self._intrinsics_stable = True
 
-    def _update_board(self):
-        self.charuco_board = generate_charuco(
-            board_rows=self.BOARD_ROWS,
-            board_cols=self.BOARD_COLS,
-            square_length_mm=self.SQUARE_LENGTH_MM,
-            marker_bits=self.MARKER_BITS
-        )
-
     def show_board_params_dialog(self):
         """
             Opens the small BoardParamsDialog to let the user set board parameters
         """
-        dlg = BoardParamsDialog(
-            rows=self.BOARD_ROWS,
-            cols=self.BOARD_COLS,
-            square_length=self.SQUARE_LENGTH_MM,
-            parent=self
-        )
+        dlg = BoardParamsDialog(self.board_params)
+
         ret = dlg.exec_()
         if ret == QDialog.Accepted:
             # retrieve updated parameters
-            rows, cols, sq, all = dlg.get_values()
+            new_board_params, bool_apply_all = dlg.get_values()
 
-            if all:
+            if bool_apply_all:
                 # Loop over all secondary windows in the main app
                 for w in self._main_window.secondary_windows:
                     if isinstance(w, VideoWindowCalib):
-                        w.BOARD_ROWS = rows
-                        w.BOARD_COLS = cols
-                        w.SQUARE_LENGTH_MM = sq
-                        w._update_board()
+                        w.board_params = new_board_params.copy()
                         w._update_board_preview()
             else:
-                self.BOARD_ROWS = rows
-                self.BOARD_COLS = cols
-                self.SQUARE_LENGTH_MM = sq
-
-                self._update_board()
+                self.board_params = new_board_params.copy()
                 self._update_board_preview()
 
     def _update_board_preview(self):
         MAX_W, MAX_H = 100, 100
 
-        r = self.BOARD_ROWS / self.BOARD_COLS
+        r = self.board_params['rows'] / self.board_params['cols']
         h, w = 100, int(r * 100)
-        board_arr = self.charuco_board.generateImage((h, w))
+        board_arr = generate_charuco(
+            board_rows=self.board_params['rows'],
+            board_cols=self.board_params['cols'],
+            square_length_mm=self.board_params['square_length'],
+            marker_bits=self.board_params['markers_size']).generateImage((h, w))
         q_img = QImage(board_arr, h, w, h, QImage.Format.Format_Grayscale8)
         pixmap = QPixmap.fromImage(q_img)
         bounded_pixmap = pixmap.scaled(MAX_W, MAX_H,

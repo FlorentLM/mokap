@@ -6,14 +6,20 @@ import cv2
 import toml
 import scipy.stats as stats
 from scipy.spatial.distance import cdist
-from mokap.utils import geometry
+from mokap.utils import geometry, generate_charuco
 from mokap.calibration import monocular, multiview
 
 
 class DetectionTool:
-    def __init__(self, charuco_board):
+    def __init__(self, board_params):
+
         # Charuco board and detector parameters
-        self.board = charuco_board
+        self.board = generate_charuco(
+            board_rows=board_params['rows'],
+            board_cols=board_params['cols'],
+            square_length_mm=board_params['square_length'],
+            marker_bits=board_params['markers_size']
+        )
         aruco_dict = self.board.getDictionary()
         self.detector_parameters = cv2.aruco.DetectorParameters()
         self.detector_parameters.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
@@ -115,8 +121,9 @@ class MonocularCalibrationTool:
     """
         This object is stateful for the intrinsics *only*
     """
-    def __init__(self, detectiontool, imsize_hw=None, min_stack=15, max_stack=100, focal_mm=None, sensor_size=None):
-        self.dt = detectiontool
+    def __init__(self, board_params, imsize_hw=None, min_stack=15, max_stack=100, focal_mm=None, sensor_size=None):
+
+        self.dt = DetectionTool(board_params=board_params)
 
         # self._min_pts = 3   # SQPNP method needs at least 3 points
         # self._min_pts = 4   # ITERATIVE method needs at least 4 points
