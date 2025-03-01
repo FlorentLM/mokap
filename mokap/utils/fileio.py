@@ -25,8 +25,8 @@ ENCODE_FORMAT = COMPRESSED
 
 def exists_check(path):
     """
-        Checks if a file or folder of the given name exists. If so, create a suffixed version of the name
-        in a smart way. Returns the new, safe to use, name.
+    Checks if a file or folder of the given name exists. If so, create a suffixed version of the name
+    in a smart way. Returns the new, safe to use, name.
     """
     i = 2
     while path.exists():
