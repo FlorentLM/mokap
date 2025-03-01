@@ -263,48 +263,72 @@ def load_skeleton_SLEAP(slp_path, indices=False):
         return slp_content.skeleton.node_names, slp_content.skeleton.edge_names
 
 
-def read_SLEAP(slp_path, cam_name=None):
-    import sleap_io
+def SLP_to_df(slp_content, camera_name=None, session=None):
 
-    def instance_to_row(instance):
+    def instance_to_row(instance, is_manual):
+
         original_track = instance.track.name if instance.track else ''
-        instance_score = float(instance.score) if hasattr(instance, 'score') else 1.0
-        tracking_score = float(instance.tracking_score) if hasattr(instance, 'tracking_score') else 1.0
+        instance_score = float(instance.score) if hasattr(instance, 'score') else int(is_manual)
+        tracking_score = float(instance.tracking_score) if hasattr(instance, 'tracking_score') else int(is_manual)
+
         values = []
         for node in instance.skeleton.nodes:
-            x = float(instance.points[node].x) if hasattr(instance.points[node], 'x') else np.nan
-            y = float(instance.points[node].y) if hasattr(instance.points[node], 'y') else np.nan
-            s = float(instance.points[node].score) if hasattr(instance.points[node], 'score') else 1.0
+            if not instance.points[node].visible:
+                x = np.nan
+                y = np.nan
+                s = 0.0
+            else:
+                x = float(instance.points[node].x) if hasattr(instance.points[node], 'x') else np.nan
+                y = float(instance.points[node].y) if hasattr(instance.points[node], 'y') else np.nan
+                s = float(instance.points[node].score) if hasattr(instance.points[node], 'score') else 1.0
             values.extend([x, y, s])
         return  values + [instance_score, tracking_score, original_track]
 
-    slp_path = Path(slp_path)
-    if cam_name is None:
-        try:
-            cam_name = slp_path.stem.split('_')[2]   # TODO - This needs to be more robust
-        except:
-            raise Exception(f'Impossible to infer camera name from {slp_path.stem}!')
-    slp_content = sleap_io.load_file(slp_path.as_posix())
 
     keypoints = slp_content.skeleton.node_names
-
     columns = (['camera.', 'frame.']
                + [f"{k}.{a}" for k in keypoints for a in ['x', 'y', 'score']]
                + ['comments.instance_score', 'comments.tracking_score', 'comments.track_sleap'])
 
     rows = []
     for frame_content in slp_content.labeled_frames:
-        for i, instance in enumerate(frame_content.instances):
-            row = instance_to_row(instance)
-            if row[-1] == '':
-                row[-1] = f'instance_{i}'
-            row = [cam_name, frame_content.frame_idx] + row
-            rows.append(row)
+        source_video = Path(frame_content.video.filename)
+        if camera_name in source_video.stem or camera_name is None:   # if name is not passed, assume we load everything
+            if session in source_video.stem or session is None:
+                for i, instance in enumerate(frame_content.instances):
+                    is_manual = instance in frame_content.user_instances
+                    row = instance_to_row(instance, is_manual)
+                    if row[-1] == '':
+                        row[-1] = f'instance_{i}'
+                    if session is not None:
+                        row[-1] = f"{session}_{row[-1]}"   # prepend session in the track nb
+                    row = [camera_name, frame_content.frame_idx] + row
+                    rows.append(row)
 
     df = pd.DataFrame(rows, columns=columns)
     df.columns = pd.MultiIndex.from_tuples([col.split('.') for col in df.columns])
 
     return df
+
+
+def read_SLEAP(slp_path):
+    import sleap_io
+
+    slp_path = Path(slp_path)
+    slp_content = sleap_io.load_file(slp_path.as_posix())
+
+    list_of_dfs = []
+
+    source_files = [Path(v.filename) for v in slp_content.videos]
+    cameras_names = set(f.stem.split('_')[-2] for f in source_files)
+    sessions = set(f.stem.split('_')[-1] for f in source_files)
+
+    for session in sessions:
+        for cam_name in cameras_names:
+            df = SLP_to_df(slp_content, cam_name, session)  # This particular camera / session might not exist, so
+            if not df.empty:                                # in that case the df is empty, we just skip it
+                list_of_dfs.append(df)
+    return merge_multiview_df(list_of_dfs)
 
 
 def SLEAP_to_csv(slp_path, output_csv_path=None):
@@ -380,10 +404,10 @@ def load_session(path, session=''):
 
 def merge_multiview_df(list_of_dfs):
 
-    last_nb_tracks = 1
+    last_nb_tracks = 0
     for df in list_of_dfs:
         df['track'] = df[('comments', 'track_sleap')].factorize()[0] + last_nb_tracks
-        last_nb_tracks = int(df['track'].max())
+        last_nb_tracks += len(df['track'])
 
     multiview_df = pd.concat(list_of_dfs, join='outer')
     multiview_df.set_index(['camera', 'track', 'frame'], inplace=True)
