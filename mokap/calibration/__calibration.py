@@ -740,10 +740,10 @@ class MonocularCalibrationTool:
 
 class MultiviewCalibrationTool:
     """
-        Class to aggregate multiple monocular detections into multi-view samples, compute, and refine cameras poses
+    Class to aggregate multiple monocular detections into multi-view samples, compute, and refine cameras poses
     """
 
-    def __init__(self, nb_cameras, origin_camera=0, min_poses=15, max_poses=100, min_detections=15, max_detections=100):
+    def __init__(self, nb_cameras, origin_camera_idx=0, min_poses=15, max_poses=100, min_detections=15, max_detections=100):
 
         self.nb_cameras = nb_cameras
 
@@ -752,7 +752,7 @@ class MultiviewCalibrationTool:
         self._multi_dist_coeffs = np.zeros((nb_cameras, 14))
         self._multi_dist_coeffs_refined = np.zeros((nb_cameras, 14))
 
-        self._origin_idx = origin_camera
+        self._origin_idx = origin_camera_idx
 
         self._detections_by_frame = defaultdict(dict)
         self._poses_by_frame = defaultdict(dict)
@@ -761,7 +761,8 @@ class MultiviewCalibrationTool:
         self._min_detections = min_detections
 
         self._detections_stack = deque(maxlen=max_detections)
-        # self._poses_stack = deque(maxlen=max_poses)
+        self._poses_stack = deque(maxlen=max_poses)
+
         self._poses_per_camera = {i: [] for i in range(nb_cameras)}
 
         self._optimised_rvecs = None
@@ -847,8 +848,8 @@ class MultiviewCalibrationTool:
 
     def register_detection(self, frame_idx: int, cam_idx: int, points2d: np.ndarray, points_ids: np.ndarray):
         """
-            This registers points detections from multiple cameras and
-            stores them as a complete detection samples if all cameras have one
+        This registers points detections from multiple cameras and
+        stores them as a complete detection samples if all cameras have one
         """
         self._detections_by_frame[frame_idx][cam_idx] = (points2d, points_ids)
 
