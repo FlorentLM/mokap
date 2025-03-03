@@ -1,16 +1,22 @@
 import numpy as np
+np.set_printoptions(precision=3, suppress=True, threshold=5)
 from PySide6.QtCore import QObject, Signal, Slot
 from mokap.calibration import MonocularCalibrationTool, MultiviewCalibrationTool
 from mokap.utils import fileio
 from dataclasses import dataclass
-from typing import Dict, Any, Literal, List, Annotated
+from typing import Dict, Any, Literal, List, Annotated, Optional
+from numpy.typing import ArrayLike
 from pathlib import Path
 
 DEBUG = True
 
 @dataclass
 class ErrorsPayload:
-    errors: List[float]
+    errors: Optional[ArrayLike] = None
+
+@dataclass
+class OriginCameraPayload:
+    camera_name: str
 
 @dataclass
 class PosePayload:
@@ -37,6 +43,7 @@ class IntrinsicsPayload:
     """
     camera_matrix: np.ndarray
     dist_coeffs: np.ndarray
+    errors: Optional[ArrayLike] = None
 
 @dataclass
 class ExtrinsicsPayload:
@@ -52,48 +59,60 @@ class CalibrationData:
     Encapsulation of a payload with the camera name
     """
     camera_name: str
-    payload: IntrinsicsPayload | ExtrinsicsPayload | DetectionPayload | PosePayload | ErrorsPayload
+    payload: IntrinsicsPayload | ExtrinsicsPayload | DetectionPayload | PosePayload | ErrorsPayload | OriginCameraPayload
 
 
 ##
 
-class BaseWorker(QObject):
-
-    finished = Signal()
+class CalibrationWorker(QObject):
+    """ Base class for all the Calibration workers. Sends/Receives CalibrationData objects. """
     error = Signal(Exception)
-    blocking = Signal(bool)     # Tell the main thread when doing a blocking function
 
     send_payload = Signal(CalibrationData)      # Single output signal - will always go to the coordinator
     receive_payload = Signal(CalibrationData)   # Single input signal - will always be accessed by the coordinator
 
-    def __init__(self, name: str):
-        super().__init__()
-        self.name = name
-        self._paused = False
+    def __init__(self, name: str, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.name: str = name
 
         # We connect through an intermediary internal signal so that we can call receive_payload from the outside
         # without having to specifically connect to _handle_payload
         self.receive_payload.connect(self._handle_payload)
 
+    @Slot(CalibrationData)
+    def _handle_payload(self, data: CalibrationData):
+        sender_worker = self.sender()
+        print(f'[{self.name.title()}] Received (from: {sender_worker.name}) {data.payload}')
+
+class ProcessingWorker(QObject):
+    """ Base class for all processing workers. Can be paused. """
+
+    finished = Signal()
+    blocking = Signal(bool)     # Report when doing a blocking function
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._paused = False
+
     def set_paused(self, paused: bool):
         self._paused = paused
 
-    @Slot(CalibrationData)
-    def _handle_payload(self, data: CalibrationData):
-        print(f'[Worker {self.name}] Received {data.payload} (origin: {data.camera_name})')
+    @Slot(np.ndarray, int)
+    def handle_frame(self, frame, frame_idx):
+        if self._paused:
+            return
 
-class MainWorker(BaseWorker):
-    """
-    This worker lives in its own thread and does stuff on the full resolution image
-    """
+class MovementWorker(ProcessingWorker):
 
     annotations = Signal(list)
 
-    def __init__(self, cam_name):
-        super().__init__(cam_name)
+    def __init__(self, name: str):
+        super().__init__()
+        self.name: str = name
 
-    @Slot(np.ndarray)
-    def process_frame(self, frame):
+    #  ============= Slots for direct Main Thread signals =============
+    @Slot(np.ndarray, int)
+    def handle_frame(self, frame, frame_idx):
         if self._paused:
             return
 
@@ -110,36 +129,62 @@ class MainWorker(BaseWorker):
         # TESTING - Fake bounding box around (100,100) of size (50,40)
         return [(100, 100, 50, 40)]
 
-class MonocularWorker(BaseWorker):
-    """
-    This worker lives in its own thread and does monocular detection/calibration
-    """
+class CalibrationProcessingWorker(CalibrationWorker, ProcessingWorker):
+    """ Base class for calibration processing workers (i.e. MonocularWorker and MultiviewWorker) """
+
+    def __init__(self, name: str, *args, **kwargs):
+        super().__init__(name=name, *args, **kwargs)
+        self._current_stage = 0
+
+    @Slot(int)
+    def set_stage(self, stage: int):
+        """ Update worker's internal stage (can be overridden) """
+        self._current_stage = stage
+        print(f"[{self.name.title()}] Received stage {stage}")
+
+class MonocularWorker(CalibrationProcessingWorker):
 
     annotations = Signal(np.ndarray)       # Annotations are already burned into the image, so emit the whole thing
 
-    def __init__(self, board_params, cam_idx, cam_name, cam_shape):
-        super().__init__(cam_name)
-
+    def __init__(self, board_params: dict, cam_idx: int, cam_name: str, cam_shape: ArrayLike):
+        super().__init__(name=cam_name)
         self.camera_idx = cam_idx
         self.cam_name = cam_name
         self.cam_shape = cam_shape
 
         self.monocular_tool = MonocularCalibrationTool(
             board_params=board_params,
-            imsize_hw=self.cam_shape[:2],  # pass frame size so it can track coverage
-            focal_mm=60,  # TODO - UI field for these
+            imsize_hw=self.cam_shape[:2],   # pass frame size so it can track coverage
+            focal_mm=60,                    # TODO - UI field for these
             sensor_size='1/2.9"'  #
         )
         self.monocular_tool.set_visualisation_scale(2)
 
         # Flags for worker function
-        self.auto_sample = True
-        self.auto_compute = True
+        self._auto_sample = True
+        self._auto_compute = True
 
         self._current_stage = 0
 
+    #  ============= Slots for Coordinator signals =============
+    @Slot(int)
+    def set_stage(self, stage: int):
+        """ Extended stage handling with calibration tool reset """
+        super().set_stage(stage)
+        self.monocular_tool.clear_stacks()
+
+    @Slot(CalibrationData)
+    def _handle_payload(self, data: CalibrationData):
+        super()._handle_payload(data)  # Keep debug print
+
+        payload = data.payload
+
+        if isinstance(payload, IntrinsicsPayload):
+            self.monocular_tool.set_intrinsics(payload.camera_matrix, payload.dist_coeffs, payload.errors)
+
+    #  ============= Slots for direct Main Thread signals =============
     @Slot(np.ndarray, int)
-    def process_frame(self, frame, frame_id):
+    def handle_frame(self, frame: ArrayLike, frame_idx: int):
         if self._paused:
             return
 
@@ -172,7 +217,7 @@ class MonocularWorker(BaseWorker):
                 if r:
                     # If the intrinsics have been updated, emit the new errors...
                     self.send_payload.emit(
-                        CalibrationData(self.cam_name, ErrorsPayload(self.monocular_tool.last_best_errors))
+                        CalibrationData(self.cam_name, ErrorsPayload(self.monocular_tool.intrinsics_errors))
                     )
 
                     # ...and the intrinsics themselves
@@ -189,14 +234,14 @@ class MonocularWorker(BaseWorker):
         if self._current_stage == 1:
             if self.monocular_tool.has_extrinsics:
                 self.send_payload.emit(
-                    CalibrationData(self.cam_name, PosePayload(frame_id, *self.monocular_tool.extrinsics))
+                    CalibrationData(self.cam_name, PosePayload(frame_idx, *self.monocular_tool.extrinsics))
                 )
 
         # Refining stage: Emit points detections
         if self._current_stage == 2:
             if self.monocular_tool.has_detection:
                 self.send_payload.emit(
-                    CalibrationData(self.cam_name, DetectionPayload(frame_id, *self.monocular_tool.detection))
+                    CalibrationData(self.cam_name, DetectionPayload(frame_idx, *self.monocular_tool.detection))
                 )
 
         # Visualize (this returns the annotated image in full resolution)
@@ -208,14 +253,6 @@ class MonocularWorker(BaseWorker):
         # Emit the end signal to tell this thread is free
         self.finished.emit()
 
-    @Slot(bool)
-    def set_auto_sample(self, value):
-        self.auto_sample = value
-
-    @Slot(bool)
-    def set_auto_compute(self, value):
-        self.auto_compute = value
-
     @Slot()
     def add_sample(self):
         self.monocular_tool.register_sample()
@@ -225,87 +262,178 @@ class MonocularWorker(BaseWorker):
         self.monocular_tool.clear_stacks()
 
     @Slot()
+    def compute_intrinsics(self):
+        self.monocular_tool.compute_intrinsics()
+
+    @Slot()
     def clear_intrinsics(self):
         self.monocular_tool.clear_intrinsics()
         self.monocular_tool.clear_stacks()
 
-    @Slot(int)
-    def set_stage(self, stage):
-        self._current_stage = stage
-        self.monocular_tool.clear_stacks()
+    @Slot(bool)
+    def auto_sample(self, value: bool):
+        self._auto_sample = value
 
-class MultiviewWorker(BaseWorker):
+    @Slot(bool)
+    def auto_compute(self, value: bool):
+        self._auto_compute = value
 
-    # signal_return_computed_poses = Signal(np.ndarray, np.ndarray)  # Send current camera poses back to main thread
-    # signal_return_computed_points = Signal(np.ndarray)           # Send points 3d back to main thread
+class MultiviewWorker(CalibrationProcessingWorker):
 
-    def __init__(self, multiview_calib):
-        super().__init__('multiview')
-        self.multiview_calib = multiview_calib
+    def __init__(self, cameras_names, origin_camera_name):
+        super().__init__(name='multiview')
+        self.name = 'multiview'
 
-    # @Slot(int, int, np.ndarray, np.ndarray)
-    # def on_received_detection(self, frame_idx, cam_idx, points2d, points_ids):
-    #     # when we recieve a detection from the monocular worker
-    #     self.multiview_calib.register_detection(frame_idx, cam_idx, points2d, points_ids)
-    #     if DEBUG:
-    #         print(f"[DEBUG] [MultiCalibWorker] Registered detection for cam {cam_idx}\r")
-    #
-    # @Slot(int, int, np.ndarray, np.ndarray)
-    # def on_received_camera_pose(self, frame_idx, cam_idx, rvec, tvec):
-    #     # when we recieve a pose from the monocular worker
-    #     self.multiview_calib.register_extrinsics(frame_idx, cam_idx, rvec, tvec)
-    #     if DEBUG:
-    #         print(f"[DEBUG] [MultiCalibWorker] Registered extrinsics for cam {cam_idx}\r")
-    #
-    # @Slot(int, np.ndarray, np.ndarray)
-    # def on_updated_intrinsics(self, cam_idx, cam_mat, dist_coeff):
-    #     self.multiview_calib.register_intrinsics(cam_idx, cam_mat, dist_coeff)
-    #     if DEBUG:
-    #         print(f'[DEBUG] [MultiCalibWorker] Intrinsics updated for camera {cam_idx}\r')
+        self._cameras_names = cameras_names.copy()
+        self._origin_camera_idx = self._cameras_names.index(origin_camera_name)
+
+        self.multiview_tool = MultiviewCalibrationTool(len(self._cameras_names),
+                                                       origin_camera_idx=self._origin_camera_idx,
+                                                       min_poses=3)
+
+    @Slot(CalibrationData)
+    def _handle_payload(self, data: CalibrationData):
+        super()._handle_payload(data)  # Keep debug print
+
+        if isinstance(data.payload, IntrinsicsPayload):
+            self.multiview_tool.register_intrinsics(
+                self._cameras_names.index(data.camera_name),
+                data.payload.camera_matrix,
+                data.payload.dist_coeffs
+            )
+
+        elif isinstance(data.payload, DetectionPayload):
+            self.multiview_tool.register_detection(
+                data.payload.frame,
+                self._cameras_names.index(data.camera_name),
+                data.payload.points2D,
+                data.payload.pointsIDs
+            )
+
+        elif isinstance(data.payload, PosePayload):
+            self.multiview_tool.register_pose(
+                data.payload.frame,
+                self._cameras_names.index(data.camera_name),
+                data.payload.rvec,
+                data.payload.tvec
+            )
+
+        elif isinstance(data.payload, OriginCameraPayload):
+            self._origin_camera_idx = self._cameras_names.index(data.payload.camera_name)
+            self.multiview_tool.origin_camera = self._origin_camera_idx
 
     @Slot()
     def compute(self):
         if self._paused:
             return
 
-        # # Estimate extrinsics
-        # self.multiview_calib.compute_estimation()
-        #
-        # rvecs, tvecs = self.multiview_calib.extrinsics
-        # if rvecs is not None and tvecs is not None:
-        #     # Send them back to the main thread
-        #     self.signal_return_computed_poses.emit(rvecs, tvecs)
-        pass
+        if self._current_stage == 2:
+            # Estimate extrinsics
+            self.multiview_tool.estimate_extrinsics()
 
-    @Slot(int)
-    def set_origin_camera(self, value: int):
-        self.multiview_calib.origin_camera = value
+            if self.multiview_tool.has_extrinsics:
+                # If this worked, send them back to the main thread
+                rvecs, tvecs = self.multiview_tool.extrinsics
+                for cam_idx, cam_name in enumerate(self._cameras_names):
+                    self.send_payload.emit(CalibrationData(cam_name, ExtrinsicsPayload(rvecs[cam_idx, :], tvecs[cam_idx, :])))
+        else:
+            pass
 
 class CalibrationCoordinator(QObject):
+
+    broadcast_stage = Signal(int)
+    send_to_main = Signal(CalibrationData)
+    receive_from_main = Signal(CalibrationData)  # New signal for main thread
+
     def __init__(self):
         super().__init__()
-        self._workers = {}
         self.name = 'coordinator'
+        self._current_stage = 0
 
-    def register_worker(self, worker: BaseWorker):
+        self._workers = {}
+
+        self.receive_from_main.connect(self._handle_payload_from_main)
+
+    def register_worker(self, worker: CalibrationProcessingWorker):
         self._workers[worker.name] = worker
+        self.broadcast_stage.connect(worker.set_stage)
+        worker.set_stage(self._current_stage)
         # The coordinator is always the one to receive payloads first, so direct connections here
-        worker.send_payload.connect(self._route_data)
+        worker.send_payload.connect(self._route_payload)
+
+        self._current_stage = 0
+
+    @Slot(int)
+    def set_stage(self, stage: int):
+        """ Main thread entry point for stage changes """
+        self._current_stage = stage
+        # Broadcast to all workers
+        self.broadcast_stage.emit(stage)
+        print(f"[{self.name.title()}] Broadcast stage {stage}")
+
+    @Slot(str)
+    def set_origin_camera(self, camera_name: str):
+        """ Main thread entry point for origin camera change """
+        data = CalibrationData('multiview', OriginCameraPayload(camera_name))   # a bit redundant...
+        self._send_to_worker('multiview', data)    # Direct to multiview worker
 
     @Slot(CalibrationData)
-    def _route_data(self, data: CalibrationData):
-        """
-        Slot to receive and forward data to the corresponding private method
-        """
+    def _handle_payload_from_main(self, data: CalibrationData):
+        """ Main thread entry point for CalibrationData """
+
+        print(f'[{self.name.title()}] Received (from: main) -> {data.camera_name} {data.payload}')
+
+        if isinstance(data.payload, IntrinsicsPayload) or isinstance(data.payload, ExtrinsicsPayload):
+            # Send to respective MonocularWorker and MultiviewWorker
+            self._send_to_worker(data.camera_name, data)
+            self._send_to_worker('multiview', data)
+
+    @Slot(CalibrationData)
+    def _route_payload(self, data: CalibrationData):
+
         sending_worker = self.sender()
 
+        print(f'[{self.name.title()}] Received (from: {sending_worker.name}) -> {data.camera_name} {data.payload}')
+
         if isinstance(data.payload, IntrinsicsPayload):
-            print(f'[Coordinator] Received {data.camera_name} intrinsics payload from worker {sending_worker.name}')
-            self._send_to('multiview', data)
+            if sending_worker.name == 'multiview':
+                # This is the refined intrinsics -> send to main thread
+                self.send_to_main.emit(data)  # Use the sigle signal towards main thread
+
+            elif sending_worker.name == 'main':
+                # This is a loaded file coming from main thread
+                # TODO
+                pass
+
+            elif sending_worker == data.camera_name and self._current_stage == 0:
+                # This comes from a monocular worker, so forward to the aggregator if we're in stage 0
+                self._send_to_worker('multiview', data)
+
+        elif isinstance(data.payload, ExtrinsicsPayload):
+            if sending_worker.name == 'multiview':
+                # This is the refined extrinsics -> send to main thread
+                self.send_to_main.emit(data)  # Use the sigle signal towards main thread
+
+            elif sending_worker.name == 'main':
+                # This is a loaded file coming from main thread
+                # TODO
+                pass
+
+        elif isinstance(data.payload, PosePayload):
+            # Must always come from a monocular worker, and only route if stage 1
+            if sending_worker == data.camera_name and self._current_stage == 1:
+                self._send_to_worker('multiview', data)
 
         elif isinstance(data.payload, DetectionPayload):
-            print(f'[Coordinator] Received {data.camera_name} extrinsics payload from worker {sending_worker.name}')
+            # Must always come from a monocular worker, and only route if stage 2
+            if sending_worker == data.camera_name and self._current_stage == 2:
+                self._send_to_worker('multiview', data)
 
-    def _send_to(self, worker_name, data: CalibrationData):
+        elif isinstance(data.payload, ErrorsPayload):
+            # Must always come from a monocular worker, and only route if stage 0
+            if sending_worker == data.camera_name and self._current_stage == 0:
+                self.send_to_main.emit(data)
+
+    def _send_to_worker(self, worker_name, data: CalibrationData):
         # We go via the 'receive_payload' signal on the worker thread, so no direct connection required
         self._workers[worker_name].receive_payload.emit(data)

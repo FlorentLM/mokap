@@ -8,7 +8,8 @@ import scipy.stats as stats
 from scipy.spatial.distance import cdist
 from mokap.utils import geometry, generate_charuco
 from mokap.calibration import monocular, multiview
-from typing import List
+from typing import List, Optional
+from numpy.typing import ArrayLike
 
 
 class DetectionTool:
@@ -175,13 +176,12 @@ class MonocularCalibrationTool:
         self.stack_points_ids = deque(maxlen=self._max_stack)
 
         # Error metrics
-        self.last_best_errors: List[float] = [np.inf]
-        self._stack_error: float = np.inf      # This will be the mean of the last_best_errors
-        self.curr_error: float = np.inf
+        self._intrinsics_errors: ArrayLike = np.array([np.inf])
+        self._pose_error: float = np.inf
 
         self.set_visualisation_scale(scale=1)
 
-    def _update_imsize(self, new_size):
+    def _update_imsize(self, new_size: ArrayLike):
 
         new_size = np.asarray(new_size)[:2]
 
@@ -245,12 +245,12 @@ class MonocularCalibrationTool:
         return (np.sum(self._coverage_grid) / self._coverage_grid.size) * 100
 
     @property
-    def stackerror(self):
-        return self._stack_error
+    def pose_error(self):
+        return self._pose_error
 
     @property
-    def error(self):
-        return self.curr_error
+    def intrinsics_errors(self):
+        return self._intrinsics_errors
 
     @property
     def focal(self):
@@ -276,7 +276,7 @@ class MonocularCalibrationTool:
 
         return (f_mm_x + f_mm_y) / 2.0
 
-    def set_intrinsics(self, camera_matrix, dist_coeffs, errors=None):
+    def set_intrinsics(self, camera_matrix: ArrayLike, dist_coeffs: ArrayLike, errors: ArrayLike | None = None):
         self._camera_matrix = np.asarray(camera_matrix)
         dist_coeffs = np.asarray(dist_coeffs)
         if len(dist_coeffs) < 4:
@@ -284,7 +284,9 @@ class MonocularCalibrationTool:
             self._dist_coeffs[:len(dist_coeffs)] = dist_coeffs
         self._dist_coeffs = dist_coeffs
         if errors is not None:
-            self.last_best_errors = errors
+            self._intrinsics_errors = np.asarray(errors)
+        else:
+            self._intrinsics_errors = np.array([np.inf])
 
     def clear_intrinsics(self):
         if self._ideal_camera_matrix is not None:
@@ -293,10 +295,10 @@ class MonocularCalibrationTool:
         else:
             self._camera_matrix = None
             self._dist_coeffs = None
-        self.last_best_errors = [np.inf]
+        self._intrinsics_errors = np.array([np.inf])
 
     @staticmethod
-    def _check_new_errors(errors_new, errors_prev, p_val=0.05, confidence_lvl=0.95):
+    def _check_new_errors(errors_new: ArrayLike, errors_prev: ArrayLike, p_val=0.05, confidence_lvl=0.95):
         mean_new, se_new, l_new = np.mean(errors_new), stats.sem(errors_new), len(np.atleast_1d(errors_prev))
         mean_prev, se_prev, l_prev = np.mean(errors_prev), stats.sem(errors_prev), len(np.atleast_1d(errors_prev))
 
@@ -352,7 +354,7 @@ class MonocularCalibrationTool:
         self.stack_points2d.clear()
         self.stack_points_ids.clear()
 
-    def _create_weight_grid(self, gamma=2, min_weight=0.5):
+    def _create_weight_grid(self, gamma=2.0, min_weight=0.5):
         """
             Creates a grid of weights for the coverage cells based on distance from the image center
         """
@@ -427,7 +429,7 @@ class MonocularCalibrationTool:
 
         try:
             # Compute calibration using all the frames we selected
-            global_error, new_camera_matrix, new_dist_coeffs, stack_rvecs, stack_tvecs, std_intrinsics, std_extrinsics, stack_errors = cv2.aruco.calibrateCameraCharucoExtended(
+            global_intr_error, new_camera_matrix, new_dist_coeffs, stack_rvecs, stack_tvecs, std_intrinsics, std_extrinsics, stack_intr_errors = cv2.aruco.calibrateCameraCharucoExtended(
                 charucoCorners=self.stack_points2d,
                 charucoIds=self.stack_points_ids,
                 board=self.dt.board,
@@ -437,13 +439,13 @@ class MonocularCalibrationTool:
                 flags=calib_flags)
 
             # std_cam_mat, std_dist_coeffs = np.split(std_intrinsics.squeeze(), [4])
-            # std_rvecs, std_tvecs = std_extrinsics.reshape(2, -1, 3)
+            # std_rvecs, std_tvecs =  std_extrinsics.reshape(2, -1, 3)
             # TODO - Use these std values in the plot - or to decide if the new round of calibrateCamera is good or not?
 
             new_dist_coeffs = new_dist_coeffs.squeeze()
             # stack_rvecs = np.stack(stack_rvecs).squeeze()       # Unused for now
             # stack_tvecs = np.stack(stack_tvecs).squeeze()       # Unused for now
-            stack_errors = stack_errors.squeeze() / self._err_norm  # Normalise errors on image diagonal
+            stack_intr_errors = stack_intr_errors.squeeze() / self._err_norm  # Normalise errors on image diagonal
 
             # Note:
             # ---------------
@@ -462,7 +464,6 @@ class MonocularCalibrationTool:
             #
             # The global calibration error in calibrateCamera is:
             #       np.sqrt(np.sum([sq_diff for view in stack])) / np.sum([len(view) for view in stack]))
-            #
 
             # The following things should not be possible ; if any happens, then we trash the stack and abort
             if (new_camera_matrix < 0).any() or (new_camera_matrix[:2, 2] >= np.flip(self.imsize)).any():
@@ -470,18 +471,16 @@ class MonocularCalibrationTool:
                 return
 
             # Update the intrinsics if this stack's errors are better (or if it is the very first stack computed)
-            if not self.has_intrinsics or np.any(self.last_best_errors == np.inf):
+            if not self.has_intrinsics or np.any(self._intrinsics_errors == np.inf):
                 self._camera_matrix = new_camera_matrix
                 self._dist_coeffs = new_dist_coeffs
-                self.last_best_errors = stack_errors
-                self._stack_error = np.mean(self.last_best_errors)
+                self._intrinsics_errors = stack_intr_errors
                 print(f"---Computed intrinsics---")
 
-            elif self._check_new_errors(stack_errors, self.last_best_errors):
+            elif self._check_new_errors(stack_intr_errors, self._intrinsics_errors):
                 self._camera_matrix = new_camera_matrix
                 self._dist_coeffs = new_dist_coeffs
-                self.last_best_errors = stack_errors
-                self._stack_error = np.mean(self.last_best_errors)
+                self._intrinsics_errors = stack_intr_errors
                 print(f"---Updated intrinsics---")
 
         except cv2.error as e:
@@ -495,19 +494,19 @@ class MonocularCalibrationTool:
         # We need a detection to get the extrinsics relative to it
         if not self.has_detection:
             self._rvec, self._tvec = None, None
-            self.curr_error = np.inf
+            self._pose_error = np.inf
             return
 
         # We also need intrinsics
         if not self.has_intrinsics:
             self._rvec, self._tvec = None, None
-            self.curr_error = np.inf
+            self._pose_error = np.inf
             return
 
         # If the points are collinear, extrinsics estimation is garbage, so abort
         if cv2.aruco.testCharucoCornersCollinear(self.dt.board, self._points_ids):
             self._rvec, self._tvec = None, None
-            self.curr_error = np.inf
+            self._pose_error = np.inf
             return
 
         # pnp_flags = cv2.SOLVEPNP_ITERATIVE
@@ -518,23 +517,24 @@ class MonocularCalibrationTool:
         pnp_flags = cv2.SOLVEPNP_SQPNP
 
         try:
-            nb_solutions, rvecs, tvecs, errors = cv2.solvePnPGeneric(self.dt.points3d[self._points_ids],
+            nb_solutions, rvecs, tvecs, solutions_errors = cv2.solvePnPGeneric(self.dt.points3d[self._points_ids],
                                                          self._points2d,
                                                          self._camera_matrix,
                                                          self._dist_coeffs,
                                                          flags=pnp_flags)
         except cv2.error as e:
             self._rvec, self._tvec = None, None
-            self.curr_error = np.inf
+            self._pose_error = np.inf
             return
 
         # If no solution, or if multiple solutions were found, abort
         if nb_solutions != 1:
             self._rvec, self._tvec = None, None
-            self.curr_error = np.inf
+            self._pose_error = np.inf
             return
 
-        self.curr_error = errors[0].squeeze().item() / self._err_norm   # Normalise errors on image diagonal
+        # Only one solution
+        self._pose_error = float(solutions_errors.squeeze()) / self._err_norm   # Normalise error on image diagonal
         rvec, tvec = rvecs[0], tvecs[0]
 
         if refine:
@@ -724,10 +724,11 @@ class MonocularCalibrationTool:
                                 f"Area: {self.coverage:.2f}% ({len(self.stack_points2d)} snapshots)",
                                 (30, 60 * self.SCALE), **self.text_params)
 
-        txt = f"{self.error:.3f} px" if self.error != np.inf else '-'
+        txt = f"{self._pose_error:.3f} px" if np.all(self._pose_error != np.inf) else '-'
         frame_out = cv2.putText(frame_out, f"Current reprojection error: {txt}", (30, 90 * self.SCALE), **self.text_params)
 
-        txt = f"{self.stackerror:.3f} px" if self.stackerror != np.inf else '-'
+        avg_intr_err = np.nanmean(self._intrinsics_errors)
+        txt = f"{avg_intr_err:.3f} px" if np.all(avg_intr_err != np.inf) else '-'
         frame_out = cv2.putText(frame_out, f"Best average reprojection error: {txt}", (30, 120 * self.SCALE), **self.text_params)
 
         f_mm = self.focal_mm
@@ -746,38 +747,38 @@ class MultiviewCalibrationTool:
     def __init__(self, nb_cameras, origin_camera_idx=0, min_poses=15, max_poses=100, min_detections=15, max_detections=100):
 
         self.nb_cameras = nb_cameras
-
-        self._multi_intrinsics = np.zeros((nb_cameras, 3, 3))
-        self._multi_intrinsics_refined = np.zeros((nb_cameras, 3, 3))
-        self._multi_dist_coeffs = np.zeros((nb_cameras, 14))
-        self._multi_dist_coeffs_refined = np.zeros((nb_cameras, 14))
-
         self._origin_idx = origin_camera_idx
+        self._min_poses = min_poses
+        self._min_detections = min_detections
+
+        self._is_refined = False
+        self._intrinsics_records = np.zeros(self.nb_cameras, dtype=bool)
+
+        self._multi_cam_mat = np.zeros((nb_cameras, 3, 3))
+        self._multi_dist_coeffs = np.zeros((nb_cameras, 14))
+        self._multi_cam_mat_refined = np.zeros((nb_cameras, 3, 3))
+        self._multi_dist_coeffs_refined = np.zeros((nb_cameras, 14))
 
         self._detections_by_frame = defaultdict(dict)
         self._poses_by_frame = defaultdict(dict)
 
-        self._min_poses = min_poses
-        self._min_detections = min_detections
-
         self._detections_stack = deque(maxlen=max_detections)
         self._poses_stack = deque(maxlen=max_poses)
 
-        self._poses_per_camera = {i: [] for i in range(nb_cameras)}
+        self._poses_per_camera = {cam_idx: [] for cam_idx in range(nb_cameras)}
 
-        self._optimised_rvecs = None
-        self._optimised_tvecs = None
-        self._refined_rvecs = None
-        self._refined_tvecs = None
-        self._refined = False
+        self._multi_rvecs_estim: Optional[ArrayLike] = None     # when not None, shape is (self.nb_cams, 3)
+        self._multi_tvecs_estim: Optional[ArrayLike] = None     # when not None, shape is (self.nb_cams, 3)
+        self._multi_rvecs_refined: Optional[ArrayLike] = None   # when not None, shape is (self.nb_cams, 3)
+        self._multi_tvecs_refined: Optional[ArrayLike] = None   # when not None, shape is (self.nb_cams, 3)
 
     @property
     def nb_detection_samples(self):
         return len(self._detections_stack)
 
-    # @property
-    # def nb_pose_samples(self):
-    #     return len(self._poses_stack)
+    @property
+    def nb_pose_samples(self):
+        return len(self._poses_stack)
 
     @property
     def origin_camera(self):
@@ -787,39 +788,42 @@ class MultiviewCalibrationTool:
     def origin_camera(self, value: int):
         self._origin_idx = value
         self.clear_poses()
+        print(f'[MultiviewCalibrationTool] Origin set to camera {self._origin_idx}')
 
     @property
     def has_extrinsics(self):
-        return self._optimised_rvecs is not None and self._optimised_tvecs is not None
+        rvecs, tvecs = self.extrinsics
+        return rvecs is not None and tvecs is not None
 
     @property
-    def has_refined_rig_pose(self):
-        return self._refined_rvecs is not None and self._refined_tvecs is not None
+    def has_intrinsics(self):
+        return np.all(self._intrinsics_records)
 
     @property
     def is_refined(self):
-        return self._refined
+        return self._is_refined
 
     @property
     def extrinsics(self):
-        if self._refined:
-            return self._refined_rvecs, self._refined_tvecs
+        if self._is_refined:
+            return self._multi_rvecs_refined, self._multi_tvecs_refined
         else:
-            return self._optimised_rvecs, self._optimised_tvecs
+            return self._multi_rvecs_estim, self._multi_tvecs_estim
 
-    def register_intrinsics(self, cam_idx: int, camera_matrix: np.ndarray, dist_coeffs: np.ndarray):
-        self._multi_intrinsics[cam_idx, :, :] = camera_matrix
+    def register_intrinsics(self, cam_idx: int, camera_matrix: ArrayLike, dist_coeffs: ArrayLike):
+        self._multi_cam_mat[cam_idx, :, :] = camera_matrix
         self._multi_dist_coeffs[cam_idx, :len(dist_coeffs)] = dist_coeffs
+        self._intrinsics_records[cam_idx] = True
 
     def intrinsics(self):
-        if self._refined:
-            return self._multi_intrinsics_refined
+        if self._is_refined:
+            return self._multi_cam_mat_refined, self._multi_dist_coeffs_refined
         else:
-            return self._multi_intrinsics
+            return self._multi_cam_mat, self._multi_dist_coeffs
 
-    def register_extrinsics(self, frame_idx: int, cam_idx: int, rvec: np.ndarray, tvec: np.ndarray, similarity_threshold=10.0):
+    def register_pose(self, frame_idx: int, cam_idx: int, rvec: ArrayLike, tvec: ArrayLike):
         """
-            This registers estimated monocular camera poses and stores them as complete pose samples if all cameras have a pose
+        This registers estimated monocular camera poses and stores them as complete pose samples
         """
         self._poses_by_frame[frame_idx][cam_idx] = (rvec, tvec)
 
@@ -833,23 +837,9 @@ class MultiviewCalibrationTool:
                 remapped_rvec, remapped_tvec = geometry.remap_rtvecs(rvec, tvec, origin_rvec, origin_tvec)
                 self._poses_per_camera[cam].append((remapped_rvec, remapped_tvec))
 
-            # # TODO - the similarity threshold probably needs to be a bit more elaborate (geodesic distance and separate rotation and translation similarities?) ...but that will do for now
-            #
-            # # Compute the similarity between the new pose and the already stored ones
-            # if len(self._poses_stack) == 0:
-            #     deltas = np.ones(1) * np.inf
-            # else:
-            #     deltas = np.array([np.linalg.norm(remapped_poses - pose) for pose in self._poses_stack])
-            #
-            # # If the new pose is sufficiently different, add it
-            # # if np.all(deltas > similarity_threshold):
-            # if np.all(deltas > 0):  # 0 threshold for testing
-            #     self._poses_stack.append(remapped_poses)
-
-    def register_detection(self, frame_idx: int, cam_idx: int, points2d: np.ndarray, points_ids: np.ndarray):
+    def register_detection(self, frame_idx: int, cam_idx: int, points2d: ArrayLike, points_ids: ArrayLike):
         """
-        This registers points detections from multiple cameras and
-        stores them as a complete detection samples if all cameras have one
+        This registers points detections from multiple cameras and stores them as a complete detection samples
         """
         self._detections_by_frame[frame_idx][cam_idx] = (points2d, points_ids)
 
@@ -865,33 +855,45 @@ class MultiviewCalibrationTool:
             points2d_ids_list = [det[1] for det in sample]
 
             # Only triangulate if extrinsics are available
-            if self._optimised_rvecs is not None and self._optimised_tvecs is not None:
-                points3d, points3d_ids = multiview.triangulation(
-                    points2d_list, points2d_ids_list,
-                    self._optimised_rvecs, self._optimised_tvecs,
-                    self._multi_intrinsics,  self._multi_dist_coeffs
-                )
+            if self.has_intrinsics and self.has_extrinsics:
+                points3d, points3d_ids = multiview.triangulation(points2d_list, points2d_ids_list,
+                                                                 self._multi_rvecs_estim, self._multi_tvecs_estim,
+                                                                 self._multi_cam_mat, self._multi_dist_coeffs)
                 if points3d is not None:
                     print("Triangulation succeeded, emitting 3D points.")
                 else:
                     print("Triangulation failed or returned no points.")
             else:
-                print("Extrinsics not available yet; cannot triangulate.")
+                print("Extrinsics or Intrinsics not available yet; cannot triangulate.")
+
+    def clear_intrinsics(self, clear_refined=True):
+        self._intrinsics_records.fill(False)
+        self._multi_cam_mat.fill(0)
+        self._multi_dist_coeffs.fill(0)
+        if clear_refined:
+            self._multi_cam_mat_refined.fill(0)
+            self._multi_dist_coeffs_refined.fill(0)
+
+    def clear_extrinsics(self, clear_refined=True):
+        self._multi_rvecs_estim = None
+        self._multi_tvecs_estim = None
+        if clear_refined:
+            self._multi_rvecs_refined = None
+            self._multi_tvecs_refined = None
 
     def clear_poses(self):
-        self._poses_per_camera = {i: [] for i in range(self.nb_cameras)}
+        self._poses_per_camera = {cam_idx: [] for cam_idx in range(self.nb_cameras)}
         self._poses_by_frame = defaultdict(dict)
 
     def clear_detections(self):
         self._detections_stack.clear()
         self._detections_by_frame = defaultdict(dict)
 
-    def compute_estimation(self, clear_poses_stack=True):
+    def estimate_extrinsics(self, clear_poses_stack=True):
         """
-            This uses the complete pose samples to compute a first estimate of the cameras arrangement
+        This uses the complete pose samples to compute a first estimate of the cameras arrangement
         """
-
-        if not all(len(self._poses_per_camera[cam]) >= self._min_poses for cam in range(self.nb_cameras)):
+        if not all(len(self._poses_per_camera[cam_idx]) >= self._min_poses for cam_idx in range(self.nb_cameras)):
             # print(f"Waiting for at least {self._min_poses} samples per camera; "
             #       f"current counts: {[len(self._poses_per_camera[cam]) for cam in range(self.nb_cameras)]}")
             return
@@ -899,12 +901,12 @@ class MultiviewCalibrationTool:
         # Each camera’s list is converted to an array of shape (M, 3) where M varies
         n_m_rvecs = []
         n_m_tvecs = []
-        for cam in range(self.nb_cameras):
-            samples = self._poses_per_camera.get(cam, [])
+        for cam_idx in range(self.nb_cameras):
+            samples = self._poses_per_camera.get(cam_idx, [])
             if not samples:
                 # If no samples are available for this camera -> empty array
-                n_m_rvecs.append(np.empty((0, 3)))
-                n_m_tvecs.append(np.empty((0, 3)))
+                n_m_rvecs.append(np.empty([0, 3]))
+                n_m_tvecs.append(np.empty([0, 3]))
             else:
                 samples_arr = np.array(samples)  # shape: (M, 2, 3) because each sample is (rvec, tvec)
                 m_rvecs = samples_arr[:, 0, :]
@@ -912,28 +914,7 @@ class MultiviewCalibrationTool:
                 n_m_rvecs.append(m_rvecs)
                 n_m_tvecs.append(m_tvecs)
 
-        self._optimised_rvecs, self._optimised_tvecs = multiview.bestguess_rtvecs(n_m_rvecs, n_m_tvecs)
+        self._multi_rvecs_estim, self._multi_tvecs_estim = multiview.bestguess_rtvecs(n_m_rvecs, n_m_tvecs)
 
         if clear_poses_stack:
             self.clear_poses()
-
-    # def compute_refined(self, clear_detections_stack=True):
-    #     """
-    #         This uses the complete detections samples to refine the cameras poses and intrinsics with bundle adjustment
-    #     """
-    #
-    #     if self.nb_detection_samples < self._min_detections:
-    #         return
-    #
-    #     print(f"[MultiviewCalibrationTool] Refining cameras poses...")
-    #
-    #     this_m_points2d = [cam.loc[fr] for cam in test_points_2d]
-    #     this_m_points2d_ids = [cam.loc[fr] for cam in test_points_2d_ids]
-    #
-    #     points3d_svd, points3d_ids = multicam.triangulation(this_m_points2d, this_m_points2d_ids,
-    #                                                         n_optimised_rvecs, n_optimised_tvecs,
-    #                                                         n_camera_matrices, n_dist_coeffs)
-    #
-    #     # if clear_detections_stack:
-    #     #     self.clear_detections()
-

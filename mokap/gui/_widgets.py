@@ -192,6 +192,11 @@ class SecondaryWindowBase(QWidget):
         self.timer_fast = QTimer(self)
         self.timer_fast.timeout.connect(self._update_fast)
 
+    def _setup_worker(self, worker_object):
+        self.worker_thread = QThread(self)
+        self.worker = worker_object
+        self.worker.moveToThread(self.worker_thread)
+
     def _update_slow(self):
         pass
 
@@ -244,17 +249,15 @@ class VideoWindowBase(SecondaryWindowBase):
 
     #  ============= Worker thread setup =============
     def _setup_worker(self, worker_object):
-        self.worker_thread = QThread(self)
-        self.worker = worker_object
+        super()._setup_worker(worker_object)
 
-        self._mainwindow.coordinator.register_worker(worker_object)
-
-        # Setup signals
-        self.send_frame.connect(self.worker.process_frame, type=Qt.QueuedConnection)
+        # Setup preview-windows-specific signals (direct Main thread - Worker connections)
+        # Emit frames to worker
+        self.send_frame.connect(self.worker.handle_frame, type=Qt.QueuedConnection)
+        # Receive results and state from worker
         self.worker.annotations.connect(self.on_worker_result)
         self.worker.finished.connect(self.on_worker_finished)
         self.worker.blocking.connect(self.blocking_toggle)
-        self.worker.moveToThread(self.worker_thread)
 
     #  ============= UI constructors =============
     def _init_common_ui(self):
@@ -608,7 +611,7 @@ class VideoWindowBase(SecondaryWindowBase):
             self._clock = now
             self._last_capture_count = ind
 
-class VideoWindowRec(VideoWindowBase):
+class RecordingWindow(VideoWindowBase):
 
     def __init__(self, camera, main_window_ref):
         super().__init__(camera, main_window_ref)
@@ -635,7 +638,7 @@ class VideoWindowRec(VideoWindowBase):
             [0, 1, 0],
             [0, 0, 0]], dtype=np.uint8)
 
-        self._setup_worker(MainWorker(self._cam_name))
+        self._setup_worker(MovementWorker(self._cam_name))
 
         # Store worker results and its current state
         self._bboxes = []
@@ -1015,19 +1018,7 @@ class VideoWindowRec(VideoWindowBase):
                     window.camera_controls_sliders[label].setValue(w_new_val)
                     window.update_param(label)
 
-class VideoWindowCalib(VideoWindowBase):
-
-    signal_load_calib = Signal(str)
-    signal_save_calib = Signal(str)
-
-    signal_add_sample = Signal()
-    signal_clear_samples = Signal()
-    signal_clear_intrinsics = Signal()
-
-    signal_auto_sample = Signal(bool)
-    signal_auto_compute = Signal(bool)
-
-    signal_set_stage = Signal(int)
+class MonocularCalibWindow(VideoWindowBase):
 
     def __init__(self, camera, main_window_ref):
         super().__init__(camera, main_window_ref)
@@ -1047,25 +1038,6 @@ class VideoWindowCalib(VideoWindowBase):
 
         self._setup_worker(MonocularWorker(self.board_params, self.idx, self.name, self.source_shape))
 
-        # Setup additional signals
-
-        # Worker --> Main thread
-        # self.worker.signal_return_reprojection_error.connect(self.on_reprojection_error)
-        # self.worker.signal_return_detection.connect(self._mainwindow.opengl_window.worker.on_received_detection)
-        # self.worker.signal_return_pose.connect(self._mainwindow.opengl_window.worker.on_received_camera_pose)
-        # self.worker.signal_return_intrinsics.connect(self.on_intrinsics_update, type=Qt.QueuedConnection)
-
-        # Main thread --> Worker
-        # self.signal_load_calib.connect(self.worker.load_calib)
-        # self.signal_save_calib.connect(self.worker.save_calib)
-
-        self.signal_add_sample.connect(self.worker.add_sample)
-        self.signal_clear_samples.connect(self.worker.clear_samples)
-        self.signal_clear_intrinsics.connect(self.worker.clear_intrinsics)
-        self.signal_auto_sample.connect(self.worker.set_auto_sample)
-        self.signal_auto_compute.connect(self.worker.set_auto_compute)
-        self.signal_set_stage.connect(self.worker.set_stage)
-
         # Finish building the UI by calling the other constructors
         self._init_common_ui()
         self._init_specific_ui()
@@ -1074,12 +1046,16 @@ class VideoWindowCalib(VideoWindowBase):
         self.worker_thread.start()
         self._start_timers()
 
+    #  ============= Worker thread additional setup =============
+    def _setup_worker(self, worker_object):
+        super()._setup_worker(worker_object)
+        self._mainwindow.coordinator.register_worker(worker_object)
+
     #  ============= UI constructors =============
     def _init_specific_ui(self):
         """
         This constructor creates the UI elements specific to Calib mode
         """
-
         layout = QHBoxLayout(self.RIGHT_GROUP)
         layout.setContentsMargins(5, 5, 5, 5)
 
@@ -1104,34 +1080,39 @@ class VideoWindowCalib(VideoWindowBase):
 
         self.auto_sample_check = QCheckBox("Sample automatically")
         self.auto_sample_check.setChecked(True)
-        self.auto_sample_check.stateChanged.connect(self.on_auto_sample_toggled)
+        self.auto_sample_check.stateChanged.connect(self.worker.auto_sample)
         sampling_layout.addWidget(self.auto_sample_check)
 
         sampling_btns_group = QWidget()
         sampling_btns_layout = QHBoxLayout(sampling_btns_group)
 
         self.sample_button = QPushButton("Add sample")
-        self.sample_button.clicked.connect(self.on_add_sample)
+        self.sample_button.clicked.connect(self.worker.add_sample)
         self.sample_button.setStyleSheet(f"background-color: {self._mainwindow.col_darkgreen}; color: {self._mainwindow.col_white};")
         sampling_btns_layout.addWidget(self.sample_button)
 
         self.clear_samples_button = QPushButton("Clear samples")
-        self.clear_samples_button.clicked.connect(self.on_clear_samples)
+        self.clear_samples_button.clicked.connect(self.worker.clear_samples)
         sampling_btns_layout.addWidget(self.clear_samples_button)
 
         sampling_layout.addWidget(sampling_btns_group)
 
         self.auto_compute_check = QCheckBox("Compute intrinsics automatically")
         self.auto_compute_check.setChecked(True)
-        self.auto_compute_check.stateChanged.connect(self.on_auto_compute_toggled)
+        self.auto_compute_check.stateChanged.connect(self.worker.auto_compute)
         sampling_layout.addWidget(self.auto_compute_check)
 
         intrinsics_btns_group = QWidget()
         intrinsics_btns_layout = QHBoxLayout(intrinsics_btns_group)
 
-        self.clear_intrinsics = QPushButton("Clear intrinsics")
-        self.clear_intrinsics.clicked.connect(self.on_clear_intrinsics)
-        intrinsics_btns_layout.addWidget(self.clear_intrinsics)
+        self.compute_intrinsics_button = QPushButton("Compute intrinsics now")
+        self.compute_intrinsics_button.clicked.connect(self.worker.compute_intrinsics)
+        intrinsics_btns_layout.addWidget(self.compute_intrinsics_button)
+
+        self.clear_intrinsics_button = QPushButton("Clear intrinsics")
+        self.clear_intrinsics_button.clicked.connect(self.on_clear_intrinsics)      # Main thread to main thread UI updt
+        self.clear_intrinsics_button.clicked.connect(self.worker.clear_intrinsics)  # Send signal to worker
+        intrinsics_btns_layout.addWidget(self.clear_intrinsics_button)
 
         sampling_layout.addWidget(intrinsics_btns_group)
 
@@ -1155,11 +1136,11 @@ class VideoWindowCalib(VideoWindowBase):
         calib_io_layout = QVBoxLayout(calib_io_group)
 
         self.load_calib_button = QPushButton("Load intrinsics")
-        self.load_calib_button.clicked.connect(self.on_load_intrinsics)
+        self.load_calib_button.clicked.connect(self.on_load_parameters)
         calib_io_layout.addWidget(self.load_calib_button)
 
         self.save_calib_button = QPushButton("Save intrinsics")
-        self.save_calib_button.clicked.connect(self.on_save_calib)
+        self.save_calib_button.clicked.connect(self.on_save_parameters)
         calib_io_layout.addWidget(self.save_calib_button)
 
         self.load_save_message = QLabel("")
@@ -1227,22 +1208,15 @@ class VideoWindowCalib(VideoWindowBase):
         self.annotated_frame = annotated_frame
 
     #  ============= Handle additional worker communication =============
-    def on_stage_change(self, stage):
-        self.signal_set_stage.emit(stage)
-
-    def on_add_sample(self):
-        self.signal_add_sample.emit()
-
-    def on_clear_samples(self):
-        self.signal_clear_samples.emit()
 
     def on_clear_intrinsics(self):
+        # Clear plot
         self.reprojection_errors.clear()
         self.error_plot_curve.setData(self.reprojection_errors)
-        self.signal_clear_intrinsics.emit()
+        # Clear text
         self.load_save_message.setText('')
 
-    def on_load_intrinsics(self, file_path=None):
+    def on_load_parameters(self, file_path=None):
         if file_path is None or file_path is False:
             file_path = self._show_file_dialog(self._mainwindow.mc.full_path.parent)
         else:
@@ -1252,42 +1226,34 @@ class VideoWindowCalib(VideoWindowBase):
             if file_path.is_dir():
                 file = file_path / "parameters.toml"
                 if file.exists():
-                    self.signal_load_calib.emit(file.as_posix())
                     self.load_save_message.setText(f"Intrinsics <b>loaded</b> from {file.parent}")
+                    # self.signal_load_calib.emit(file.as_posix())
 
             elif file_path.is_file():
-                self.signal_load_calib.emit(file_path.as_posix())
                 self.load_save_message.setText(f"Intrinsics <b>loaded</b> from {file_path}")
+                # self.signal_load_calib.emit(file_path.as_posix())
 
-    def on_save_calib(self):
+    def on_save_parameters(self):
         file_path = self._mainwindow.mc.full_path / "parameters.toml"
-        self.signal_save_calib.emit(file_path.as_posix())
         self.load_save_message.setText(f"Intrinsics <b>saved</b> as \r{file_path}")
+        # self.signal_save_calib.emit(file_path.as_posix())
 
-    @Slot(np.ndarray, np.ndarray, bool)
-    def on_intrinsics_update(self, camera_matrix, dist_coeffs, update_message=True):
-        self._mainwindow.opengl_window.update_intrinsics(self.idx, camera_matrix, dist_coeffs)
-        if update_message:
-            self.load_save_message.setText(f"Intrinsics <b>not</b> saved!")
-        if DEBUG:
-            print(f'[DEBUG] [MainThread] Intrinsics updated for {self.name} camera (idx={self.idx})\r')
-
-    @Slot(np.ndarray)
-    def on_reprojection_error(self, error):
-
-        m = np.mean(error)
-        # s = np.std(error)
-
-        self.reprojection_errors.append(m)
-        self.error_plot_curve.setData(self.reprojection_errors)
-
-    @Slot(bool)
-    def on_auto_sample_toggled(self, checked):
-        self.signal_auto_sample.emit(checked)
-
-    @Slot(bool)
-    def on_auto_compute_toggled(self, checked):
-        self.signal_auto_compute.emit(checked)
+    # @Slot(np.ndarray, np.ndarray, bool)
+    # def on_intrinsics_update(self, camera_matrix, dist_coeffs, update_message=True):
+    #     self._mainwindow.opengl_window.update_intrinsics(self.idx, camera_matrix, dist_coeffs)
+    #     if update_message:
+    #         self.load_save_message.setText(f"Intrinsics <b>not</b> saved!")
+    #     if DEBUG:
+    #         print(f'[DEBUG] [MainThread] Intrinsics updated for {self.name} camera (idx={self.idx})\r')
+    #
+    # @Slot(np.ndarray)
+    # def on_reprojection_error(self, error):
+    #
+    #     m = np.mean(error)
+    #     # s = np.std(error)
+    #
+    #     self.reprojection_errors.append(m)
+    #     self.error_plot_curve.setData(self.reprojection_errors)
 
     #  ============= Calibration video window functions =============
     def _show_file_dialog(self, startpath: str | Path):
@@ -1321,7 +1287,7 @@ class VideoWindowCalib(VideoWindowBase):
             if bool_apply_all:
                 # Loop over all secondary windows in the main app
                 for w in self._mainwindow.video_windows:
-                    if isinstance(w, VideoWindowCalib):
+                    if isinstance(w, MonocularCalibWindow):
                         w.board_params = new_board_params.copy()
                         w._update_board_preview()
             else:
@@ -1347,10 +1313,7 @@ class VideoWindowCalib(VideoWindowBase):
         self.board_preview_label.setPixmap(bounded_pixmap)
 
 
-class OpenGLWindow(SecondaryWindowBase):
-
-    signal_update_origin_camera = Signal(str)
-    # signal_update_intrinsics = Signal(int, np.ndarray, np.ndarray)
+class MultiviewCalibWindow(SecondaryWindowBase):
 
     def __init__(self, main_window_ref):
         super().__init__(main_window_ref)
@@ -1402,28 +1365,12 @@ class OpenGLWindow(SecondaryWindowBase):
         ], dtype=np.int32)
 
         # # Initialise where to store intrinsics and extrinsics for all cams
-        # self._multi_intrinsics_matrices = np.zeros((self.nb_cams, 3, 3), dtype=np.float32)
-        # self._multi_dist_coeffs = np.zeros((self.nb_cams, 14), dtype=np.float32)
-        # self._multi_extrinsics_matrices = np.zeros((self.nb_cams, 3, 4), dtype=np.float32)
+        self._multi_cameras_matrices = np.zeros((self.nb_cams, 3, 3), dtype=np.float32)
+        self._multi_dist_coeffs = np.zeros((self.nb_cams, 14), dtype=np.float32)
+        self._multi_extrinsics_matrices = np.zeros((self.nb_cams, 3, 4), dtype=np.float32)
 
         # Setup worker
-        self.worker_thread = QThread(self)
-        self.worker = MultiviewWorker(MultiviewCalibrationTool(self.nb_cams,
-                                                               origin_camera_idx=self._cameras_names.index(self._origin_camera),
-                                                               min_poses=3))    # TODO - Very small value for debug
-        self.worker.moveToThread(self.worker_thread)
-
-        self._mainwindow.coordinator.register_worker(self.worker)
-
-        # Setup signals
-        # #      Worker --> Main thread
-        # self.worker.signal_return_computed_poses.connect(self.update_poses)
-        # self.worker.signal_return_computed_points.connect(self.update_points)
-        #
-        # #       Main thread --> Worker
-        # self.signal_update_origin_camera.connect(self.worker.set_origin_camera)
-        # self.signal_update_intrinsics.connect(self.worker.on_updated_intrinsics)
-
+        self._setup_worker(MultiviewWorker(self._cameras_names, self._origin_camera))
         self.worker_thread.start()
 
         # References to displayed items
@@ -1448,6 +1395,13 @@ class OpenGLWindow(SecondaryWindowBase):
         self.timer_slow.timeout.connect(self.update_scene)
         self.timer_slow.start(500)
 
+    #  ============= Worker thread additional setup =============
+    def _setup_worker(self, worker_object):
+        super()._setup_worker(worker_object)
+        self._mainwindow.coordinator.register_worker(worker_object)
+        self._mainwindow.coordinator.send_to_main.connect(self.handle_payload)
+
+    #  ============= UI constructors =============
     def _init_ui(self):
         self.view = GLViewWidget()
         self.view.setWindowTitle('3D viewer')
@@ -1462,7 +1416,7 @@ class OpenGLWindow(SecondaryWindowBase):
 
         self.calibration_stage_combo = QComboBox()
         self.calibration_stage_combo.addItems(['Intrinsics', 'Extrinsics', 'Refinement'])
-        self.calibration_stage_combo.currentIndexChanged.connect(self._switch_stage)
+        self.calibration_stage_combo.currentIndexChanged.connect(self._mainwindow.coordinator.set_stage)
         buttons_row1_layout.addWidget(self.calibration_stage_combo)
 
         # self.estimate_button = QPushButton("Estimate 3D pose")
@@ -1471,7 +1425,7 @@ class OpenGLWindow(SecondaryWindowBase):
 
         self.origin_camera_combo = QComboBox()
         self.origin_camera_combo.addItems(self._cameras_names)
-        self.origin_camera_combo.currentIndexChanged.connect(self._switch_origin_camera)
+        self.origin_camera_combo.currentTextChanged.connect(self._mainwindow.coordinator.set_origin_camera)
         buttons_row1_layout.addWidget(self.origin_camera_combo)
 
         layout.addWidget(buttons_row1)
@@ -1495,7 +1449,7 @@ class OpenGLWindow(SecondaryWindowBase):
 
         self.show()
 
-    # -------------- Rendering methods -----------------
+    #  ============= Rendering methods =============
     def clear_scene(self):
         for item in self._refreshable_items:
             try:
@@ -1545,8 +1499,8 @@ class OpenGLWindow(SecondaryWindowBase):
 
         # Back-project the 2D image corners to 3D
         frustum_points3d = geometry.back_projection(self._frustums_points2d[cam_idx],
-                                                     self._frustum_depth,
-                                                     self._multi_intrinsics_matrices[cam_idx],
+                                                    self._frustum_depth,
+                                                    self._multi_cameras_matrices[cam_idx],
                                                      self._multi_extrinsics_matrices[cam_idx, :, :])    # we use the non-rotated points, and rotate below
         frustum_points3d = geometry.rotate_points3d(frustum_points3d, 180, axis='y')
 
@@ -1571,8 +1525,8 @@ class OpenGLWindow(SecondaryWindowBase):
 
         # Compute and draw the optical axis (from camera center toward the image center)
         centre3d = geometry.back_projection(self._centres_points2d[cam_idx],
-                                             self._frustum_depth,
-                                             self._multi_intrinsics_matrices[cam_idx],
+                                            self._frustum_depth,
+                                            self._multi_cameras_matrices[cam_idx],
                                              self._multi_extrinsics_matrices[cam_idx, :, :])         # we use the non-rotated points, and rotate below
         centre3d = geometry.rotate_points3d(centre3d, 180, axis='y')
 
@@ -1630,8 +1584,8 @@ class OpenGLWindow(SecondaryWindowBase):
         color = tuple(color)
 
         points3d = geometry.back_projection(points2d,
-                                             self._frustum_depth,
-                                             self._multi_intrinsics_matrices[cam_idx],
+                                            self._frustum_depth,
+                                            self._multi_cameras_matrices[cam_idx],
                                              self._multi_extrinsics_matrices[cam_idx, :, :])
         points3d = geometry.rotate_points3d(points3d, 180, axis='y')
 
@@ -1714,30 +1668,21 @@ class OpenGLWindow(SecondaryWindowBase):
         pass
 
     # -------------- TODO --------------------
-    def _switch_stage(self):
-        for w in self._mainwindow.video_windows:
-            w.on_stage_change(self.calibration_stage_combo.currentIndex())
+    @Slot(CalibrationData)
+    def handle_payload(self, data: CalibrationData):
+        print(f'[Main Thread] Received {data.camera_name} {data.payload}')
 
-    def _switch_origin_camera(self):
-        self._origin_camera = self._cameras_names[int(self.origin_camera_combo.currentIndex())]
-        print(f"[ExtrinsicsWindow] Origin camera set to {self._origin_camera}")
-        self.signal_update_origin_camera.emit(self._origin_camera)
+        cam_idx = self._cameras_names.index(data.camera_name)
 
-    @Slot(np.ndarray, np.ndarray)
-    def update_poses(self, rvecs, tvecs):
-        if rvecs and tvecs:
-            for n in range(self.nb_cams):
-                self._multi_extrinsics_matrices[n, :, :] = geometry.extrinsics_matrix(rvecs[n], tvecs[n])
-        self._have_extrinsics = True
+        if isinstance(data.payload, ExtrinsicsPayload):
+            self._multi_extrinsics_matrices[cam_idx, :, :] = geometry.extrinsics_matrix(data.payload.rvec, data.payload.tvec)
+
+        elif isinstance(data.payload, IntrinsicsPayload):
+            self._multi_cameras_matrices[cam_idx, :, :] = data.payload.camera_matrix
+            self._multi_dist_coeffs[cam_idx, :len(data.payload.dist_coeffs)] = data.payload.dist_coeffs
+
         self.update_scene()
 
-    def update_intrinsics(self, cam_idx, camera_matrix, dist_coeffs):
-        # Update internal copy of the intrinsics (for plotting)
-        self._multi_intrinsics_matrices[cam_idx, :, :] = camera_matrix
-        self._multi_dist_coeffs[cam_idx, :len(dist_coeffs)] = dist_coeffs
-
-        # And forward new intrinsics to the multiview worker
-        self.signal_update_intrinsics.emit(cam_idx, camera_matrix, dist_coeffs)
 
 class MainWindow(QMainWindow):
     INFO_PANEL_MINSIZE_H = 200
@@ -2353,15 +2298,15 @@ class MainWindow(QMainWindow):
     def _start_secondary_windows(self):
         if self.is_calibrating:
             # Create 3D visualization window
-            self.opengl_window = OpenGLWindow(self)
+            self.opengl_window = MultiviewCalibWindow(self)
             self.opengl_window.setWindowTitle("3D Calibration View")
             self.opengl_window.show()
 
         for i, cam in enumerate(self.mc.cameras):
             if self.is_calibrating:
-                w = VideoWindowCalib(cam, self)
+                w = MonocularCalibWindow(cam, self)
             else:
-                w = VideoWindowRec(cam, self)
+                w = RecordingWindow(cam, self)
             self.video_windows.append(w)
             self.secondary_windows_visibility_buttons[i].setText(f" {w.name.title()} camera")
             self.secondary_windows_visibility_buttons[i].setStyleSheet(f"border-radius: 5px; padding: 0 10 0 10; color: {w.secondary_colour}; background-color: {w.colour};")
