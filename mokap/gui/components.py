@@ -2,7 +2,7 @@ import numpy as np
 np.set_printoptions(precision=3, suppress=True, threshold=5)
 from PySide6.QtCore import QObject, Signal, Slot
 from mokap.calibration import MonocularCalibrationTool, MultiviewCalibrationTool
-from mokap.utils import fileio
+from mokap.utils import fileio, BoardParams
 from dataclasses import dataclass
 from typing import Dict, Any, Literal, List, Annotated, Optional
 from numpy.typing import ArrayLike
@@ -162,7 +162,7 @@ class MonocularWorker(CalibrationProcessingWorker):
 
     annotations = Signal(np.ndarray)       # Annotations are already burned into the image, so emit the whole thing
 
-    def __init__(self, board_params: dict, cam_idx: int, cam_name: str, cam_shape: ArrayLike):
+    def __init__(self, board_params: BoardParams, cam_idx: int, cam_name: str, cam_shape: ArrayLike):
         super().__init__(name=cam_name)
         self.camera_idx = cam_idx
         self.cam_name = cam_name

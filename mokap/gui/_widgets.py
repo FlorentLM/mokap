@@ -1027,10 +1027,10 @@ class MonocularCalibWindow(VideoWindowBase):
         super().__init__(camera, main_window_ref)
 
         # Default board params - TODO: Needs to be loaded from config file
-        self.board_params = {'rows': 6,
-                             'cols': 5,
-                             'square_length': 1.5,
-                             'markers_size': 4}
+        self.board_params = BoardParams(rows=6,
+                                        cols=5,
+                                        square_length=1.5,
+                                        markers_size=4)
 
         # Initialize reprojection error data for plotting
         self.reprojection_errors = deque(maxlen=100)
@@ -1298,7 +1298,7 @@ class MonocularCalibWindow(VideoWindowBase):
             board_rows=self.board_params['rows'],
             board_cols=self.board_params['cols'],
             square_length_mm=self.board_params['square_length'],
-            marker_bits=self.board_params['markers_size']).generateImage((h, w))
+            markers_size=self.board_params['markers_size']).generateImage((h, w))
 
         q_img = QImage(board_arr, h, w, h, QImage.Format.Format_Grayscale8)
         pixmap = QPixmap.fromImage(q_img)

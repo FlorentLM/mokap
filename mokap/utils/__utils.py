@@ -7,6 +7,19 @@ from pathlib import Path
 import numpy as np
 from alive_progress import alive_bar
 from tempfile import mkdtemp
+from dataclasses import dataclass
+
+
+@dataclass
+class BoardParams:
+    rows: int
+    cols: int
+    square_length: float    # in real-life units (e.g. mm)
+    markers_size: int = 4
+    margin: int = 1
+
+    def to_opencv(self) -> cv2.aruco.CharucoBoard:
+        return generate_charuco(self.rows, self.cols, self.square_length, self.markers_size, self.margin)
 
 
 class CallbackOutputStream:
@@ -178,21 +191,21 @@ def load_full_video(video_path):
     return full_video, temp_file
 
 
-def generate_charuco(board_rows, board_cols, square_length_mm=5.0, marker_bits=4, margin=1):
+def generate_charuco(board_rows, board_cols, square_length_mm=5.0, markers_size=4, margin=1) -> cv2.aruco.CharucoBoard:
     """
-        Generates a Charuco board for the given parameters, and optionally saves it in a SVG file.
+    Generates a Charuco board for the given parameters
     """
     all_dict_sizes = [50, 100, 250, 1000]
 
     padding = 1     # Black margin inside the markers (i.e. OpenCV's borderBits)
 
-    mk_l_bits = marker_bits + padding * 2
+    mk_l_bits = markers_size + padding * 2
     sq_l_bits = mk_l_bits + margin * 2
 
     marker_length_mm = mk_l_bits / sq_l_bits * square_length_mm
 
     dict_size = next(s for s in all_dict_sizes if s >= board_rows * board_cols)
-    dict_name = f'DICT_{marker_bits}X{marker_bits}_{dict_size}'
+    dict_name = f'DICT_{markers_size}X{markers_size}_{dict_size}'
 
     aruco_dict = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, dict_name))
     board = cv2.aruco.CharucoBoard((board_cols, board_rows),    # number of chessboard squares in x and y directions
@@ -202,7 +215,7 @@ def generate_charuco(board_rows, board_cols, square_length_mm=5.0, marker_bits=4
     return board
 
 
-def print_board(board, multi_size=False, factor=2.0, dpi=1200):
+def print_board(board: cv2.aruco.CharucoBoard, multi_size=False, factor=2.0, dpi=1200):
 
     square_length_mm = board.getSquareLength()
     marker_length_mm = board.getMarkerLength()

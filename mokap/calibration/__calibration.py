@@ -1,28 +1,22 @@
 from collections import defaultdict, deque
-from pathlib import Path
 import numpy as np
 np.set_printoptions(precision=3, suppress=True, threshold=5)
 import cv2
-import toml
 import scipy.stats as stats
 from scipy.spatial.distance import cdist
-from mokap.utils import geometry, generate_charuco
+from mokap.utils import geometry, BoardParams
 from mokap.calibration import monocular, multiview
-from typing import List, Optional
+from typing import Optional
 from numpy.typing import ArrayLike
 
 
-class DetectionTool:
-    def __init__(self, board_params):
+class CharucoDetector:
+    def __init__(self, board_params: BoardParams):
 
         # Charuco board and detector parameters
-        self.board = generate_charuco(
-            board_rows=board_params['rows'],
-            board_cols=board_params['cols'],
-            square_length_mm=board_params['square_length'],
-            marker_bits=board_params['markers_size']
-        )
+        self.board = board_params.to_opencv()
         aruco_dict = self.board.getDictionary()
+
         self.detector_parameters = cv2.aruco.DetectorParameters()
         self.detector_parameters.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
         self.detector = cv2.aruco.ArucoDetector(aruco_dict, detectorParams=self.detector_parameters)
@@ -123,9 +117,9 @@ class MonocularCalibrationTool:
     """
         This object is stateful for the intrinsics *only*
     """
-    def __init__(self, board_params, imsize_hw=None, min_stack=15, max_stack=100, focal_mm=None, sensor_size=None):
+    def __init__(self, board_params: BoardParams, imsize_hw=None, min_stack=15, max_stack=100, focal_mm=None, sensor_size=None):
 
-        self.dt = DetectionTool(board_params=board_params)
+        self.dt = CharucoDetector(board_params)
 
         # self._min_pts = 3   # SQPNP method needs at least 3 points
         # self._min_pts = 4   # ITERATIVE method needs at least 4 points
