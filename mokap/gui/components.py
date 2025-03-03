@@ -45,6 +45,11 @@ class IntrinsicsPayload:
     dist_coeffs: np.ndarray
     errors: Optional[ArrayLike] = None
 
+    @classmethod
+    def from_file(cls, filepath, camera_name: Optional[str] = None):
+        params = fileio.read_parameters(filepath, camera_name)
+        return cls(camera_matrix=params['camera_matrix'], dist_coeffs=params['dist_coeffs'], errors=params.get('errors'))
+
 @dataclass
 class ExtrinsicsPayload:
     """
@@ -53,6 +58,11 @@ class ExtrinsicsPayload:
     rvec: np.ndarray
     tvec: np.ndarray
 
+    @classmethod
+    def from_file(cls, filepath, camera_name: Optional[str] = None):
+        params = fileio.read_parameters(filepath, camera_name)
+        return cls(rvec=params['rvec'], tvec=params['tvec'])
+
 @dataclass
 class CalibrationData:
     """
@@ -60,6 +70,12 @@ class CalibrationData:
     """
     camera_name: str
     payload: IntrinsicsPayload | ExtrinsicsPayload | DetectionPayload | PosePayload | ErrorsPayload | OriginCameraPayload
+
+    def to_file(self, filepath):
+        if isinstance(self.payload, IntrinsicsPayload):
+            fileio.write_intrinsics(filepath, self.camera_name, self.payload.camera_matrix, self.payload.dist_coeffs, self.payload.errors)
+        elif isinstance(self.payload, ExtrinsicsPayload):
+            fileio.write_extrinsics(filepath, self.camera_name, self.payload.rvec, self.payload.tvec)
 
 
 ##
@@ -81,8 +97,8 @@ class CalibrationWorker(QObject):
 
     @Slot(CalibrationData)
     def _handle_payload(self, data: CalibrationData):
-        sender_worker = self.sender()
-        print(f'[{self.name.title()}] Received (from: {sender_worker.name}) {data.payload}')
+        # This signal is coming from the receive_payload proxy, which always comes from the Coordinator
+        print(f'[{self.name.title()}] Received (from Coordinator): ({data.camera_name}) {data.payload}')
 
 class ProcessingWorker(QObject):
     """ Base class for all processing workers. Can be paused. """
@@ -140,7 +156,7 @@ class CalibrationProcessingWorker(CalibrationWorker, ProcessingWorker):
     def set_stage(self, stage: int):
         """ Update worker's internal stage (can be overridden) """
         self._current_stage = stage
-        print(f"[{self.name.title()}] Received stage {stage}")
+        print(f"[{self.name.title()}] Received calibration stage: {stage}")
 
 class MonocularWorker(CalibrationProcessingWorker):
 
@@ -278,6 +294,23 @@ class MonocularWorker(CalibrationProcessingWorker):
     def auto_compute(self, value: bool):
         self._auto_compute = value
 
+    @Slot(str)
+    def load_intrinsics(self, file_path: str):
+        intrinsics = IntrinsicsPayload.from_file(file_path, self.cam_name)
+        # Set the intrinsics in the tool
+        self.monocular_tool.set_intrinsics(intrinsics.camera_matrix, intrinsics.dist_coeffs, intrinsics.errors)
+        # And forward to the coordinator (it will route to the Multiview and UI)
+        self.send_payload.emit(
+            CalibrationData(self.cam_name, intrinsics)
+        )
+
+    @Slot(str)
+    def save_intrinsics(self, file_path: str):
+        if self.monocular_tool.has_intrinsics:
+            data = CalibrationData(self.cam_name, IntrinsicsPayload(*self.monocular_tool.intrinsics,
+                                                                    self.monocular_tool.intrinsics_errors))
+            data.to_file(file_path)
+
 class MultiviewWorker(CalibrationProcessingWorker):
 
     def __init__(self, cameras_names, origin_camera_name):
@@ -369,7 +402,7 @@ class CalibrationCoordinator(QObject):
         self._current_stage = stage
         # Broadcast to all workers
         self.broadcast_stage.emit(stage)
-        print(f"[{self.name.title()}] Broadcast stage {stage}")
+        print(f"[{self.name.title()}] Broadcasting calibration stage: {stage}")
 
     @Slot(str)
     def set_origin_camera(self, camera_name: str):
@@ -381,7 +414,7 @@ class CalibrationCoordinator(QObject):
     def _handle_payload_from_main(self, data: CalibrationData):
         """ Main thread entry point for CalibrationData """
 
-        print(f'[{self.name.title()}] Received (from: main) -> {data.camera_name} {data.payload}')
+        print(f'[{self.name.title()}] Received (from Main): ({data.camera_name}) {data.payload}')
 
         if isinstance(data.payload, IntrinsicsPayload) or isinstance(data.payload, ExtrinsicsPayload):
             # Send to respective MonocularWorker and MultiviewWorker
@@ -392,20 +425,15 @@ class CalibrationCoordinator(QObject):
     def _route_payload(self, data: CalibrationData):
 
         sending_worker = self.sender()
-
-        print(f'[{self.name.title()}] Received (from: {sending_worker.name}) -> {data.camera_name} {data.payload}')
+        # This signal carries the source sender still
+        print(f'[{self.name.title()}] Received (from {sending_worker.name.title()}): ({data.camera_name}) {data.payload}')
 
         if isinstance(data.payload, IntrinsicsPayload):
             if sending_worker.name == 'multiview':
                 # This is the refined intrinsics -> send to main thread
                 self.send_to_main.emit(data)  # Use the sigle signal towards main thread
 
-            elif sending_worker.name == 'main':
-                # This is a loaded file coming from main thread
-                # TODO
-                pass
-
-            elif sending_worker == data.camera_name and self._current_stage == 0:
+            elif sending_worker.name == data.camera_name and self._current_stage == 0:
                 # This comes from a monocular worker, so forward to the aggregator if we're in stage 0
                 self._send_to_worker('multiview', data)
 
@@ -413,11 +441,6 @@ class CalibrationCoordinator(QObject):
             if sending_worker.name == 'multiview':
                 # This is the refined extrinsics -> send to main thread
                 self.send_to_main.emit(data)  # Use the sigle signal towards main thread
-
-            elif sending_worker.name == 'main':
-                # This is a loaded file coming from main thread
-                # TODO
-                pass
 
         elif isinstance(data.payload, PosePayload):
             # Must always come from a monocular worker, and only route if stage 1

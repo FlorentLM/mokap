@@ -166,64 +166,6 @@ def write_extrinsics(filepath, camera_name, rvec, tvec):
     file_writer('extrinsics', filepath, camera_name, rvec, tvec)
 
 
-def read_intrinsics(filepath, camera_name=None):
-
-    filepath = Path(filepath)
-    if filepath.is_dir():
-        filepath = filepath / 'parameters.toml'
-
-    if filepath.is_file():
-        with open(filepath, 'r') as f:
-            data = toml.load(f)
-    else:
-        raise FileNotFoundError(f"File not found: {filepath}")
-
-    if camera_name is not None:
-        if camera_name in data:
-            cam_data = data[camera_name]
-            cam_data.pop('rvec', None)
-            cam_data.pop('tvec', None)
-            return {k: np.array(v).squeeze() for k, v in cam_data.items()}
-        else:
-            raise Exception(f'No camera named {camera_name} in {filepath}')
-    else:
-        for cam_name, cam_data in data.items():
-            cam_data.pop('rvec', None)
-            cam_data.pop('tvec', None)
-            data[cam_name] = {k: np.array(v).squeeze() for k, v in cam_data.items()}
-        return data
-
-
-def read_extrinsics(filepath, camera_name=None):
-
-    filepath = Path(filepath)
-    if filepath.is_dir():
-        filepath = filepath / 'parameters.toml'
-
-    if filepath.is_file():
-        with open(filepath, 'r') as f:
-            data = toml.load(f)
-    else:
-        raise FileNotFoundError(f"File not found: {filepath}")
-
-    if camera_name is not None:
-        if camera_name in data:
-            cam_data = data[camera_name]
-            cam_data.pop('camera_matrix', None)
-            cam_data.pop('dist_coeffs', None)
-            cam_data.pop('errors', None)
-            return {k: np.array(v).squeeze() for k, v in cam_data.items()}
-        else:
-            raise Exception(f'No camera named {camera_name} in {filepath}')
-    else:
-        for cam_name, cam_data in data.items():
-            cam_data.pop('camera_matrix', None)
-            cam_data.pop('dist_coeffs', None)
-            cam_data.pop('errors', None)
-            data[cam_name] = {k: np.array(v).squeeze() for k, v in cam_data.items()}
-        return data
-
-
 def read_parameters(filepath, camera_name=None):
 
     filepath = Path(filepath)
@@ -245,10 +187,6 @@ def read_parameters(filepath, camera_name=None):
         for cam_name, cam_data in data.items():
             data[cam_name] = {k: np.array(v).squeeze() for k, v in cam_data.items()}
         return data
-
-
-# slp_path = 'C:/Users/flolm/Desktop/3d_ant_data/240905-1616/inputs/tracking/240905-1616_cam2_banana_session13.predictions.slp'
-# slp_path = 'C:/Users/flolm/Desktop/labels.v005.slp'
 
 
 def load_skeleton_SLEAP(slp_path, indices=False):

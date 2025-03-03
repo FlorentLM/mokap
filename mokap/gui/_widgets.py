@@ -1020,6 +1020,9 @@ class RecordingWindow(VideoWindowBase):
 
 class MonocularCalibWindow(VideoWindowBase):
 
+    request_load = Signal(str)
+    request_save = Signal(str)
+
     def __init__(self, camera, main_window_ref):
         super().__init__(camera, main_window_ref)
 
@@ -1050,6 +1053,8 @@ class MonocularCalibWindow(VideoWindowBase):
     def _setup_worker(self, worker_object):
         super()._setup_worker(worker_object)
         self._mainwindow.coordinator.register_worker(worker_object)
+        self.request_load.connect(worker_object.load_intrinsics)
+        self.request_save.connect(worker_object.save_intrinsics)
 
     #  ============= UI constructors =============
     def _init_specific_ui(self):
@@ -1216,27 +1221,16 @@ class MonocularCalibWindow(VideoWindowBase):
         # Clear text
         self.load_save_message.setText('')
 
-    def on_load_parameters(self, file_path=None):
-        if file_path is None or file_path is False:
-            file_path = self._show_file_dialog(self._mainwindow.mc.full_path.parent)
-        else:
-            file_path = Path(file_path)
+    def on_load_parameters(self):
+        file_path = self._show_file_dialog(self._mainwindow.mc.full_path.parent)
+        if file_path and file_path.is_file():   # Might still be None if the picker did not succeed
+            self.request_load.emit(file_path.as_posix())
+            self.load_save_message.setText(f"Intrinsics <b>loaded</b> from {file_path.parent}")
 
-        if file_path:   # Might still be None if the picker did not succeed
-            if file_path.is_dir():
-                file = file_path / "parameters.toml"
-                if file.exists():
-                    self.load_save_message.setText(f"Intrinsics <b>loaded</b> from {file.parent}")
-                    # self.signal_load_calib.emit(file.as_posix())
-
-            elif file_path.is_file():
-                self.load_save_message.setText(f"Intrinsics <b>loaded</b> from {file_path}")
-                # self.signal_load_calib.emit(file_path.as_posix())
-
-    def on_save_parameters(self):
+    def on_save_parameters(self, data: CalibrationData):
         file_path = self._mainwindow.mc.full_path / "parameters.toml"
+        self.request_save.emit(file_path.as_posix())
         self.load_save_message.setText(f"Intrinsics <b>saved</b> as \r{file_path}")
-        # self.signal_save_calib.emit(file_path.as_posix())
 
     # @Slot(np.ndarray, np.ndarray, bool)
     # def on_intrinsics_update(self, camera_matrix, dist_coeffs, update_message=True):
