@@ -24,7 +24,7 @@ from pyqtgraph.opengl import GLViewWidget, GLGridItem, GLLinePlotItem, GLScatter
 from mokap.utils import geometry
 from mokap.calibration import monocular
 from mokap.utils import hex_to_rgb, hex_to_hls, pretty_size, generate_charuco
-from .components import *
+from .workers import *
 
 
 def do_nothing():
@@ -156,10 +156,7 @@ class BoardParamsDialog(QDialog):
         return self._board_params, self.apply_all_checkbox.isChecked()
 
 class SecondaryWindowBase(QWidget):
-    """
-    Stores common stuff for Preview windows and 3D view window
-    """
-
+    """ Stores common stuff for Preview windows and 3D view window """
     BOTTOM_PANEL_H = 300
     WINDOW_MIN_W = 550
     if 'Windows' in platform.system():
