@@ -7,10 +7,10 @@ import psutil
 import screeninfo
 import cv2
 import numpy as np
+from pathlib import Path
 from functools import partial
 from collections import deque
 from datetime import datetime
-from pathlib import Path
 from PIL import Image
 from PySide6.QtCore import Qt, QTimer, QEvent, QDir, Signal, Slot, QThread, QPoint, QSize
 from PySide6.QtGui import QIcon, QImage, QPixmap, QCursor, QBrush, QPen, QColor, QFont
@@ -26,10 +26,10 @@ from mokap.calibration import monocular
 from mokap.utils import hex_to_rgb, hex_to_hls, pretty_size, generate_charuco
 from .components import *
 
-DEBUG = True
 
 def do_nothing():
     print('Nothing')
+
 
 class GUILogger:
     def __init__(self):
@@ -96,7 +96,7 @@ class SnapPopup(QFrame):
 
 class BoardParamsDialog(QDialog):
 
-    def __init__(self, board_params, parent=None):
+    def __init__(self, board_params: BoardParams, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Calibration Board Settings")
         self.setModal(True)
@@ -112,7 +112,7 @@ class BoardParamsDialog(QDialog):
         self.row_spin = QSpinBox()
         self.row_spin.setMinimum(2)
         self.row_spin.setMaximum(30)
-        self.row_spin.setValue(self._board_params['rows'])
+        self.row_spin.setValue(self._board_params.rows)
         row_layout.addWidget(row_label)
         row_layout.addWidget(self.row_spin)
         main_layout.addLayout(row_layout)
@@ -123,7 +123,7 @@ class BoardParamsDialog(QDialog):
         self.col_spin = QSpinBox()
         self.col_spin.setMinimum(2)
         self.col_spin.setMaximum(30)
-        self.col_spin.setValue(self._board_params['cols'])
+        self.col_spin.setValue(self._board_params.cols)
         col_layout.addWidget(col_label)
         col_layout.addWidget(self.col_spin)
         main_layout.addLayout(col_layout)
@@ -135,7 +135,7 @@ class BoardParamsDialog(QDialog):
         self.sq_spin.setMinimum(0.01)
         self.sq_spin.setMaximum(1000.0)
         self.sq_spin.setDecimals(2)
-        self.sq_spin.setValue(self._board_params['square_length'])
+        self.sq_spin.setValue(self._board_params.square_length)
         sq_layout.addWidget(sq_label)
         sq_layout.addWidget(self.sq_spin)
         main_layout.addLayout(sq_layout)
@@ -154,8 +154,6 @@ class BoardParamsDialog(QDialog):
 
     def get_values(self):
         return self._board_params, self.apply_all_checkbox.isChecked()
-
-##
 
 class SecondaryWindowBase(QWidget):
     """
@@ -1289,21 +1287,15 @@ class MonocularCalibWindow(VideoWindowBase):
                 self._update_board_preview()
 
     def _update_board_preview(self):
-        max_board_img_w, max_board_img_h = 100, 100
+        max_w, max_h = 100, 100
 
-        r = self.board_params['rows'] / self.board_params['cols']
-        h, w = 100, int(r * 100)
+        r = self.board_params.rows / self.board_params.cols
+        h, w = max_h, int(r * max_w)
 
-        board_arr = generate_charuco(
-            board_rows=self.board_params['rows'],
-            board_cols=self.board_params['cols'],
-            square_length_mm=self.board_params['square_length'],
-            markers_size=self.board_params['markers_size']).generateImage((h, w))
-
+        board_arr = self.board_params.to_opencv().generateImage((h, w))
         q_img = QImage(board_arr, h, w, h, QImage.Format.Format_Grayscale8)
         pixmap = QPixmap.fromImage(q_img)
-        bounded_pixmap = pixmap.scaled(max_board_img_w, max_board_img_h,
-                                       Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        bounded_pixmap = pixmap.scaled(max_w, max_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self.board_preview_label.setPixmap(bounded_pixmap)
 
 

@@ -1,30 +1,17 @@
 import sys
 import subprocess
-from typing import List, Optional, Set, Tuple, Union
+from typing import List, Optional, Set, Tuple
 import colorsys
 import cv2
 from pathlib import Path
 import numpy as np
 from alive_progress import alive_bar
 from tempfile import mkdtemp
-from dataclasses import dataclass
-
-
-@dataclass
-class BoardParams:
-    rows: int
-    cols: int
-    square_length: float    # in real-life units (e.g. mm)
-    markers_size: int = 4
-    margin: int = 1
-
-    def to_opencv(self) -> cv2.aruco.CharucoBoard:
-        return generate_charuco(self.rows, self.cols, self.square_length, self.markers_size, self.margin)
 
 
 class CallbackOutputStream:
     """
-        Simple class to capture stdout and use it with alive_progress
+    Simple class to capture stdout and use it with alive_progress
     """
     def __init__(self, callback, keep_stdout=True):
         self.callback = callback
@@ -102,13 +89,13 @@ def USB_off() -> None:
 def USB_status() -> int:
     ret = subprocess.Popen(["uhubctl", "-l", "4-2"], stdout=subprocess.PIPE)
     out, error = ret.communicate()
-    if 'off' in str(out):
-        return 1
-    elif 'power' in str(out):
+    if 'power' in str(out):
         return 0
+    else:
+        return 1
 
 
-def ensure_list(s: Optional[Union[str, List[str], Tuple[str], Set[str]]]) -> List[str]:
+def ensure_list(s: Optional[str | List[str] | Tuple[str] | Set[str]]) -> List[str]:
     # Ref: https://stackoverflow.com/a/56641168/
     return s if isinstance(s, list) else list(s) if isinstance(s, (tuple, set)) else [] if s is None else [s]
 
@@ -137,7 +124,7 @@ def pretty_size(value: int, verbose=False, decimal=False) -> str:
     return f"{int(amount)} {unit}" if amount.is_integer() else f"{amount:.2f} {unit}"
 
 
-def probe_video(video_path):
+def probe_video(video_path: Path | str):
     video_path = Path(video_path)
 
     if not video_path.exists():
@@ -154,7 +141,7 @@ def probe_video(video_path):
     return frame.shape, nb_frames
 
 
-def load_full_video(video_path):
+def load_full_video(video_path: Path | str):
     video_path = Path(video_path)
 
     if not video_path.exists():
@@ -191,7 +178,7 @@ def load_full_video(video_path):
     return full_video, temp_file
 
 
-def generate_charuco(board_rows, board_cols, square_length_mm=5.0, markers_size=4, margin=1) -> cv2.aruco.CharucoBoard:
+def generate_charuco(rows: int, cols: int, square_length_mm: float = 5.0, markers_size: int = 4, margin: int = 1) -> cv2.aruco.CharucoBoard:
     """
     Generates a Charuco board for the given parameters
     """
@@ -204,18 +191,18 @@ def generate_charuco(board_rows, board_cols, square_length_mm=5.0, markers_size=
 
     marker_length_mm = mk_l_bits / sq_l_bits * square_length_mm
 
-    dict_size = next(s for s in all_dict_sizes if s >= board_rows * board_cols)
+    dict_size = next(s for s in all_dict_sizes if s >= rows * cols)
     dict_name = f'DICT_{markers_size}X{markers_size}_{dict_size}'
 
     aruco_dict = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, dict_name))
-    board = cv2.aruco.CharucoBoard((board_cols, board_rows),    # number of chessboard squares in x and y directions
-                                   square_length_mm,                # chessboard square side length (normally in meters)
-                                   marker_length_mm,                # marker side length (same unit than squareLength)
+    board = cv2.aruco.CharucoBoard((cols, rows),  # number of chessboard squares in x and y directions
+                                   square_length_mm,  # chessboard square side length (normally in meters)
+                                   marker_length_mm,  # marker side length (same unit than squareLength)
                                    aruco_dict)
     return board
 
 
-def print_board(board: cv2.aruco.CharucoBoard, multi_size=False, factor=2.0, dpi=1200):
+def generate_board_svg(board: cv2.aruco.CharucoBoard, file_path: Path | str, multi_size=False, factor=2.0, dpi=1200):
 
     square_length_mm = board.getSquareLength()
     marker_length_mm = board.getMarkerLength()
@@ -343,5 +330,6 @@ def print_board(board: cv2.aruco.CharucoBoard, multi_size=False, factor=2.0, dpi
 
     svg_lines.append('</svg>')
 
-    with open(filename, 'w') as f:
+    file_path.mkdir(parents=True, exist_ok=True)    # TODO - check if user passed the file name in there...
+    with open(file_path / filename, 'w') as f:
         f.write('\n'.join(svg_lines))

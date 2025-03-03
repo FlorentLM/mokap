@@ -4,7 +4,8 @@ np.set_printoptions(precision=3, suppress=True, threshold=5)
 import cv2
 import scipy.stats as stats
 from scipy.spatial.distance import cdist
-from mokap.utils import geometry, BoardParams
+from mokap.utils import geometry
+from mokap.utils.datatypes import BoardParams
 from mokap.calibration import monocular, multiview
 from typing import Optional
 from numpy.typing import ArrayLike

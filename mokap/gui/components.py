@@ -2,83 +2,10 @@ import numpy as np
 np.set_printoptions(precision=3, suppress=True, threshold=5)
 from PySide6.QtCore import QObject, Signal, Slot
 from mokap.calibration import MonocularCalibrationTool, MultiviewCalibrationTool
-from mokap.utils import fileio, BoardParams
-from dataclasses import dataclass
-from typing import Dict, Any, Literal, List, Annotated, Optional
+from mokap.utils.datatypes import (BoardParams, CalibrationData, IntrinsicsPayload, ExtrinsicsPayload,
+                                   ErrorsPayload, OriginCameraPayload, PosePayload, DetectionPayload)
 from numpy.typing import ArrayLike
-from pathlib import Path
 
-DEBUG = True
-
-@dataclass
-class ErrorsPayload:
-    errors: Optional[ArrayLike] = None
-
-@dataclass
-class OriginCameraPayload:
-    camera_name: str
-
-@dataclass
-class PosePayload:
-    """
-    Monocular estimation of the extrinsics (camera pose)
-    """
-    frame: int
-    rvec: np.ndarray
-    tvec: np.ndarray
-
-@dataclass
-class DetectionPayload:
-    """
-    Monocular detection of points 2D
-    """
-    frame: int
-    points2D: np.ndarray
-    pointsIDs: np.ndarray
-
-@dataclass
-class IntrinsicsPayload:
-    """
-    Monocular intrinsics parameters
-    """
-    camera_matrix: np.ndarray
-    dist_coeffs: np.ndarray
-    errors: Optional[ArrayLike] = None
-
-    @classmethod
-    def from_file(cls, filepath, camera_name: Optional[str] = None):
-        params = fileio.read_parameters(filepath, camera_name)
-        return cls(camera_matrix=params['camera_matrix'], dist_coeffs=params['dist_coeffs'], errors=params.get('errors'))
-
-@dataclass
-class ExtrinsicsPayload:
-    """
-    Multiview extrinsics parameters (global arrangement)
-    """
-    rvec: np.ndarray
-    tvec: np.ndarray
-
-    @classmethod
-    def from_file(cls, filepath, camera_name: Optional[str] = None):
-        params = fileio.read_parameters(filepath, camera_name)
-        return cls(rvec=params['rvec'], tvec=params['tvec'])
-
-@dataclass
-class CalibrationData:
-    """
-    Encapsulation of a payload with the camera name
-    """
-    camera_name: str
-    payload: IntrinsicsPayload | ExtrinsicsPayload | DetectionPayload | PosePayload | ErrorsPayload | OriginCameraPayload
-
-    def to_file(self, filepath):
-        if isinstance(self.payload, IntrinsicsPayload):
-            fileio.write_intrinsics(filepath, self.camera_name, self.payload.camera_matrix, self.payload.dist_coeffs, self.payload.errors)
-        elif isinstance(self.payload, ExtrinsicsPayload):
-            fileio.write_extrinsics(filepath, self.camera_name, self.payload.rvec, self.payload.tvec)
-
-
-##
 
 class CalibrationWorker(QObject):
     """ Base class for all the Calibration workers. Sends/Receives CalibrationData objects. """
