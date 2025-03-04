@@ -342,7 +342,7 @@ def merge_multiview_df(list_of_dfs, reset_tracks=True):
         for df in list_of_dfs:
             track_ids = df[('comments', 'track_sleap')].factorize()[0] + last_nb_tracks
             last_nb_tracks += np.unique(track_ids).shape[0]
-            df['tracks'] = track_ids
+            df['track'] = track_ids
 
     multiview_df = pd.concat(list_of_dfs, join='outer')
 
