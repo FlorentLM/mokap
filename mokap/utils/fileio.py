@@ -5,7 +5,6 @@ import toml
 import numpy as np
 import pandas as pd
 
-
 ##
 
 COMPRESSED = {'codec': 'libx265',
@@ -62,7 +61,6 @@ def read_config(config_file='config.yml'):
 
 
 def rm_if_empty(path):
-
     path = Path(path)
     if not path.exists():
         # if it doesn't exist, nothing to do.
@@ -104,7 +102,7 @@ def toml_formatter(dictionary):
 
 def intrinsics_to_dict(camera_matrix, dist_coeffs, errors=None):
     intrinsics_dict = {'camera_matrix': np.array(camera_matrix).squeeze().tolist(),
-         'dist_coeffs': np.array(dist_coeffs).squeeze().tolist()}
+                       'dist_coeffs': np.array(dist_coeffs).squeeze().tolist()}
     if errors is not None:
         errors_arr = np.array(errors)
         if not np.all(errors_arr == np.inf):
@@ -114,12 +112,11 @@ def intrinsics_to_dict(camera_matrix, dist_coeffs, errors=None):
 
 def extrinsics_to_dict(rvec, tvec):
     extrinsics_dict = {'rvec': np.array(rvec).squeeze().tolist(),
-                'tvec': np.array(tvec).squeeze().tolist()}
+                       'tvec': np.array(tvec).squeeze().tolist()}
     return extrinsics_dict
 
 
 def file_writer(mode, filepath, camera_name, *args):
-
     filepath = Path(filepath)
     if filepath.is_dir():
         filepath = filepath / 'parameters.toml'
@@ -167,7 +164,6 @@ def write_extrinsics(filepath, camera_name, rvec, tvec):
 
 
 def read_parameters(filepath, camera_name=None):
-
     filepath = Path(filepath)
     if filepath.is_dir():
         filepath = filepath / 'parameters.toml'
@@ -202,7 +198,6 @@ def load_skeleton_SLEAP(slp_path, indices=False):
 
 
 def SLP_to_df(slp_content, camera_name=None, session=None):
-
     def instance_to_row(instance, is_manual):
 
         original_track = instance.track.name if instance.track else ''
@@ -220,8 +215,7 @@ def SLP_to_df(slp_content, camera_name=None, session=None):
                 y = float(instance.points[node].y) if hasattr(instance.points[node], 'y') else np.nan
                 s = float(instance.points[node].score) if hasattr(instance.points[node], 'score') else 1.0
             values.extend([x, y, s])
-        return  values + [instance_score, tracking_score, original_track]
-
+        return values + [instance_score, tracking_score, original_track]
 
     keypoints = slp_content.skeleton.node_names
     columns = (['camera.', 'frame.']
@@ -231,7 +225,7 @@ def SLP_to_df(slp_content, camera_name=None, session=None):
     rows = []
     for frame_content in slp_content.labeled_frames:
         source_video = Path(frame_content.video.filename)
-        if camera_name in source_video.stem or camera_name is None:   # if name is not passed, assume we load everything
+        if camera_name in source_video.stem or camera_name is None:  # if name is not passed, assume we load everything
             if session in source_video.stem or session is None:
                 for i, instance in enumerate(frame_content.instances):
                     is_manual = instance in frame_content.user_instances
@@ -239,7 +233,7 @@ def SLP_to_df(slp_content, camera_name=None, session=None):
                     if row[-1] == '':
                         row[-1] = f'instance_{i}'
                     if session is not None:
-                        row[-1] = f"{session}_{row[-1]}"   # prepend session in the track nb
+                        row[-1] = f"{session}_{row[-1]}"  # prepend session in the track nb
                     row = [camera_name, frame_content.frame_idx] + row
                     rows.append(row)
 
@@ -264,7 +258,7 @@ def read_SLEAP(slp_path):
     for session in sessions:
         for cam_name in cameras_names:
             df = SLP_to_df(slp_content, cam_name, session)  # This particular camera / session might not exist, so
-            if not df.empty:                                # in that case the df is empty, we just skip it
+            if not df.empty:  # in that case the df is empty, we just skip it
                 list_of_dfs.append(df)
     return merge_multiview_df(list_of_dfs)
 
@@ -340,15 +334,26 @@ def load_session(path, session=''):
     return merged_df
 
 
-def merge_multiview_df(list_of_dfs):
+def merge_multiview_df(list_of_dfs, reset_tracks=True):
+    list_of_dfs = list_of_dfs.copy()
 
-    last_nb_tracks = 0
-    for df in list_of_dfs:
-        df['track'] = df[('comments', 'track_sleap')].factorize()[0] + last_nb_tracks
-        last_nb_tracks += len(df['track'])
+    if reset_tracks:
+        last_nb_tracks = 0
+        for df in list_of_dfs:
+            track_ids = df[('comments', 'track_sleap')].factorize()[0] + last_nb_tracks
+            last_nb_tracks += np.unique(track_ids).shape[0]
+            df['tracks'] = track_ids
 
     multiview_df = pd.concat(list_of_dfs, join='outer')
-    multiview_df.set_index(['camera', 'track', 'frame'], inplace=True)
+
+    if reset_tracks:
+        if 'track' in multiview_df.index.names:
+            multiview_df = multiview_df.reset_index('track', drop=True)  # Reset tracks: get rid of the old ones
+
+    if set(multiview_df.index.names) == {None}:
+        multiview_df = multiview_df.set_index(['camera', 'track', 'frame'])
+    else:
+        multiview_df = multiview_df.reset_index().set_index(['camera', 'track', 'frame'])
 
     # Set the cameras level as a categorical
     multiview_df.index = multiview_df.index.set_levels(
@@ -362,7 +367,6 @@ def merge_multiview_df(list_of_dfs):
 
 
 def sort_multiview_df(in_df, cameras_order=None, keypoints_order=None):
-
     df = in_df.copy()
 
     if keypoints_order is None:
@@ -393,7 +397,7 @@ def sort_multiview_df(in_df, cameras_order=None, keypoints_order=None):
 
     # Reorder the levels themselves to the preferred one
     df = df.reorder_levels(['camera', 'track', 'frame'])
-    
+
     if cameras_order is None:
         # If no custom ordering is passsed we sort alphabetically
         cameras_order = sorted(df.index.levels[0])
@@ -402,13 +406,11 @@ def sort_multiview_df(in_df, cameras_order=None, keypoints_order=None):
     df.index = df.index.set_levels(
         pd.CategoricalIndex(df.index.levels[0],
                             categories=cameras_order, ordered=True), level=0)
-    
+
     # And apply the sorted categorical index for the cameras
     df_ordered = df.sort_index()
 
     return df_ordered
-
-
 
 ## These functions below are not to be used anymore - will be deleted
 #
