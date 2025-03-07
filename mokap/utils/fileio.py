@@ -220,7 +220,7 @@ def SLP_to_df(slp_content, camera_name=None, session=None):
     keypoints = slp_content.skeleton.node_names
     columns = (['camera.', 'frame.']
                + [f"{k}.{a}" for k in keypoints for a in ['x', 'y', 'score']]
-               + ['comments.instance_score', 'comments.tracking_score', 'comments.track_sleap'])
+               + ['comments.instance_score', 'comments.tracking_score', 'comments.instance'])
 
     rows = []
     for frame_content in slp_content.labeled_frames:
@@ -234,7 +234,7 @@ def SLP_to_df(slp_content, camera_name=None, session=None):
                         row[-1] = f'instance_{i}'
                     if session is not None:
                         row[-1] = f"{session}_{row[-1]}"  # prepend session in the track nb
-                    row = [camera_name, frame_content.frame_idx] + row
+                    row = [camera_name, frame_content.frame_idx + 1] + row
                     rows.append(row)
 
     df = pd.DataFrame(rows, columns=columns)
@@ -340,7 +340,7 @@ def merge_multiview_df(list_of_dfs, reset_tracks=True):
     if reset_tracks:
         last_nb_tracks = 0
         for df in list_of_dfs:
-            track_ids = df[('comments', 'track_sleap')].factorize()[0] + last_nb_tracks
+            track_ids = df[('comments', 'instance')].factorize()[0] + last_nb_tracks
             last_nb_tracks += np.unique(track_ids).shape[0]
             df['track'] = track_ids
 
@@ -387,7 +387,7 @@ def sort_multiview_df(in_df, cameras_order=None, keypoints_order=None):
         ('centroid', 'disp'),
         ('comments', 'tracking_score'),
         ('comments', 'instance_score'),
-        ('comments', 'track_sleap'),
+        ('comments', 'instance'),
     ]
 
     desired_order += [col for col in other_columns if col in df.columns]
