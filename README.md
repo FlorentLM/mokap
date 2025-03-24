@@ -159,7 +159,7 @@ sources:
 
 ### Start GUI
 
-1. Activate the conda environment `conda activate mokap`
+1. Activate the uv environment `source .venv/bin/activate`
 2. Run `./mokap.py`
 
 *Note: There are some default values hardcoded in `mokap.py`, but they can be changed with the GUI*
