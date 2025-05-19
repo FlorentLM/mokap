@@ -182,7 +182,15 @@ mc = MultiCam(config='./config.yaml', triggered=False, silent=False)
 ```
 (or the name you chose for the config file)
 
-Make sure that `Dhccp` and `pigpiod` GPIO pin trigger services are running on PI.
+You must enable the GPIO interface on the PI using:
+```
+sudo raspi-config
+```
+
+Make sure that `Dhcpcd` and `pigpiod` GPIO pin trigger services are running on PI using:
+```
+sudo systemctl status <service>
+```
 Make sure that  systemd-networkd service is running on Linux Desktop if connected via wired connection.
 Make sure you can ping between devices. You made need to explicitly set IP addresses with subnet.
 
