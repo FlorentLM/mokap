@@ -159,12 +159,10 @@ sources:
 
 ### Start GUI
 
-1. Activate the uv environment within mokap. On Linux this is `source .venv/bin/activate`
+1. Activate the conda environment `conda activate mokap`
 2. Run `./mokap.py`
 
 *Note: There are some default values hardcoded in `mokap.py`, but they can be changed with the GUI*
-
-### Hardware Trigger
 
 **Important**: The default in `mokap.py` is to use a hardware trigger (Raspberry Pi). For this, you **_MUST_** have three environment variables defined.
 The recommended way is to create a file named `.env` that contains the three variables:
@@ -181,18 +179,6 @@ You can disable the hardware trigger by editing the `mokap.py` file line 6:
 mc = MultiCam(config='./config.yaml', triggered=False, silent=False)
 ```
 (or the name you chose for the config file)
-
-You must enable the GPIO interface on the PI using:
-```
-sudo raspi-config
-```
-
-Make sure that `Dhcpcd` and `pigpiod` GPIO pin trigger services are running on PI using:
-```
-sudo systemctl status <service>
-```
-Make sure that  systemd-networkd service is running on Linux Desktop if connected via wired connection.
-Make sure you can ping between devices. You made need to explicitly set IP addresses with subnet.
 
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
