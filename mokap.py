@@ -8,8 +8,8 @@ mc = MultiCam(config='./config.yaml', triggered=True, silent=False)
 # Example:
 # Set some default parameters for all cameras at once
 
-mc.exposure = 4800
-mc.framerate = 100
+#mc.exposure = 4800
+mc.framerate = 10
 mc.gamma = 1.0
 mc.blacks = 1.0
 mc.gain = 0.0

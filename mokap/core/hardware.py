@@ -279,6 +279,7 @@ class BaslerCamera:
 
         self._width = 0
         self._height = 0
+        self._channels = 0
         self._probe_frame_shape = None  # (height, width)
 
         self._framerate = framerate
@@ -287,8 +288,8 @@ class BaslerCamera:
         self._gain = 1.0
         self._gamma = 1.0
         self._triggered = triggered
-        self._binning_value = binning
-        self._binning_mode = binning_mode
+        #self._binning_value = binning
+        #self._binning_mode = binning_mode
 
         self._idx = -1
 
@@ -304,18 +305,20 @@ class BaslerCamera:
 
     def _set_roi(self) -> NoReturn:
         if not self._is_virtual:
-            self._width = int(self.ptr.WidthMax.GetValue() - (16 // self._binning_value))
-            self._height = int(self.ptr.HeightMax.GetValue() - (8 // self._binning_value))
-
+            self._width = 1920#int(self.ptr.WidthMax.GetValue() - (16 // self._binning_value))
+            self._height = 1200#int(self.ptr.HeightMax.GetValue() - (8 // self._binning_value))
+            self._channels = 3 #this needs to be set dynamically...
             # Apply the dimensions to the ROI
             self.ptr.Width = self._width
             self.ptr.Height = self._height
+
             self.ptr.CenterX = True
             self.ptr.CenterY = True
 
         else:
             self._width = int(self._probe_frame_shape[1])
             self._height = int(self._probe_frame_shape[0])
+            self._channels = int(self._probe_frame_shape[2])
             # self.ptr.Width = self._width
             # self.ptr.Height = self._height
 
@@ -351,6 +354,7 @@ class BaslerCamera:
 
         self.ptr.UserSetSelector.SetValue("Default")
         self.ptr.UserSetLoad.Execute()
+
         self.ptr.AcquisitionMode.Value = 'Continuous'
         self.ptr.ExposureMode = 'Timed'
 
@@ -358,13 +362,17 @@ class BaslerCamera:
         # 342 Mbps is a bit less than the maximum, but things are more stable like this
         self.ptr.DeviceLinkThroughputLimit.SetValue(342000000)
 
+        self.ptr.PixelFormat.SetValue("BayerBG8")
+
         if self._probe_frame_shape is None:
             probe_frame = self.ptr.GrabOne(100)
+            print("PROBE SHAPE:", probe_frame.GetArray().shape)
             self._probe_frame_shape = probe_frame.GetArray().shape
+
 
         if not self._is_virtual:
 
-            self.ptr.ExposureTimeMode.SetValue('Standard')
+            #self.ptr.ExposureTimeMode.SetValue('Standard')
             self.ptr.ExposureAuto = 'Off'
             self.ptr.GainAuto = 'Off'
             self.ptr.TriggerDelay.Value = 0.0
@@ -374,10 +382,10 @@ class BaslerCamera:
             self.ptr.TriggerSelector = "FrameStart"
 
             if self.triggered:
-                self.ptr.LineSelector = "Line4"
+                self.ptr.LineSelector = "Line3"
                 self.ptr.LineMode = "Input"
                 self.ptr.TriggerMode = "On"
-                self.ptr.TriggerSource = "Line4"
+                self.ptr.TriggerSource = "Line3"
                 self.ptr.TriggerActivation.Value = 'RisingEdge'
                 self.ptr.AcquisitionFrameRateEnable.SetValue(False)
             else:
@@ -386,8 +394,8 @@ class BaslerCamera:
 
         self._set_roi()
 
-        self.binning = self._binning_value
-        self.binning_mode = self._binning_mode
+        #self.binning = self._binning_value
+        #self.binning_mode = self._binning_mode
 
         self.framerate = self._framerate
         self.exposure = self._exposure
@@ -411,6 +419,7 @@ class BaslerCamera:
             self._name = 'unnamed'
             self._width = 0
             self._height = 0
+            self._channels = 0
 
         self._connected = False
 
@@ -645,6 +654,10 @@ class BaslerCamera:
     @property
     def height(self) -> int:
         return self._height
+    
+    @property
+    def channels(self) -> int:
+        return self._channels
 
     @property
     def shape(self) -> np.array:

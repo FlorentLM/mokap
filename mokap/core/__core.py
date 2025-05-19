@@ -116,6 +116,7 @@ class MultiCam:
 
         # and populate the lists
         for i, cam in enumerate(self._sources_list):
+            print("CAM SHAPE:",cam.shape)
             self._l_display_buffers.append(np.zeros(cam.shape, dtype=np.uint8))
             self._l_finished_saving.append(Event())
             self._l_all_frames.append(deque())
@@ -310,7 +311,7 @@ class MultiCam:
             cam = self._sources_list[cam_idx]
 
             if not self._videowriters[cam_idx]:
-                dummy_frame = np.zeros((cam.height, cam.width), dtype=np.uint8)
+                dummy_frame = np.zeros((cam.height, cam.width,cam.channels), dtype=np.uint8)
                 filepath = self.full_path / f"{self.session_name}_cam{cam.idx}_{cam.name}_session{len(self._metadata['sessions'])-1}.mp4"
 
                 # TODO - Get available hardware-accelerated encoders on user's system and choose the best one automatically
@@ -318,14 +319,15 @@ class MultiCam:
                 # TODO - h265 only for now, x264 would be nice too
 
                 if len(cam.shape) == 2:
-                    fmt = 'gray8'   # TODO - Check if the camera is using 8 or 10 or 12 bits per pixel
+                    fmt = 'bayer_bggr8'   # TODO - Check if the camera is using 8 or 10 or 12 bits per pixel
                 else:
-                    fmt = 'rgb8'    # TODO - Check if the camera is using another filter
+                    fmt = 'bayer_bggr8'    # TODO - Check if the camera is using another filter
 
-                input_params = f'{self._ffmpeg_path} -hide_banner -threads 1 -y -s {cam.width}x{cam.height} -f rawvideo -framerate {cam.framerate} -pix_fmt {fmt} -i pipe:0'
+                input_params = f'{self._ffmpeg_path} -hide_banner -threads 3 -y -s {cam.width}x{cam.height} -f rawvideo -framerate {cam.framerate} -pix_fmt {fmt} -i pipe:0'
 
                 if self._config_encoding_params is not None:
                     output_params = self._config_encoding_params
+                    print(self._config_encoding_params)
                 else:
                     if 'Linux' in platform.system():
                         if self._config_encoding_gpu:
