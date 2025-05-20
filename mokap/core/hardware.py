@@ -206,9 +206,14 @@ class SSHTrigger:
         env_ip = os.getenv('TRIGGER_HOST')
         env_user = os.getenv('TRIGGER_USER')
         env_pass = os.getenv('TRIGGER_PASS')
+        env_pin = os.getenv('GPIO_PIN')
 
-        if None in (env_ip, env_user, env_pass):
-            raise EnvironmentError(f'Missing {sum([v is None for v in (env_ip, env_user, env_pass)])} variables.')
+
+        if None in (env_ip, env_user, env_pass, env_pin):
+            raise EnvironmentError(f'Missing {sum([v is None for v in (env_ip, env_user, env_pass, env_pin)])} variables.')
+
+        self.PWM_GPIO_PIN = env_pin
+
 
         if ping(env_ip):
 
@@ -306,8 +311,8 @@ class BaslerCamera:
 
     def _set_roi(self) -> NoReturn:
         if not self._is_virtual:
-            self._width = (int(self.ptr.Width.GetValue())  - (16 // self._binning_value)) #does not seem to work with binning right now
-            self._height = (int(self.ptr.Height.GetValue()) - (8 // self._binning_value))
+            self._width = int(self.ptr.Width.GetValue())  #- (16 // self._binning_value)) #does not seem to work with binning - maxvalue - x // self.binning value goes out of range for camera
+            self._height = int(self.ptr.Height.GetValue()) #- (8 // self._binning_value))
 
             # Apply the dimensions to the ROI
             self.ptr.Width = self._width

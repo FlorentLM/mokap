@@ -174,6 +174,7 @@ For example (replace with your trigger's IP or hostname, username and passsword)
 TRIGGER_HOST=192.168.0.10
 TRIGGER_USER=pi
 TRIGGER_PASS=hunter2
+GPIO_PIN=18
 ```
 
 You can disable the hardware trigger by editing the `mokap.py` file line 6:
@@ -187,13 +188,18 @@ You must enable the GPIO interface on the PI using:
 sudo raspi-config
 ```
 
-Make sure that `Dhcpcd` and `pigpiod` GPIO pin trigger services are running on PI using:
+Make sure that the following services are enabled...
+1. On Pi: `Dhcpcd` and `pigpiod` GPIO pin trigger services
+
+2. On Linux connected PC: `systemd-networkd`
+
+3. On Windows: TBC
+
 ```
 sudo systemctl status <service>
 ```
-Make sure that  systemd-networkd service is running on Linux Desktop if connected via wired connection.
-Make sure you can ping between devices. You made need to explicitly set IP addresses with subnet.
-
+You made need to explicitly set IP addresses with subnet in order for PC and Pi to communicate with one another.
+Test by pinging between devices.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
