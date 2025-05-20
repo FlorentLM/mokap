@@ -1,8 +1,10 @@
 import numpy as np
 np.set_printoptions(precision=3, suppress=True, threshold=150)
 import cv2
+import jax.numpy as jnp
+from jax import jit
 
-# This can be used to estimate thepretical camera matrices
+# This can be used to estimate theoretical camera matrices
 # Values from https://www.digicamdb.com/sensor-sizes/
 SENSOR_SIZES = {'1/4"': [3.20, 2.40],
                 '1/3.6"': [4, 3],
@@ -122,17 +124,60 @@ def estimate_camera_matrix(f_mm, sensor_wh_mm, image_wh_px):
 
 
 def reprojection(points3d, camera_matrix, dist_coeffs, rvec, tvec):
+    """ Reproject 3D points into 2D space using a custom 3D reprojection algorithm making use of JIT calculations
+    :param points3d: 3D points to reproject
+    :param camera_matrix: camera intrinsics
+    :param dist_coeffs: distortion coefficients
+    :param rvec: rotation vector
+    :param tvec: translation vector
+    """
 
-    if dist_coeffs is not None and len(dist_coeffs) < 4:
-        dist_coeffs_minimal = np.zeros(4, dtype=np.float32)
+    if dist_coeffs is not None and len(dist_coeffs) < 9:
+        dist_coeffs_minimal = np.zeros(8, dtype=np.float32)
         dist_coeffs_minimal[:len(dist_coeffs)] = dist_coeffs
         dist_coeffs = dist_coeffs_minimal
 
-    reproj, jacobian = cv2.projectPoints(points3d,
-                                         rvec=rvec, tvec=tvec,
-                                         cameraMatrix=camera_matrix,
-                                         distCoeffs=dist_coeffs)
-    return reproj.squeeze()
+    reproj = project_3d_points(points3d, rvec, tvec, camera_matrix, dist_coeffs)
+
+    return reproj
+
+@jit
+def project_3d_points(points3d, rvec, tvec, camera_matrix, dist_coeffs):
+
+    points3d = jnp.asarray(points3d)
+    rvec = jnp.asarray(rvec)
+    tvec = jnp.asarray(tvec)
+    camera_matrix = jnp.asarray(camera_matrix)
+    dist_coeffs = jnp.asarray(dist_coeffs)
+
+    if rvec.shape == (3, 1) or rvec.shape == (3,):
+        rmat, _ = cv2.Rodrigues(rvec)
+    else:
+        rmat = rvec
+
+    if tvec.shape == (3,):
+        tvec = tvec.reshape(3, 1)
+
+    points_cam = (rmat @ points3d.T) + tvec
+
+    k1, k2, p1, p2, k3, k4, k5, k6 = dist_coeffs
+
+    # Normalize by Z coords
+    normalised_2dpts = points_cam[:2] / points_cam[2]
+    x, y = normalised_2dpts
+    r2 = jnp.pow(normalised_2dpts, 2).sum(axis=0)
+    r4 = jnp.pow(r2, 2)
+    r6 = jnp.pow(r2, 3)
+
+    # Apply radial and tangential distortion
+    radial_distortion = 1 + k1 * r2 + k2 * r4 + k3 * r6
+    x_distorted = x * radial_distortion + 2 * p1 * x * y + p2 * (r2 + 2 * x**2)
+    y_distorted = y * radial_distortion + p1 * (r2 + 2 * y**2) + 2 * p2 * x * y
+
+    # Project to 2D image plane using the camera matrix
+    points_2d = camera_matrix[:2, :2] @ jnp.vstack((x_distorted, y_distorted)) + camera_matrix[:2, 2].reshape(2, 1)
+
+    return points_2d.T
 
 
 def undistortion(points2d, camera_matrix, dist_coeffs):
