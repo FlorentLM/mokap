@@ -281,7 +281,6 @@ class BaslerCamera:
         self._pixel_format = pixel_format
         self._width = 0
         self._height = 0
-        self._channels = 0
         self._probe_frame_shape = None  # (height, width)
 
         self._framerate = framerate
@@ -307,9 +306,9 @@ class BaslerCamera:
 
     def _set_roi(self) -> NoReturn:
         if not self._is_virtual:
-            self._width = int(self.ptr.Width.GetValue()) # - (16 // self._binning_value)) #does not seem to work with binning right now
-            self._height = int(self.ptr.Height.GetValue()) #- (8 // self._binning_value))
-            self._channels = 3 #this needs to be set dynamically...
+            self._width = (int(self.ptr.Width.GetValue())  - (16 // self._binning_value)) #does not seem to work with binning right now
+            self._height = (int(self.ptr.Height.GetValue()) - (8 // self._binning_value))
+
             # Apply the dimensions to the ROI
             self.ptr.Width = self._width
             self.ptr.Height = self._height
@@ -320,7 +319,6 @@ class BaslerCamera:
         else:
             self._width = int(self._probe_frame_shape[1])
             self._height = int(self._probe_frame_shape[0])
-            self._channels = int(self._probe_frame_shape[2])
 
     def connect(self, cam_ptr=None) -> NoReturn:
 
@@ -417,7 +415,6 @@ class BaslerCamera:
             self._name = 'unnamed'
             self._width = 0
             self._height = 0
-            self._channels = 0
 
         self._connected = False
 
@@ -672,10 +669,6 @@ class BaslerCamera:
     @property
     def height(self) -> int:
         return self._height
-    
-    @property
-    def channels(self) -> int:
-        return self._channels
 
     @property
     def shape(self) -> np.array:
