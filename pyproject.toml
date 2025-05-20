@@ -21,5 +21,6 @@ dependencies = [
     "pyopengl",
     "pyqtgraph",
     "sleap-io>=0.2.0",
+    "jax>=0.5.2",
     "alive_progress"
 ]
