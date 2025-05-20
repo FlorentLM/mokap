@@ -321,8 +321,6 @@ class BaslerCamera:
             self._width = int(self._probe_frame_shape[1])
             self._height = int(self._probe_frame_shape[0])
             self._channels = int(self._probe_frame_shape[2])
-            # self.ptr.Width = self._width
-            # self.ptr.Height = self._height
 
     def connect(self, cam_ptr=None) -> NoReturn:
 
@@ -366,7 +364,6 @@ class BaslerCamera:
 
         if self._probe_frame_shape is None:
             probe_frame = self.ptr.GrabOne(100)
-            print("PROBE SHAPE:", probe_frame.GetArray().shape)
             self._probe_frame_shape = probe_frame.GetArray().shape
 
 
@@ -394,8 +391,8 @@ class BaslerCamera:
 
         self._set_roi()
 
-        #self.binning = self._binning_value
-        #self.binning_mode = self._binning_mode
+        self.binning = self._binning_value
+        self.binning_mode = self._binning_mode
 
         self.framerate = self._framerate
         self.exposure = self._exposure
@@ -527,10 +524,8 @@ class BaslerCamera:
         else:
             value = 'Mono8'
 
-        print(value)
         if self._connected:
             if not self._is_virtual:
-                print(value)
                 self.ptr.PixelFormat.SetValue(value)
 
         self._pixel_format = value

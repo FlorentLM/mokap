@@ -13,7 +13,7 @@ mc.framerate = 70
 mc.gamma = 1.0
 mc.blacks = 1.0
 mc.gain = 0.0
-mc.pixel_format = "gray"
+mc.pixel_format = "bayer"
 
 
 if __name__ == '__main__':

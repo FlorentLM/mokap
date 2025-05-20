@@ -118,7 +118,6 @@ class MultiCam:
 
         # and populate the lists
         for i, cam in enumerate(self._sources_list):
-            print("CAM SHAPE:",cam.shape)
             self._l_display_buffers.append(np.zeros(cam.shape, dtype=np.uint8))
             self._l_finished_saving.append(Event())
             self._l_all_frames.append(deque())
@@ -341,7 +340,6 @@ class MultiCam:
 
                 if self._config_encoding_params is not None:
                     output_params = self._config_encoding_params
-                    print(self._config_encoding_params)
                 else:
                     if 'Linux' in platform.system():
                         if self._config_encoding_gpu:

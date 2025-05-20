@@ -730,7 +730,6 @@ class VideoWindowBase(QWidget):
         if self._main_window.mc.acquiring:
             arr = self._main_window.mc.get_current_framebuffer(self.idx)
             if arr is not None:
-                print("FORMAT", self._fmt)
                 if self._fmt == "BayerBG8":#len(self.source_shape) == 2:
                     # Using cv for this is faster than any way using numpy (?)
                     self._frame_buffer = cv2.cvtColor(arr, cv2.COLOR_BayerBG2BGR, dst=self._frame_buffer)
