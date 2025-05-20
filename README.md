@@ -183,7 +183,7 @@ mc = MultiCam(config='./config.yaml', triggered=False, silent=False)
 ```
 (or the name you chose for the config file)
 
-You must enable the GPIO interface on the PI using:
+You must enable the GPIO & SSH interface on the PI using:
 ```
 sudo raspi-config
 ```
