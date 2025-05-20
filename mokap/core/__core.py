@@ -539,6 +539,7 @@ class MultiCam:
                                         'idx': c.idx,
                                         'name': c.name,
                                         'width': c.width,
+                                        'pixel_format': c.pixel_format,
                                         'height': c.height,
                                         'exposure': c.exposure,
                                         'gain': c.gain,
