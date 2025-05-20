@@ -267,6 +267,7 @@ class BaslerCamera:
                  framerate=60,
                  exposure=5000,
                  triggered=True,
+                 pixel_format="Mono8",
                  binning=1,
                  binning_mode='sum'):
 
@@ -277,6 +278,7 @@ class BaslerCamera:
         self._serial = ''
         self._name = name
 
+        self._pixel_format = pixel_format
         self._width = 0
         self._height = 0
         self._channels = 0
@@ -288,8 +290,8 @@ class BaslerCamera:
         self._gain = 1.0
         self._gamma = 1.0
         self._triggered = triggered
-        #self._binning_value = binning
-        #self._binning_mode = binning_mode
+        self._binning_value = binning
+        self._binning_mode = binning_mode
 
         self._idx = -1
 
@@ -305,8 +307,8 @@ class BaslerCamera:
 
     def _set_roi(self) -> NoReturn:
         if not self._is_virtual:
-            self._width = 1920#int(self.ptr.WidthMax.GetValue() - (16 // self._binning_value))
-            self._height = 1200#int(self.ptr.HeightMax.GetValue() - (8 // self._binning_value))
+            self._width = int(self.ptr.Width.GetValue()) # - (16 // self._binning_value)) #does not seem to work with binning right now
+            self._height = int(self.ptr.Height.GetValue()) #- (8 // self._binning_value))
             self._channels = 3 #this needs to be set dynamically...
             # Apply the dimensions to the ROI
             self.ptr.Width = self._width
@@ -362,8 +364,6 @@ class BaslerCamera:
         # 342 Mbps is a bit less than the maximum, but things are more stable like this
         self.ptr.DeviceLinkThroughputLimit.SetValue(342000000)
 
-        self.ptr.PixelFormat.SetValue("BayerBG8")
-
         if self._probe_frame_shape is None:
             probe_frame = self.ptr.GrabOne(100)
             print("PROBE SHAPE:", probe_frame.GetArray().shape)
@@ -399,6 +399,7 @@ class BaslerCamera:
 
         self.framerate = self._framerate
         self.exposure = self._exposure
+        self.pixel_format = self._pixel_format
         self.blacks = self._blacks
         self.gain = self._gain
         self.gamma = self._gamma
@@ -511,6 +512,28 @@ class BaslerCamera:
     @property
     def exposure(self) -> int:
         return self._exposure
+    
+    @property
+    def pixel_format(self) -> str:
+        return self._pixel_format
+    
+    @pixel_format.setter
+    def pixel_format(self, value: str):
+
+        if value.lower() in ['b','bayer','bg8','bayerbg8','bayer_bg8']:
+            value = 'BayerBG8'
+        elif value.lower() in ['g','m','gray','grey','grayscale','greyscale','mono']:
+            value = 'Mono8'
+        else:
+            value = 'Mono8'
+
+        print(value)
+        if self._connected:
+            if not self._is_virtual:
+                print(value)
+                self.ptr.PixelFormat.SetValue(value)
+
+        self._pixel_format = value
 
     @property
     def blacks(self) -> float:

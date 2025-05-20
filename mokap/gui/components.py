@@ -437,6 +437,7 @@ class VideoWindowBase(QWidget):
         self._camera = self._main_window.mc.cameras[self.idx]
         self._cam_name = self._camera.name
 
+        self._fmt = self._camera.pixel_format
         self._source_shape = self._main_window.sources_shapes[self.idx]
         self._bg_colour = self._main_window.bg_colours_list[self.idx]
         self._fg_colour = self._main_window.fg_colours_list[self.idx]
@@ -729,9 +730,12 @@ class VideoWindowBase(QWidget):
         if self._main_window.mc.acquiring:
             arr = self._main_window.mc.get_current_framebuffer(self.idx)
             if arr is not None:
-                if len(self.source_shape) == 2:
+                print("FORMAT", self._fmt)
+                if self._fmt == "BayerBG8":#len(self.source_shape) == 2:
                     # Using cv for this is faster than any way using numpy (?)
                     self._frame_buffer = cv2.cvtColor(arr, cv2.COLOR_BayerBG2BGR, dst=self._frame_buffer)
+                elif self._fmt == "Mono8":
+                    self._frame_buffer = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR, dst=self._frame_buffer)
                 else:
                     self._frame_buffer = arr
         else:

@@ -26,6 +26,7 @@ class MultiCam:
                '#2471a3', '#d4ac0d', '#186a3b', '#922b21', '#6c3483', '#d35400', '#117a65', '#e699db', '#1c2833', '#707b7c']
     def __init__(self,
                  config='config.yml',
+                 pixel_format = "Mono8",
                  framerate=220,
                  exposure=4318,
                  triggered=False,
@@ -45,6 +46,7 @@ class MultiCam:
         self._silent: bool = silent
 
         self._binning: int = 1
+        self._pixel_format: str = pixel_format
         self._binning_mode: str = 'sum'
         self._exposure: int = exposure
         self._framerate: float = framerate
@@ -187,6 +189,7 @@ class MultiCam:
 
             source = BaslerCamera(framerate=self._framerate,
                                exposure=self._exposure,
+                               pixel_format=self._pixel_format,
                                triggered=self._triggered,
                                binning=self._binning)
             source.connect(cptr)
@@ -239,6 +242,15 @@ class MultiCam:
     def exposure(self, value: float) -> None:
         for i, cam in enumerate(self._sources_list):
             cam.exposure = value
+
+    @property
+    def pixel_format(self) -> List[str]:
+        return [c.pixel_format for c in self._sources_list]
+
+    @pixel_format.setter
+    def pixel_format(self, value: str) -> None:
+        for i, cam in enumerate(self._sources_list):
+            cam.pixel_format = value
 
     @property
     def gain(self) -> List[float]:
@@ -318,10 +330,12 @@ class MultiCam:
                 # TODO - Why is QSV not working????
                 # TODO - h265 only for now, x264 would be nice too
 
-                if len(cam.shape) == 2:
+                if cam.pixel_format == "BayerBG8":
                     fmt = 'bayer_bggr8'   # TODO - Check if the camera is using 8 or 10 or 12 bits per pixel
+                elif cam.pixel_format == "Mono8":
+                    fmt = 'gray8'
                 else:
-                    fmt = 'bayer_bggr8'    # TODO - Check if the camera is using another filter
+                    fmt = 'rgb8'    # TODO - Check if the camera is using another filter
 
                 input_params = f'{self._ffmpeg_path} -hide_banner -threads 3 -y -s {cam.width}x{cam.height} -f rawvideo -framerate {cam.framerate} -pix_fmt {fmt} -i pipe:0'
 
