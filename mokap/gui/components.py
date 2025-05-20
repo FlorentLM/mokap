@@ -731,7 +731,7 @@ class VideoWindowBase(QWidget):
             if arr is not None:
                 if len(self.source_shape) == 2:
                     # Using cv for this is faster than any way using numpy (?)
-                    self._frame_buffer = cv2.cvtColor(arr, cv2.COLOR_GRAY2RGB, dst=self._frame_buffer)
+                    self._frame_buffer = arr #cv2.cvtColor(arr, cv2.COLOR_GRAY2RGB, dst=self._frame_buffer)
                 else:
                     self._frame_buffer = arr
         else:
