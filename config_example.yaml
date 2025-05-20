@@ -1,0 +1,28 @@
+# Where the recordings will be stored
+base_path: D:/
+save_format: 'mp4'
+save_quality: 80    # 0 - 100%
+gpu: true
+
+# Add your sources below
+sources:
+    strawberry:         # Choose a name
+        type: basler
+        serial: xxxxxxxx
+        color: da141d
+    avocado:
+        type: basler
+        serial: xxxxxxxx
+        color: 7a9c21
+    banana:
+        type: basler
+        serial: xxxxxxxx
+        color: f3d586
+    blueberry:
+        type: basler
+        serial: xxxxxxxx
+        color: 443e93
+    coconut:
+        type: basler
+        serial: xxxxxxxx
+        color: efeee7
