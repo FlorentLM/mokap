@@ -322,7 +322,7 @@ class MultiCam:
             cam = self._sources_list[cam_idx]
 
             if not self._videowriters[cam_idx]:
-                dummy_frame = np.zeros((cam.height, cam.width,cam.channels), dtype=np.uint8)
+                dummy_frame = np.zeros((cam.height, cam.width), dtype=np.uint8)
                 filepath = self.full_path / f"{self.session_name}_cam{cam.idx}_{cam.name}_session{len(self._metadata['sessions'])-1}.mp4"
 
                 # TODO - Get available hardware-accelerated encoders on user's system and choose the best one automatically
