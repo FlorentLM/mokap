@@ -159,8 +159,8 @@ sources:
 
 ### Start GUI
 
-1. Activate the uv environment within mokap.
-Linux:`source .venv/bin/activate`
+1. Activate the uv environment within mokap.\
+Linux:`source .venv/bin/activate`\
 Windows: `.venv/Scripts/activate`
 2. Run `./mokap.py`
 
