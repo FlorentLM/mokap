@@ -159,7 +159,9 @@ sources:
 
 ### Start GUI
 
-1. Activate the uv environment within mokap. On Linux this is `source .venv/bin/activate`
+1. Activate the uv environment within mokap.
+Linux:`source .venv/bin/activate`
+Windows: `.venv/Scripts/activate`
 2. Run `./mokap.py`
 
 *Note: There are some default values hardcoded in `mokap.py`, but they can be changed with the GUI*
@@ -193,7 +195,6 @@ Make sure that the following services are enabled...
 
 2. On Linux connected PC: `systemd-networkd`
 
-3. On Windows: TBC
 
 ```
 sudo systemctl status <service>
