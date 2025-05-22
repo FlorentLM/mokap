@@ -1,1 +1,1 @@
-from .components import *
+from ._widgets import *

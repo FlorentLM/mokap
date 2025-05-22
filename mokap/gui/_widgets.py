@@ -2,37 +2,34 @@ import os
 import subprocess
 import sys
 import platform
+from typing import Tuple
 import psutil
 import screeninfo
 import cv2
-from functools import partial
-from collections import deque, defaultdict
-from datetime import datetime
-from pathlib import Path
 import numpy as np
+from pathlib import Path
+from functools import partial
+from collections import deque
+from datetime import datetime
 from PIL import Image
-from PySide6.QtCore import Qt, QTimer, QEvent, QDir, QObject, Signal, Slot, QThread, QPoint, QSize
+from PySide6.QtCore import Qt, QTimer, QEvent, QDir, Signal, Slot, QThread, QPoint, QSize
 from PySide6.QtGui import QIcon, QImage, QPixmap, QCursor, QBrush, QPen, QColor, QFont
 from PySide6.QtWidgets import (QApplication, QMainWindow, QStatusBar, QSlider, QGraphicsView, QGraphicsScene,
                                QGraphicsRectItem, QComboBox, QLineEdit, QProgressBar, QCheckBox, QScrollArea,
-                               QWidget, QLabel, QFrame, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout, QStackedLayout,
+                               QWidget, QLabel, QFrame, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout,
                                QPushButton, QSizePolicy, QGraphicsTextItem, QTextEdit, QFileDialog, QSpinBox,
-                               QDialog, QDoubleSpinBox, QDialogButtonBox, QToolButton, QGraphicsOpacityEffect)
+                               QDialog, QDoubleSpinBox, QDialogButtonBox, QToolButton)
 import pyqtgraph as pg
-from pyqtgraph.opengl import GLViewWidget, GLAxisItem, GLGridItem, GLLinePlotItem, GLScatterPlotItem, MeshData, GLMeshItem
-
+from pyqtgraph.opengl import GLViewWidget, GLGridItem, GLLinePlotItem, GLScatterPlotItem, MeshData, GLMeshItem
 from mokap.utils import geometry
 from mokap.calibration import monocular
 from mokap.utils import hex_to_rgb, hex_to_hls, pretty_size, generate_charuco
+from .workers import *
 
-from mokap.calibration import MonocularCalibrationTool, MultiviewCalibrationTool
-from mokap.utils import fileio
 
-##
+def do_nothing():
+    print('Nothing')
 
-DEBUG = True
-
-##
 
 class GUILogger:
     def __init__(self):
@@ -54,7 +51,6 @@ class GUILogger:
 
     def flush(self):
         pass
-
 
 class SnapPopup(QFrame):
 
@@ -98,16 +94,13 @@ class SnapPopup(QFrame):
         self.move(pos)
         self.show()
 
-
 class BoardParamsDialog(QDialog):
 
-    def __init__(self, board_params, parent=None):
+    def __init__(self, board_params: BoardParams, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Calibration Board Settings")
         self.setModal(True)
-
         self._board_params = board_params
-
         self._init_ui()
 
     def _init_ui(self):
@@ -119,7 +112,7 @@ class BoardParamsDialog(QDialog):
         self.row_spin = QSpinBox()
         self.row_spin.setMinimum(2)
         self.row_spin.setMaximum(30)
-        self.row_spin.setValue(self._board_params['rows'])
+        self.row_spin.setValue(self._board_params.rows)
         row_layout.addWidget(row_label)
         row_layout.addWidget(self.row_spin)
         main_layout.addLayout(row_layout)
@@ -130,7 +123,7 @@ class BoardParamsDialog(QDialog):
         self.col_spin = QSpinBox()
         self.col_spin.setMinimum(2)
         self.col_spin.setMaximum(30)
-        self.col_spin.setValue(self._board_params['cols'])
+        self.col_spin.setValue(self._board_params.cols)
         col_layout.addWidget(col_label)
         col_layout.addWidget(self.col_spin)
         main_layout.addLayout(col_layout)
@@ -142,7 +135,7 @@ class BoardParamsDialog(QDialog):
         self.sq_spin.setMinimum(0.01)
         self.sq_spin.setMaximum(1000.0)
         self.sq_spin.setDecimals(2)
-        self.sq_spin.setValue(self._board_params['square_length'])
+        self.sq_spin.setValue(self._board_params.square_length)
         sq_layout.addWidget(sq_label)
         sq_layout.addWidget(self.sq_spin)
         main_layout.addLayout(sq_layout)
@@ -162,260 +155,8 @@ class BoardParamsDialog(QDialog):
     def get_values(self):
         return self._board_params, self.apply_all_checkbox.isChecked()
 
-
-##
-
-class MainWorker(QObject):
-    """
-        This worker lives in its own thread and does stuff on the full resolution image
-    """
-    # TESTING - send bounding boxes of a fake detection
-    signal_result_ready = Signal(list)
-    signal_finished_processing = Signal()
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        # self._running = True
-        self._paused = False
-
-    def set_paused(self, val):
-        self._paused = val
-
-    @Slot(np.ndarray)
-    def process_frame(self, frame):
-        # if not self._running or self._paused:
-        if self._paused:
-            return
-
-        # 1- TESTING - Fake motiuon detection
-        bboxes = self._do_motion_detection(frame)
-
-        # 2- Emit the results (metadata) back to the main thread, and emit 'done' signal
-        self.signal_result_ready.emit(bboxes)
-        self.signal_finished_processing.emit()
-
-    def _do_motion_detection(self, frame):
-        # TESTING - Fake bounding box around (100,100) of size (50,40)
-        return [(100, 100, 50, 40)]
-
-    # def stop(self):
-    #     self._running = False
-
-class MonocularCalibWorker(QObject):
-    """
-        This worker lives in its own thread and does monocular detection/calibration
-    """
-
-    signal_send_annotated_frame = Signal(np.ndarray)   # carry back the annotated image back to the main thread (to didplay it)
-    signal_send_finished = Signal()      # signals when this worker is busy / free
-
-    signal_computation_started = Signal()
-    signal_computation_finished = Signal()
-
-    signal_return_reprojection_error = Signal(np.ndarray)          # Send current reprojection error back to main thread
-    signal_return_intrinsics = Signal(np.ndarray, np.ndarray, bool)         # Send intrinsics to the main thread
-    signal_return_detection = Signal(int, int, np.ndarray, np.ndarray)
-    signal_return_pose = Signal(int, int, np.ndarray, np.ndarray)
-
-    def __init__(self, board_params, cam_idx, cam_name, cam_shape, parent=None):
-        super().__init__(parent)
-        self.camera_idx = cam_idx
-        self.cam_name = cam_name
-        self.cam_shape = cam_shape
-
-        self.init_mct(board_params)
-
-        # Flags for worker state
-        self._paused = False
-
-        # Flags for worker function
-        self.auto_sample = True
-        self.auto_compute = True
-
-        self._current_stage = 0
-
-    def init_mct(self, board_params):
-        self.monocular_tool = MonocularCalibrationTool(
-            board_params=board_params,
-            imsize_hw=self.cam_shape[:2],           # pass frame size so it can track coverage
-            focal_mm=60,                            # TODO - UI field for these
-            sensor_size='1/2.9"'                    #
-        )
-        self.monocular_tool.set_visualisation_scale(2)
-
-    def set_paused(self, val):
-        self._paused = val
-
-    @Slot(np.ndarray)
-    def process_frame(self, frame, frame_id):
-        # Called for each new frame received from main thread to process
-        if self._paused:
-            return
-
-        # 1- Detect
-        self.monocular_tool.detect(frame)
-
-        # 2. Stage 0: Auto-sample and compute intrinsics
-        if self._current_stage == 0:
-            if self.auto_sample:
-                self.monocular_tool.auto_register_area_based(area_threshold=0.2, nb_points_threshold=4)
-
-            if self.auto_compute:
-                # TODO - expose these in the UI
-                coverage_threshold = 80
-                stack_length_threshold = 20
-
-                if self.monocular_tool.coverage >= coverage_threshold and self.monocular_tool.nb_samples > stack_length_threshold:
-                    self.signal_computation_started.emit()
-
-                r = self.monocular_tool.auto_compute_intrinsics(
-                    coverage_threshold=coverage_threshold,
-                    stack_length_threshold=stack_length_threshold,
-                    simple_focal=True,
-                    simple_distortion=True,
-                    complex_distortion=False
-                )
-                if r:
-                    # If the intrinsics have been updated, return the new errors...
-                    self.signal_return_reprojection_error.emit(self.monocular_tool.last_best_errors)
-
-                    # ...and the intrinsics themselves
-                    cam_mat, dist_coeffs = self.monocular_tool.intrinsics
-                    if cam_mat is not None and dist_coeffs is not None:
-                        self.signal_return_intrinsics.emit(cam_mat.copy(),
-                                                           dist_coeffs.copy(),
-                                                           True)                    # bool to update the message in the UI
-            self.signal_computation_finished.emit()
-
-        # 4- Compute extrinsics (only works if we already have intrinsics)
-        self.monocular_tool.compute_extrinsics()
-
-        # 3. Stage 1: Compute extrinsics and forward poses
-        if self._current_stage == 1:
-            if self.monocular_tool.has_extrinsics:
-                # Forward the pose to the aggregator
-                # it will registered it if it's sufficiently different from already collected ones
-                self.signal_return_pose.emit(frame_id, self.camera_idx, *self.monocular_tool.extrinsics)
-
-        # 4. Stage 2: Forward detections for triangulation
-        if self._current_stage == 2:
-            # Here we simply forward the raw 2D detections.
-            if self.monocular_tool.has_detection:
-                self.signal_return_detection.emit(frame_id, self.camera_idx, *self.monocular_tool.detection)
-
-        # 5- Visualize (this returns the annotated image in full resolution)
-        annotated = self.monocular_tool.visualise(errors_mm=True)
-
-        # 6- Emit the annotated frame to the main thread, and emit the 'done' signal
-        self.signal_send_annotated_frame.emit(annotated)
-        self.signal_send_finished.emit()
-
-    @Slot(bool)
-    def set_auto_sample(self, value):
-        self.auto_sample = value
-
-    @Slot(bool)
-    def set_auto_compute(self, value):
-        self.auto_compute = value
-
-    @Slot()
-    def add_sample(self):
-        self.monocular_tool.register_sample()
-
-    @Slot()
-    def clear_samples(self):
-        self.monocular_tool.clear_stacks()
-
-    @Slot()
-    def clear_intrinsics(self):
-        self.monocular_tool.clear_intrinsics()
-        self.monocular_tool.clear_stacks()
-
-    @Slot(str)
-    def load_calib(self, file_path):
-        d = fileio.read_intrinsics(file_path, self.cam_name)
-        r = self.monocular_tool.set_intrinsics(d['camera_matrix'], d['dist_coeffs'], d.get('errors', None))
-        if r:
-            self.monocular_tool.clear_stacks()
-
-            # Also send the loaded intrinsics to the other classes
-            cam_mat, dist_coeffs = self.monocular_tool.intrinsics
-            self.signal_return_intrinsics.emit(cam_mat.copy(), dist_coeffs.copy(), False)   # Dont update message
-
-    @Slot(str)
-    def save_calib(self, file_path):
-        fileio.write_intrinsics(file_path, self.cam_name, *self.monocular_tool.intrinsics, self.monocular_tool.last_best_errors)
-
-    @Slot(int)
-    def set_stage(self, stage):
-        self._current_stage = stage
-        self.monocular_tool.clear_stacks()
-
-
-class MultiCalibWorker(QObject):
-
-    signal_return_computed_poses = Signal(np.ndarray, np.ndarray)  # Send current camera poses back to main thread
-    signal_return_computed_points = Signal(np.ndarray)           # Send points 3d back to main thread
-
-    def __init__(self, multiview_calib, parent=None):
-        super().__init__(parent)
-        self.multiview_calib = multiview_calib
-
-        self._paused = False
-
-    def set_paused(self, val):
-        self._paused = val
-
-    @Slot(int, int, np.ndarray, np.ndarray)
-    def on_received_detection(self, frame_idx, cam_idx, points2d, points_ids):
-        # when we recieve a detection from the monocular worker
-        self.multiview_calib.register_detection(frame_idx, cam_idx, points2d, points_ids)
-        if DEBUG:
-            print(f"[DEBUG] [MultiCalibWorker] Registered detection for cam {cam_idx}\r")
-
-    @Slot(int, int, np.ndarray, np.ndarray)
-    def on_received_camera_pose(self, frame_idx, cam_idx, rvec, tvec):
-        # when we recieve a pose from the monocular worker
-        self.multiview_calib.register_extrinsics(frame_idx, cam_idx, rvec, tvec)
-        if DEBUG:
-            print(f"[DEBUG] [MultiCalibWorker] Registered extrinsics for cam {cam_idx}\r")
-
-    @Slot(int, np.ndarray, np.ndarray)
-    def on_updated_intrinsics(self, cam_idx, cam_mat, dist_coeff):
-        self.multiview_calib.register_intrinsics(cam_idx, cam_mat, dist_coeff)
-        if DEBUG:
-            print(f'[DEBUG] [MultiCalibWorker] Intrinsics updated for camera {cam_idx}\r')
-
-    @Slot()
-    def compute(self):
-        if self._paused:
-            return
-
-        # print(f"Pose samples: {self.multiview_calib.nb_pose_samples}")
-
-        # Estimate extrinsics
-        self.multiview_calib.compute_estimation()
-
-        rvecs, tvecs = self.multiview_calib.extrinsics
-        if rvecs is not None and tvecs is not None:
-            # Send them back to the main thread
-            self.signal_return_computed_poses.emit(rvecs, tvecs)
-
-    @Slot(int)
-    def set_origin_camera(self, value: int):
-        self.multiview_calib.origin_camera = value
-
-##
-
-# Create this immediately to capture everything
-# gui_logger = GUILogger()
-gui_logger = False
-
-
-##
-
-
-class VideoWindowBase(QWidget):
+class SecondaryWindowBase(QWidget):
+    """ Stores common stuff for Preview windows and 3D view window """
     BOTTOM_PANEL_H = 300
     WINDOW_MIN_W = 550
     if 'Windows' in platform.system():
@@ -424,58 +165,103 @@ class VideoWindowBase(QWidget):
     else:
         TASKBAR_H = 48
         TOPBAR_H = 23
-    SPACING = 10
+    SPACING = 5
 
-    def __init__(self, main_window_ref, idx):
+    def __init__(self, main_window_ref):
         super().__init__()
+        self._force_destroy = False  # This is used to defined whether we only hide or destroy the window
+        self.setAttribute(Qt.WA_DeleteOnClose, True)  # force PySide to destroy the windows on mode change
 
-        self._force_destroy = False     # This is used to defined whether we only hide or destroy the window
-        self.setAttribute(Qt.WA_DeleteOnClose, True)    # force PySide to destroy the windows on mode change
+        # References for easier access
+        self._mainwindow = main_window_ref
+        self._coordinator = self._mainwindow.coordinator
 
-        self._main_window = main_window_ref
-        self.idx = idx
-        self._camera = self._main_window.mc.cameras[self.idx]
+        self.worker = None
+        self.worker_thread = None
+
+        # This updater function does not need to run super frequently
+        self.timer_slow = QTimer(self)
+        self.timer_slow.timeout.connect(self._update_slow)
+
+        # This updater function should only run at 60 fps
+        self.timer_fast = QTimer(self)
+        self.timer_fast.timeout.connect(self._update_fast)
+
+    def _setup_worker(self, worker_object):
+        self.worker_thread = QThread(self)
+        self.worker = worker_object
+        self.worker.moveToThread(self.worker_thread)
+
+    def _update_slow(self):
+        pass
+
+    def _update_fast(self):
+        pass
+
+    def _start_timers(self, fast=16, slow=200):
+        self.timer_fast.start(fast)
+        self.timer_slow.start(slow)
+
+class VideoWindowBase(SecondaryWindowBase):
+
+    send_frame = Signal(np.ndarray, int)
+
+    def __init__(self, camera, main_window_ref):
+        super().__init__(main_window_ref)
+
+        # Refs to anything preview window -related
+        self._camera = camera
         self._cam_name = self._camera.name
+        self._cam_idx = self._mainwindow.cameras_names.index(self._cam_name)
+        self._source_shape = self._camera.shape
+        self._source_framerate = self._camera.framerate
+        self._cam_colour = self._mainwindow.cams_colours[self._cam_name]
+        self._secondary_colour = self._mainwindow.secondary_colours[self._cam_name]
 
         self._fmt = self._camera.pixel_format
         self._source_shape = self._main_window.sources_shapes[self.idx]
         self._bg_colour = self._main_window.bg_colours_list[self.idx]
         self._fg_colour = self._main_window.fg_colours_list[self.idx]
+        # Qt things
+        self.setWindowTitle(f'{self._camera.name.title()} camera')
 
-        # Where the frame data will be stored
+        # Init where the frame data will be stored
         self._frame_buffer = np.zeros((*self._source_shape[:2], 3), dtype=np.uint8)
         self._display_buffer = np.zeros((*self._source_shape[:2], 3), dtype=np.uint8)
 
+        # Init states
+        self._worker_busy = False
+        self._worker_blocking = False
+        self._warning = False
+
+        self._warning_text = '[WARNING]'
+
+        self._latest_frame = None
+
+        self._windowpositions = np.array([['nw', 'n', 'ne'],
+                                          ['w', 'c', 'e'],
+                                          ['sw', 's', 'se']])
         # Init clock and counter
         self._clock = datetime.now()
         self._capture_fps = deque(maxlen=10)
         self._last_capture_count = 0
 
-        # Init states
-        self._warning = False
-        self._warning_text = '[WARNING]'
+    #  ============= Worker thread setup =============
+    def _setup_worker(self, worker_object):
+        super()._setup_worker(worker_object)
 
-        self.worker = None
-        self.worker_thread = None
-
-        # Some other stuff
-        self._wanted_fps = self._camera.framerate
-
-        self.setWindowTitle(f'{self._camera.name.title()} camera')
-
-        self.positions = np.array([['nw', 'n', 'ne'],
-                                   ['w', 'c', 'e'],
-                                   ['sw', 's', 'se']])
-
-        # This updater function foes not need to run super frequently
-        self.timer_update = QTimer(self)
-        self.timer_update.timeout.connect(self._update_vars)
-        self.timer_update.start(100)
+        # Setup preview-windows-specific signals (direct Main thread - Worker connections)
+        # Emit frames to worker
+        self.send_frame.connect(self.worker.handle_frame, type=Qt.QueuedConnection)
+        # Receive results and state from worker
+        self.worker.annotations.connect(self.on_worker_result)
+        self.worker.finished.connect(self.on_worker_finished)
+        self.worker.blocking.connect(self.blocking_toggle)
 
     #  ============= UI constructors =============
     def _init_common_ui(self):
         """
-            This constructor creates all the UI elements that are common to all modes
+        This constructor creates all the UI elements that are common to all modes
         """
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -506,7 +292,7 @@ class VideoWindowBase(QWidget):
         camera_name_bar = QLabel(f'{self._camera.name.title()} camera')
         camera_name_bar.setFixedHeight(25)
         camera_name_bar.setAlignment(Qt.AlignCenter)
-        camera_name_bar.setStyleSheet(f"color: {self.colour_2}; background-color: {self.colour}; font: bold;")
+        camera_name_bar.setStyleSheet(f"color: {self.secondary_colour}; background-color: {self.colour}; font: bold;")
 
         bottom_panel_v_layout.addWidget(camera_name_bar)
         bottom_panel_v_layout.addWidget(bottom_panel_h)
@@ -534,7 +320,7 @@ class VideoWindowBase(QWidget):
         self.capturefps_value.setText(f"Off")
         self.exposure_value.setText(f"{self._camera.exposure} µs")
         self.brightness_value.setText(f"-")
-        self.temperature_value.setText(f"{self._camera.temperature}°C" if self._camera.temperature is not None else '-')
+        self.temperature_value.setText(f"{self._camera.temperature}°C" if self._camera.temperature else '-')
 
         labels_and_values = [
             ('Triggered', self.triggered_value),
@@ -553,7 +339,7 @@ class VideoWindowBase(QWidget):
 
             label = QLabel(f"{label} :")
             label.setAlignment(Qt.AlignRight)
-            label.setStyleSheet(f"color: {self._main_window.col_darkgray}; font: bold;")
+            label.setStyleSheet(f"color: {self._mainwindow.col_darkgray}; font: bold;")
             label.setMinimumWidth(88)
             line_layout.addWidget(label)
 
@@ -569,7 +355,7 @@ class VideoWindowBase(QWidget):
 
         self.snap_button = QToolButton()
         # self.snap_button.setText("Snap to:")
-        self.snap_button.setIcon(self._main_window.icon_move_bw)
+        self.snap_button.setIcon(self._mainwindow.icon_move_bw)
         self.snap_button.setIconSize(QSize(16, 16))
         self.snap_button.setToolTip("Move current window to a position")
         self.snap_button.setPopupMode(QToolButton.InstantPopup)
@@ -581,7 +367,7 @@ class VideoWindowBase(QWidget):
 
     def _init_specific_ui(self):
         """
-            This does nothing in the base class, each VideoWindow implements its own specific UI elements
+        This does nothing in the base class, each VideoWindow implements its own specific UI elements
         """
         pass
 
@@ -595,48 +381,75 @@ class VideoWindowBase(QWidget):
             # pause worker and only hide window
             event.ignore()
             self.hide()
-            self.pause_worker()
-            self._main_window.secondary_windows_visibility_buttons[self.idx].setChecked(False)
+            self._pause_worker()
+            self._mainwindow.secondary_windows_visibility_buttons[self._cam_idx].setChecked(False)
 
-    #  ============= Qt method overrides =============
-    def pause_worker(self):
+    #  ============= Thread control =============
+    def _pause_worker(self):
         self.worker.set_paused(True)
 
-    def resume_worker(self):
+    def _resume_worker(self):
         self.worker.set_paused(False)
 
     def _stop_worker(self):
-        if self.worker is not None and self.worker_thread is not None:
-            self.pause_worker()
-            self.worker_thread.quit()
-            self.worker_thread.wait()
+        self.worker_thread.quit()
+        self.worker_thread.wait()
 
-    #  ============= Some useful attributes =============
+    #  ============= Some common signals =============
+    def _send_frame_to_worker(self, frame):
+        self.send_frame.emit(frame, int(self._mainwindow.mc.indices[self._cam_idx]))
+        self._worker_busy = True
+
+    @Slot()
+    def on_worker_result(self, bboxes):
+        # called in the main thread when worker finishes processing and emits its 'annotation'
+        # Needs to be defined in each subclass because the result is not necessarily the same thing
+        pass
+
+    @Slot()
+    def on_worker_finished(self):
+        self._worker_busy = False
+        if self._latest_frame is not None:
+            f = self._latest_frame
+            self._latest_frame = None
+            self._send_frame_to_worker(f)
+
+    @Slot(bool)
+    def blocking_toggle(self, state):
+        self._worker_blocking = state
+
+    #  ============= Some useful properties =============
     @property
     def name(self) -> str:
         return self._cam_name
 
     @property
+    def idx(self) -> int:
+        return self._cam_idx
+
+    @property
     def colour(self) -> str:
-        return f'#{self._bg_colour.lstrip("#")}'
+        return f'#{self._cam_colour.lstrip("#")}'
 
     color = colour
 
     @property
-    def colour_2(self) -> str:
-        return f'#{self._fg_colour.lstrip("#")}'
+    def secondary_colour(self) -> str:
+        return f'#{self._secondary_colour.lstrip("#")}'
 
-    color_2 = colour_2
+    secondary_color = secondary_colour
 
     @property
-    def source_shape(self):
+    def source_shape(self) -> Tuple[int, int]:
         return self._source_shape
 
     @property
-    def aspect_ratio(self):
+    def aspect_ratio(self) -> float:
         return self._source_shape[1] / self._source_shape[0]
 
-    #  ============= Some common window-related methods =============
+    #  ============= Some common video window-related methods =============
+    # TODO - Some of these should be moved to parent class to be usable by OpenGL window
+
     def show_snap_popup(self):
         button_pos = self.snap_button.mapToGlobal(QPoint(0, self.snap_button.height()))
         self.snap_popup.show_popup(button_pos)
@@ -644,8 +457,8 @@ class VideoWindowBase(QWidget):
     def auto_size(self):
 
         # If landscape screen
-        if self._main_window.selected_monitor.height < self._main_window.selected_monitor.width:
-            available_h = (self._main_window.selected_monitor.height - VideoWindowBase.TASKBAR_H) // 2 - VideoWindowBase.SPACING * 3
+        if self._mainwindow.selected_monitor.height < self._mainwindow.selected_monitor.width:
+            available_h = (self._mainwindow.selected_monitor.height - VideoWindowBase.TASKBAR_H) // 2 - VideoWindowBase.SPACING * 3
             video_max_h = available_h - self.BOTTOM_PANEL.height() - VideoWindowBase.TOPBAR_H
             video_max_w = video_max_h * self.aspect_ratio
 
@@ -654,7 +467,7 @@ class VideoWindowBase(QWidget):
 
         # If portrait screen
         else:
-            video_max_w = self._main_window.selected_monitor.width // 2 - VideoWindowBase.SPACING * 3
+            video_max_w = self._mainwindow.selected_monitor.width // 2 - VideoWindowBase.SPACING * 3
             video_max_h = video_max_w / self.aspect_ratio
 
             h = int(video_max_h + self.BOTTOM_PANEL.height())
@@ -663,7 +476,7 @@ class VideoWindowBase(QWidget):
         self.resize(w, h)
 
     def auto_move(self):
-        if self._main_window.selected_monitor.height < self._main_window.selected_monitor.width:
+        if self._mainwindow.selected_monitor.height < self._mainwindow.selected_monitor.width:
             # First corners, then left right, then top and bottom,  and finally centre
             positions = ['nw', 'sw', 'ne', 'se', 'n', 's', 'w', 'e', 'c']
         else:
@@ -673,15 +486,15 @@ class VideoWindowBase(QWidget):
         nb_positions = len(positions)
 
         if self.idx <= nb_positions:
-            pos = positions[self.idx]
+            pos = positions[self._cam_idx]
         else:  # Start over to first position
-            pos = positions[self.idx % nb_positions]
+            pos = positions[self._cam_idx % nb_positions]
 
         self.move_to(pos)
 
     def move_to(self, pos):
 
-        monitor = self._main_window.selected_monitor
+        monitor = self._mainwindow.selected_monitor
         w = self.geometry().width()
         h = self.geometry().height()
 
@@ -713,22 +526,22 @@ class VideoWindowBase(QWidget):
             override = not self.isVisible()
 
         if self.isVisible() and override is False:
-            self._main_window.secondary_windows_visibility_buttons[self.idx].setChecked(False)
+            self._mainwindow.secondary_windows_visibility_buttons[self.idx].setChecked(False)
             self.hide()
-            self.pause_worker()
+            self._pause_worker()
 
         elif not self.isVisible() and override is True:
-            self._main_window.secondary_windows_visibility_buttons[self.idx].setChecked(True)
+            self._mainwindow.secondary_windows_visibility_buttons[self.idx].setChecked(True)
             self.show()
-            self.resume_worker()
+            self._resume_worker()
 
     #  ============= Display-related common methods =============
     def _refresh_framebuffer(self):
         """
-            Grabs a new frame from the cameras and stores it in the frame buffer
+        Grabs a new frame from the cameras and stores it in the frame buffer
         """
-        if self._main_window.mc.acquiring:
-            arr = self._main_window.mc.get_current_framebuffer(self.idx)
+        if self._mainwindow.mc.acquiring:
+            arr = self._mainwindow.mc.get_current_framebuffer(self.idx)
             if arr is not None:
                 if self._fmt == "BayerBG8":#len(self.source_shape) == 2:
                     # Using cv for this is faster than any way using numpy (?)
@@ -741,30 +554,29 @@ class VideoWindowBase(QWidget):
             self._frame_buffer.fill(0)
 
     def _resize_to_display(self):
-        """ Fills and resizes the display buffer to the current window size """
+        """
+        Fills and resizes the display buffer to the current window size
+        """
         scale = min(self.VIDEO_FEED.width() / self._frame_buffer.shape[1], self.VIDEO_FEED.height() / self._frame_buffer.shape[0])
         self._display_buffer = cv2.resize(self._frame_buffer, (0, 0), dst=self._display_buffer, fx=scale, fy=scale)
 
     def _blit_image(self):
-        """ Applies the content of display buffers to the GUI """
+        """
+        Applies the content of display buffers to the GUI
+        """
         h, w = self._display_buffer.shape[:2]
         q_img = QImage(self._display_buffer.data, w, h, 3 * w, QImage.Format.Format_RGB888)
         pixmap = QPixmap.fromImage(q_img)
         self.VIDEO_FEED.setPixmap(pixmap)
 
     #  ============= Common update method for texts and stuff =============
-    def _update_vars(self):
-
+    def _update_slow(self):
         if self.isVisible():
-
             now = datetime.now()
-
-            if self._main_window.mc.acquiring:
-
+            if self._mainwindow.mc.acquiring:
                 cap_fps = sum(list(self._capture_fps)) / len(self._capture_fps) if self._capture_fps else 0
-
                 if 0 < cap_fps < 1000:
-                    if abs(cap_fps - self._wanted_fps) > 10:
+                    if abs(cap_fps - self._source_framerate) > 10:
                         self._warning_text = '[WARNING] Framerate'
                         self._warning = True
                     else:
@@ -783,29 +595,27 @@ class VideoWindowBase(QWidget):
             if self._camera.temperature is not None:
                 self.temperature_value.setText(f'{self._camera.temperature:.1f}°C')
             if self._camera.temperature_state == 'Ok':
-                self.temperature_value.setStyleSheet(f"color: {self._main_window.col_green}; font: bold;")
+                self.temperature_value.setStyleSheet(f"color: {self._mainwindow.col_green}; font: bold;")
             elif self._camera.temperature_state == 'Critical':
-                self.temperature_value.setStyleSheet(f"color: {self._main_window.col_orange}; font: bold;")
+                self.temperature_value.setStyleSheet(f"color: {self._mainwindow.col_orange}; font: bold;")
             elif self._camera.temperature_state == 'Error':
-                self.temperature_value.setStyleSheet(f"color: {self._main_window.col_red}; font: bold;")
+                self.temperature_value.setStyleSheet(f"color: {self._mainwindow.col_red}; font: bold;")
             else:
-                self.temperature_value.setStyleSheet(f"color: {self._main_window.col_yellow}; font: bold;")
+                self.temperature_value.setStyleSheet(f"color: {self._mainwindow.col_yellow}; font: bold;")
 
             # Update display fps
             dt = (now - self._clock).total_seconds()
-            ind = int(self._main_window.mc.indices[self.idx])
+            ind = int(self._mainwindow.mc.indices[self.idx])
             if dt > 0:
                 self._capture_fps.append((ind - self._last_capture_count) / dt)
 
             self._clock = now
             self._last_capture_count = ind
 
+class RecordingWindow(VideoWindowBase):
 
-class VideoWindowRec(VideoWindowBase):
-    newFrameSignal = Signal(np.ndarray)
-
-    def __init__(self, main_window_ref, idx):
-        super().__init__(main_window_ref, idx)
+    def __init__(self, camera, main_window_ref):
+        super().__init__(camera, main_window_ref)
 
         self._n_enabled = False
         self._magnifier_enabled = False
@@ -815,9 +625,7 @@ class VideoWindowRec(VideoWindowBase):
         self.magn_window_h = 100
         self.magn_window_x = 10
         self.magn_window_y = 10
-
-        # Target area for the magnification (initialise at the centre)
-        self.magn_target_cx = 0.5
+        self.magn_target_cx = 0.5   # Target initialised at the centre
         self.magn_target_cy = 0.5
 
         # Mouse states
@@ -831,38 +639,24 @@ class VideoWindowRec(VideoWindowBase):
             [0, 1, 0],
             [0, 0, 0]], dtype=np.uint8)
 
-        ##
-
-        # Setup worker
-        self.worker_thread = QThread(self)
-        self.worker = MainWorker()
-        self.worker.moveToThread(self.worker_thread)
-
-        # Setup signals
-        self.newFrameSignal.connect(self.worker.process_frame, type=Qt.QueuedConnection)
-        self.worker.signal_result_ready.connect(self.on_worker_result)
-        self.worker.signal_finished_processing.connect(self.on_worker_finished)
-        self.worker_thread.start()
+        self._setup_worker(MovementWorker(self._cam_name))
 
         # Store worker results and its current state
         self._bboxes = []
-        self._worker_busy = False
-        self._latest_frame = None
-
-        # This updater function should only run at 60 fps
-        self.timer_video = QTimer(self)
-        self.timer_video.timeout.connect(self._update_images)
-        self.timer_video.start(16)
 
         # Finish building the UI by calling the other constructors
         self._init_common_ui()
         self._init_specific_ui()
         self.auto_size()
 
+        # Start worker and timers
+        self.worker_thread.start()
+        self._start_timers()
+
     #  ============= UI constructors =============
     def _init_specific_ui(self):
         """
-            This constructor creates the UI elements specific to Recording mode
+        This constructor creates the UI elements specific to Recording mode
         """
 
         # Add mouse click detection to video feed (for the magnifier)
@@ -878,7 +672,7 @@ class VideoWindowRec(VideoWindowBase):
         self._val_in_sync = {}
 
         slider_params = [
-            ('framerate', (int, 1, int(self._main_window.mc.cameras[self.idx].max_framerate), 1, 1)),
+            ('framerate', (int, 1, int(self._mainwindow.mc.cameras[self.idx].max_framerate), 1, 1)),
             ('exposure', (int, 21, 100000, 5, 1)),  # in microseconds - 100000 microseconds ~ 10 fps
             ('blacks', (float, 0.0, 32.0, 0.5, 3)),
             ('gain', (float, 0.0, 36.0, 0.5, 3)),
@@ -904,7 +698,7 @@ class VideoWindowRec(VideoWindowBase):
             line_layout.setContentsMargins(1, 1, 1, 1)
             line_layout.setSpacing(2)
 
-            param_value = getattr(self._main_window.mc.cameras[self.idx], label)
+            param_value = getattr(self._mainwindow.mc.cameras[self.idx], label)
 
             slider_label = QLabel(f'{label.title()}:')
             slider_label.setFixedWidth(70)
@@ -1026,7 +820,7 @@ class VideoWindowRec(VideoWindowBase):
 
         return super().eventFilter(obj, event)
 
-    #  ============= Update frame, and worker communication =============
+    #  ============= Update frame =============
     def _annotate(self):
 
         # Get new coordinates
@@ -1039,8 +833,8 @@ class VideoWindowRec(VideoWindowBase):
         x_west, y_west = 0, h // 2
 
         # Draw crosshair
-        cv2.line(self._display_buffer, (x_west, y_west), (x_east, y_east), self._main_window.col_white_rgb, 1)
-        cv2.line(self._display_buffer, (x_north, y_north), (x_south, y_south), self._main_window.col_white_rgb, 1)
+        cv2.line(self._display_buffer, (x_west, y_west), (x_east, y_east), self._mainwindow.col_white_rgb, 1)
+        cv2.line(self._display_buffer, (x_north, y_north), (x_south, y_south), self._mainwindow.col_white_rgb, 1)
 
         if self._magnifier_enabled:
 
@@ -1075,7 +869,7 @@ class VideoWindowRec(VideoWindowBase):
             target_y2 = int((target_cy_fb + self.magn_window_h / 2) * ratio_h)
             self._display_buffer = cv2.rectangle(self._display_buffer,
                                                  (target_x1, target_y1), (target_x2, target_y2),
-                                                 self._main_window.col_yellow_rgb, 1)
+                                                 self._mainwindow.col_yellow_rgb, 1)
 
             # Paste the zoom window into the display buffer
             magn_x1 = min(self._display_buffer.shape[0], max(0, self.magn_window_x))
@@ -1087,82 +881,76 @@ class VideoWindowRec(VideoWindowBase):
             # Add frame around the magnification
             self._display_buffer = cv2.rectangle(self._display_buffer,
                                                  (magn_y1, magn_x1), (magn_y2, magn_x2),
-                                                 self._main_window.col_yellow_rgb, 1)
+                                                 self._mainwindow.col_yellow_rgb, 1)
 
         # Position the 'Recording' indicator
         font, txtsiz, txtth = cv2.FONT_HERSHEY_DUPLEX, 1.0, 2
-        textsize = cv2.getTextSize(self._main_window._recording_text, font, txtsiz, txtth)[0]
-        self._display_buffer = cv2.putText(self._display_buffer, self._main_window._recording_text,
+        textsize = cv2.getTextSize(self._mainwindow._recording_text, font, txtsiz, txtth)[0]
+        self._display_buffer = cv2.putText(self._display_buffer, self._mainwindow._recording_text,
                                            (int(x_centre - textsize[0] / 2), int(1.5 * y_centre - textsize[1])),
-                                           font, txtsiz, self._main_window.col_red_rgb, txtth, cv2.LINE_AA)
+                                           font, txtsiz, self._mainwindow.col_red_rgb, txtth, cv2.LINE_AA)
 
         # Position the 'Warning' indicator
         if self._warning:
             textsize = cv2.getTextSize(self._warning_text, font, txtsiz, txtth)[0]
             self._display_buffer = cv2.putText(self._display_buffer, self._warning_text,
                                                (int(x_north - textsize[0] / 2), int(y_centre / 2 - textsize[1])),
-                                               font, txtsiz, self._main_window.col_orange_rgb, txtth, cv2.LINE_AA)
+                                               font, txtsiz, self._mainwindow.col_orange_rgb, txtth, cv2.LINE_AA)
 
-
-    def _update_images(self):
-        # 1- Grab camera frame
+    def _update_fast(self):
+        # Grab camera frame
         self._refresh_framebuffer()
         frame = self._frame_buffer.copy()
 
-        # 2- if worker is free, send frame
+        # if worker is free, send frame
         if not self._worker_busy:
             self._send_frame_to_worker(frame)
         else:
             self._latest_frame = frame  # We overwrite the latest_frame purposefully, no need to queue them
 
-        # 3- resize to current window
+        # Resize viewport to fit current window size
         self._resize_to_display()
 
+        # Resize the image to the new viewport size
         disp_h, disp_w = self._display_buffer.shape[:2]
         scale = min(disp_w / frame.shape[1], disp_h / frame.shape[0])
         display_img = cv2.resize(frame, (0,0), fx=scale, fy=scale)
 
-        # 4- annotate resized image - TODO: this will be moved to _annotate()
+        # Paste new image into the viewport
         h, w = display_img.shape[:2]
         self._display_buffer[:h, :w] = display_img
+
+        # And fill any remaining viewport space with black
         if h < disp_h:
             self._display_buffer[h:, :] = 0
         if w < disp_w:
             self._display_buffer[:, w:] = 0
 
-        # TESTING - fake bounding box
+        # Fake bounding box
         # for (x, y, bw, bh) in self._bboxes:
         #     sx, sy = int(x*scale), int(y*scale)
         #     sw, sh = int(bw*scale), int(bh*scale)
         #     cv2.rectangle(self._display_buffer, (sx, sy), (sx+sw, sy+sh),
         #                   (0,255,255), 2)
 
+        # Add annotations
         self._annotate()
 
+        # And blit
         self._blit_image()
 
-    def _send_frame_to_worker(self, frame):
-        self.newFrameSignal.emit(frame)
-        self._worker_busy = True
-
-    def on_worker_finished(self):
-        self._worker_busy = False
-        if self._latest_frame is not None:
-            frame = self._latest_frame
-            self._latest_frame = None
-            self._send_frame_to_worker(frame)
-
+    # ============= Worker communication =============
+    @Slot(list)
     def on_worker_result(self, bboxes):
-        # called in the main thread when worker finishes processing and emits 'result_ready'
         self._bboxes = bboxes
 
-    #  ============= Custom functions =============
+    #  ============= Recording mode-specific functions =============
     def _toggle_n_display(self):
         if self._n_enabled:
             self.n_button.setStyleSheet('')
             self._n_enabled = False
         else:
-            self.n_button.setStyleSheet(f'background-color: #80{self._main_window.col_green.lstrip("#")};')
+            self.n_button.setStyleSheet(f'background-color: #80{self._mainwindow.col_green.lstrip("#")};')
             self._n_enabled = True
 
     def _toggle_mag_display(self):
@@ -1171,29 +959,29 @@ class VideoWindowRec(VideoWindowBase):
             # self.magn_slider.setDisabled(True)
             self._magnifier_enabled = False
         else:
-            self.magn_button.setStyleSheet(f'background-color: #80{self._main_window.col_yellow.lstrip("#")};')
+            self.magn_button.setStyleSheet(f'background-color: #80{self._mainwindow.col_yellow.lstrip("#")};')
             # self.magn_slider.setDisabled(False)
             self._magnifier_enabled = True
 
     def update_param(self, label):
-        if label == 'framerate' and self._main_window.mc.triggered and self._main_window.mc.acquiring:
+        if label == 'framerate' and self._mainwindow.mc.triggered and self._mainwindow.mc.acquiring:
             return
 
         slider = self.camera_controls_sliders[label]
 
         new_val_float = slider.value() / self.camera_controls_sliders_scales[label]
 
-        setattr(self._main_window.mc.cameras[self.idx], label, new_val_float)
+        setattr(self._mainwindow.mc.cameras[self.idx], label, new_val_float)
 
         # And update the slider to the actual new value (can be different from the one requested)
-        read_back = getattr(self._main_window.mc.cameras[self.idx], label)
+        read_back = getattr(self._mainwindow.mc.cameras[self.idx], label)
 
         actual_new_val = int(read_back * self.camera_controls_sliders_scales[label])
         slider.setValue(actual_new_val)
 
         if label == 'exposure':
             # Refresh exposure value for UI display
-            self.exposure_value.setText(f"{self._main_window.mc.cameras[self.idx].exposure} µs")
+            self.exposure_value.setText(f"{self._mainwindow.mc.cameras[self.idx].exposure} µs")
 
             # We also need to update the framerate slider to current resulting fps after exposure change
             self.update_param('framerate')
@@ -1203,12 +991,12 @@ class VideoWindowRec(VideoWindowBase):
             wanted_fps_val = slider.value() / self.camera_controls_sliders_scales[label]
             self._wanted_fps = wanted_fps_val
 
-            if self._main_window.mc.triggered:
-                self._main_window.mc.framerate = self._wanted_fps
+            if self._mainwindow.mc.triggered:
+                self._mainwindow.mc.framerate = self._wanted_fps
             else:
-                self._main_window.mc.cameras[self.idx].framerate = self._wanted_fps
+                self._mainwindow.mc.cameras[self.idx].framerate = self._wanted_fps
 
-            new_max = int(self._main_window.mc.cameras[self.idx].max_framerate * self.camera_controls_sliders_scales[label])
+            new_max = int(self._mainwindow.mc.cameras[self.idx].max_framerate * self.camera_controls_sliders_scales[label])
             self.camera_controls_sliders['framerate'].setMaximum(new_max)
 
     def _slider_changed(self, label, int_value):
@@ -1224,94 +1012,56 @@ class VideoWindowRec(VideoWindowBase):
             # This should not be needed, the scale is supposed to be the same anyway but... just in case
             new_val_float = self.camera_controls_sliders[label].value() / self.camera_controls_sliders_scales[label]
 
-            for window in self._main_window.secondary_windows:
+            for window in self._mainwindow.video_windows:
                 if window is not self and bool(window._val_in_sync[label].isChecked()):
                     # Apply the window's scale (which should be the same anyway)
                     w_new_val = int(new_val_float * window.camera_controls_sliders_scales[label])
                     window.camera_controls_sliders[label].setValue(w_new_val)
                     window.update_param(label)
 
+class MonocularCalibWindow(VideoWindowBase):
 
-class VideoWindowCalib(VideoWindowBase):
+    request_load = Signal(str)
+    request_save = Signal(str)
 
-    signal_new_frame = Signal(np.ndarray, int)
-    signal_load_calib = Signal(str)
-    signal_save_calib = Signal(str)
-    signal_add_sample = Signal()
-    signal_clear_samples = Signal()
-    signal_clear_intrinsics = Signal()
-    signal_auto_sample = Signal(bool)
-    signal_auto_compute = Signal(bool)
-    signal_set_stage = Signal(int)
-
-    def __init__(self, main_window_ref, idx):
-        super().__init__(main_window_ref, idx)
+    def __init__(self, camera, main_window_ref):
+        super().__init__(camera, main_window_ref)
 
         # Default board params - TODO: Needs to be loaded from config file
-        self.board_params = {'rows': 6,
-                             'cols': 5,
-                             'square_length': 1.5,
-                             'markers_size': 4}
+        self.board_params = BoardParams(rows=6,
+                                        cols=5,
+                                        square_length=1.5,
+                                        markers_size=4)
 
         # Initialize reprojection error data for plotting
         self.reprojection_errors = deque(maxlen=100)
 
-        # Setup worker
-        self.worker_thread = QThread(self)
-        self.worker = MonocularCalibWorker(self.board_params, self.idx, self.name, self.source_shape)
-        self.worker.moveToThread(self.worker_thread)
-
-        # Initialise where to store worker results and state
+        # The worker annotates the frame by itself so we keep a reference to the latest annotated frame
+        # TODO - Maybe the anotation should happen here instead, like the recording mode?
         self.annotated_frame = None
-        self._worker_busy = False           # Any worker job (including detection, etc)
-        self._worker_computing = False      # Only heavy worker job that blocks
-        self._latest_frame = None
-        self._intrinsics_stable = False
 
-        # Setup signals
-        #      Worker --> Main thread
-        self.worker.signal_send_annotated_frame.connect(self.on_worker_result)
-        self.worker.signal_send_finished.connect(self.on_worker_finished)
-
-        self.worker.signal_computation_started.connect(self.on_computation_started)
-        self.worker.signal_computation_finished.connect(self.on_computation_finished)
-
-        self.worker.signal_return_reprojection_error.connect(self.on_reprojection_error)
-        self.worker.signal_return_detection.connect(self._main_window.extrinsics_window.worker.on_received_detection)
-        self.worker.signal_return_pose.connect(self._main_window.extrinsics_window.worker.on_received_camera_pose)
-        self.worker.signal_return_intrinsics.connect(self.on_intrinsics_update, type=Qt.QueuedConnection)
-
-        #       Main thread --> Worker
-        self.signal_new_frame.connect(self.worker.process_frame, type=Qt.QueuedConnection)
-        self.signal_load_calib.connect(self.worker.load_calib)
-        self.signal_save_calib.connect(self.worker.save_calib)
-        self.signal_add_sample.connect(self.worker.add_sample)
-        self.signal_clear_samples.connect(self.worker.clear_samples)
-        self.signal_clear_intrinsics.connect(self.worker.clear_intrinsics)
-        self.signal_auto_sample.connect(self.worker.set_auto_sample)
-        self.signal_auto_compute.connect(self.worker.set_auto_compute)
-        self.signal_set_stage.connect(self.worker.set_stage)
-
-        self.worker_thread.start()
-
-        # This updater function should only run at 60 fps
-        self.timer_calib = QTimer(self)
-        self.timer_calib.timeout.connect(self._update_images)
-        self.timer_calib.start(16)
+        self._setup_worker(MonocularWorker(self.board_params, self.idx, self.name, self.source_shape))
 
         # Finish building the UI by calling the other constructors
         self._init_common_ui()
         self._init_specific_ui()
         self.auto_size()
 
-        self._update_board_preview()
+        self.worker_thread.start()
+        self._start_timers()
+
+    #  ============= Worker thread additional setup =============
+    def _setup_worker(self, worker_object):
+        super()._setup_worker(worker_object)
+        self._mainwindow.coordinator.register_worker(worker_object)
+        self.request_load.connect(worker_object.load_intrinsics)
+        self.request_save.connect(worker_object.save_intrinsics)
 
     #  ============= UI constructors =============
     def _init_specific_ui(self):
         """
-            This constructor creates the UI elements specific to Calib mode
+        This constructor creates the UI elements specific to Calib mode
         """
-
         layout = QHBoxLayout(self.RIGHT_GROUP)
         layout.setContentsMargins(5, 5, 5, 5)
 
@@ -1324,7 +1074,7 @@ class VideoWindowCalib(VideoWindowBase):
         board_layout.addWidget(self.board_preview_label)
 
         board_settings_button = QPushButton("Board Settings...")
-        board_settings_button.clicked.connect(self.show_board_params_dialog)
+        board_settings_button.clicked.connect(self._show_board_dialog)
         board_layout.addWidget(board_settings_button)
 
         layout.addWidget(board_group)
@@ -1336,34 +1086,39 @@ class VideoWindowCalib(VideoWindowBase):
 
         self.auto_sample_check = QCheckBox("Sample automatically")
         self.auto_sample_check.setChecked(True)
-        self.auto_sample_check.stateChanged.connect(self.on_auto_sample_toggled)
+        self.auto_sample_check.stateChanged.connect(self.worker.auto_sample)
         sampling_layout.addWidget(self.auto_sample_check)
 
         sampling_btns_group = QWidget()
         sampling_btns_layout = QHBoxLayout(sampling_btns_group)
 
         self.sample_button = QPushButton("Add sample")
-        self.sample_button.clicked.connect(self.on_add_sample)
-        self.sample_button.setStyleSheet(f"background-color: {self._main_window.col_darkgreen}; color: {self._main_window.col_white};")
+        self.sample_button.clicked.connect(self.worker.add_sample)
+        self.sample_button.setStyleSheet(f"background-color: {self._mainwindow.col_darkgreen}; color: {self._mainwindow.col_white};")
         sampling_btns_layout.addWidget(self.sample_button)
 
         self.clear_samples_button = QPushButton("Clear samples")
-        self.clear_samples_button.clicked.connect(self.on_clear_samples)
+        self.clear_samples_button.clicked.connect(self.worker.clear_samples)
         sampling_btns_layout.addWidget(self.clear_samples_button)
 
         sampling_layout.addWidget(sampling_btns_group)
 
         self.auto_compute_check = QCheckBox("Compute intrinsics automatically")
         self.auto_compute_check.setChecked(True)
-        self.auto_compute_check.stateChanged.connect(self.on_auto_compute_toggled)
+        self.auto_compute_check.stateChanged.connect(self.worker.auto_compute)
         sampling_layout.addWidget(self.auto_compute_check)
 
         intrinsics_btns_group = QWidget()
         intrinsics_btns_layout = QHBoxLayout(intrinsics_btns_group)
 
-        self.clear_intrinsics = QPushButton("Clear intrinsics")
-        self.clear_intrinsics.clicked.connect(self.on_clear_intrinsics)
-        intrinsics_btns_layout.addWidget(self.clear_intrinsics)
+        self.compute_intrinsics_button = QPushButton("Compute intrinsics now")
+        self.compute_intrinsics_button.clicked.connect(self.worker.compute_intrinsics)
+        intrinsics_btns_layout.addWidget(self.compute_intrinsics_button)
+
+        self.clear_intrinsics_button = QPushButton("Clear intrinsics")
+        self.clear_intrinsics_button.clicked.connect(self.on_clear_intrinsics)      # Main thread to main thread UI updt
+        self.clear_intrinsics_button.clicked.connect(self.worker.clear_intrinsics)  # Send signal to worker
+        intrinsics_btns_layout.addWidget(self.clear_intrinsics_button)
 
         sampling_layout.addWidget(intrinsics_btns_group)
 
@@ -1387,11 +1142,11 @@ class VideoWindowCalib(VideoWindowBase):
         calib_io_layout = QVBoxLayout(calib_io_group)
 
         self.load_calib_button = QPushButton("Load intrinsics")
-        self.load_calib_button.clicked.connect(self.on_load_intrinsics)
+        self.load_calib_button.clicked.connect(self.on_load_parameters)
         calib_io_layout.addWidget(self.load_calib_button)
 
         self.save_calib_button = QPushButton("Save intrinsics")
-        self.save_calib_button.clicked.connect(self.on_save_calib)
+        self.save_calib_button.clicked.connect(self.on_save_parameters)
         calib_io_layout.addWidget(self.save_calib_button)
 
         self.load_save_message = QLabel("")
@@ -1401,22 +1156,11 @@ class VideoWindowCalib(VideoWindowBase):
 
         layout.addWidget(calib_io_group)
 
-    #  ============= Update frame, and worker communication =============
-    def _annotate(self):
+        # Now that the UI is ready, generate the calibration board image once
+        self._update_board_preview()
 
-        if self._intrinsics_stable:
-            # Get new coordinates
-            h, w = self._display_buffer.shape[:2]
-
-            x_centre, y_centre = w // 2, h // 2
-
-            font, txtsiz, txtth = cv2.FONT_HERSHEY_DUPLEX, 1.0, 2
-            textsize = cv2.getTextSize('Intrinsics stable', font, txtsiz, txtth)[0]
-            self._display_buffer = cv2.putText(self._display_buffer, self._main_window._recording_text,
-                                               (int(x_centre - textsize[0] / 2), int(1.5 * y_centre - textsize[1])),
-                                               font, txtsiz, self._main_window.col_green_rgb, txtth, cv2.LINE_AA)
-
-    def _update_images(self):
+    #  ============= Update frame =============
+    def _update_fast(self):
         self._refresh_framebuffer()
         frame = self._frame_buffer.copy()
 
@@ -1430,9 +1174,9 @@ class VideoWindowCalib(VideoWindowBase):
         # Now scale + display the last annotated frame we got from the worker
         disp_h, disp_w = self._display_buffer.shape[:2]
 
-        if self._worker_computing:
+        if self._worker_blocking:
+            # Worker is blocking during computation so it can't annotate - Display a blurred image
             blurred = cv2.GaussianBlur(frame.copy(), (25, 25), 0)
-            # Overlay "Computing..." text in the center of the blurred image
             h, w = blurred.shape[:2]
             text = "Computing..."
             font = cv2.FONT_HERSHEY_SIMPLEX
@@ -1442,15 +1186,19 @@ class VideoWindowCalib(VideoWindowBase):
             text_x = (w - text_size[0]) // 2
             text_y = (h + text_size[1]) // 2
             cv2.putText(blurred, text, (text_x, text_y), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
-            self.annotated_frame = blurred.copy()
+            self.annotated_frame = blurred
 
         if self.annotated_frame is not None and self.annotated_frame.size > 0:
+
+            # Resize image to current viewport dimensions
             scale = min(disp_w / self.annotated_frame.shape[1],
                         disp_h / self.annotated_frame.shape[0])
             out = cv2.resize(self.annotated_frame, (0, 0), fx=scale, fy=scale)
 
+            # Paste resized image into display buffer
             h, w = out.shape[:2]
             self._display_buffer[:h, :w] = out
+            # Fill any remaining buffer space with black
             if h < disp_h:
                 self._display_buffer[h:, :] = 0
             if w < disp_w:
@@ -1458,117 +1206,71 @@ class VideoWindowCalib(VideoWindowBase):
         else:
             self._display_buffer.fill(0)
 
-        self._annotate()
-
         self._blit_image()
 
-    def _send_frame_to_worker(self, frame):
-        self.signal_new_frame.emit(frame, int(self._main_window.mc.indices[self.idx]))
-        self._worker_busy = True
+    # ============= Worker communication =============
+    @Slot(np.ndarray)
+    def on_worker_result(self, annotated_frame):
+        self.annotated_frame = annotated_frame
 
-    def on_stage_change(self, stage):
-        self.signal_set_stage.emit(stage)
-
-    def on_add_sample(self):
-        self.signal_add_sample.emit()
-
-    def on_clear_samples(self):
-        self.signal_clear_samples.emit()
+    #  ============= Handle additional worker communication =============
 
     def on_clear_intrinsics(self):
+        # Clear plot
         self.reprojection_errors.clear()
         self.error_plot_curve.setData(self.reprojection_errors)
-        self.signal_clear_intrinsics.emit()
-        self._intrinsics_stable = False
+        # Clear text
         self.load_save_message.setText('')
 
-    def on_load_intrinsics(self, file_path=None):
-        if file_path is None or file_path is False:
-            file_path = self.file_dialog(self._main_window.mc.full_path.parent)
-        else:
-            file_path = Path(file_path)
+    def on_load_parameters(self):
+        file_path = self._show_file_dialog(self._mainwindow.mc.full_path.parent)
+        if file_path and file_path.is_file():   # Might still be None if the picker did not succeed
+            self.request_load.emit(file_path.as_posix())
+            self.load_save_message.setText(f"Intrinsics <b>loaded</b> from {file_path.parent}")
 
-        if file_path is not None:   # Might still be None if the picker did not succeed
-            if file_path.is_dir():
-                file = file_path / "parameters.toml"
-                if file.exists():
-                    self.signal_load_calib.emit(file.as_posix())
-                    self.load_save_message.setText(f"Intrinsics <b>loaded</b> from {file.parent}")
-
-            elif file_path.is_file():
-                self.signal_load_calib.emit(file_path.as_posix())
-                self.load_save_message.setText(f"Intrinsics <b>loaded</b> from {file_path}")
-
-    def on_save_calib(self):
-        file_path = self._main_window.mc.full_path / "parameters.toml"
-        self.signal_save_calib.emit(file_path.as_posix())
+    def on_save_parameters(self, data: CalibrationData):
+        file_path = self._mainwindow.mc.full_path / "parameters.toml"
+        self.request_save.emit(file_path.as_posix())
         self.load_save_message.setText(f"Intrinsics <b>saved</b> as \r{file_path}")
 
-    @Slot(np.ndarray, np.ndarray, bool)
-    def on_intrinsics_update(self, camera_matrix, dist_coeffs, update_message=True):
-        self._main_window.extrinsics_window.update_intrinsics(self.idx, camera_matrix, dist_coeffs)
-        if update_message:
-            self.load_save_message.setText(f"Intrinsics <b>not</b> saved!")
-        if DEBUG:
-            print(f'[DEBUG] [MainThread] Intrinsics updated for {self.name} camera (idx={self.idx})\r')
+    # @Slot(np.ndarray, np.ndarray, bool)
+    # def on_intrinsics_update(self, camera_matrix, dist_coeffs, update_message=True):
+    #     self._mainwindow.opengl_window.update_intrinsics(self.idx, camera_matrix, dist_coeffs)
+    #     if update_message:
+    #         self.load_save_message.setText(f"Intrinsics <b>not</b> saved!")
+    #     if DEBUG:
+    #         print(f'[DEBUG] [MainThread] Intrinsics updated for {self.name} camera (idx={self.idx})\r')
+    #
+    # @Slot(np.ndarray)
+    # def on_reprojection_error(self, error):
+    #
+    #     m = np.mean(error)
+    #     # s = np.std(error)
+    #
+    #     self.reprojection_errors.append(m)
+    #     self.error_plot_curve.setData(self.reprojection_errors)
 
-    def on_worker_finished(self):
-        self._worker_busy = False
-        if self._latest_frame is not None:
-            f = self._latest_frame
-            self._latest_frame = None
-            self._send_frame_to_worker(f)
-
-    def on_worker_result(self, annotated):
-        # called in the main thread when worker finishes processing and emits 'result ready'
-        self.annotated_frame = annotated
-
-    @Slot()
-    def on_computation_started(self):
-        self._worker_computing = True
-
-    @Slot()
-    def on_computation_finished(self):
-        self._worker_computing = False
-
-    #  ============= Custom functions =============
-    @Slot(np.ndarray)
-    def on_reprojection_error(self, error):
-
-        m = np.mean(error)
-        # s = np.std(error)
-
-        self.reprojection_errors.append(m)
-        self.error_plot_curve.setData(self.reprojection_errors)
-
-        # check for plateau when we have 10+ errors
-        if len(self.reprojection_errors) >= 10:
-            errors_list = np.array(self.reprojection_errors)
-
-            last5 = errors_list[-5:]
-            prev5 = errors_list[-10:-5]
-
-            mean_last5 = np.mean(last5)
-            mean_prev5 = np.mean(prev5)
-
-            if np.isnan(mean_last5) or np.isnan(mean_prev5) or mean_last5 == np.inf or mean_prev5 == np.inf:
-                return
-
-            se_last5 = np.std(last5, ddof=1) / np.sqrt(len(last5))
-            se_prev5 = np.std(prev5, ddof=1) / np.sqrt(len(prev5))
-
-            # relative improvement from the previous 5 samples to the last 5
-            improvement = (mean_prev5 - mean_last5) / mean_prev5
-
-            improvement_threshold = 0.01
-            se_threshold = 0.05
-
-            if improvement > improvement_threshold and se_last5 < se_threshold:
-                self._intrinsics_stable = True
-
-    def show_board_params_dialog(self):
+    #  ============= Calibration video window functions =============
+    def _show_file_dialog(self, startpath: str | Path):
         """
-            Opens the small BoardParamsDialog to let the user set board parameters
+        Opens the small file selector to let the user load a parameters.toml file
+        """
+        dial = QFileDialog(self)
+        dial.setWindowTitle("Choose folder")
+        dial.setViewMode(QFileDialog.ViewMode.Detail)
+        dial.setDirectory(QDir(Path(startpath).resolve()))
+
+        if dial.exec():
+            selected = dial.selectedFiles()
+            if selected:
+                file = Path(selected[0])
+                if file.exists():
+                    return file
+        return None
+
+    def _show_board_dialog(self):
+        """
+        Opens the small BoardParamsDialog to let the user set board parameters
         """
         dlg = BoardParamsDialog(self.board_params)
 
@@ -1579,8 +1281,8 @@ class VideoWindowCalib(VideoWindowBase):
 
             if bool_apply_all:
                 # Loop over all secondary windows in the main app
-                for w in self._main_window.secondary_windows:
-                    if isinstance(w, VideoWindowCalib):
+                for w in self._mainwindow.video_windows:
+                    if isinstance(w, MonocularCalibWindow):
                         w.board_params = new_board_params.copy()
                         w._update_board_preview()
             else:
@@ -1588,136 +1290,59 @@ class VideoWindowCalib(VideoWindowBase):
                 self._update_board_preview()
 
     def _update_board_preview(self):
-        MAX_W, MAX_H = 100, 100
+        max_w, max_h = 100, 100
 
-        r = self.board_params['rows'] / self.board_params['cols']
-        h, w = 100, int(r * 100)
-        board_arr = generate_charuco(
-            board_rows=self.board_params['rows'],
-            board_cols=self.board_params['cols'],
-            square_length_mm=self.board_params['square_length'],
-            marker_bits=self.board_params['markers_size']).generateImage((h, w))
+        r = self.board_params.rows / self.board_params.cols
+        h, w = max_h, int(r * max_w)
+
+        board_arr = self.board_params.to_opencv().generateImage((h, w))
         q_img = QImage(board_arr, h, w, h, QImage.Format.Format_Grayscale8)
         pixmap = QPixmap.fromImage(q_img)
-        bounded_pixmap = pixmap.scaled(MAX_W, MAX_H,
-                                       Qt.KeepAspectRatio,
-                                       Qt.SmoothTransformation)
+        bounded_pixmap = pixmap.scaled(max_w, max_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self.board_preview_label.setPixmap(bounded_pixmap)
 
-    @Slot(bool)
-    def on_auto_sample_toggled(self, checked):
-        self.signal_auto_sample.emit(checked)
 
-    @Slot(bool)
-    def on_auto_compute_toggled(self, checked):
-        self.signal_auto_compute.emit(checked)
-
-    def file_dialog(self, startpath):
-        dial = QFileDialog(self)
-        dial.setWindowTitle("Choose folder")
-        dial.setFileMode(QFileDialog.FileMode.Directory)
-        dial.setOption(QFileDialog.Option.ShowDirsOnly, False)
-        dial.setViewMode(QFileDialog.ViewMode.Detail)
-        dial.setDirectory(QDir(startpath.resolve()))
-
-        selected_path = None
-        if dial.exec():
-            selected = dial.selectedFiles()
-            if selected:
-                folder = Path(selected[0])
-                if folder.exists():
-                    selected_path = folder
-        return selected_path
-
-##
-
-class ExtrinsicsWindow(QWidget):
-
-    signal_update_origin_camera = Signal(int)
-    signal_update_intrinsics = Signal(int, np.ndarray, np.ndarray)
+class MultiviewCalibWindow(SecondaryWindowBase):
 
     def __init__(self, main_window_ref):
-        super().__init__()
+        super().__init__(main_window_ref)
 
-        self._force_destroy = False         # This is used to defined whether we only hide or destroy the window
-        self.setAttribute(Qt.WA_DeleteOnClose, True)  # force PySide to destroy the windows on mode change
-
-        self._main_window = main_window_ref
         self.nb_cams = main_window_ref.nb_cams
         self.idx = self.nb_cams + 1
-        self._cameras = [c.name for c in self._main_window.mc.cameras]
-        self._origin_camera = self._cameras[0]
+        self._cameras_names = self._mainwindow.cameras_names    # Fixed cameras order
+        self._origin_camera = self._cameras_names[0]    # default to first one
+        self._cam_colours_rgba = {cam: np.array([*hex_to_rgb(col), 255], dtype=np.uint8)
+                                  for cam, col in self._mainwindow.cams_colours.items()}
+        self._cam_colours_rgba_norm = {cam: col / 255
+                                       for cam, col in self._cam_colours_rgba.items()}
+        self._sources_shapes = self._mainwindow.sources_shapes
 
-        self._have_extrinsics = False
-
-        # Initialise where to store intrinsics and extrinsics for all cams
-        self._multi_intrinsics_matrices = np.zeros((self.nb_cams, 3, 3), dtype=np.float32)
-        self._multi_dist_coeffs = np.zeros((self.nb_cams, 14), dtype=np.float32)
-        self._multi_extrinsics_matrices = np.zeros((self.nb_cams, 3, 4), dtype=np.float32)
-
-        # Setup multiview calib tool
-        self.multi_calib_tool = MultiviewCalibrationTool(self.nb_cams, origin_camera=0, min_poses=3)
-
-        # Global arrangement coords
-        self._cameras_pos_rot = np.zeros((self.nb_cams, 3), dtype=np.float32)
+        # These will be aliases to the (rotated for display) rvec and tvec (filled using the fixed camera order)
         self.optical_axes = np.zeros((self.nb_cams, 3), dtype=np.float32)
+        self.cam_positions = np.zeros((self.nb_cams, 3), dtype=np.int32)
+        # And a reference to the shared focal point
         self.focal_point = np.zeros((1, 3), dtype=np.float32)
 
-        # Setup worker
-        self.worker_thread = QThread(self)
-        self.worker = MultiCalibWorker(self.multi_calib_tool)
-        self.worker.moveToThread(self.worker_thread)
-
-        # Setup signals
-        #      Worker --> Main thread
-        self.worker.signal_return_computed_poses.connect(self.update_poses)
-        self.worker.signal_return_computed_points.connect(self.update_points)
-
-        #       Main thread --> Worker
-        self.signal_update_origin_camera.connect(self.worker.set_origin_camera)
-        self.signal_update_intrinsics.connect(self.worker.on_updated_intrinsics)
-
-        self.worker_thread.start()
-
-        ##
-        # ================= Stuff for OpenGL below =================
-
-        # References to displayed items
-        self.kept_items = []
-        self.clearable_items = []
-
-        self._cam_colours_rgba = np.vstack([(*hex_to_rgb(c), 255) for c in self._main_window.bg_colours_list])
-        self._cam_colours_rgba_norm = self._cam_colours_rgba / 255
-        self._frames_sizes = self._main_window.sources_shapes
-
-        self._frustum_depth = 200
-
-        self._antialiasing = True
-
-        # Finish building the UI and initialise the 3D scene
-        self._init_ui()
-
-        # Add the grid now bc no need to update it later
-        self._gridsize = 100
-        self.grid = GLGridItem()
-        self.grid.setSize(self._gridsize * 2, self._gridsize * 2, self._gridsize * 2)
-        self.grid.setSpacing(self._gridsize * 0.1, self._gridsize * 0.1, self._gridsize * 0.1)
-        self.view.addItem(self.grid)
-
         # Define some constants
-        self._frustums_points2d = np.stack([np.array([[0, 0], [w, 0], [w, h], [0, h]], dtype=np.int32) for (h, w) in self._frames_sizes])
-        self._centres_points2d = self._frustums_points2d[:, 2, :] / 2
-        # faces as triangles
+        # Points in 2D (as arrays, and using the fixed cameras order)
+        self._frustums_points2d = np.stack([np.array([[0, 0],
+                                             [self._sources_shapes[cam][1], 0],
+                                             [self._sources_shapes[cam][1], self._sources_shapes[cam][0]],
+                                             [0, self._sources_shapes[cam][0]]], dtype=np.int32)
+                                   for cam in self._cameras_names])
+        self._centres_points2d = self._frustums_points2d[:, 2, :] / 2.0
+
+        # Faces as triangles
         self._frustum_faces = np.array([[0, 1, 2], [0, 2, 3]])
         self._volume_verts = np.array([
             [-1., -1., -1.],
-            [1., -1., -1.],
-            [1., 1., -1.],
-            [-1., 1., -1.],
-            [-1., -1., 1.],
-            [1., -1., 1.],
-            [1., 1., 1.],
-            [-1., 1., 1.]
+            [ 1., -1., -1.],
+            [ 1.,  1., -1.],
+            [-1.,  1., -1.],
+            [-1., -1.,  1.],
+            [ 1., -1.,  1.],
+            [ 1.,  1.,  1.],
+            [-1.,  1.,  1.]
         ], dtype=np.float32)
         self._volume_faces = np.array([
             [0, 1, 2], [0, 2, 3],  # Bottom
@@ -1725,67 +1350,47 @@ class ExtrinsicsWindow(QWidget):
             [0, 1, 5], [0, 5, 4],  # Front
             [1, 2, 6], [1, 6, 5],  # Right
             [2, 3, 7], [2, 7, 6],  # Back
-            [3, 0, 4], [3, 4, 7]  # Left
+            [3, 0, 4], [3, 4, 7]   # Left
         ], dtype=np.int32)
 
-        ##
-        # ============================================ TEMPORARY TEST VALUES ===========================================
+        # # Initialise where to store intrinsics and extrinsics for all cams
+        self._multi_cameras_matrices = np.zeros((self.nb_cams, 3, 3), dtype=np.float32)
+        self._multi_dist_coeffs = np.zeros((self.nb_cams, 14), dtype=np.float32)
+        self._multi_extrinsics_matrices = np.zeros((self.nb_cams, 3, 4), dtype=np.float32)
 
-        # self._cam_colours_rgba_norm = np.array([(218, 20, 29, 255), (122, 156, 33, 255), (243, 213, 134, 255), (68, 62, 147, 255),
-        #                    (239, 238, 231, 255)]) / 255
-        #
-        # n_optimised_rvecs = np.array([[0.45200041476980235, 0.8771147275087425, 2.251746546223581],
-        #                               [0.5005899848817629, -0.40415125297412524, -1.7664028088411652],
-        #                               [0.8488376012023714, 0.840477261793214, 1.4946774627106294],
-        #                               [-0.0003631347110473988, 0.00021406779771240513, -0.0026958147664326733],
-        #                               [0.7003948435159923, 0.30747234763007686, 0.95309397614152]
-        #                               ])
-        #
-        # n_optimised_tvecs = np.array([[-110.00946411872877, -107.07056980084768, 53.335528134397805],
-        #                               [126.41534461953935, -13.321909590625866, -6.39879794280635],
-        #                               [-192.4985924773089, -11.06001204792536, 97.57202285958193],
-        #                               [-0.657915548760298, -0.03441274672931003, 4.499012937051807],
-        #                               [-108.4554173475389, 77.11590331140114, 42.40017779935506]])
+        # Setup worker
+        self._setup_worker(MultiviewWorker(self._cameras_names, self._origin_camera))
+        self.worker_thread.start()
 
-        # for n in range(self.nb_cams):
-        #     self._multi_extrinsics_matrices[n, :, :] = geometry.extrinsics_matrix(n_optimised_rvecs[n], n_optimised_tvecs[n])
-        #
-        # self._multi_intrinsics_matrices = np.array([
-        #     [[17707.67747316224, 0.0, 790.5587621784158],
-        #      [0.0, 17707.67747316224, 983.864989843142],
-        #      [0.0, 0.0, 1.0]],
-        #     [[19151.7271090595, 0.0, 1012.4168885068306],
-        #      [0.0, 19151.7271090595, 398.77269888563404],
-        #      [0.0, 0.0, 1.0]],
-        #     [[20136.8295090655, 0.0, 1141.4955218160396],
-        #      [0.0, 20136.8295090655, 1002.6488556447825],
-        #      [0.0, 0.0, 1.0]],
-        #     [[17913.718172333134, 0.0, 405.2813966335253],
-        #      [0.0, 17913.718172333134, 1126.343479359868],
-        #      [0.0, 0.0, 1.0]],
-        #     [[18794.177986152907, 0.0, 736.9062486680083],
-        #      [0.0, 18794.177986152907, 585.4228956792946],
-        #      [0.0, 0.0, 1.0]]
-        # ])
+        # References to displayed items
+        self._static_items = []
+        self._refreshable_items = []
+        self._frustum_depth = 200
+        self._gridsize = 100
+        self._antialiasing = True
 
-        focal = 60
-        s_size = np.flip(monocular.SENSOR_SIZES['1/2.9"'])
-        self._multi_intrinsics_matrices = np.stack([monocular.estimate_camera_matrix(focal,
-                                                                                     s_size,
-                                                                                     self._frames_sizes[n]) for n in range(self.nb_cams)])
-        # self._have_extrinsics = True
-        # ==============================================================================================================
-        ##
+        # Finish building the UI and initialise the 3D scene
+        self._init_ui()
 
+        # Add the grid now bc no need to update it later
+        self.grid = GLGridItem()
+        self.grid.setSize(self._gridsize * 2, self._gridsize * 2, self._gridsize * 2)
+        self.grid.setSpacing(self._gridsize * 0.1, self._gridsize * 0.1, self._gridsize * 0.1)
+        self.view.addItem(self.grid)
         self.view.opts['distance'] = self._gridsize
-        # self.view.opts['center'] = pg.Vector(*self.focal_point)
 
-        # TESTING - Update timer - TODO
-        self.timer_update = QTimer(self)
-        self.timer_update.timeout.connect(self.worker.compute)
-        # self.timer_update.timeout.connect(self.update_scene)
-        self.timer_update.start(500)
+        # Start window update timer
+        self.timer_slow = QTimer(self)
+        self.timer_slow.timeout.connect(self.update_scene)
+        self.timer_slow.start(500)
 
+    #  ============= Worker thread additional setup =============
+    def _setup_worker(self, worker_object):
+        super()._setup_worker(worker_object)
+        self._mainwindow.coordinator.register_worker(worker_object)
+        self._mainwindow.coordinator.send_to_main.connect(self.handle_payload)
+
+    #  ============= UI constructors =============
     def _init_ui(self):
         self.view = GLViewWidget()
         self.view.setWindowTitle('3D viewer')
@@ -1800,7 +1405,7 @@ class ExtrinsicsWindow(QWidget):
 
         self.calibration_stage_combo = QComboBox()
         self.calibration_stage_combo.addItems(['Intrinsics', 'Extrinsics', 'Refinement'])
-        self.calibration_stage_combo.currentIndexChanged.connect(self._switch_stage)
+        self.calibration_stage_combo.currentIndexChanged.connect(self._mainwindow.coordinator.set_stage)
         buttons_row1_layout.addWidget(self.calibration_stage_combo)
 
         # self.estimate_button = QPushButton("Estimate 3D pose")
@@ -1808,8 +1413,8 @@ class ExtrinsicsWindow(QWidget):
         # buttons_row1_layout.addWidget(self.estimate_button)
 
         self.origin_camera_combo = QComboBox()
-        self.origin_camera_combo.addItems(self._cameras)
-        self.origin_camera_combo.currentIndexChanged.connect(self._switch_origin_camera)
+        self.origin_camera_combo.addItems(self._cameras_names)
+        self.origin_camera_combo.currentTextChanged.connect(self._mainwindow.coordinator.set_origin_camera)
         buttons_row1_layout.addWidget(self.origin_camera_combo)
 
         layout.addWidget(buttons_row1)
@@ -1818,54 +1423,50 @@ class ExtrinsicsWindow(QWidget):
         buttons_row2_layout = QHBoxLayout(buttons_row_2)
 
         load_multi = QPushButton("Load all intrinsics")
-        load_multi.clicked.connect(self.load_all_intrinsics)
+        load_multi.clicked.connect(do_nothing)
         buttons_row2_layout.addWidget(load_multi)
 
         layout.addWidget(buttons_row_2)
 
         # If landscape screen
-        if self._main_window.selected_monitor.height < self._main_window.selected_monitor.width:
-            h = w = self._main_window.selected_monitor.height // 2
+        if self._mainwindow.selected_monitor.height < self._mainwindow.selected_monitor.width:
+            h = w = self._mainwindow.selected_monitor.height // 2
         else:
-            h = w = self._main_window.selected_monitor.width // 2
+            h = w = self._mainwindow.selected_monitor.width // 2
 
         self.resize(h, w)
 
         self.show()
 
-    # -------------- OpenGL rendering -related methods -----------------
-
+    #  ============= Rendering methods =============
     def clear_scene(self):
-        for item in self.clearable_items:
+        for item in self._refreshable_items:
             try:
                 self.view.removeItem(item)
             except ValueError:
                 pass
-        self.clearable_items.clear()
+        self._refreshable_items.clear()
 
     def update_scene(self):
-
-        # Clear previous elements
         self.clear_scene()
 
-        if self._have_extrinsics:
-            for cam_idx in range(self.nb_cams):
-                color = self._cam_colours_rgba_norm[cam_idx]
-
-                self.add_camera(cam_idx, color=color)
-
-                # self.add_points2d(cam_idx, points2d, color=color)
-
-            self.add_focal_point()
+        for cam_name in self._cameras_names:
+            color = self._cam_colours_rgba_norm[cam_name]
+            # self.add_camera(cam_name, color=color)
+            # self.add_points2d(cam_name, points2d, color=color)
+        self.add_focal_point()
 
         # draw everything
-        for item in self.clearable_items:
+        for item in self._refreshable_items:
             self.view.addItem(item)
 
-    def add_camera(self, cam_idx, color=(1, 0, 0, 1)):
+    def add_camera(self, cam_name: str, color=(1, 0, 0, 1)):
         """
-            Add a camera to the OpenGL scene
+        Add a camera to the OpenGL scene
         """
+
+        # Recover the correct index to use with arrays
+        cam_idx = self._cameras_names.index(cam_name)
 
         color_translucent_80 = np.copy(color)
         color_translucent_80[3] *= 0.8
@@ -1883,12 +1484,12 @@ class ExtrinsicsWindow(QWidget):
 
         # Add camera center as a point
         center_scatter = GLScatterPlotItem(pos=ext_mat_rot[:3, 3].reshape(1, -1), color=color, size=10)
-        self.clearable_items.append(center_scatter)
+        self._refreshable_items.append(center_scatter)
 
         # Back-project the 2D image corners to 3D
         frustum_points3d = geometry.back_projection(self._frustums_points2d[cam_idx],
-                                                     self._frustum_depth,
-                                                     self._multi_intrinsics_matrices[cam_idx],
+                                                    self._frustum_depth,
+                                                    self._multi_cameras_matrices[cam_idx],
                                                      self._multi_extrinsics_matrices[cam_idx, :, :])    # we use the non-rotated points, and rotate below
         frustum_points3d = geometry.rotate_points3d(frustum_points3d, 180, axis='y')
 
@@ -1901,7 +1502,7 @@ class ExtrinsicsWindow(QWidget):
                                   drawEdges=True,
                                   edgeColor=color_translucent_80,
                                   color=color_translucent_50)
-        self.clearable_items.append(frustum_mesh)
+        self._refreshable_items.append(frustum_mesh)
 
         # Draw lines from the camera to each frustum corner
         for corner in frustum_points3d:
@@ -1909,12 +1510,12 @@ class ExtrinsicsWindow(QWidget):
                                   color=color,
                                   width=1,
                                   antialias=self._antialiasing)
-            self.clearable_items.append(line)
+            self._refreshable_items.append(line)
 
         # Compute and draw the optical axis (from camera center toward the image center)
         centre3d = geometry.back_projection(self._centres_points2d[cam_idx],
-                                             self._frustum_depth,
-                                             self._multi_intrinsics_matrices[cam_idx],
+                                            self._frustum_depth,
+                                            self._multi_cameras_matrices[cam_idx],
                                              self._multi_extrinsics_matrices[cam_idx, :, :])         # we use the non-rotated points, and rotate below
         centre3d = geometry.rotate_points3d(centre3d, 180, axis='y')
 
@@ -1926,7 +1527,7 @@ class ExtrinsicsWindow(QWidget):
                              width=1)
 
         # Store the rotated camera center
-        self._cameras_pos_rot[cam_idx] = ext_mat_rot[:3, 3]
+        self.cam_positions[cam_idx] = ext_mat_rot[:3, 3]
 
         # Compute and store the (normalized) optical axis direction
         axis_vec = centre3d - ext_mat_rot[:3, 3]
@@ -1936,21 +1537,21 @@ class ExtrinsicsWindow(QWidget):
         self.optical_axes[cam_idx] = axis_vec
 
         prev_focal = np.copy(self.focal_point)
-        self.focal_point[0, :] = geometry.focal_point_3d(self._cameras_pos_rot, self.optical_axes)
+        self.focal_point[0, :] = geometry.focal_point_3d(self.cam_positions, self.optical_axes)
         self.grid.translate(*(self.focal_point - prev_focal)[0])
 
-    def add_points3d(self, points3d, errors=None, color=(0, 0, 0, 1)):
+    def add_points3d(self, points3d: np.ndarray, errors=None, color=(0, 0, 0, 1)):
         """
-            Add 3D points to the OpenGL scene
-            If errors are provided, they are mapped to colors
+        Add 3D points to the OpenGL scene
+        If errors are provided, they are mapped to colors
         """
 
         color = tuple(color)
 
         points3d_rot = geometry.rotate_points3d(points3d, 180, axis='y')
 
-        if errors is not None:
-            # TODO - use a fixed scale gfrom green to red instead
+        if errors:
+            # TODO - use a fixed scale from green to red instead
             # normalize error values to [0, 1]
             min_e = errors - np.nanmin(errors)
             norm_errors = min_e / np.nanmax(min_e)
@@ -1961,18 +1562,19 @@ class ExtrinsicsWindow(QWidget):
         else:
             scatter = GLScatterPlotItem(pos=points3d_rot, color=color, size=5)
 
-        self.clearable_items.append(scatter)
+        self._refreshable_items.append(scatter)
 
-    def add_points2d(self, cam_idx, points2d, color=(1, 1, 0, 1)):
+    def add_points2d(self, cam_name, points2d, color=(1, 1, 0, 1)):
         """
-            Back-project 2D points into 3D and add them to the scene
+        Back-project 2D points into 3D and add them to the scene
         """
+        cam_idx = self._cameras_names.index(cam_name)
 
         color = tuple(color)
 
         points3d = geometry.back_projection(points2d,
-                                             self._frustum_depth,
-                                             self._multi_intrinsics_matrices[cam_idx],
+                                            self._frustum_depth,
+                                            self._multi_cameras_matrices[cam_idx],
                                              self._multi_extrinsics_matrices[cam_idx, :, :])
         points3d = geometry.rotate_points3d(points3d, 180, axis='y')
 
@@ -1980,11 +1582,11 @@ class ExtrinsicsWindow(QWidget):
                                     color=color,
                                     size=5)
 
-        self.clearable_items.append(scatter)
+        self._refreshable_items.append(scatter)
 
-    def add_cube(self, center, size, color=(1, 1, 1, 0.5)):
+    def add_cube(self, center: np.ndarray, size: float | np.ndarray, color=(1, 1, 1, 0.5)):
         """
-            Add a cube centered at "center" with the given "size"
+        Add a cube centered at "center" with the given "size"
         """
 
         color_translucent_50 = np.copy(color)
@@ -2008,19 +1610,19 @@ class ExtrinsicsWindow(QWidget):
                              drawEdges=True,
                              edgeColor=color,
                              color=color_translucent_50)
-        self.clearable_items.append(cube)
+        self._refreshable_items.append(cube)
 
     def add_focal_point(self, color=(1, 1, 1, 1)):
         color = tuple(color)
         focal_scatter = GLScatterPlotItem(pos=self.focal_point, color=color, size=5)
-        self.clearable_items.append(focal_scatter)
+        self._refreshable_items.append(focal_scatter)
 
-    def add_dashed_line(self, start, end, dash_length=5.0, gap_length=5.0, color=(1, 1, 1, 1), width=1, antialias=True):
+    def add_dashed_line(self, start: np.ndarray, end: np.ndarray, dash_length=5.0, gap_length=5.0, color=(1, 1, 1, 1), width=1, antialias=True):
 
         color = tuple(color)
 
-        start = np.array(start, dtype=float)
-        end = np.array(end, dtype=float)
+        start = np.asarray(start, dtype=float)
+        end = np.asarray(end, dtype=float)
         vec = end - start
         total_length = np.linalg.norm(vec)
         if total_length == 0:
@@ -2041,35 +1643,9 @@ class ExtrinsicsWindow(QWidget):
                                          color=color,
                                          width=width,
                                          antialias=antialias)
-            self.clearable_items.append(line_seg)
+            self._refreshable_items.append(line_seg)
 
-    # -------------- Other methods --------------------
-    def _switch_stage(self):
-        for w in self._main_window.secondary_windows:
-            w.on_stage_change(self.calibration_stage_combo.currentIndex())
-
-    def _switch_origin_camera(self):
-        self._origin_camera = int(self.origin_camera_combo.currentIndex())
-        print(f"[ExtrinsicsWindow] Origin camera set to {self._cameras[self._origin_camera]}")
-        self.signal_update_origin_camera.emit(self._origin_camera)
-
-    def file_dialog(self, startpath):
-        dial = QFileDialog(self)
-        dial.setWindowTitle("Choose folder")
-        dial.setFileMode(QFileDialog.FileMode.Directory)
-        dial.setOption(QFileDialog.Option.ShowDirsOnly, False)
-        dial.setViewMode(QFileDialog.ViewMode.Detail)
-        dial.setDirectory(QDir(startpath.resolve()))
-
-        selected_path = None
-        if dial.exec():
-            selected = dial.selectedFiles()
-            if selected:
-                folder = Path(selected[0])
-                if folder.exists():
-                    selected_path = folder
-        return selected_path
-
+    # -------------- Temporary --------------------
     def auto_size(self):
         # Do nothing on the extrinsics window for now
         # TODO - implement this
@@ -2080,33 +1656,21 @@ class ExtrinsicsWindow(QWidget):
         # TODO - implement this
         pass
 
-    def load_all_intrinsics(self):
-        folder = self.file_dialog(self._main_window.mc.full_path.parent)
-        for w in self._main_window.secondary_windows:
-            w.on_load_intrinsics(folder)
+    # -------------- TODO --------------------
+    @Slot(CalibrationData)
+    def handle_payload(self, data: CalibrationData):
+        print(f'[Main Thread] Received {data.camera_name} {data.payload}')
 
-    @Slot(np.ndarray, np.ndarray)
-    def update_poses(self, rvecs, tvecs):
-        if rvecs is not None and tvecs is not None:
-            for n in range(self.nb_cams):
-                self._multi_extrinsics_matrices[n, :, :] = geometry.extrinsics_matrix(rvecs[n], tvecs[n])
-        self._have_extrinsics = True
+        cam_idx = self._cameras_names.index(data.camera_name)
+
+        if isinstance(data.payload, ExtrinsicsPayload):
+            self._multi_extrinsics_matrices[cam_idx, :, :] = geometry.extrinsics_matrix(data.payload.rvec, data.payload.tvec)
+
+        elif isinstance(data.payload, IntrinsicsPayload):
+            self._multi_cameras_matrices[cam_idx, :, :] = data.payload.camera_matrix
+            self._multi_dist_coeffs[cam_idx, :len(data.payload.dist_coeffs)] = data.payload.dist_coeffs
+
         self.update_scene()
-
-    def update_intrinsics(self, cam_idx, camera_matrix, dist_coeffs):
-        # Update internal copy of the intrinsics (for plotting)
-        self._multi_intrinsics_matrices[cam_idx, :, :] = camera_matrix
-        self._multi_dist_coeffs[cam_idx, :len(dist_coeffs)] = dist_coeffs
-
-        # And forward new intrinsics to the multiview worker
-        self.signal_update_intrinsics.emit(cam_idx, camera_matrix, dist_coeffs)
-
-    @Slot(np.ndarray)
-    def update_points(self, points3d):
-        self.add_points3d(points3d, color=(1, 0, 0, 1))
-
-
-##
 
 
 class MainWindow(QMainWindow):
@@ -2150,15 +1714,19 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         self.setWindowTitle('Controls')
-        self.gui_logger = gui_logger
+        self.gui_logger = False
 
         self.mc = mc
+        self.coordinator = CalibrationCoordinator()
+
         self.nb_cams = self.mc.nb_cameras
+        self._cameras_names = tuple(cam.name for cam in self.mc.cameras)     # This order is fixed
 
         # Set cameras info
-        self.sources_shapes = np.vstack([np.array(cam.shape)[:2] for cam in self.mc.cameras])
-        self.bg_colours_list = [f'#{self.mc.colours[cam.name].lstrip("#")}' for cam in self.mc.cameras]
-        self.fg_colours_list = [self.col_white if hex_to_hls(bg)[1] < 60 else self.col_black for bg in self.bg_colours_list]
+        self.sources_shapes = {cam.name: np.array(cam.shape)[:2] for cam in self.mc.cameras}
+        self.cams_colours = {cam.name: f'#{self.mc.colours[cam.name].lstrip("#")}' for cam in self.mc.cameras}
+        self.secondary_colours = {k: self.col_white if hex_to_hls(v)[1] < 60 else self.col_black for k, v in
+                                  self.cams_colours.items()}
 
         # Identify monitors
         self.selected_monitor = None
@@ -2177,15 +1745,15 @@ class MainWindow(QMainWindow):
         self.icon_move_bw = QIcon((resources_path / 'move.png').as_posix())     # TODO make an icon - this is a temp one
 
         # States
-        self.editing_disabled = True
-        self._is_calibrating = False
+        self.is_editing = False
+        self.is_calibrating = False
         self.calibration_stage = 0
 
         self._recording_text = ''
 
         # Refs for the secondary windows
-        self.extrinsics_window = None
-        self.secondary_windows = []
+        self.opengl_window = None
+        self.video_windows = []
 
         # Other things to init
         self._current_buffers = None
@@ -2194,24 +1762,25 @@ class MainWindow(QMainWindow):
         # Build the gui
         self.init_gui()
 
-        self.update_monitors_buttons()
-
         # Start the secondary windows
         self._start_secondary_windows()
 
-        # Setup MainWindow secondary update
-        self.timer_update = QTimer(self)
-        self.timer_update.timeout.connect(self._update_main)
-        self.timer_update.start(100)
+        # Setup MainWindow update
+        self.timer_slow = QTimer(self)
+        self.timer_slow.timeout.connect(self._update_main)
+        self.timer_slow.start(200)
 
         self._mem_baseline = psutil.virtual_memory().percent
+
+    @property
+    def cameras_names(self):
+        # Return a copy of the tuple, as a list
+        return list(self._cameras_names)
 
     def init_gui(self):
         self.MAIN_LAYOUT = QVBoxLayout()
         self.MAIN_LAYOUT.setContentsMargins(5, 5, 5, 5)
         self.MAIN_LAYOUT.setSpacing(5)
-        # self.setStyleSheet('QGroupBox { border: 1px solid #807f7f7f; border-radius: 5px; margin-top: 0.5em;} '
-                           # 'QGroupBox::title { subcontrol-origin: margin; left: 3px; padding: 0 3 3 3;}')
 
         central_widget = QWidget()
         central_widget.setLayout(self.MAIN_LAYOUT)
@@ -2228,9 +1797,8 @@ class MainWindow(QMainWindow):
 
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(['Recording', 'Calibration'])
-        self.mode_combo.currentIndexChanged.connect(self._toggle_calibrate)
+        self.mode_combo.currentIndexChanged.connect(self._toggle_calib_record)
         toolbar_layout.addWidget(self.mode_combo, 1)    # 1 unit
-
         toolbar_layout.addStretch(2)    # spacing of 2 units
 
         # Exit button
@@ -2240,7 +1808,8 @@ class MainWindow(QMainWindow):
         self.button_exit.setStyleSheet(f"background-color: {self.col_red}; color: {self.col_white};")
         toolbar_layout.addWidget(self.button_exit)
 
-        self.MAIN_LAYOUT.addWidget(toolbar)  # End toolbar
+        self.MAIN_LAYOUT.addWidget(toolbar)
+        # End toolbar
 
         # Main content
         maincontent = QWidget()
@@ -2405,7 +1974,6 @@ class MainWindow(QMainWindow):
 
         # Status bar
         statusbar = QStatusBar()
-        # statusbar.setStyleSheet(f"background-color: {'#157f7f7f'}; color: {'#ff7f7f7f'};")
         self.setStatusBar(statusbar)
 
         mem_pressure_label = QLabel('Memory pressure: ')
@@ -2421,6 +1989,10 @@ class MainWindow(QMainWindow):
         self.frames_saved_label.setStyleSheet(f"background-color: {'#00000000'}")
         statusbar.addPermanentWidget(self.frames_saved_label)
 
+        # Now that the UI is ready, refresh the monitors buttons
+        self._update_monitors_buttons()
+
+    #  ============= Qt method overrides =============
     def closeEvent(self, event):
         event.ignore()
         self.quit()
@@ -2439,10 +2011,11 @@ class MainWindow(QMainWindow):
         QApplication.instance().quit()
         sys.exit()
 
-    def _toggle_calibrate(self):
+    #  ============= General toggles =============
+    def _toggle_calib_record(self):
 
-        if self._is_calibrating and self.mode_combo.currentIndex() == 0:
-            self._is_calibrating = False
+        if self.is_calibrating and self.mode_combo.currentIndex() == 0:
+            self.is_calibrating = False
 
             self._stop_secondary_windows()
 
@@ -2452,8 +2025,8 @@ class MainWindow(QMainWindow):
 
             self._start_secondary_windows()
 
-        elif not self._is_calibrating and self.mode_combo.currentIndex() == 1:
-            self._is_calibrating = True
+        elif not self.is_calibrating and self.mode_combo.currentIndex() == 1:
+            self.is_calibrating = True
 
             self._stop_secondary_windows()
 
@@ -2467,34 +2040,19 @@ class MainWindow(QMainWindow):
     def _toggle_text_editing(self, override=None):
 
         if override is None:
-            override = not self.editing_disabled
+            override = self.is_editing
 
-        if self.editing_disabled and override is True:
+        if not self.is_editing and override is True:
             self.acq_name_textbox.setDisabled(False)
             self.acq_name_edit_btn.setText('Set')
-            self.editing_disabled = False
+            self.is_editing = False
 
-        elif not self.editing_disabled and override is False:
+        elif self.is_editing and override is False:
             self.acq_name_textbox.setDisabled(True)
             self.acq_name_edit_btn.setText('Edit')
             self.mc.session_name = self.acq_name_textbox.text()
-            self.editing_disabled = True
-
             self.save_dir_current.setText(f'{self.mc.full_path.resolve()}')
-
-    def open_session_folder(self):
-
-        path = self.mc.full_path.resolve()
-
-        try:
-            if 'Linux' in platform.system():
-                subprocess.Popen(['xdg-open', path])
-            elif 'Windows' in platform.system():
-                os.startfile(path)
-            elif 'Darwin' in platform.system():
-                subprocess.Popen(['open', path])
-        except:
-            pass
+            self.is_editing = True
 
     def _toggle_acquisition(self, override=None):
 
@@ -2503,57 +2061,31 @@ class MainWindow(QMainWindow):
 
         # If we're currently acquiring, then we should stop
         if self.mc.acquiring and override is False:
-
             self._toggle_recording(False)
             self.mc.off()
-
             # Reset Acquisition folder name
             self.acq_name_textbox.setText('')
             self.save_dir_current.setText('')
-
             self.button_acquisition.setText("Acquisition off")
             self.button_acquisition.setIcon(self.icon_capture_bw)
             self.button_snapshot.setDisabled(True)
             self.button_recpause.setDisabled(True)
-
             # Re-enable the framerate sliders (only in case of hardware-triggered cameras)
-            if not self._is_calibrating and self.mc.triggered:
-                for w in self.secondary_windows:
+            if not self.is_calibrating and self.mc.triggered:
+                for w in self.video_windows:
                     w.camera_controls_sliders['framerate'].setDisabled(True)
 
         elif not self.mc.acquiring and override is True:
             self.mc.on()
-
-            if not self._is_calibrating and self.mc.triggered:
-                for w in self.secondary_windows:
+            if not self.is_calibrating and self.mc.triggered:
+                for w in self.video_windows:
                     w.camera_controls_sliders['framerate'].setDisabled(True)
-
             self.save_dir_current.setText(f'{self.mc.full_path.resolve()}')
-
             self.button_acquisition.setText("Acquiring")
             self.button_acquisition.setIcon(self.icon_capture)
             self.button_snapshot.setDisabled(False)
-
-            if not self._is_calibrating:
+            if not self.is_calibrating:
                 self.button_recpause.setDisabled(False)
-
-    def _take_snapshot(self):
-        """
-            Takes an instantaneous snapshot from all cameras
-        """
-
-        now = datetime.now().strftime('%y%m%d-%H%M%S')
-
-        if self.mc.acquiring:
-
-            arrays = self.mc.get_current_framebuffer()
-
-            for i, arr in enumerate(arrays):
-                if len(arr.shape) == 3:
-                    img = Image.fromarray(arr, mode='RGB')
-                else:
-                    img = Image.fromarray(arr, mode='L')
-                img.save(self.mc.full_path.resolve() / f"snapshot_{now}_{self.mc.cameras[i].name}.bmp")
 
     def _toggle_recording(self, override=None):
 
@@ -2574,24 +2106,39 @@ class MainWindow(QMainWindow):
                 self.button_recpause.setText("Recording... (Space to toggle)")
                 self.button_recpause.setIcon(self.icon_rec_on)
 
-    def nothing(self):
-        print('Nothing')
-        pass
+    def _take_snapshot(self):
+        """
+        Takes an instantaneous snapshot from all cameras
+        """
+        now = datetime.now().strftime('%y%m%d-%H%M%S')
+        if self.mc.acquiring:
+            arrays = self.mc.get_current_framebuffer()
+            for i, arr in enumerate(arrays):
+                img = Image.fromarray(arr, mode='RGB' if arr.ndim == 3 else 'L')
+                img.save(self.mc.full_path.resolve() / f"snapshot_{now}_{self.mc.cameras[i].name}.bmp")
+
+    def open_session_folder(self):
+        path = self.mc.full_path.resolve()
+        try:
+            if 'Linux' in platform.system():
+                subprocess.Popen(['xdg-open', path])
+            elif 'Windows' in platform.system():
+                os.startfile(path)
+            elif 'Darwin' in platform.system():
+                subprocess.Popen(['open', path])
+        except:
+            pass
 
     def screen_update(self, val, event):
-
         # Get current monitor coordinates
         prev_monitor = self.selected_monitor
-
         # Get current mouse cursor position in relation to window origin
         prev_mouse_pos = QCursor.pos() - self.geometry().topLeft()
 
         # Set new monitor
         self.set_monitor(val)
-        self.update_monitors_buttons()
-
+        self._update_monitors_buttons()
         new_monitor = self.selected_monitor
-
         # Move windows by the difference
         for win in self.visible_windows(include_main=True):
             geo = win.geometry()
@@ -2659,7 +2206,7 @@ class MainWindow(QMainWindow):
 
         nb_positions = len(positions)
 
-        idx = len(self.secondary_windows)
+        idx = len(self.video_windows)
         if idx <= nb_positions:
             pos = positions[idx]
         else:  # Start over to first position
@@ -2697,7 +2244,7 @@ class MainWindow(QMainWindow):
             case 'se':
                 self.move(monitor.x + monitor.width - w - 1, monitor.y + monitor.height - h - VideoWindowBase.TASKBAR_H)
 
-    def update_monitors_buttons(self):
+    def _update_monitors_buttons(self):
         self.monitors_buttons_scene.clear()
 
         for i, m in enumerate(self._monitors):
@@ -2730,54 +2277,51 @@ class MainWindow(QMainWindow):
             self.selected_monitor = self._monitors[0]
 
     def visible_windows(self, include_main=False):
-        windows = [w for w in self.secondary_windows if w.isVisible()]
-        if self.extrinsics_window is not None:
-            windows += [self.extrinsics_window]
+        windows = [w for w in self.video_windows if w.isVisible()]
+        if self.opengl_window:
+            windows += [self.opengl_window]
         if include_main:
             windows += [self]
         return windows
 
     def _start_secondary_windows(self):
-        if self._is_calibrating:
+        if self.is_calibrating:
             # Create 3D visualization window
-            self.extrinsics_window = ExtrinsicsWindow(self)
-            self.extrinsics_window.setWindowTitle("3D Calibration View")
-            self.extrinsics_window.show()
+            self.opengl_window = MultiviewCalibWindow(self)
+            self.opengl_window.setWindowTitle("3D Calibration View")
+            self.opengl_window.show()
 
         for i, cam in enumerate(self.mc.cameras):
-            if self._is_calibrating:
-                w = VideoWindowCalib(main_window_ref=self, idx=cam.idx)
+            if self.is_calibrating:
+                w = MonocularCalibWindow(cam, self)
             else:
-                w = VideoWindowRec(main_window_ref=self, idx=cam.idx)
-
-            self.secondary_windows.append(w)
+                w = RecordingWindow(cam, self)
+            self.video_windows.append(w)
             self.secondary_windows_visibility_buttons[i].setText(f" {w.name.title()} camera")
-            self.secondary_windows_visibility_buttons[i].setStyleSheet(f"border-radius: 5px; padding: 0 10 0 10; color: {w.colour_2}; background-color: {w.colour};")
+            self.secondary_windows_visibility_buttons[i].setStyleSheet(f"border-radius: 5px; padding: 0 10 0 10; color: {w.secondary_colour}; background-color: {w.colour};")
             self.secondary_windows_visibility_buttons[i].clicked.connect(w.toggle_visibility)
             self.secondary_windows_visibility_buttons[i].setChecked(True)
-
             w.show()
-
         self.cascade_windows()
 
     def _stop_secondary_windows(self):
-        for w in self.secondary_windows:
+        for w in self.video_windows:
             w.worker_thread.quit()
             w.worker_thread.wait()
             w._force_destroy = True
             w.close()
 
-        if self.extrinsics_window is not None:
-            self.extrinsics_window.worker_thread.quit()
-            self.extrinsics_window.worker_thread.wait()
+        if self.opengl_window:
+            self.opengl_window.worker_thread.quit()
+            self.opengl_window.worker_thread.wait()
 
-            self.extrinsics_window.timer_update.stop()
+            self.opengl_window.timer_slow.stop()
 
-            self.extrinsics_window._force_destroy = True
-            self.extrinsics_window.close()
-            self.extrinsics_window = None
+            self.opengl_window._force_destroy = True
+            self.opengl_window.close()
+            self.opengl_window = None
 
-        self.secondary_windows.clear()
+        self.video_windows.clear()
 
     def _update_main(self):
 
