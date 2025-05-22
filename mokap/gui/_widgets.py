@@ -217,11 +217,8 @@ class VideoWindowBase(SecondaryWindowBase):
         self._source_framerate = self._camera.framerate
         self._cam_colour = self._mainwindow.cams_colours[self._cam_name]
         self._secondary_colour = self._mainwindow.secondary_colours[self._cam_name]
-
         self._fmt = self._camera.pixel_format
-        self._source_shape = self._main_window.sources_shapes[self.idx]
-        self._bg_colour = self._main_window.bg_colours_list[self.idx]
-        self._fg_colour = self._main_window.fg_colours_list[self.idx]
+
         # Qt things
         self.setWindowTitle(f'{self._camera.name.title()} camera')
 
@@ -543,8 +540,7 @@ class VideoWindowBase(SecondaryWindowBase):
         if self._mainwindow.mc.acquiring:
             arr = self._mainwindow.mc.get_current_framebuffer(self.idx)
             if arr is not None:
-                if self._fmt == "BayerBG8":#len(self.source_shape) == 2:
-                    # Using cv for this is faster than any way using numpy (?)
+                if self._fmt == "BayerBG8":
                     self._frame_buffer = cv2.cvtColor(arr, cv2.COLOR_BayerBG2BGR, dst=self._frame_buffer)
                 elif self._fmt == "Mono8":
                     self._frame_buffer = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR, dst=self._frame_buffer)
