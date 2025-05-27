@@ -5,7 +5,8 @@ import mokap.utils as utils
 import os
 from dotenv import load_dotenv
 import pypylon.pylon as py
-from typing import NoReturn, Union, List
+import pypylon.genicam as geni
+from typing import NoReturn, Union, List, Any
 from subprocess import  check_output
 #import PySpin
 #os.environ['SPINNAKER_GENTL64_CTI'] = '/Applications/Spinnaker/lib/spinnaker-gentl/Spinnaker_GenTL.cti'
@@ -295,6 +296,8 @@ class BaslerCamera:
         self._connected = False
         self._is_grabbing = False
 
+        self._node_map = None
+
     def __repr__(self):
         if self._connected:
             v = 'Virtual ' if self._is_virtual else ''
@@ -319,6 +322,19 @@ class BaslerCamera:
             # self.ptr.Width = self._width
             # self.ptr.Height = self._height
 
+    def set_value(self, node_name: str, value: Any):
+
+        try:
+            node = self._node_map.GetNode(node_name)
+            if geni.IsImplemented(node) and geni.IsWritable(node):  # TODO use these checks everywhere?
+                if isinstance(value, str):
+                    node.FromString(value.title())
+                else:
+                    node.Value = value
+        except geni.LogicalErrorException:
+            # print(f'{node_name} not found')
+            pass
+
     def connect(self, cam_ptr=None) -> NoReturn:
 
         available_idx = len(BaslerCamera.instancied_cams)
@@ -339,6 +355,8 @@ class BaslerCamera:
         self.ptr.Open()
         self._serial = self.dptr.GetSerialNumber()
 
+        self._node_map = self.ptr.GetNodeMap()
+
         if '0815-0' in self.serial:
             self._is_virtual = True
             self._idx = max(available_idx, int(self.serial[-1]))
@@ -349,40 +367,45 @@ class BaslerCamera:
         if self._name in BaslerCamera.instancied_cams:
             self._name += f"_{self._idx}"
 
-        self.ptr.UserSetSelector.SetValue("Default")
+        self.set_value('UserSetSelector', 'Default')
         self.ptr.UserSetLoad.Execute()
-        self.ptr.AcquisitionMode.Value = 'Continuous'
-        self.ptr.ExposureMode = 'Timed'
 
-        self.ptr.DeviceLinkThroughputLimitMode.SetValue('On')
+        self.set_value('AcquisitionMode', 'Continuous')
+        self.set_value('ExposureMode', 'Timed')
+        self.set_value('DeviceLinkThroughputLimitMode', 'On')
+
         # 342 Mbps is a bit less than the maximum, but things are more stable like this
-        self.ptr.DeviceLinkThroughputLimit.SetValue(342000000)
+        self.set_value('DeviceLinkThroughputLimit', 342000000)
 
         if self._probe_frame_shape is None:
             probe_frame = self.ptr.GrabOne(100)
             self._probe_frame_shape = probe_frame.GetArray().shape
 
         if not self._is_virtual:
+            self.set_value('ExposureTimeMode', 'Standard')
+            self.set_value('AutoFunctionROIUseBrightness', False)
+            self.set_value('BalanceWhiteAuto', 'Off')
+            self.set_value('BlackLevelAuto', 'Off')
+            self.set_value('ExposureAuto', 'Off')
+            self.set_value('GainAuto', 'Off')
+            self.set_value('GammaMode', 'User')
 
-            self.ptr.ExposureTimeMode.SetValue('Standard')
-            self.ptr.ExposureAuto = 'Off'
-            self.ptr.GainAuto = 'Off'
-            self.ptr.TriggerDelay.Value = 0.0
-            self.ptr.LineDebouncerTime.Value = 5.0
-            self.ptr.MaxNumBuffer = 20
+            self.set_value('TriggerDelay', 0.0)
+            self.set_value('LineDebouncerTime', 5.0)
+            self.set_value('MaxNumBuffer', 20)
 
-            self.ptr.TriggerSelector = "FrameStart"
+            self.set_value('TriggerSelector', 'FrameStart')
 
             if self.triggered:
-                self.ptr.LineSelector = "Line4"
-                self.ptr.LineMode = "Input"
-                self.ptr.TriggerMode = "On"
-                self.ptr.TriggerSource = "Line4"
-                self.ptr.TriggerActivation.Value = 'RisingEdge'
-                self.ptr.AcquisitionFrameRateEnable.SetValue(False)
+                self.set_value('LineSelector', 'Line4')
+                self.set_value('LineMode', 'Input')
+                self.set_value('TriggerMode', 'On')
+                self.set_value('TriggerSource', 'Line4')
+                self.set_value('TriggerActivation', 'RisingEdge')
+                self.set_value('AcquisitionFrameRateEnable', False)
             else:
-                self.ptr.TriggerMode = "Off"
-                self.ptr.AcquisitionFrameRateEnable.SetValue(True)
+                self.set_value('TriggerMode', 'Off')
+                self.set_value('AcquisitionFrameRateEnable', True)
 
         self._set_roi()
 
@@ -429,6 +452,7 @@ class BaslerCamera:
                 self._is_grabbing = False
         else:
             print(f"{self.name.title()} camera is not connected")
+
     @property
     def ptr(self) -> py.InstantCamera:
         return self._ptr
