@@ -2,6 +2,7 @@ import numpy as np
 from scipy.optimize import least_squares
 from alive_progress import alive_bar
 from mokap.calibration import multiview
+# from mokap.calibration import multiview_jax as multiview
 from mokap.utils import CallbackOutputStream
 
 
@@ -112,7 +113,37 @@ def unflatten_params(params, nb_cams, simple_focal=True, simple_distortion=False
 
     return n_camera_matrices, n_distortion_coeffs, m_rvecs, m_tvecs
 
-# params, points_3d_th = x0, detector.points3d
+
+def intrinsics_bounds(simple_focal: bool, simple_distortion: bool, complex_distortion: bool):
+    # focal and principal point
+    # if simple_focal is True, we only optimise for [f, cx, cy] else [fx, fy, cx, cy]
+    if simple_focal:
+        intr_lo = [0.0, 0.0, 0.0]
+        # intr_lo = [-np.inf, -np.inf, -np.inf]
+        intr_hi = [np.inf, np.inf, np.inf]
+    else:
+        intr_lo = [0.0, 0.0, 0.0, 0.0]
+        # intr_lo = [-np.inf, -np.inf, -np.inf, -np.inf]
+        intr_hi = [np.inf, np.inf, np.inf, np.inf]
+
+    # distortion
+    if simple_distortion and not complex_distortion:
+        # k1, k2, p1, p2  (4)
+        intr_lo += [-0.5, -0.5, -0.1, -0.1]
+        intr_hi += [ 0.5,  0.5,  0.1,  0.1]
+    elif complex_distortion and not simple_distortion:
+        # k1, k2, p1, p2, k3, k4, k5, k6  (8)
+        intr_lo += [-0.5] * 2 + [-0.1, -0.1] + [-0.5] * 4
+        intr_hi += [ 0.5] * 2 + [ 0.1,  0.1] + [ 0.5] * 4
+    else:
+        # default 5-coef: k1, k2, p1, p2, k3
+        intr_lo += [-0.5, -0.5, -0.1, -0.1, -0.5]
+        intr_hi += [ 0.5,  0.5,  0.1,  0.1,  0.5]
+
+    return np.array(intr_lo), np.array(intr_hi)
+
+
+# params, points_3d_th = x0, calib.dt.points3d
 def cost_func(params, points_2d, points_ids, points_3d_th, weight_2d_reproj=1.0, weight_3d_consistency=1.0, simple_focal=True, simple_distortion=False, complex_distortion=False, interpolate=False):
     N = len(points_2d)
     M = len(points_2d[0])
@@ -142,6 +173,7 @@ def cost_func(params, points_2d, points_ids, points_3d_th, weight_2d_reproj=1.0,
             if interpolate:
                 points3d_svd, points3d_ids = multiview.interpolate3d(points3d_svd, points3d_ids, points_3d_th)
 
+            # (points2d, points2d_ids, points3d_world, points3d_ids, points3d_theor, n_rvecs_world, n_tvecs_world, n_cam_mats, n_dist_coeffs) = (this_m_points2d, this_m_points2d_ids, points3d_svd, points3d_ids, points_3d_th, rvecs, tvecs, camera_matrices, distortion_coeffs)
             errors_reproj, errors_consistency = multiview.compute_3d_errors(this_m_points2d,
                                                                             this_m_points2d_ids,
                                                                             points3d_svd,
@@ -168,12 +200,20 @@ def run_bundle_adjustment(camera_matrices, distortion_coeffs, rvecs, tvecs, poin
     # Flatten all the optimisable variables into a 1-D array
     x0 = flatten_params(camera_matrices, distortion_coeffs, rvecs, tvecs, simple_focal=simple_focal, simple_distortion=simple_distortion, complex_distortion=complex_distortion)
 
+    # Set bounds on intrinsics parameters
+    lo_intr, hi_intr = intrinsics_bounds(simple_focal=simple_focal, simple_distortion=simple_distortion, complex_distortion=complex_distortion)
+    lb_intr = np.tile(lo_intr, nb_cams)
+    ub_intr = np.tile(hi_intr, nb_cams)
+    lb = np.concatenate([lb_intr, -np.inf * np.ones(x0.size - lb_intr.size)])
+    ub = np.concatenate([ub_intr, np.inf * np.ones(x0.size - ub_intr.size)])
+
     # Note: Points 2D, points 3D and points IDs are fixed - We do not optimise those!
 
-    with alive_bar(title='Bundle adjustment...', force_tty=True) as bar:
+    with alive_bar(title='Bundle adjustment...', length=20, force_tty=True) as bar:
         with CallbackOutputStream(bar, keep_stdout=False):
             result = least_squares(cost_func, x0,       # x0 contains all the optimisable variables
                                    verbose=2,
+                                   bounds=(lb, ub),
                                    x_scale='jac',
                                    ftol=1e-8,
                                    method='trf',
@@ -186,6 +226,6 @@ def run_bundle_adjustment(camera_matrices, distortion_coeffs, rvecs, tvecs, poin
                                          simple_focal, simple_distortion, complex_distortion,
                                          interpolate))
 
-    camera_matrices_opt, distortion_coeffs_opt, rvecs_opt, tvecs_opt = unflatten_params(result.x, nb_cams=nb_cams, simple_focal=simple_focal, simple_distortion=simple_distortion)
+    camera_matrices_opt, distortion_coeffs_opt, rvecs_opt, tvecs_opt = unflatten_params(result.x, nb_cams=nb_cams, simple_focal=simple_focal, simple_distortion=simple_distortion, complex_distortion=complex_distortion)
 
     return camera_matrices_opt, distortion_coeffs_opt, rvecs_opt, tvecs_opt

@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QStatusBar, QSlider, Q
 import pyqtgraph as pg
 from pyqtgraph.opengl import GLViewWidget, GLGridItem, GLLinePlotItem, GLScatterPlotItem, MeshData, GLMeshItem
 from mokap.utils import geometry
+# from mokap.utils import geometry_jax as geometry
 from mokap.calibration import monocular
 from mokap.utils import hex_to_rgb, hex_to_hls, pretty_size, generate_charuco
 from .workers import *
@@ -1474,18 +1475,18 @@ class MultiviewCalibWindow(SecondaryWindowBase):
         color_translucent_50 = tuple(color_translucent_50)
 
         # Apply the 180° rotation around Y axis so the rig appears the right way up
-        ext_mat_rot = geometry.rotate_extrinsics_matrix(self._multi_extrinsics_matrices[cam_idx, :, :], 180, axis='y',)
+        ext_mat_rot = geometry_jax.rotate_extrinsics_matrix(self._multi_extrinsics_matrices[cam_idx, :, :], 180, axis='y',)
 
         # Add camera center as a point
         center_scatter = GLScatterPlotItem(pos=ext_mat_rot[:3, 3].reshape(1, -1), color=color, size=10)
         self._refreshable_items.append(center_scatter)
 
         # Back-project the 2D image corners to 3D
-        frustum_points3d = geometry.back_projection(self._frustums_points2d[cam_idx],
+        frustum_points3d = geometry_jax.back_projection(self._frustums_points2d[cam_idx],
                                                     self._frustum_depth,
                                                     self._multi_cameras_matrices[cam_idx],
                                                      self._multi_extrinsics_matrices[cam_idx, :, :])    # we use the non-rotated points, and rotate below
-        frustum_points3d = geometry.rotate_points3d(frustum_points3d, 180, axis='y')
+        frustum_points3d = geometry_jax.rotate_points3d(frustum_points3d, 180, axis='y')
 
         # Draw the frustum planes
         frustum_meshdata = MeshData(vertexes=frustum_points3d, faces=self._frustum_faces)
@@ -1507,11 +1508,11 @@ class MultiviewCalibWindow(SecondaryWindowBase):
             self._refreshable_items.append(line)
 
         # Compute and draw the optical axis (from camera center toward the image center)
-        centre3d = geometry.back_projection(self._centres_points2d[cam_idx],
+        centre3d = geometry_jax.back_projection(self._centres_points2d[cam_idx],
                                             self._frustum_depth,
                                             self._multi_cameras_matrices[cam_idx],
                                              self._multi_extrinsics_matrices[cam_idx, :, :])         # we use the non-rotated points, and rotate below
-        centre3d = geometry.rotate_points3d(centre3d, 180, axis='y')
+        centre3d = geometry_jax.rotate_points3d(centre3d, 180, axis='y')
 
         self.add_dashed_line(ext_mat_rot[:3, 3], centre3d,
                              dash_length=2.0,
@@ -1531,7 +1532,7 @@ class MultiviewCalibWindow(SecondaryWindowBase):
         self.optical_axes[cam_idx] = axis_vec
 
         prev_focal = np.copy(self.focal_point)
-        self.focal_point[0, :] = geometry.focal_point_3d(self.cam_positions, self.optical_axes)
+        self.focal_point[0, :] = geometry_jax.focal_point_3d(self.cam_positions, self.optical_axes)
         self.grid.translate(*(self.focal_point - prev_focal)[0])
 
     def add_points3d(self, points3d: np.ndarray, errors=None, color=(0, 0, 0, 1)):
@@ -1542,7 +1543,7 @@ class MultiviewCalibWindow(SecondaryWindowBase):
 
         color = tuple(color)
 
-        points3d_rot = geometry.rotate_points3d(points3d, 180, axis='y')
+        points3d_rot = geometry_jax.rotate_points3d(points3d, 180, axis='y')
 
         if errors:
             # TODO - use a fixed scale from green to red instead
@@ -1566,11 +1567,11 @@ class MultiviewCalibWindow(SecondaryWindowBase):
 
         color = tuple(color)
 
-        points3d = geometry.back_projection(points2d,
+        points3d = geometry_jax.back_projection(points2d,
                                             self._frustum_depth,
                                             self._multi_cameras_matrices[cam_idx],
                                              self._multi_extrinsics_matrices[cam_idx, :, :])
-        points3d = geometry.rotate_points3d(points3d, 180, axis='y')
+        points3d = geometry_jax.rotate_points3d(points3d, 180, axis='y')
 
         scatter = GLScatterPlotItem(pos=points3d,
                                     color=color,
@@ -1658,7 +1659,7 @@ class MultiviewCalibWindow(SecondaryWindowBase):
         cam_idx = self._cameras_names.index(data.camera_name)
 
         if isinstance(data.payload, ExtrinsicsPayload):
-            self._multi_extrinsics_matrices[cam_idx, :, :] = geometry.extrinsics_matrix(data.payload.rvec, data.payload.tvec)
+            self._multi_extrinsics_matrices[cam_idx, :, :] = geometry_jax.extrinsics_matrix(data.payload.rvec, data.payload.tvec)
 
         elif isinstance(data.payload, IntrinsicsPayload):
             self._multi_cameras_matrices[cam_idx, :, :] = data.payload.camera_matrix

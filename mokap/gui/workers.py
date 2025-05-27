@@ -151,8 +151,8 @@ class MonocularWorker(CalibrationProcessingWorker):
                 r = self.monocular_tool.auto_compute_intrinsics(
                     coverage_threshold=coverage_threshold,
                     stack_length_threshold=stack_length_threshold,
-                    simple_focal=True,
-                    simple_distortion=True,
+                    simple_focal=False,
+                    simple_distortion=False,
                     complex_distortion=False
                 )
                 self.blocking.emit(False)

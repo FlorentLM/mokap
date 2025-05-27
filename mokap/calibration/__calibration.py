@@ -7,6 +7,9 @@ from scipy.spatial.distance import cdist
 from mokap.utils import geometry
 from mokap.utils.datatypes import BoardParams
 from mokap.calibration import monocular, multiview
+# from mokap.calibration import monocular_jax as monocular
+# from mokap.calibration import multiview_jax as multiview
+# TODO: use JAX here too
 from typing import Optional
 from numpy.typing import ArrayLike
 
