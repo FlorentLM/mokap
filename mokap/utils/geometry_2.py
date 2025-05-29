@@ -2,9 +2,9 @@ import numpy as np
 from functools import reduce
 from scipy.optimize import minimize
 from typing import List, Tuple
-from jax import vmap
 import jax.numpy as jnp
 from mokap.utils import geometry_jax
+
 
 def filter_outliers(values, strong=False):
 
@@ -146,48 +146,44 @@ def common_points(
 
 
 def triangulation(
-        points2d:           List[np.ndarray],
-        points_ids:         List[np.ndarray],
+        points2d:           jnp.ndarray,
+        visibility_mask:    jnp.ndarray,
         rvecs_world:        np.ndarray,
         tvecs_world:        np.ndarray,
         camera_matrices:    np.ndarray,
-        dist_coeffs:        np.ndarray
+        dist_coeffs:        np.ndarray,
 ) -> Tuple[jnp.ndarray, np.ndarray]:
     """
-    Triangulate the M points common to C cameras
+    Triangulate points 2D seen by C cameras
 
     Args:
-        points2d: list containing N arrays of points coordinates, each of shape (?, 2)
-        points_ids: list containing N arrays of points IDs, each of shape (?, )
+        points2d: points 2D detected by the C cameras (C, N, 2)
+        visibility_mask: visibility mask for points 2D (C, N)
         rvecs_world: C rotation vectors (C, 3)
         tvecs_world: C translation vectors (C, 3)
         camera_matrices: C camera matrices (C, 3, 3)
-        dist_coeffs: C distortion coefficients (C, 4–8)
+        dist_coeffs: C distortion coefficients (C, ≤8)
 
     Returns:
-        points3d: 3D coordinates of the M points that could be triangulated (M, 3)
-        common_ids: IDs of the M points that could be triangulated (M,)
+        points3d: N 3D coordinates (N, 3)
+
     """
-
-    # Find the M points common to all cameras
-    common_pts2d, common_ids = common_points(points2d, points_ids) # lsit of length C, each (M, 2)
-
-    common_pts2d_arr = jnp.stack(common_pts2d, axis=0)      # (C, M, 2)
-    camera_matrices = jnp.asarray(camera_matrices)          # (C, 3, 3)
-    dist_coeffs = jnp.asarray(dist_coeffs)                  # (C, 4-8)
 
     rvecs_world = jnp.asarray(rvecs_world)
     tvecs_world = jnp.asarray(tvecs_world)
+    camera_matrices = jnp.asarray(camera_matrices)
+    dist_coeffs = jnp.asarray(dist_coeffs)
 
-    pts2d_ud = geometry_jax.undistort_multiple(common_pts2d_arr, camera_matrices, dist_coeffs)
+    # this is converted back to a float array because the triangulate_svd accepts actual weights
+    # we can multiply the visibility weights by a confidence score
+    visibility_mask = visibility_mask.astype(jnp.float32)
 
-    E_all = geometry_jax.extrinsics_matrix(rvecs_world, tvecs_world)  # (C, 4, 4)
+    # Recover camera-centric extrinsics matrices and compute the projection matrices
+    E_all = geometry_jax.extrinsics_matrix(rvecs_world, tvecs_world)    # (C, 4, 4)
+    E_inv_all = geometry_jax.invert_extrinsics_matrix(E_all)            # (C, 4, 4)
+    P_all = geometry_jax.projection_matrix(camera_matrices, E_inv_all)  # (C, 3, 4)
 
-    # world-to-camera -> camera-to-world
-    E_all_inv = geometry_jax.invert_extrinsics_matrix(E_all)  # (C, 4, 4)
+    pts2d_ud = geometry_jax.undistort_multiple(points2d, camera_matrices, dist_coeffs)
+    pts3d = geometry_jax.triangulate_svd(pts2d_ud, P_all, weights=visibility_mask)  # (N, 3)
 
-    P_all = geometry_jax.projection_matrix(camera_matrices, E_all_inv)  # (C, 3, 4)
-
-    pts3d = geometry_jax.triangulate_svd(pts2d_ud, P_all)   # (M, 3)
-
-    return pts3d, common_ids
+    return pts3d

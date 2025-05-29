@@ -1,3 +1,7 @@
+import os
+os.environ['JAX_LOG_COMPILES'] = '1'
+from jax import config
+config.update("jax_log_compiles", True)
 import jax
 import jax.numpy as jnp
 from typing import Union, Iterable, Optional, Tuple
@@ -22,7 +26,7 @@ def pad_dist_coeffs(dist_coefs: jnp.ndarray) -> jnp.ndarray:
     Simple utility to always return 8 distortion coefficients
 
     Args:
-        dist_coeffs: distortion coefficients (4-8,)
+        dist_coeffs: distortion coefficients (≤8,)
      Returns:
         coefs8:  distortion coefficients but padded to (8,)
 
@@ -45,7 +49,7 @@ def distortion(
     Args:
         x: x coordinates
         y: y coordinates
-        dist_coeffs: distortion coefficients (4-8,)
+        dist_coeffs: distortion coefficients (≤8,)
 
     Returns:
         radial: radial distortion
@@ -99,7 +103,7 @@ def rodrigues(rvec: jnp.ndarray) -> jnp.ndarray:
         jnp.stack([-ky, kx, zeros], axis=-1),
     ], axis=-2)     # (..., 3, 3)
 
-    # now apply Rodrigues: R = I + sinθ o K + (1 − cosθ) o K @ K
+    # now apply Rodrigues: R = I + sinθ . K + (1 − cosθ) . K @ K
     # sinθ and cosθ need a singleton matrix dimension for broadcasting
     sin_t = jnp.sin(theta)[..., None]  # (..., 1, 1)
     cos_t = jnp.cos(theta)[..., None]  # (..., 1, 1)
@@ -157,7 +161,7 @@ def project_points(
         rvec: rotation vector (3,)
         tvec: translation vector (3,)
         camera_matrix: camera matrix (3, 3)
-        dist_coeffs: distortion coefficients (4–8,)
+        dist_coeffs: distortion coefficients (≤8,)
 
     Returns:
         image_points: same leading dims as object_points but last dim 2 (..., 2)
@@ -177,7 +181,7 @@ def project_points(
     return jnp.stack([fx * x_d + cx, fy * y_d + cy], axis=-1)
 
 
-# Vectorized version for N cameras
+# Vectorized version for C cameras
 #    object_points is shared among cameras so in_axes[0] is None
 #    the other camera‐specific args vary
 project_multiple = jax.jit(
@@ -197,8 +201,8 @@ def undistort_points(
     points2d:       jnp.ndarray,
     camera_matrix:  jnp.ndarray,
     dist_coeffs:    jnp.ndarray,
-    R:              jnp.ndarray,
-    P:              jnp.ndarray,
+    R:              Optional[jnp.ndarray] = None,
+    P:              Optional[jnp.ndarray] = None,
     max_iter:       int = 5
 ) -> jnp.ndarray:
     """
@@ -207,7 +211,7 @@ def undistort_points(
     Args:
         points2d: any leading batch dims but last dim 2 (..., 2)
         camera_matrix: camera matrix (3, 3)
-        dist_coeffs: distortion coefficients (4–8,)
+        dist_coeffs: distortion coefficients (≤8,)
         R: rectification (usually identity matrix) (3, 3)
         P: new projection (usually camera matrix) (3, 3)
         max_iter: maximum number of iterations, default 5 (same as OpenCV) is typically enough
@@ -215,6 +219,12 @@ def undistort_points(
     Returns:
         undistorted_points: same leading dims as points2d but last dim 2 (..., 2)
     """
+
+    # fallback to default R and P (runs in host code)
+    if R is None:
+        R = jnp.eye(3, dtype=camera_matrix.dtype)
+    if P is None:
+        P = camera_matrix
 
     fx, fy = camera_matrix[0, 0], camera_matrix[1, 1]
     cx, cy = camera_matrix[0, 2], camera_matrix[1, 2]
@@ -243,20 +253,17 @@ def undistort_points(
     return unsistorted_points
 
 
-# Vectorized version for N cameras
+# Vectorized version for C cameras
 #    max_iter is shared among cameras so in_axes[-1] is None
 #    the other camera‐specific args vary
 undistort_multiple = jax.jit(
-    jax.vmap(
-        undistort_points,
-        in_axes=(0,     # each camera has its own points2d
-                 0,     # its own camera_matrix
-                 0,     # its own dist_coeffs
-                 0,     # its own R
-                 0,     # its own P
-                 None), # max_iter is shared
-    ),
-    static_argnums=(5,)  # max_iter is also static
+    jax.vmap(undistort_points,
+             in_axes=(
+                0,     # each camera has its own points2d
+                0,     # its own camera_matrix
+                0),     # its own dist_coeffs
+             out_axes=0),
+    static_argnums=()
 )
 
 ## ---- Functions to compute various useful mnatrices
@@ -511,18 +518,23 @@ def invert_extrinsics_matrix(
         inv_E: inverted extrinsics matrix (or matrices)  (..., 4, 4)
     """
 
-    def pad_and_inv(E3x4):
-        # pad (3, 4) to (4, 4) and invert
-        bottom = jnp.array([0.0, 0.0, 0.0, 1.0])
-        bottom = jnp.broadcast_to(bottom, E3x4.shape[:-2] + (1, 4))
-        E4 = jnp.concatenate([E3x4, bottom], axis=-2)
+    # Since E.shape is known when we trace the function, we can use plain Python if/else on E.shape[-2:]
+
+    last2 = (E.shape[-2], E.shape[-1])
+    if last2 == (3, 4):
+        bottom = jnp.array([0., 0., 0., 1.], dtype=E.dtype)
+        bottom = bottom.reshape((1, 4))
+        # broadcast to match leading dims
+        bottom = jnp.broadcast_to(bottom, E.shape[:-2] + (1, 4))
+        E4 = jnp.concatenate([E, bottom], axis=-2)  # (..., 4, 4)
         return jnp.linalg.inv(E4)
 
-    def inv(E4x4):
-        return jnp.linalg.inv(E4x4)
+    elif last2 == (4, 4):
+        return jnp.linalg.inv(E)
 
-    is3x4 = (E.shape[-2] == 3)
-    return jax.lax.cond(is3x4, pad_and_inv, inv, E)
+    else:
+        # catching bad shapes early
+        raise ValueError(f"Expected shape (..., 3, 4) or (..., 4, 4), got {last2}")
 
 
 @jax.jit
@@ -681,6 +693,66 @@ def back_projection(
 
 ## ---- Main functions - Used in Bundle adjustment for calibration, and in most of the downstream tasks
 
+
+@jax.jit
+def triangulate_one(
+    points2d:       jnp.ndarray,
+    P_mats:         jnp.ndarray,
+    weight:         float = 1.0,
+    lambda_reg:     float = 0.0
+) -> jnp.ndarray:
+    """
+    Triangulate one point from C 2D observations and their corresponding projection matrices
+
+        For each i-th 2D point and its corresponding camera matrix, two rows are added to matrix A:
+
+               [ u_1 * P_1_3 - P_1_1 ]
+               [ v_1 * P_1_3 - P_1_2 ]
+        A =    [ u_2 * P_2_3 - P_2_1 ]
+               [ v_2 * P_2_3 - P_2_2 ]
+               [          ...        ]
+               [          ...        ]
+               [          ...        ]
+
+        where P_i_j denotes the j-th row of the i-th camera matrix
+
+    We use SVD to solve the system AX=0. The solution X is the last row of V^t from SVD
+
+    See https://people.math.wisc.edu/~chr/am205/g_act/svd_slides.pdf for more info and sources
+
+    Args:
+        points2d: the 2D observations from C cameras (C, 2)
+        P_mats: C projection matrices (C, 3, 4)
+        weight: weight for the 2D points confidence (C,) or None
+        lambda_reg: Regularisation term for Tikhonov Regularisation
+
+    Returns:
+        point3d: the 3D coordinates for the point (3,)
+
+    """
+
+    w = jnp.atleast_2d(weight)[:, None]
+
+    P0, P1, P2 = P_mats[:, 0, :], P_mats[:, 1, :], P_mats[:, 2, :]
+    u, v = points2d[:, 0], points2d[:, 1]
+
+    # build the (2*C, 4) A-matrix for a single point
+    r1 = (u[:, None] * P2 - P0) * w               # (C, 4)
+    r2 = (v[:, None] * P2 - P1) * w               # (C, 4)
+    A = jnp.concatenate([r1, r2], axis=0)   # (2*C, 4)
+
+    if lambda_reg != 0.0:
+        ATA = A.T@A + lambda_reg * jnp.eye(4)
+        _, _, Vt = jnp.linalg.svd(ATA, full_matrices=False)
+    else:
+        _, _, Vt = jnp.linalg.svd(A, full_matrices=False)
+
+    X = Vt[-1]
+    X = X / (X[-1] + _eps)
+    point3d = X[:3]
+    return point3d  # (3,)
+
+
 @jax.jit
 def triangulate_svd(
     points2d:   jnp.ndarray,
@@ -708,40 +780,47 @@ def triangulate_svd(
     See https://people.math.wisc.edu/~chr/am205/g_act/svd_slides.pdf for more info and sources
 
     Args:
-        points2d: M 2D points from N cameras (N, M, 2)
-        P_mats: N projection matrices (N, 3, 4)
-        weights: weights for 2D points confidences (N, M, 3) or None
+        points2d: N 2D points from C cameras (C, N, 2)
+        P_mats: C projection matrices (C, 3, 4)
+        weights: weights for 2D points confidences (C, N, 3) or None
         lambda_reg: Regularisation term for Tikhonov Regularisation
 
     Returns:
-        points3d: M 3D points coordinates (M, 3)
+        points3d: N 3D points coordinates (N, 3)
 
     """
 
-    N, M = points2d.shape[:2]
+    # We want to get rid of invalid values
+    valid_observations = jnp.isfinite(points2d[..., 0]) & jnp.isfinite(points2d[..., 1])  # (C, N)
+    # how many cams saw each point
+    n_obs = jnp.sum(valid_observations, axis=0)  # (N,)
 
-    # Prepare weights
+    #so we zero-fill u and v
+    u = jnp.where(valid_observations, points2d[..., 0], 0.0)  # (C, N)
+    v = jnp.where(valid_observations, points2d[..., 1], 0.0)  # (C, N)
     if weights is None:
-        w = jnp.ones((N, M), dtype=points2d.dtype)
+        w = valid_observations.astype(points2d.dtype)            # (C, N)
     else:
-        w = jnp.where(jnp.asarray(weights) > 0, weights, 0.0)
+        weights = jnp.asarray(weights)
+        w = jnp.where(valid_observations, weights, 0.0)  # and also zero out any weight where data was invalid
 
-    # Pull out the rows of each P
-    P0 = P_mats[:, 0, :]     # (N, 4)
-    P1 = P_mats[:, 1, :]
-    P2 = P_mats[:, 2, :]
+    # pull out the three rows of each Projection matrix and insert a dummy 'point' axis
+    P0 = P_mats[:, 0, :][:, None, :]  # (C, 1, 4)
+    P1 = P_mats[:, 1, :][:, None, :]  # (C, 1, 4)
+    P2 = P_mats[:, 2, :][:, None, :]  # (C, 1, 4)
 
-    u = points2d[..., 0]   # (N, M)
-    v = points2d[..., 1]
+    u_exp = u[:, :, None]  # (C, N, 1)
+    v_exp = v[:, :, None]  # (C, N, 1)
+    w_exp = w[:, :, None]  # (C, N, 1)
 
     # Build all the A's at once
     # row1_i(p) = u[i,p] * P2[i] - P0[i]
     # row2_i(p) = v[i,p] * P2[i] - P1[i]
     # then each multiplied by w[i, p]
-    r1 = (u[:, :, None] * P2[ :, None, :] - P0[:, None, :]) * w[:, :, None]  # (N, M, 4)
-    r2 = (v[:, :, None] * P2[ :, None, :] - P1[:, None, :]) * w[:, :, None]  # (N, M, 4)
+    r1 = (u_exp * P2 - P0) * w_exp
+    r2 = (v_exp * P2 - P1) * w_exp
 
-    # stack the u and v contributions, then transpose -> (M, 2*N, 4)
+    # stack the u and v contributions, then transpose -> (N, 2*C, 4)
     A = jnp.concatenate([r1, r2], axis=0).transpose(1, 0, 2)
 
     # Batched SVD
@@ -749,70 +828,57 @@ def triangulate_svd(
         # build A^T A + λI for each point
         ATA = jnp.einsum('pni,pnj->pij', A, A) + lambda_reg * jnp.eye(4)
         _, _, Vh = jnp.linalg.svd(ATA, full_matrices=False)
-        Xh = Vh[:, -1, :]      # (M, 4)
+        Xh = Vh[:, -1, :]      # (N, 4)
     else:
         _, _, Vh = jnp.linalg.svd(A, full_matrices=False)
         Xh = Vh[:, -1, :]
 
     # Dehomogenize
     Xh = Xh / (Xh[:, 3:4] + _eps)
-    points3d = Xh[:, :3]    # (M, 3)
+    points3d = Xh[:, :3]    # (N, 3)
+
+    # we only trust points seen by 2 cameras or more so we set the unreliable ones back to nan
+    reliable = n_obs >= 2  # (N,)
+    reliable = reliable[:, None]
+    points3d = jnp.where(reliable, points3d, jnp.nan)
     return points3d
 
 
 @jax.jit
 def compute_errors_jax(
-    observed:       jnp.ndarray,
-    reprojected:    jnp.ndarray,
-    points3d_world: jnp.ndarray,
-    grid3d:         jnp.ndarray,
-    common_ids:     jnp.ndarray,
-    tri_idx:        Tuple[jnp.ndarray, jnp.ndarray],
-    fill_value:     float = jnp.nan
+    observed:           jnp.ndarray,
+    reprojected:        jnp.ndarray,
+    visibility_mask:    jnp.ndarray,
+    points3d_world:     jnp.ndarray,
+    points_3d_th:       jnp.ndarray,
+    tri_idx:            Tuple[jnp.ndarray, jnp.ndarray],
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """
     Compute the multi-view reprojection error (i.e. the error in 2D of the reprojected 3D triangulated points)
-    for each of N cameras, and the 3D consistency error (i.e. the error in the distances between pairs of points in 3D)
+    for each of C cameras, and the 3D consistency error (i.e. the error in the distances between pairs of points in 3D)
 
     Args:
-        observed: observed points (that are common to all cameras) (C, M, 2)
-        reprojected: the same common points after reprojection (C, M, 2)
-        points3d_world: the M points in 3D (M, 3)
-        grid3d: the full set of N theoretical point coordinates (N, 3)
-        common_ids: IDs of the points that are common to all cameras (M,)
+        observed: observed points (the full array with nans for missing) (C, N, 2)
+        reprojected: the same points after reprojection (C, N, 2)
+        visibility_mask: the visibility mask of the N points in the C cameras (C, N)
+        points3d_world: the full set of N points in 3D world coordinates (N, 3)
+        points_3d_th: the full set of N theoretical point coordinates (N, 3)
         tri_idx: two arrays of length K
-        fill_value: what to fill the errors for missing points with
 
     Returns:
         err2d: error in 2D of the reprojected 3D triangulated points (C, N, 2)
         err3d: error in the distances between pairs of points in 3D (K,)
     """
 
-    # 2D reprojection errors for common points
-    err2d_comm = reprojected - observed         # (C, M, 2)
-
-    # Scatter into a full (C, N, 2) array
-    C, M, _ = err2d_comm.shape
-    N = grid3d.shape[0]
-    err2d = jnp.full((C, N, 2), fill_value)
-
-    # for each camera n, place err2d_comm[n] at indices common_ids
-    def scatter_cam(err_cam):
-        return err2d.at[common_ids, :].set(err_cam)
-    err2d = jax.vmap(scatter_cam)(err2d_comm)   # (C, N, 2)
+    # mask out missing 2D reprojected errors
+    m3 = visibility_mask[..., None]  # (C, N, 1)
+    err2d = jnp.where(m3 > 0, reprojected - observed,jnp.nan)  # (C, N, 2)
 
     # 3D consistency: distances between all pairs for theoretical vs measured
-
-    # compute pairwise on points3d_world
-    dists_world = jnp.linalg.norm(points3d_world[:, None, :] - points3d_world[None, :, :], axis=-1)  # (M, M)
-
-    # theoretical for the same subset
-    Xth_c = grid3d[common_ids]          # (M, 3)
-    dists_th = jnp.linalg.norm(Xth_c[:, None, :] - Xth_c[None, :, :], axis=-1)  # (M, M)
-
-    # flatten lower triangle
-    tri_i, tri_j = tri_idx
-    err3d = dists_world[tri_i, tri_j] - dists_th[tri_i, tri_j]  # (K,)
+    d_w = jnp.linalg.norm(points3d_world[:, None, :] - points3d_world[None, :, :], axis=-1)     # (N, N)
+    d_t = jnp.linalg.norm(points_3d_th[:, None, :] - points_3d_th[None, :, :], axis=-1)     # (N, N)
+    i, j = tri_idx
+    err3d = d_w[i, j] - d_t[i, j]
 
     return err2d, err3d
 
@@ -820,59 +886,44 @@ def compute_errors_jax(
 @jax.jit
 def interpolate3d(
     points3d:               jnp.ndarray,
-    points3d_ids:           jnp.ndarray,
+    visibility_mask:        jnp.ndarray,
     points3d_theoretical:   jnp.ndarray
-) -> Tuple[jnp.ndarray, jnp.ndarray]:
+) -> jnp.ndarray:
     """
     Use triangulated 3D points and theoretical point layout (e.g. the calibration grid) to interpolate missing points
 
     Args:
-        points3d: the M points we have (M, 3)
-        points3d_ids: their corresponding IDs (M,)
+        points3d: the N 3D points (N, 3)
+        visibility_mask: the visibility mask of the N points (N,)
         points3d_theoretical: the full set of N theoretical point coordinates (N, 3)
 
     Returns:
         filled: (N, 3) filled-in points
-        ids_filled: (N, ) filled-in points IDs
     """
 
-    # build detected-theoretical design matrix
-    X_det = points3d_theoretical[points3d_ids]
-    ones = jnp.ones((X_det.shape[0], 1))
-    A = jnp.concatenate([X_det, ones], axis=1)
+    N = points3d.shape[0]
+    mask = visibility_mask.astype(bool)  # (N,)
 
-    # solve least squares: A @ T = points3d
-    T, *_ = jnp.linalg.lstsq(A, points3d, rcond=None)  # T is (4, 3)
+    # Build design matrix [X_th | 1]
+    ones = jnp.ones((N, 1), dtype=points3d.dtype)
+    A = jnp.concatenate([points3d_theoretical, ones], axis=1)  # (N, 4)
 
-    # apply T to entire grid
-    N_total = points3d_theoretical.shape[0]
-    ones_full = jnp.ones((N_total, 1))
-    A_full = jnp.concatenate([points3d_theoretical, ones_full], axis=1)
-    filled = A_full @ T
+    # zeroify just the rows we did observe for the weighted least squares
+    A_obs = jnp.where(mask[:, None], A, 0.0)  # (N, 4)
+    Y_obs = jnp.where(mask[:, None], points3d, 0.0)  # (N, 3)
 
-    ids_filled = jnp.arange(N_total)
-    return filled, ids_filled
+    # Solve A_obs @ T ~ Y_obs
+    T, *_ = jnp.linalg.lstsq(A_obs, Y_obs, rcond=None)  # (4, 3)
+
+    # Predict N with that T
+    filled_all = A @ T  # (N, 3)
+
+    # And only replace the originally missing rows
+    return jnp.where(mask[:, None], points3d, filled_all)
 
 
 ## Other utils - used in 3D visualisation mostly
 
-@jax.jit
-def find_affine(Ps, Ps_2):
-    """
-    Estimates the affine transformation between two sets of points
-    """
-
-    n = Ps.shape[0]
-    Ps_homogeneous = jnp.hstack([Ps, jnp.ones((n, 1))])
-
-    # Solve for the transformation matrix using least squares
-    A_h, res, rank, s = jnp.linalg.lstsq(Ps_homogeneous, Ps_2, rcond=None)
-
-    # Extract rotation and translation components
-    R = A_h[:3, :3]
-    t = A_h[3, :]
-
-    return R, t
 
 @jax.jit
 def find_affine(
@@ -920,34 +971,32 @@ def focal_point_3d(
     direction_vectors:  jnp.ndarray
 ) -> jnp.ndarray:
     """
-    Estimate the 3D focal point of N cameras
+    Estimate the 3D focal point of C cameras
 
     Args:
-        camera_centers: N camera centers (N, 3)
-        direction_vectors: N direction vectors (N, 3)
+        camera_centers: C camera centers (C, 3)
+        direction_vectors: C direction vectors (C, 3)
 
     Returns:
         focal_point: (3,)
     """
 
     # A_i = I - d d^T
-    D = direction_vectors[..., :, None]     # (N, 3, 1)
-    A = jnp.eye(3)[None, ...] - D @ D.transpose(0,2,1)  # (N, 3, 3)
+    D = direction_vectors[..., :, None]     # (C, 3, 1)
+    A = jnp.eye(3)[None, ...] - D @ D.transpose(0,2,1)  # (C, 3, 3)
 
     # b_i = A_i @ C_i
-    C = camera_centers[..., :, None]        # (N, 3, 1)
-    b = (A @ C)[..., 0]                     # (N, 3)
+    C = camera_centers[..., :, None]        # (C, 3, 1)
+    b = (A @ C)[..., 0]                     # (C, 3)
 
     # stack into a (3N, 3) system and solve it
-    A_stack = A.reshape(-1, 3)    # (3N, 3)
-    b_stack = b.reshape(-1)           # (3N,)
+    A_stack = A.reshape(-1, 3)    # (3*C, 3)
+    b_stack = b.reshape(-1)           # (3*C,)
     focal_point, *_ = jnp.linalg.lstsq(A_stack, b_stack, rcond=None)  # (3,)
     return focal_point
 
 
 ## Rotate stuff - used in 3D visualisation
-
-# TODO - these need to be properly implemented for JAX
 
 @partial(jax.jit, static_argnums=(1,))
 def Rmat_from_angle(
@@ -980,44 +1029,83 @@ def Rmat_from_angle(
         rvec = v * theta
     return rodrigues(rvec)
 
+# TODO - these 3 below need to be reworked
 
 @jax.jit
-def rotate_points3d(points3d: jnp.ndarray, angle_degrees: float, axis: Union[str, Iterable[float]] = 'y') -> jnp.ndarray:
-    R = Rmat_from_angle(angle_degrees, axis)   # (3, 3)
-    return jnp.einsum('ij,...j->...i', R, points3d)
+def rotate_points3d(
+        points3d: jnp.ndarray,
+        angle_degrees: float,
+        axis: Union[str, Iterable[float]] = 'y'
+) -> jnp.ndarray:
+    """
+    Args:
+        points3d: 3D points to rotate (..., 3)
+        angle_degrees: the angle in degrees (scalar)
+        axis: the axis of rotation, either a (3,) iterable or an axis name ('x', 'y' or 'z')
+
+    Returns:
+        points3d_rot: the rotated points 3D (..., 3)
+    """
+
+    R = Rmat_from_angle(angle_degrees, axis)    # (3, 3)
+    points3d_rot = jnp.einsum('ij,...j->...i', R, points3d)     # (..., 3)
+    return points3d_rot
 
 
 @jax.jit
-def rotate_pose(rvecs: jnp.ndarray, tvecs: jnp.ndarray, angle_degrees: float, axis: Union[str, Iterable[float]] = 'y') -> tuple[jnp.ndarray, jnp.ndarray]:
-    Rg = Rmat_from_angle(angle_degrees, axis)     # (3,3)
+def rotate_pose(
+        rvecs:          jnp.ndarray,
+        tvecs:          jnp.ndarray,
+        angle_degrees:  float,
+        axis:           Union[str, Iterable[float]] = 'y'
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    Args:
+        rvecs: rvecs (..., 3)
+        tvecs: tvecs (..., 3)
+        angle_degrees: the angle in degrees (scalar)
+        axis: the axis of rotation, either a (3,) iterable or an axis name ('x', 'y' or 'z')
 
-    # expand to batch
-    Rg_b = Rg[jnp.newaxis, ...]                      # (1, 3, 3) for broadcasting
-    Rl = rodrigues(rvecs)                   # (..., 3, 3)
-    R_comb = jnp.matmul(Rg_b, Rl)                   # (...,3, 3)
-    rvecs_rot = inverse_rodrigues(R_comb)           # (..., 3)
-    tvecs_rot = jnp.einsum('ij,...j->...i', Rg, tvecs)# (..., 3)
+    Returns:
+        rvecs_rot: rotated rvecs (..., 3)
+        tvecs_rot: rotated tvecs (..., 3)
+    """
+
+    Rg = Rmat_from_angle(angle_degrees, axis)   # (3, 3)
+
+    Rg_b = Rg[jnp.newaxis, ...]                 # (1, 3, 3) for broadcasting
+    Rl = rodrigues(rvecs)                       # (..., 3, 3)
+    R_comb = jnp.matmul(Rg_b, Rl)               # (...,3, 3)
+    rvecs_rot = inverse_rodrigues(R_comb)       # (..., 3)
+    tvecs_rot = jnp.einsum('ij,...j->...i', Rg, tvecs)  # (..., 3)
     return rvecs_rot, tvecs_rot
 
 
 @jax.jit
 def rotate_extrinsics_matrix(
-    E: jnp.ndarray,
-    angle_degrees: float,
-    axis: Union[str, Iterable[float]] = 'y',
-    hom: bool = False
+    E:              jnp.ndarray,
+    angle_degrees:  float,
+    axis:           Union[str, Iterable[float]] = 'y',
+    hom:            bool = False
 ) -> jnp.ndarray:
     """
-    E: (3,4) or (4,4) extrinsics matrix
-    returns: 3×4 or 4×4 rotated extrinsics
+    Args:
+        E: extrinsics matrix (3, 4) or (4, 4)
+        angle_degrees: the angle in degrees (scalar)
+        axis: the axis of rotation, either a (3,) iterable or an axis name ('x', 'y' or 'z')
+        hom: whether the matrix should be returned as a homogeneous matrix
+
+    Returns:
+        E_rot: (3, 4) or (4, 4) rotated extrinsics matrix (or matrices)
     """
 
-    Rg = Rmat_from_angle(angle_degrees, axis)   # (3,3)
-    R, t = E[:3,:3], E[:3,3]
+    Rg = Rmat_from_angle(angle_degrees, axis)   # (3, 3)
+    R, t = E[:3, :3], E[:3, 3]
     R_new = Rg @ R
     t_new = Rg @ t
-    E_new = jnp.concatenate([R_new, t_new[...,None]], axis=1)  # (3,4)
+
+    E_rot = jnp.concatenate([R_new, t_new[..., None]], axis=1)  # (3, 4)
     if hom:
-        bottom = jnp.array([[0.,0.,0.,1.]], dtype=E_new.dtype)
-        E_new = jnp.vstack([E_new, bottom])
-    return E_new
+        bottom = jnp.array([[0.0, 0.0, 0.0, 1.0]], dtype=E_rot.dtype)
+        E_rot = jnp.vstack([E_rot, bottom])
+    return E_rot
