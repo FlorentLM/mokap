@@ -79,7 +79,7 @@ SENSOR_SIZES = {'1/4"': [3.20, 2.40],
 def estimate_camera_matrix(
     f_mm:           float,
     sensor_wh_mm:   Tuple[float, float],
-    image_wh_px:    Tuple[float, float]
+    image_wh_px:    Tuple[int, int]
 ) -> jnp.ndarray:
     """
     Estimate the camera matrix K (a 3x3 matrix of the camera intrinsics parameters) using real-world values:
