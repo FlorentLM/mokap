@@ -6,8 +6,10 @@ import os
 from dotenv import load_dotenv
 import pypylon.pylon as py
 import pypylon.genicam as geni
-from typing import NoReturn, Union, List, Any
+from typing import NoReturn, Union, Any
 from subprocess import  check_output
+from threading import Thread
+
 #import PySpin
 #os.environ['SPINNAKER_GENTL64_CTI'] = '/Applications/Spinnaker/lib/spinnaker-gentl/Spinnaker_GenTL.cti'
 
@@ -189,27 +191,69 @@ def ping(host: str) -> bool:
 
 ##
 
-class SSHTrigger:
+class RaspberryTrigger:
     """
-        Class to communicate with the hardware Trigger via SSH
+        Class to communicate with the Raspberry Pi via SSH
         It uses the environment variables to load the host address and login info
     """
 
-    def __init__(self, silent=False):
+    PWM_GPIO_PIN = 18  # Should be true for all Raspberry Pis
+
+    def __init__(self, keepalive=10, silent=False):
 
         self._connected = False
         self._silent = silent
+        self._keepalive_seconds = keepalive
 
-        self.PWM_GPIO_PIN = 18  # Should be true for all Raspberry Pis
+        self._transport = None
+        self._channel = None
+        self._keepalive_thread = None
+        self._keepalive_active = False
 
         load_dotenv()
 
+        self._connect()
+
+    def _connect(self):
         env_ip = os.getenv('TRIGGER_HOST')
         env_user = os.getenv('TRIGGER_USER')
         env_pass = os.getenv('TRIGGER_PASS')
 
         if None in (env_ip, env_user, env_pass):
             raise EnvironmentError(f'Missing {sum([v is None for v in (env_ip, env_user, env_pass)])} variables.')
+
+        try:
+            self.client = paramiko.SSHClient()
+            self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+            self.client.connect(
+                env_ip,
+                username=env_user,
+                password=env_pass,
+                look_for_keys=False,
+                timeout=5,
+                banner_timeout=5,
+                auth_timeout=5
+            )
+
+            # Create persistent channel
+            self._transport = self.client.get_transport()
+            self._transport.set_keepalive(self._keepalive_seconds)
+            self._channel = self._transport.open_session()
+
+            self._connected = True
+            if not self._silent:
+                print('[INFO] Trigger connected with persistent channel')
+
+            # Start keepalive thread
+            self._keepalive_active = True
+            self._keepalive_thread = Thread(target=self._keepalive_loop, daemon=True)
+            self._keepalive_thread.start()
+
+        except Exception as e:
+            if not self._silent:
+                print(f'[WARN] Trigger connection failed: {str(e)}')
+            self._connected = False
 
         if ping(env_ip):
 
@@ -225,6 +269,21 @@ class SSHTrigger:
         else:
             print('[WARN] Trigger unreachable')
 
+    def _keepalive_loop(self):
+        """ Maintains connection with periodic checks """
+        while self._keepalive_active:
+            try:
+                # Simple command to keep connection alive
+                if self._channel:
+                    self._channel.exec_command('true')
+                time.sleep(self._keepalive_seconds)
+
+            except:
+                self._connected = False
+                if not self._silent:
+                    print('[WARN] Trigger connection lost')
+                break
+
     @property
     def connected(self) -> bool:
         return self._connected
@@ -234,25 +293,55 @@ class SSHTrigger:
             Starts the trigger loop on a Raspberry Pi
         """
 
+        if not self.connected:
+            return
+
         pct = int(np.floor(highs_pct * 1e4))
         frq = int(np.floor(frequency))
 
-        if self.client is not None:
-            self.client.exec_command(f'pigs hp {self.PWM_GPIO_PIN} {frq} {pct}')
+        try:
+            command = f'pigs hp {self.PWM_GPIO_PIN} {frq} {pct}'
+            self._channel.exec_command(command)
+
             if not self._silent:
                 print(f"[INFO] Trigger started at {frequency} Hz")
 
-    def stop(self) -> NoReturn:
-        if self.client:
-            self.client.exec_command(f'pigs hp {self.PWM_GPIO_PIN} 0 0 && pigs w {self.PWM_GPIO_PIN} 0')
-        time.sleep(0.1)
-        if not self._silent:
-            print(f"[INFO] Trigger stopped")
+        except Exception as e:
+            self._connected = False
+            if not self._silent:
+                print(f"[ERROR] Trigger start failed: {str(e)}")
 
-    def disconnect(self) -> NoReturn:
+    def stop(self) -> NoReturn:
+
+        if not self.connected:
+            return
+
+        try:
+            command = f'pigs hp {self.PWM_GPIO_PIN} 0 0 && pigs w {self.PWM_GPIO_PIN} 0'
+            self._channel.exec_command(command)
+
+            if not self._silent:
+                print(f"[INFO] Trigger stopped")
+
+        except Exception as e:
+            self._connected = False
+            if not self._silent:
+                print(f"[ERROR] Trigger stop failed: {str(e)}")
+
+    def disconnect(self) -> None:
+        """ Clean up resources """
+        self._keepalive_active = False
+
+        if self._keepalive_thread and self._keepalive_thread.is_alive():
+            self._keepalive_thread.join(timeout=1.0)
+
+        if self._channel:
+            self._channel.close()
+
         if hasattr(self, 'client') and self.client:
             self.client.close()
-            self.client = False
+
+        self._connected = False
 
     def __del__(self):
         self.disconnect()
@@ -394,14 +483,16 @@ class BaslerCamera:
             self.set_value('LineDebouncerTime', 5.0)
             self.set_value('MaxNumBuffer', 20)
 
-            self.set_value('TriggerSelector', 'FrameStart')
+            # self.set_value('TriggerSelector', 'FrameStart')
+            self.ptr.TriggerSelector = "FrameStart"
 
             if self.triggered:
                 self.set_value('LineSelector', 'Line4')
                 self.set_value('LineMode', 'Input')
                 self.set_value('TriggerMode', 'On')
                 self.set_value('TriggerSource', 'Line4')
-                self.set_value('TriggerActivation', 'RisingEdge')
+                # self.set_value('TriggerActivation', 'RisingEdge')
+                self.ptr.TriggerActivation.Value = 'RisingEdge'
                 self.set_value('AcquisitionFrameRateEnable', False)
             else:
                 self.set_value('TriggerMode', 'Off')
@@ -683,7 +774,7 @@ class BaslerCamera:
                 if val in [0.0, 421.0]:
                     return None
                 else:
-                    return val
+                    return float(val)
             except py.AccessException:
                 return None
         else:
