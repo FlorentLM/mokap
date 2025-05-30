@@ -6,7 +6,6 @@ from typing import Tuple
 import psutil
 import screeninfo
 import cv2
-import numpy as np
 from pathlib import Path
 from functools import partial
 from collections import deque
@@ -21,10 +20,8 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QStatusBar, QSlider, Q
                                QDialog, QDoubleSpinBox, QDialogButtonBox, QToolButton)
 import pyqtgraph as pg
 from pyqtgraph.opengl import GLViewWidget, GLGridItem, GLLinePlotItem, GLScatterPlotItem, MeshData, GLMeshItem
-from mokap.utils import geometry
-# from mokap.utils import geometry_jax as geometry
-from mokap.calibration import monocular
-from mokap.utils import hex_to_rgb, hex_to_hls, pretty_size, generate_charuco
+from mokap.utils import geometry_jax
+from mokap.utils import hex_to_rgb, hex_to_hls, pretty_size
 from .workers import *
 
 
@@ -317,7 +314,8 @@ class VideoWindowBase(SecondaryWindowBase):
         self.capturefps_value.setText(f"Off")
         self.exposure_value.setText(f"{self._camera.exposure} µs")
         self.brightness_value.setText(f"-")
-        self.temperature_value.setText(f"{self._camera.temperature}°C" if self._camera.temperature else '-')
+        temp = self._camera.temperature
+        self.temperature_value.setText(f"{temp}°C" if temp else '-')
 
         labels_and_values = [
             ('Triggered', self.triggered_value),
@@ -586,14 +584,17 @@ class VideoWindowBase(SecondaryWindowBase):
                 self.capturefps_value.setText("Off")
                 self.brightness_value.setText("-")
 
+            temp = self._camera.temperature
+            temp_state = self._camera.temperature_state
+
             # Update the temperature label colour
-            if self._camera.temperature is not None:
-                self.temperature_value.setText(f'{self._camera.temperature:.1f}°C')
-            if self._camera.temperature_state == 'Ok':
+            if temp is not None:
+                self.temperature_value.setText(f'{temp:.1f}°C')
+            if temp_state == 'Ok':
                 self.temperature_value.setStyleSheet(f"color: {self._mainwindow.col_green}; font: bold;")
-            elif self._camera.temperature_state == 'Critical':
+            elif temp_state == 'Critical':
                 self.temperature_value.setStyleSheet(f"color: {self._mainwindow.col_orange}; font: bold;")
-            elif self._camera.temperature_state == 'Error':
+            elif temp_state == 'Error':
                 self.temperature_value.setStyleSheet(f"color: {self._mainwindow.col_red}; font: bold;")
             else:
                 self.temperature_value.setStyleSheet(f"color: {self._mainwindow.col_yellow}; font: bold;")
@@ -895,7 +896,8 @@ class RecordingWindow(VideoWindowBase):
     def _update_fast(self):
         # Grab camera frame
         self._refresh_framebuffer()
-        frame = self._frame_buffer.copy()
+        frame = self._frame_buffer
+        # frame = self._frame_buffer.copy()
 
         # if worker is free, send frame
         if not self._worker_busy:
@@ -1157,7 +1159,8 @@ class MonocularCalibWindow(VideoWindowBase):
     #  ============= Update frame =============
     def _update_fast(self):
         self._refresh_framebuffer()
-        frame = self._frame_buffer.copy()
+        # frame = self._frame_buffer.copy()
+        frame = self._frame_buffer
 
         if not self._worker_busy:
             self._send_frame_to_worker(frame)
@@ -1170,18 +1173,17 @@ class MonocularCalibWindow(VideoWindowBase):
         disp_h, disp_w = self._display_buffer.shape[:2]
 
         if self._worker_blocking:
-            # Worker is blocking during computation so it can't annotate - Display a blurred image
-            blurred = cv2.GaussianBlur(frame.copy(), (25, 25), 0)
-            h, w = blurred.shape[:2]
+            # Worker is blocking during computation so it can't annotate
+            h, w = frame.shape[:2]
             text = "Computing..."
             font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = 1.5
-            thickness = 3
+            font_scale = 2.0
+            thickness = 4
             text_size, baseline = cv2.getTextSize(text, font, font_scale, thickness)
             text_x = (w - text_size[0]) // 2
             text_y = (h + text_size[1]) // 2
-            cv2.putText(blurred, text, (text_x, text_y), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
-            self.annotated_frame = blurred
+            cv2.putText(frame, text, (text_x, text_y), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+            self.annotated_frame = frame
 
         if self.annotated_frame is not None and self.annotated_frame.size > 0:
 
@@ -1377,7 +1379,7 @@ class MultiviewCalibWindow(SecondaryWindowBase):
         # Start window update timer
         self.timer_slow = QTimer(self)
         self.timer_slow.timeout.connect(self.update_scene)
-        self.timer_slow.start(500)
+        self.timer_slow.start(200)
 
     #  ============= Worker thread additional setup =============
     def _setup_worker(self, worker_object):
