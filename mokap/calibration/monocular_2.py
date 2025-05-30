@@ -1,7 +1,6 @@
 import numpy as np
 np.set_printoptions(precision=3, suppress=True, threshold=150)
-from typing import Tuple
-import jax.numpy as jnp
+from numpy.typing import ArrayLike
 
 
 # This can be used to estimate thepretical camera matrices
@@ -78,9 +77,9 @@ SENSOR_SIZES = {'1/4"': [3.20, 2.40],
 
 def estimate_camera_matrix(
     f_mm:           float,
-    sensor_wh_mm:   Tuple[float, float],
-    image_wh_px:    Tuple[int, int]
-) -> jnp.ndarray:
+    sensor_wh_mm:   ArrayLike,
+    image_wh_px:    ArrayLike
+) -> np.ndarray:
     """
     Estimate the camera matrix K (a 3x3 matrix of the camera intrinsics parameters) using real-world values:
     focal length (mm), sensor size (mm) and image size (px)
@@ -117,10 +116,10 @@ def estimate_camera_matrix(
     cx = image_w / 2.0
     cy = image_h / 2.0
 
-    camera_matrix = jnp.array([
+    camera_matrix = np.array([
         [fx,   0.0, cx],
         [0.0,  fy,  cy],
         [0.0,  0.0, 1.0]
-    ], dtype=jnp.float32)
+    ], dtype=np.float32)
 
     return camera_matrix

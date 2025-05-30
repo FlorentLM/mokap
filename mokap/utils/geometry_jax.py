@@ -1,7 +1,7 @@
-import os
-os.environ['JAX_LOG_COMPILES'] = '1'
-from jax import config
-config.update("jax_log_compiles", True)
+# import os
+# os.environ['JAX_LOG_COMPILES'] = '1'
+# from jax import config
+# config.update("jax_log_compiles", True)
 import jax
 import jax.numpy as jnp
 from typing import Union, Iterable, Optional, Tuple
@@ -21,7 +21,7 @@ _AXIS_MAP = {
 }
 
 @jax.jit
-def pad_dist_coeffs(dist_coefs: jnp.ndarray) -> jnp.ndarray:
+def pad_dist_coeffs(dist_coeffs: jnp.ndarray) -> jnp.ndarray:
     """
     Simple utility to always return 8 distortion coefficients
 
@@ -31,9 +31,9 @@ def pad_dist_coeffs(dist_coefs: jnp.ndarray) -> jnp.ndarray:
         coefs8:  distortion coefficients but padded to (8,)
 
     """
-    coefs = dist_coefs.ravel()
+    coeffs = dist_coeffs.ravel()
     # pad to length 8 with zeros on the right
-    coefs8 = jnp.pad(coefs, (0, 8 - coefs.shape[0]), constant_values=0.0)
+    coefs8 = jnp.pad(coeffs, (0, 8 - coeffs.shape[0]), constant_values=0.0)
     return coefs8
 
 

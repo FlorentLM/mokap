@@ -5,7 +5,7 @@ import cv2
 import scipy.stats as stats
 from scipy.spatial.distance import cdist
 import jax.numpy as jnp
-
+import jax
 from typing import Optional, Iterable, Tuple, Union
 from numpy.typing import ArrayLike
 
@@ -13,6 +13,10 @@ from mokap.utils import geometry
 from mokap.utils.datatypes import BoardParams
 from mokap.calibration import monocular_2
 from mokap.utils import geometry_jax
+
+
+def _maybe_put(x):
+    return jax.device_put(x) if x is not None else None
 
 
 class CharucoDetector:
@@ -130,29 +134,42 @@ class MonocularCalibrationTool:
                  focal_mm:      Optional[int] = None,
                  sensor_size:   Optional[Tuple[float]] = None):
 
-        self.dt = CharucoDetector(board_params)
+        self.dt: CharucoDetector = CharucoDetector(board_params)
 
-        # self._min_pts = 3   # SQPNP method needs at least 3 points
-        # self._min_pts = 4   # ITERATIVE method needs at least 4 points
-        self._min_pts = 6     # DLT algorithm needs at least 6 points for pose estimation
+        # self._min_pts: int = 3   # SQPNP method needs at least 3 points
+        # self._min_pts: int = 4   # ITERATIVE method needs at least 4 points
+        self._min_pts: int = 6     # DLT algorithm needs at least 6 points for pose estimation
 
-        self._grid_cells = 15
-        self._cells_gamma = 2.0
-        self._min_cells_weight = 0.25   # cells at centre get ~ min weight and cells at the edge get ~ 1.0
+        self._grid_cells: int = 15
+        self._cells_gamma: float = 2.0
+        self._min_cells_weight: float = 0.25   # cells at centre get ~ min weight and cells at the edge get ~ 1.0
 
         # Defaults
 
         self.h, self.w = None, None
-        self._sensor_size = None
-        self._th_camera_matrix = None
+        self._sensor_size: Union[ArrayLike, None] = None
 
         self._points2d = None
         self._points_ids = None
 
-        self._camera_matrix = None
-        self._dist_coeffs = None
-        self._rvec = None
-        self._tvec = None
+        self._points3d = np.asarray(self.dt.points3d)
+        self._points3d_j: jnp.ndarray = jnp.asarray(self._points3d)
+        self._cornersd3d = np.asarray(self.dt.corners3d)
+        self._cornersd3d_j: jnp.ndarray = jnp.asarray(self._cornersd3d)
+
+        self._th_camera_matrix_j: Union[jnp.ndarray, None] = None
+
+        self._camera_matrix: Union[np.ndarray, None] = None
+        self._dist_coeffs: Union[np.ndarray, None] = None
+
+        self._camera_matrix_j: Union[jnp.ndarray, None] = None
+        self._dist_coeffs_j: Union[jnp.ndarray, None] = None
+
+        self._rvec: Union[np.ndarray, None] = None
+        self._tvec: Union[np.ndarray, None] = None
+
+        self._rvec_j: Union[jnp.ndarray, None] = None
+        self._tvec_j: Union[jnp.ndarray, None] = None
 
         if imsize_hw is not None:
             self.h, self.w = np.asarray(imsize_hw)[:2]
@@ -163,24 +180,27 @@ class MonocularCalibrationTool:
         if isinstance(sensor_size, str):
             self._sensor_size = monocular_2.SENSOR_SIZES.get(f'''{sensor_size.strip('"')}"''', None)
         elif isinstance(sensor_size, (tuple, list, set, np.ndarray)) and len(sensor_size) == 2:
-            self._sensor_size = np.asarray(sensor_size)
+            self._sensor_size = sensor_size
 
         # compute theoretical camera matrix if possible
         # (this allows to fix the fx/fy ratio and helps the first guess)
         if None not in (focal_mm, self._sensor_size, self.h, self.w):
-            self._th_camera_matrix = monocular_2.estimate_camera_matrix(focal_mm,
-                                                                        self._sensor_size,
-                                                                        (self.w, self.h))
+            self._th_camera_matrix_j = _maybe_put(monocular_2.estimate_camera_matrix(
+                focal_mm,
+                self._sensor_size,
+                (self.w, self.h))
+            )
+
         # initialise intrinsics if possible
-        if self._th_camera_matrix is not None:
-            self._camera_matrix = self._th_camera_matrix.copy()
-            self._dist_coeffs = np.zeros(5, dtype=np.float32)
+        if self._th_camera_matrix_j is not None:
+            self._camera_matrix_j = _maybe_put(self._th_camera_matrix_j.copy())
+            self._dist_coeffs_j = _maybe_put(np.zeros(5, dtype=np.float32))
 
         # Samples stack (to aggregate detections for calibration)
-        self._min_stack = min_stack
-        self._max_stack = max_stack
-        self.stack_points2d = deque(maxlen=self._max_stack)
-        self.stack_points_ids = deque(maxlen=self._max_stack)
+        self._min_stack: int = min_stack
+        self._max_stack: int = max_stack
+        self.stack_points2d: deque = deque(maxlen=self._max_stack)
+        self.stack_points_ids: deque = deque(maxlen=self._max_stack)
 
         # Error metrics
         self._intrinsics_errors: ArrayLike = np.array([np.inf])
@@ -287,12 +307,14 @@ class MonocularCalibrationTool:
     def set_intrinsics(self, camera_matrix: ArrayLike, dist_coeffs: ArrayLike, errors: Optional[ArrayLike] = None):
 
         self._camera_matrix = np.asarray(camera_matrix)
-        dist_coeffs = np.asarray(dist_coeffs)
+        self._camera_matrix_j = _maybe_put(self._camera_matrix)
 
+        dist_coeffs = np.asarray(dist_coeffs)
         if len(dist_coeffs) < 5:
             self._dist_coeffs = np.zeros(5, dtype=np.float32)
             self._dist_coeffs[:len(dist_coeffs)] = dist_coeffs
         self._dist_coeffs = dist_coeffs
+        self._dist_coeffs_j = _maybe_put(self._dist_coeffs)
 
         if errors is not None:
             self._intrinsics_errors = np.asarray(errors)
@@ -301,12 +323,12 @@ class MonocularCalibrationTool:
 
     def clear_intrinsics(self):
 
-        if self._th_camera_matrix is not None:
-            self._camera_matrix = self._th_camera_matrix.copy()
-            self._dist_coeffs = np.zeros(5, dtype=np.float32)
+        if self._th_camera_matrix_j is not None:
+            self._camera_matrix_j = _maybe_put(self._th_camera_matrix_j.copy())
+            self._dist_coeffs_j = _maybe_put(np.zeros(5, dtype=np.float32))
         else:
-            self._camera_matrix = None
-            self._dist_coeffs = None
+            self._camera_matrix_j = None
+            self._dist_coeffs_j = None
         self._intrinsics_errors = np.array([np.inf])
 
     @staticmethod
@@ -390,7 +412,7 @@ class MonocularCalibrationTool:
         if len(self.stack_points2d) < 5:
             return  # Abort and keep the stacks
 
-        if self._camera_matrix is None and fix_aspect_ratio:
+        if self._camera_matrix_j is None and fix_aspect_ratio:
             print('No current camera matrix guess, unfixing aspect ratio.')
             fix_aspect_ratio = False
 
@@ -465,7 +487,11 @@ class MonocularCalibrationTool:
 
                 self._camera_matrix = new_camera_matrix
                 self._dist_coeffs = new_dist_coeffs
+                self._camera_matrix_j = _maybe_put(self._camera_matrix)
+                self._dist_coeffs_j = _maybe_put(self._dist_coeffs)
+
                 self._intrinsics_errors = stack_intr_errors
+
                 print(f"---Computed intrinsics---")
 
             # or update them if this stack's errors are better
@@ -473,7 +499,11 @@ class MonocularCalibrationTool:
 
                 self._camera_matrix = new_camera_matrix
                 self._dist_coeffs = new_dist_coeffs
+                self._camera_matrix_j = _maybe_put(self._camera_matrix)
+                self._dist_coeffs_j = _maybe_put(self._dist_coeffs)
+
                 self._intrinsics_errors = stack_intr_errors
+
                 print(f"---Updated intrinsics---")
 
         except cv2.error as e:
@@ -487,18 +517,21 @@ class MonocularCalibrationTool:
         # We need a detection to get the extrinsics relative to it
         if not self.has_detection:
             self._rvec, self._tvec = None, None
+            self._rvec_j, self._tvec_j = None, None
             self._pose_error = np.inf
             return
 
         # We also need intrinsics
         if not self.has_intrinsics:
             self._rvec, self._tvec = None, None
+            self._rvec_j, self._tvec_j = None, None
             self._pose_error = np.inf
             return
 
         # If the points are collinear, extrinsics estimation is garbage, so abort
         if cv2.aruco.testCharucoCornersCollinear(self.dt.board, self._points_ids):
             self._rvec, self._tvec = None, None
+            self._rvec_j, self._tvec_j = None, None
             self._pose_error = np.inf
             return
 
@@ -510,19 +543,21 @@ class MonocularCalibrationTool:
         pnp_flags = cv2.SOLVEPNP_SQPNP
 
         try:
-            nb_solutions, rvecs, tvecs, solutions_errors = cv2.solvePnPGeneric(self.dt.points3d[self._points_ids],
+            nb_solutions, rvecs, tvecs, solutions_errors = cv2.solvePnPGeneric(self._points3d[self._points_ids],
                                                          self._points2d,
                                                          self._camera_matrix,
                                                          self._dist_coeffs,
                                                          flags=pnp_flags)
         except cv2.error as e:
             self._rvec, self._tvec = None, None
+            self._rvec_j, self._tvec_j = None, None
             self._pose_error = np.inf
             return
 
         # If no solution, or if multiple solutions were found, abort
         if nb_solutions != 1:
             self._rvec, self._tvec = None, None
+            self._rvec_j, self._tvec_j = None, None
             self._pose_error = np.inf
             return
 
@@ -536,17 +571,19 @@ class MonocularCalibrationTool:
             #   François Chaumette, Seth Hutchinson, 10.1109/MRA.2006.250573
             # - "Pose Estimation for Augmented Reality: A Hands-On Survey", 2015
             #   Eric Marchand, Hideaki Uchiyama, Fabien Spindler, 10.1109/TVCG.2015.2513408
-            rvec, tvec = cv2.solvePnPRefineVVS(self.dt.points3d[self._points_ids],
-                                                 self._points2d,
-                                                 self._camera_matrix,
-                                                 self._dist_coeffs,
-                                                 rvec,      # Input/Output /!\
-                                                 tvec,      # Input/Output /!\
-                                                 VVSlambda=1.0)
+            rvec, tvec = cv2.solvePnPRefineVVS(
+                self.dt.points3d[self._points_ids],
+                self._points2d,
+                self._camera_matrix,
+                self._dist_coeffs,
+                rvec,      # Input/Output /!\
+                tvec,      # Input/Output /!\
+                VVSlambda=1.0)
 
             # TODO - Test whether the Levenberg-Marquardt alternative solvePnPRefineLM() is better or not
 
         self._rvec, self._tvec = rvec.squeeze(), tvec.squeeze()
+        self._rvec_j, self._tvec_j = _maybe_put(self._rvec), _maybe_put(self._tvec)
 
     def _compute_new_area(self) -> float:
 
@@ -579,7 +616,7 @@ class MonocularCalibrationTool:
         # Detect
         self._points2d, self._points_ids = self.dt.detect(
             self._frame_in,
-            camera_matrix=np.array(self._camera_matrix),
+            camera_matrix=self._camera_matrix,
             dist_coeffs=self._dist_coeffs,
             refine_markers=True,
             refine_points=True
@@ -645,14 +682,14 @@ class MonocularCalibrationTool:
         if self.has_intrinsics and self.has_extrinsics:
             # Display reprojected points: currently detected corners as yellow dots, the others as white dots
             reproj_points_j = geometry_jax.project_points(
-                jnp.asarray(self.dt.points3d),
-                jnp.asarray(self._rvec),
-                jnp.asarray(self._tvec),
-                jnp.asarray(self._camera_matrix),
-                jnp.asarray(self._dist_coeffs)
+                self._points3d_j,
+                self._rvec_j,
+                self._tvec_j,
+                self._camera_matrix_j,
+                self._dist_coeffs_j
             )
-            reproj_points = np.array(reproj_points_j)
 
+            reproj_points = np.array(reproj_points_j)
             reproj_points_int = (reproj_points * self.shift_factor).astype(np.int32)
 
             for i, xy in enumerate(reproj_points_int):
@@ -664,7 +701,7 @@ class MonocularCalibrationTool:
             # Compute errors in mm for each point
             if errors_mm:
                 # Get each detected point's distance to the camera, and its error in pixels
-                cam_points_dists = cdist([self._tvec], self.dt.points3d[self._points_ids]).squeeze()
+                cam_points_dists = cdist([self._tvec], self._points3d[self._points_ids]).squeeze()
                 per_point_error = np.nanmean(np.abs(self._points2d - reproj_points[self._points_ids]), axis=-1)
 
                 # Horizontal field of view in pixels, and the pixel-angle (i.e. how many rads per pixels)
@@ -691,7 +728,7 @@ class MonocularCalibrationTool:
         # Undistort image
         if self.has_intrinsics:
             optimal_camera_matrix, roi = cv2.getOptimalNewCameraMatrix(
-                np.asarray(self._camera_matrix),
+                self._camera_matrix,
                 self._dist_coeffs,
                 (self.w, self.h),
                 1.0,
@@ -699,7 +736,7 @@ class MonocularCalibrationTool:
             )
             frame_out = cv2.undistort(
                 frame_out,
-                np.asarray(self._camera_matrix),
+                self._camera_matrix,
                 self._dist_coeffs,
                 None,
                 optimal_camera_matrix)
@@ -709,11 +746,11 @@ class MonocularCalibrationTool:
                 # we also need to undistort the corner points with the undistorted ('optimal') camera matrix
                 # Note: dist coeffs are 'included' in this optimal camera matrix so we have to pass None here
                 corners2d_j = geometry_jax.project_points(
-                    jnp.asarray(self.dt.corners3d),
+                    self._cornersd3d_j,
                     camera_matrix=jnp.asarray(optimal_camera_matrix),
                     dist_coeffs=jnp.zeros(8, dtype=jnp.float32),
-                    rvec=jnp.asarray(self._rvec),
-                    tvec=jnp.asarray(self._tvec))
+                    rvec=self._rvec_j,
+                    tvec=self._tvec_j)
 
                 pts_int = np.asarray((corners2d_j * self.shift_factor).astype(jnp.int32))
 

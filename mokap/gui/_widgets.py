@@ -1178,7 +1178,7 @@ class MonocularCalibWindow(VideoWindowBase):
             text = "Computing..."
             font = cv2.FONT_HERSHEY_SIMPLEX
             font_scale = 2.0
-            thickness = 4
+            thickness = 6
             text_size, baseline = cv2.getTextSize(text, font, font_scale, thickness)
             text_x = (w - text_size[0]) // 2
             text_y = (h + text_size[1]) // 2
