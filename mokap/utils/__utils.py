@@ -1,4 +1,5 @@
 import sys
+import os
 import subprocess
 from typing import List, Optional, Set, Tuple
 import colorsys
@@ -13,17 +14,25 @@ class CallbackOutputStream:
     """
     Simple class to capture stdout and use it with alive_progress
     """
-    def __init__(self, callback, keep_stdout=True):
+    def __init__(self, callback, keep_stdout=False, keep_stderr=False):
         self.callback = callback
         self.original_stdout = sys.stdout
+        self.original_stderr = sys.stderr
         self.keep_stdout = keep_stdout
+        self.keep_stderr = keep_stderr
 
     def __enter__(self):
         sys.stdout = self
+        if not self.keep_stderr:
+            sys.stderr = self
+            sys.stderr = open(os.devnull, 'w')  # Redirect stderr to null device
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
         sys.stdout = self.original_stdout
+        if not self.keep_stderr:
+            sys.stderr.close()  # Close the null device
+            sys.stderr = self.original_stderr
 
     def write(self, data):
         if '\n' in data:
