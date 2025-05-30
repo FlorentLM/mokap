@@ -18,7 +18,7 @@ import shlex
 import re
 
 from mokap.utils import fileio
-from mokap.core.hardware import SSHTrigger, BaslerCamera, setup_ulimit, enumerate_basler_devices
+from mokap.core.hardware import RaspberryTrigger, BaslerCamera, setup_ulimit, enumerate_basler_devices
 
 
 class MultiCam:
@@ -55,7 +55,7 @@ class MultiCam:
         self._triggered = triggered
 
         if self._triggered:
-            self.trigger = SSHTrigger()
+            self.trigger = RaspberryTrigger()
         else:
             self.trigger = None
 
@@ -134,7 +134,7 @@ class MultiCam:
     @triggered.setter
     def triggered(self, new_val: bool):
         if not self._triggered and new_val:
-            external_trigger = SSHTrigger(silent=self._silent)
+            external_trigger = RaspberryTrigger(silent=self._silent)
             if external_trigger.connected:
                 self.trigger = external_trigger
                 self._triggered = True
@@ -476,7 +476,7 @@ class MultiCam:
         while self._acquiring:
             timer.wait(0.05)
             if queue:
-                np.copyto(self._l_display_buffers[cam_idx], queue.popleft())
+                np.copyto(self._l_display_buffers[cam_idx], queue.popleft(), casting='no')
                 self._cnt_displayed[cam_idx] += 1
 
     def _grabber_thread(self, cam_idx: int) -> NoReturn:
@@ -494,17 +494,18 @@ class MultiCam:
         cam.start_grabbing()
 
         while self._acquiring:
-            with cam.ptr.RetrieveResult(500, py.TimeoutHandling_Return) as res:
-                try:
-                    if res.GrabSucceeded():
-                        img_nb = res.ImageNumber
-                        frame = res.GetArray()
-                        if self._recording:
-                            queue_all.append((img_nb, frame))
-                        queue_latest.append(frame)
-                        self._cnt_grabbed[cam_idx] += 1
-                except py.RuntimeException:     # This might happen if the camera stops grabbing during this loop
-                    pass
+            try:
+                res = cam.ptr.RetrieveResult(10, py.TimeoutHandling_Return)
+                if res:
+                    img_nb = res.ImageNumber
+                    frame = res.GetArray()
+                    if self._recording:
+                        queue_all.append((img_nb, frame))
+                    queue_latest.append(frame)
+                    self._cnt_grabbed[cam_idx] += 1
+                    res.Release()
+            except py.RuntimeException as e:
+                pass
 
         cam.stop_grabbing()
 
