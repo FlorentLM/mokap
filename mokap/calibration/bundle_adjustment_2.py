@@ -189,12 +189,12 @@ def intrinsics_bounds(
 
     return np.array(intr_lo), np.array(intr_hi)
 
-
+# params = x0
 def cost_func(
     params:             np.ndarray,
     points2d:           np.ndarray,     # (C, P, N, 2)
     visibility_mask:    np.ndarray,     # (C, P, N)
-    points_3d_th:       jnp.ndarray,    # (N, 3)
+    points3d_th:        jnp.ndarray,    # (N, 3)
     simple_focal:       bool = False,
     simple_distortion:  bool = False,
     complex_distortion: bool = False,
@@ -227,7 +227,7 @@ def cost_func(
     r_bc, t_bc = geometry_jax.extmat_to_rtvecs(E_board_cam) # each is (P, C, 3)
 
     # we vmap over the P dimension (project_multiple expects (C, 3) inputs)
-    project_frame = lambda rv, tv: geometry_jax.project_multiple(points_3d_th, rv, tv, cam_mats, dist_coefs)
+    project_frame = lambda rv, tv: geometry_jax.project_multiple(points3d_th, rv, tv, cam_mats, dist_coefs)
     reproj = jax.vmap(project_frame, in_axes=(0, 0))(r_bc, t_bc)  # (P, C, N, 2)
 
     # bring points2d & mask into (P, C, N, ...) layout
@@ -248,7 +248,7 @@ def run_bundle_adjustment(
         board_tvecs:        np.ndarray,  # (C, 3)
         points2d:           np.ndarray,  # (C, P, N, 2)
         visibility_mask:    np.ndarray,  # (C, P, N)
-        points_3d_th,
+        points3d_th,
         simple_focal=False,
         simple_distortion=False,
         complex_distortion=False,
@@ -278,10 +278,10 @@ def run_bundle_adjustment(
     lb = np.concatenate([lb_intr, -np.inf * np.ones(x0.size - lb_intr.size)])
     ub = np.concatenate([ub_intr, np.inf * np.ones(x0.size - ub_intr.size)])
 
-    points_3d_th = jnp.asarray(points_3d_th)    # (N, 3)
+    points3d_th = jnp.asarray(points3d_th)    # (N, 3)
 
     with alive_bar(title='Bundle adjustment...', length=20, force_tty=True) as bar:
-        with CallbackOutputStream(bar, keep_stdout=False):
+        with CallbackOutputStream(bar):
             result = least_squares(cost_func,
                                    x0,          # x0 contains all the optimisable variables
                                    verbose=2,
@@ -294,7 +294,7 @@ def run_bundle_adjustment(
                                    args=(
                                        points2d,        # Passed as a fixed parameters
                                        visibility_mask, # Passed as a fixed parameters
-                                       points_3d_th,    # Passed as a fixed parameters
+                                       points3d_th,     # Passed as a fixed parameters
 
                                        simple_focal,
                                        simple_distortion,
