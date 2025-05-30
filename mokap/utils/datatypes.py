@@ -24,6 +24,17 @@ class BoardParams:
     def to_file(self, file_path: Path | str, multi_size=False, factor=2.0, dpi=1200) -> None:
         generate_board_svg(self.to_opencv(), file_path, multi_size=multi_size, factor=factor, dpi=dpi)
 
+    def object_points(self) -> np.ndarray:
+        """
+        Returns the theoretical 3D locations (X, Y, Z=0) of the inner chessboard corners
+        """
+        xs = np.arange(1, self.cols) * self.square_length
+        ys = np.arange(1, self.rows) * self.square_length
+
+        xx, yy = np.meshgrid(xs, ys)
+
+        return np.stack((xx, yy, np.zeros_like(xx)), axis=-1).reshape(-1, 3)
+
     def copy(self):
         return deepcopy(self)
 
