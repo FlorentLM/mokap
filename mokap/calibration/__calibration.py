@@ -4,14 +4,15 @@ np.set_printoptions(precision=3, suppress=True, threshold=5)
 import cv2
 import scipy.stats as stats
 from scipy.spatial.distance import cdist
+import jax.numpy as jnp
+
+from typing import Optional, Iterable, Tuple, Union
+from numpy.typing import ArrayLike
+
 from mokap.utils import geometry
 from mokap.utils.datatypes import BoardParams
-from mokap.calibration import monocular, multiview
-# from mokap.calibration import monocular_jax as monocular
-# from mokap.calibration import multiview_jax as multiview
-# TODO: use JAX here too
-from typing import Optional
-from numpy.typing import ArrayLike
+from mokap.calibration import monocular_2
+from mokap.utils import geometry_jax
 
 
 class CharucoDetector:
@@ -119,9 +120,15 @@ class CharucoDetector:
 
 class MonocularCalibrationTool:
     """
-        This object is stateful for the intrinsics *only*
+    This object is stateful for the intrinsics *only*
     """
-    def __init__(self, board_params: BoardParams, imsize_hw=None, min_stack=15, max_stack=100, focal_mm=None, sensor_size=None):
+    def __init__(self,
+                 board_params:  BoardParams,
+                 imsize_hw:     Optional[Iterable[int]] = None, # OpenCV order (height, width)
+                 min_stack:     int = 15,
+                 max_stack:     int = 100,
+                 focal_mm:      Optional[int] = None,
+                 sensor_size:   Optional[Tuple[float]] = None):
 
         self.dt = CharucoDetector(board_params)
 
@@ -129,43 +136,45 @@ class MonocularCalibrationTool:
         # self._min_pts = 4   # ITERATIVE method needs at least 4 points
         self._min_pts = 6     # DLT algorithm needs at least 6 points for pose estimation
 
-        # Detection (2D points and IDs)
+        self._grid_cells = 15
+        self._cells_gamma = 2.0
+        self._min_cells_weight = 0.25   # cells at centre get ~ min weight and cells at the edge get ~ 1.0
+
+        # Defaults
+
+        self.h, self.w = None, None
+        self._sensor_size = None
+        self._th_camera_matrix = None
+
         self._points2d = None
         self._points_ids = None
 
-        # Extrinsics
+        self._camera_matrix = None
+        self._dist_coeffs = None
         self._rvec = None
         self._tvec = None
 
-        # Image size and related arrays
         if imsize_hw is not None:
-            self.imsize = np.asarray(imsize_hw)[:2]  # OpenCV format (height, width)
-            self._update_imsize(self.imsize)    # Initialise the related arrays
-        else:
-            self.imsize = None      # If not known, can't initialise related arrays, they will be on the first detection
+            self.h, self.w = np.asarray(imsize_hw)[:2]
+            self._update_imsize()
+        # otherwise arrays will be initialised on the first detection
 
         # Process sensor size input
         if isinstance(sensor_size, str):
-            sensor_size = monocular.SENSOR_SIZES.get(f'''{sensor_size.strip('"')}"''', None)
+            self._sensor_size = monocular_2.SENSOR_SIZES.get(f'''{sensor_size.strip('"')}"''', None)
         elif isinstance(sensor_size, (tuple, list, set, np.ndarray)) and len(sensor_size) == 2:
-            sensor_size = np.asarray(sensor_size)
-        else:
-            sensor_size = None
-        self._sensor_size = sensor_size
+            self._sensor_size = np.asarray(sensor_size)
 
-        # Compute ideal camera matrix if possible - this allows to fix the fx/fy ration, and helps the first guess
-        if all([v is not None for v in (focal_mm, self._sensor_size, self.imsize)]):
-            self._ideal_camera_matrix = monocular.estimate_camera_matrix(focal_mm, sensor_size, image_wh_px=np.flip(self.imsize))
-        else:
-            self._ideal_camera_matrix = None
-
-        # If theoretical camera matrix is available, initialise intrinsics with it (distortion coefficients as zeros)
-        if self._ideal_camera_matrix is not None:
-            self._camera_matrix = self._ideal_camera_matrix.copy()
+        # compute theoretical camera matrix if possible
+        # (this allows to fix the fx/fy ratio and helps the first guess)
+        if None not in (focal_mm, self._sensor_size, self.h, self.w):
+            self._th_camera_matrix = monocular_2.estimate_camera_matrix(focal_mm,
+                                                                        self._sensor_size,
+                                                                        (self.w, self.h))
+        # initialise intrinsics if possible
+        if self._th_camera_matrix is not None:
+            self._camera_matrix = self._th_camera_matrix.copy()
             self._dist_coeffs = np.zeros(5, dtype=np.float32)
-        else:
-            self._camera_matrix = None
-            self._dist_coeffs = None
 
         # Samples stack (to aggregate detections for calibration)
         self._min_stack = min_stack
@@ -179,21 +188,36 @@ class MonocularCalibrationTool:
 
         self.set_visualisation_scale(scale=1)
 
-    def _update_imsize(self, new_size: ArrayLike):
+    def _update_imsize(self):
 
-        new_size = np.asarray(new_size)[:2]
+        self._frame_in = np.zeros((self.h, self.w, 3), dtype=np.uint8)
 
-        self.imsize = new_size
-        self._frame_in = np.zeros((*self.imsize, 3), dtype=np.uint8)
-        self._err_norm = 1  # TODO - Error normalisation, disabled for now, use image diag np.sum(np.power(self.imsize, 2)) * 1e-6
+        # TODO - Error normalisation factor: we want to use image diagonal to normalise the errors
+        #   np.sum(np.power(self.imsize, 2)) * 1e-6
+        self._err_norm = 1
 
-        # Initialize coverage grid to track which cells have been covered
-        nb_cells = 15
-        self._coverage_grid_shape = (nb_cells, int(np.round((self.imsize[1] / self.imsize[0]) * nb_cells)))
-        self._coverage_grid = np.zeros(self._coverage_grid_shape, dtype=bool)
+        self._grid_shape = (self._grid_cells, int(np.round((self.w / self.h) * self._grid_cells)))
+        self._cumul_grid = np.zeros(self._grid_shape, dtype=bool)
+        self._temp_grid = np.zeros(self._grid_shape, dtype=bool)
 
-        # Create a weight grid for the coverage cells
-        self._coverage_weight_grid = self._create_weight_grid()
+        # we want to weight the cells based on distance from the image centre (avoids oversampling the centre)
+        grid_h, grid_w = self._grid_shape
+        cell_h = self.h / grid_h
+        cell_w = self.w / grid_w
+
+        # cell centers
+        xs = (np.arange(grid_w) + 0.5) * cell_w
+        ys = (np.arange(grid_h) + 0.5) * cell_h
+        grid_x, grid_y = np.meshgrid(xs, ys)
+
+        # distance from center of the image
+        center_x, center_y = self.w / 2, self.h / 2
+        distances = np.sqrt((grid_x - center_x) ** 2 + (grid_y - center_y) ** 2)
+        max_distance = np.sqrt(center_x ** 2 + center_y ** 2) # max dist is center -> one of the corners
+        norm_dist = distances / max_distance
+
+        # cells at centre (norm_dist ~ 0) get near min weight, and cells at the edge get near 1.0
+        self._grid_weights = self._min_cells_weight + (1 - self._min_cells_weight) * (norm_dist ** self._cells_gamma)
 
     def set_visualisation_scale(self, scale=1):
         self.BIT_SHIFT = 4
@@ -207,88 +231,78 @@ class MonocularCalibrationTool:
                             'lineType': cv2.LINE_AA}
 
     @property
-    def has_intrinsics(self):
-        return self._camera_matrix is not None and self._dist_coeffs is not None
-
-    @property
-    def has_extrinsics(self):
-        return self._rvec is not None and self._tvec is not None
-
-    @property
-    def has_detection(self):
-        return self._points2d is not None and self._points_ids is not None and len(self._points2d) >= self._min_pts
-
-    @property
-    def detection(self):
+    def detection(self) -> Tuple[ArrayLike, ArrayLike]:
         return self._points2d, self._points_ids
 
     @property
-    def intrinsics(self):
+    def intrinsics(self) -> Tuple[ArrayLike, ArrayLike]:
         return self._camera_matrix, self._dist_coeffs
 
     @property
-    def extrinsics(self):
+    def extrinsics(self) -> Tuple[ArrayLike, ArrayLike]:
         return self._rvec, self._tvec
 
     @property
-    def nb_points(self):
+    def has_detection(self) -> bool:
+        return all(x is not None for x in self.detection) and len(self._points2d) >= self._min_pts
+
+    @property
+    def has_intrinsics(self) -> bool:
+        return all(x is not None for x in self.intrinsics)
+
+    @property
+    def has_extrinsics(self) -> bool:
+        return all(x is not None for x in self.extrinsics)
+
+    @property
+    def nb_points(self) -> int:
         return self._points2d.shape[0] if self._points2d is not None else 0
 
     @property
-    def nb_samples(self):
+    def nb_samples(self) -> int:
         return len(self.stack_points2d)
 
     @property
-    def coverage(self):
-        return (np.sum(self._coverage_grid) / self._coverage_grid.size) * 100
+    def coverage(self) -> float:
+        return float(np.sum(self._cumul_grid) / self._cumul_grid.size) * 100
 
     @property
     def pose_error(self):
         return self._pose_error
 
     @property
-    def intrinsics_errors(self):
+    def intrinsics_errors(self) -> ArrayLike:
         return self._intrinsics_errors
 
     @property
-    def focal(self):
-        if self.has_intrinsics:
-            return (self._camera_matrix[0, 0] + self._camera_matrix[1, 1])/2.0
-        else:
-            return None
+    def focal(self) -> float:
+        return float(self._camera_matrix[np.diag_indices(2)].sum() / 2.0) if self.has_intrinsics else 0.0
 
     @property
-    def focal_mm(self):
-        if self._camera_matrix is None or self._sensor_size is None or self.imsize is None:
-            return None
+    def focal_mm(self) -> float:
+        if any(x is None for x in (self._camera_matrix, self._sensor_size, self.h, self.w)):
+            return 0.0
+        return float((self._camera_matrix[np.diag_indices(2)] * (self._sensor_size / np.array([self.w, self.h]))).sum() / 2.0)
 
-        sensor_w_mm, sensor_h_mm = self._sensor_size
-        image_h_px, image_w_px  = self.imsize
+    def set_intrinsics(self, camera_matrix: ArrayLike, dist_coeffs: ArrayLike, errors: Optional[ArrayLike] = None):
 
-        fx_px = self._camera_matrix[0, 0]
-        fy_px = self._camera_matrix[1, 1]
-        pixel_size_x = sensor_w_mm / image_w_px
-        pixel_size_y = sensor_h_mm / image_h_px
-        f_mm_x = fx_px * pixel_size_x
-        f_mm_y = fy_px * pixel_size_y
-
-        return (f_mm_x + f_mm_y) / 2.0
-
-    def set_intrinsics(self, camera_matrix: ArrayLike, dist_coeffs: ArrayLike, errors: ArrayLike | None = None):
         self._camera_matrix = np.asarray(camera_matrix)
         dist_coeffs = np.asarray(dist_coeffs)
-        if len(dist_coeffs) < 4:
+
+        if len(dist_coeffs) < 5:
             self._dist_coeffs = np.zeros(5, dtype=np.float32)
             self._dist_coeffs[:len(dist_coeffs)] = dist_coeffs
         self._dist_coeffs = dist_coeffs
+
         if errors is not None:
             self._intrinsics_errors = np.asarray(errors)
         else:
             self._intrinsics_errors = np.array([np.inf])
 
     def clear_intrinsics(self):
-        if self._ideal_camera_matrix is not None:
-            self._camera_matrix = self._ideal_camera_matrix.copy()
+
+        if self._th_camera_matrix is not None:
+            self._camera_matrix = self._th_camera_matrix.copy()
             self._dist_coeffs = np.zeros(5, dtype=np.float32)
         else:
             self._camera_matrix = None
@@ -297,6 +311,7 @@ class MonocularCalibrationTool:
 
     @staticmethod
     def _check_new_errors(errors_new: ArrayLike, errors_prev: ArrayLike, p_val=0.05, confidence_lvl=0.95):
+
         mean_new, se_new, l_new = np.mean(errors_new), stats.sem(errors_new), len(np.atleast_1d(errors_prev))
         mean_prev, se_prev, l_prev = np.mean(errors_prev), stats.sem(errors_prev), len(np.atleast_1d(errors_prev))
 
@@ -342,53 +357,29 @@ class MonocularCalibrationTool:
 
     def register_sample(self):
         if self.has_detection:
-            # calibrateCamera will complain if the deques contain Nx2 arrays, but not if they contain 1xNx2 arrays...
+            # cv2.calibrateCamera will complain if the deques contain (N, 2) arrays, it expects (1, N, 2)
             self.stack_points2d.append(self._points2d[np.newaxis, :, :])
             self.stack_points_ids.append(self._points_ids[np.newaxis, :])
 
     def clear_stacks(self):
-        # Clear grid and sample stacks
-        self._coverage_grid.fill(False)
+        self._cumul_grid.fill(False)
         self.stack_points2d.clear()
         self.stack_points_ids.clear()
 
-    def _create_weight_grid(self, gamma=2.0, min_weight=0.5):
-        """
-            Creates a grid of weights for the coverage cells based on distance from the image center
-        """
-        h, w = self.imsize
-        grid_h, grid_w = self._coverage_grid_shape
-        cell_h = h / grid_h
-        cell_w = w / grid_w
+    def _map_points_to_grid(self, points):
+        nb_rows, nb_cols = self._grid_shape
+        cell_height = self.h / nb_rows
+        cell_width = self.w / nb_cols
 
-        # Coordinates for cell centers
-        xs = (np.arange(grid_w) + 0.5) * cell_w
-        ys = (np.arange(grid_h) + 0.5) * cell_h
-        grid_x, grid_y = np.meshgrid(xs, ys)
+        xs = points[:, 0]
+        ys = points[:, 1]
+        cols = (xs // cell_width).astype(int)
+        rows = (ys // cell_height).astype(int)
 
-        # Calculate distance from the center of the image
-        center_x, center_y = w / 2, h / 2
-        distances = np.sqrt((grid_x - center_x) ** 2 + (grid_y - center_y) ** 2)
-        # Maximum distance is from center to one of the corners
-        max_distance = np.sqrt(center_x ** 2 + center_y ** 2)
-        norm_dist = distances / max_distance
+        rows = np.clip(rows, 0, nb_rows - 1)
+        cols = np.clip(cols, 0, nb_cols - 1)
 
-        # Weight: cells at the center (norm_dist near 0) get ~min_weight, and those at the edge get near 1.
-        weights = min_weight + (1 - min_weight) * (norm_dist ** gamma)
-        return weights
-
-    def _map_point_to_grid(self, point):
-        h, w = self.imsize
-        nb_rows, nb_cols = self._coverage_grid_shape
-
-        cell_height = h / nb_rows
-        cell_width = w / nb_cols
-
-        row = int(point[1] // cell_height)
-        col = int(point[0] // cell_width)
-        row = min(max(row, 0), nb_rows - 1)
-        col = min(max(col, 0), nb_cols - 1)
-        return row, col
+        return np.column_stack((rows, cols))
 
     def compute_intrinsics(self, clear_stack=True, fix_aspect_ratio=True, simple_distortion=False, complex_distortion=False):
 
@@ -406,10 +397,11 @@ class MonocularCalibrationTool:
         # calib_flags = cv2.CALIB_USE_LU
         # calib_flags = cv2.CALIB_USE_QR
         calib_flags = 0
+
         if fix_aspect_ratio:
             calib_flags |= cv2.CALIB_FIX_ASPECT_RATIO           # This locks the ratio of fx and fy
         if simple_distortion or not self.has_intrinsics:        # The first iteration will use the simple model - this helps
-            calib_flags |= (cv2.CALIB_FIX_K3 | cv2.CALIB_ZERO_TANGENT_DIST)
+            calib_flags |= cv2.CALIB_FIX_K3
         if complex_distortion:
             calib_flags |= cv2.CALIB_RATIONAL_MODEL
         if self.has_intrinsics:
@@ -431,22 +423,22 @@ class MonocularCalibrationTool:
                 charucoCorners=self.stack_points2d,
                 charucoIds=self.stack_points_ids,
                 board=self.dt.board,
-                imageSize=np.flip(self.imsize),
+                imageSize=(self.w, self.h),
                 cameraMatrix=current_camera_matrix,     # Input/Output /!\
                 distCoeffs=current_dist_coeffs,         # Input/Output /!\
                 flags=calib_flags)
 
             # std_cam_mat, std_dist_coeffs = np.split(std_intrinsics.squeeze(), [4])
             # std_rvecs, std_tvecs =  std_extrinsics.reshape(2, -1, 3)
-            # TODO - Use these std values in the plot - or to decide if the new round of calibrateCamera is good or not?
+            # TODO: Use these std values in the plot - or to decide if the new round of calibrateCamera is good or not?
 
             new_dist_coeffs = new_dist_coeffs.squeeze()
             # stack_rvecs = np.stack(stack_rvecs).squeeze()       # Unused for now
             # stack_tvecs = np.stack(stack_tvecs).squeeze()       # Unused for now
-            stack_intr_errors = stack_intr_errors.squeeze() / self._err_norm  # Normalise errors on image diagonal
+            stack_intr_errors = stack_intr_errors.squeeze() / self._err_norm  # TODO: Normalise errors on image diagonal
 
             # Note:
-            # ---------------
+            # ------
             #
             # The per-view reprojection error as returned by calibrateCamera() is:
             #   the square root of the sum of the 2 means in x and y of the squared diff
@@ -460,22 +452,25 @@ class MonocularCalibrationTool:
             #
             # ----------------------------------------------
             #
-            # The global calibration error in calibrateCamera is:
+            # The global calibration error in calibrateCamera() is:
             #       np.sqrt(np.sum([sq_diff for view in stack])) / np.sum([len(view) for view in stack]))
 
             # The following things should not be possible ; if any happens, then we trash the stack and abort
-            if (new_camera_matrix < 0).any() or (new_camera_matrix[:2, 2] >= np.flip(self.imsize)).any():
+            if (new_camera_matrix < 0).any() or (new_camera_matrix[:2, 2] >= np.array(self.w, self.h)).any():
                 self.clear_stacks()
                 return
 
-            # Update the intrinsics if this stack's errors are better (or if it is the very first stack computed)
-            if not self.has_intrinsics or np.any(self._intrinsics_errors == np.inf):
+            # store intrinsics if it is the very first estimation
+            if not self.has_intrinsics or np.inf in self._intrinsics_errors:
+
                 self._camera_matrix = new_camera_matrix
                 self._dist_coeffs = new_dist_coeffs
                 self._intrinsics_errors = stack_intr_errors
                 print(f"---Computed intrinsics---")
 
+            # or update them if this stack's errors are better
             elif self._check_new_errors(stack_intr_errors, self._intrinsics_errors):
+
                 self._camera_matrix = new_camera_matrix
                 self._dist_coeffs = new_dist_coeffs
                 self._intrinsics_errors = stack_intr_errors
@@ -531,8 +526,8 @@ class MonocularCalibrationTool:
             self._pose_error = np.inf
             return
 
-        # Only one solution
-        self._pose_error = float(solutions_errors.squeeze()) / self._err_norm   # Normalise error on image diagonal
+        # if only one solution, continue
+        self._pose_error = float(solutions_errors.squeeze()) / self._err_norm  # TODO: Normalise error on image diagonal
         rvec, tvec = rvecs[0], tvecs[0]
 
         if refine:
@@ -553,53 +548,48 @@ class MonocularCalibrationTool:
 
         self._rvec, self._tvec = rvec.squeeze(), tvec.squeeze()
 
-    def _compute_new_area(self):
-        # Create a temporary grid for the current detection
-        current_grid = np.zeros(self._coverage_grid.shape, dtype=bool)
-        if self.has_detection:
-            for pt in self._points2d:
-                row, col = self._map_point_to_grid(pt)
-                current_grid[row, col] = True
+    def _compute_new_area(self) -> float:
 
-            # Novel area: cells that are in current_grid but not in cumulative grid
-            # novel_cells = current_grid & (~self._coverage_grid)
-            # novel_area_pct = 100.0 * novel_cells.sum() / self._coverage_grid.size
-
-            # Novel cells are those not previously covered.
-            novel_cells = current_grid & (~self._coverage_grid)
-            # Instead of counting cells, sum the weights of the novel cells.
-            novel_weight = np.sum(self._coverage_weight_grid[novel_cells])
-            total_weight = np.sum(self._coverage_weight_grid)
-            novel_area_pct = 100.0 * novel_weight / total_weight
-
-
-            # Update the cumulative coverage grid
-            self._coverage_grid |= current_grid
-
-            return novel_area_pct
-        else:
+        if not self.has_detection:
             return 0.0
+
+        cells_indices = self._map_points_to_grid(self._points2d)
+        self._temp_grid[*cells_indices.T] = True
+
+        # Novel area = cells that are in the current grid but not in the cumulative grid
+        novel_cells = self._temp_grid & (~self._cumul_grid)
+        novel_weight = self._grid_weights[novel_cells].sum()
+        total_weight = self._grid_weights.sum()
+
+        # update cumulative coverage and clear current temporary grid
+        self._cumul_grid |= self._temp_grid
+        self._temp_grid.fill(False)
+
+        return float(novel_weight / total_weight) * 100
 
     def detect(self, frame):
 
-        # Initialise or update framesize-related stuff
-        new_size = np.asarray(frame.shape)[:2]
-        if self.imsize is None or np.any(self.imsize != new_size):
-            self._update_imsize(new_size)
+        # initialise or update the internal arrays to match frame size if needed
+        if None in (self.h, self.w) or np.any([self.h, self.w] != np.asarray(frame.shape)[:2]):
+            self._update_imsize()
 
         # Load frame
         np.copyto(self._frame_in[:], frame)
 
         # Detect
-        self._points2d, self._points_ids = self.dt.detect(self._frame_in,
-                                              camera_matrix=self._camera_matrix,
-                                              dist_coeffs=self._dist_coeffs,
-                                              refine_markers=True,
-                                              refine_points=True)
+        self._points2d, self._points_ids = self.dt.detect(
+            self._frame_in,
+            camera_matrix=np.array(self._camera_matrix),
+            dist_coeffs=self._dist_coeffs,
+            refine_markers=True,
+            refine_points=True
+        )
 
-    def auto_register_area_based(self, area_threshold=0.2, nb_points_threshold=4):
+    def auto_register_area_based(self,
+                                 area_threshold:        float = 0.2,
+                                 nb_points_threshold:   int = 4
+                                 ) -> bool:
 
-        # Compute grid-based coverage
         novel_area = self._compute_new_area()
         if novel_area >= area_threshold and self.nb_points >= nb_points_threshold:
             self.register_sample()
@@ -607,11 +597,16 @@ class MonocularCalibrationTool:
         else:
             return False
 
-    def auto_compute_intrinsics(self, coverage_threshold=80, stack_length_threshold=15,
-                                simple_focal=False, simple_distortion=False, complex_distortion=False):
+    def auto_compute_intrinsics(self,
+                                coverage_threshold:     float = 80.0,
+                                stack_length_threshold: int = 15,
+                                simple_focal:           bool = False,
+                                simple_distortion:      bool = False,
+                                complex_distortion:     bool = False
+                                ) -> bool:
         """
-            Trigger computation if the percentage of grid cells marked as covered exceeds the threshold
-             and there are enough samples
+        Triggers computation if the percentage of grid cells marked as covered exceeds the threshold and if
+        there are enough samples
         """
         if self.coverage >= coverage_threshold and self.nb_samples > stack_length_threshold:
             self.compute_intrinsics(fix_aspect_ratio=simple_focal,
@@ -622,31 +617,26 @@ class MonocularCalibrationTool:
             return False
 
     def draw_coverage_grid(self, img):
-        overlay = img.copy()
-        height, width = img.shape[:2]
-        grid_rows, grid_cols = self._coverage_grid_shape
-        cell_h = height / grid_rows
-        cell_w = width / grid_cols
+        # mask of covered cells at full resolution
+        mask = cv2.resize(
+            self._cumul_grid.astype(np.uint8),
+            np.flip(img.shape[:2]),
+            interpolation=cv2.INTER_NEAREST
+        )
 
-        for i in range(grid_rows):
-            for j in range(grid_cols):
-                if self._coverage_grid[i, j]:
-                    # Determine pixel boundaries for this cell
-                    x1 = int(j * cell_w)
-                    y1 = int(i * cell_h)
-                    x2 = int((j + 1) * cell_w)
-                    y2 = int((i + 1) * cell_h)
-                    cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 255, 0), thickness=-1)
+        # green overlay
+        overlay = np.zeros_like(img)
+        overlay[mask > 0] = (0, 255, 0)
+
         alpha = 0.3
-        blended = cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0)
-        return blended
+        return cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0)
 
     def visualise(self, errors_mm=False):
 
         frame_out = np.copy(self._frame_in)
 
         if self.has_detection:
-            # If corners have been found, show them as red dots
+            # if corners have been found show them as red dots
             detected_points_int = (self._points2d * self.shift_factor).astype(np.int32)
 
             for xy in detected_points_int:
@@ -654,11 +644,14 @@ class MonocularCalibrationTool:
 
         if self.has_intrinsics and self.has_extrinsics:
             # Display reprojected points: currently detected corners as yellow dots, the others as white dots
-            reproj_points = monocular.reprojection(self.dt.points3d,
-                                   camera_matrix=self._camera_matrix,
-                                   dist_coeffs=self._dist_coeffs,
-                                   rvec=self._rvec,
-                                   tvec=self._tvec)
+            reproj_points_j = geometry_jax.project_points(
+                jnp.asarray(self.dt.points3d),
+                jnp.asarray(self._rvec),
+                jnp.asarray(self._tvec),
+                jnp.asarray(self._camera_matrix),
+                jnp.asarray(self._dist_coeffs)
+            )
+            reproj_points = np.array(reproj_points_j)
 
             reproj_points_int = (reproj_points * self.shift_factor).astype(np.int32)
 
@@ -676,9 +669,8 @@ class MonocularCalibrationTool:
 
                 # Horizontal field of view in pixels, and the pixel-angle (i.e. how many rads per pixels)
                 f = self.focal
-                if f is not None:
-                    fov_h = 2 * np.arctan(self.imsize[1] / (2 * f))
-                    pixel_angle = fov_h / self.imsize[1]
+                if f:
+                    pixel_angle = 2 * np.arctan(self.h / (2 * f)) / self.h
 
                     # Determine the per-point error in millimeters
                     error_arc = pixel_angle * per_point_error
@@ -698,42 +690,69 @@ class MonocularCalibrationTool:
 
         # Undistort image
         if self.has_intrinsics:
-            optimal_camera_matrix, roi = cv2.getOptimalNewCameraMatrix(self._camera_matrix,
-                                                                       self._dist_coeffs,
-                                                                       np.flip(self.imsize), 1.0, np.flip(self.imsize))
-            frame_out = cv2.undistort(frame_out, self._camera_matrix, self._dist_coeffs, None, optimal_camera_matrix)
+            optimal_camera_matrix, roi = cv2.getOptimalNewCameraMatrix(
+                np.asarray(self._camera_matrix),
+                self._dist_coeffs,
+                (self.w, self.h),
+                1.0,
+                (self.w, self.h)
+            )
+            frame_out = cv2.undistort(
+                frame_out,
+                np.asarray(self._camera_matrix),
+                self._dist_coeffs,
+                None,
+                optimal_camera_matrix)
 
-            # Display board perimeter in purple AFTER undistortion, so that the lines are straight
+            # Display board perimeter in purple (after undistortion so that the lines are straight)
             if self.has_extrinsics:
-                # we also need to undistort the corner points with the undistorted ("optimal") camera matrix
-                # Note: NO dist coeffs, since they are "included" in the optimal camera matrix
-                corners2d = monocular.reprojection(self.dt.corners3d,
-                                       camera_matrix=optimal_camera_matrix,
-                                       dist_coeffs=None,
-                                       rvec=self._rvec, tvec=self._tvec)
+                # we also need to undistort the corner points with the undistorted ('optimal') camera matrix
+                # Note: dist coeffs are 'included' in this optimal camera matrix so we have to pass None here
+                corners2d_j = geometry_jax.project_points(
+                    jnp.asarray(self.dt.corners3d),
+                    camera_matrix=jnp.asarray(optimal_camera_matrix),
+                    dist_coeffs=jnp.zeros(8, dtype=jnp.float32),
+                    rvec=jnp.asarray(self._rvec),
+                    tvec=jnp.asarray(self._tvec))
 
-                pts_int = (corners2d * self.shift_factor).astype(np.int32)
-                frame_out = cv2.polylines(frame_out, [pts_int], True, (255, 0, 255), 1 * self.SCALE, **self.draw_params)
+                pts_int = np.asarray((corners2d_j * self.shift_factor).astype(jnp.int32))
+
+                frame_out = cv2.polylines(frame_out,
+                                          [pts_int],
+                                          True,
+                                          (255, 0, 255),
+                                          1 * self.SCALE,
+                                          **self.draw_params)
 
         # Add information text to the visualisation image
-        frame_out = cv2.putText(frame_out, f"Points: {self.nb_points}/{self.dt.total_points}", (30, 30 * self.SCALE),
+        frame_out = cv2.putText(frame_out,
+                                f"Points: {self.nb_points}/{self.dt.total_points}",
+                                (30, 30 * self.SCALE),
                                 **self.text_params)
         frame_out = cv2.putText(frame_out,
                                 f"Area: {self.coverage:.2f}% ({len(self.stack_points2d)} snapshots)",
-                                (30, 60 * self.SCALE), **self.text_params)
+                                (30, 60 * self.SCALE),
+                                **self.text_params)
 
         txt = f"{self._pose_error:.3f} px" if np.all(self._pose_error != np.inf) else '-'
-        frame_out = cv2.putText(frame_out, f"Current reprojection error: {txt}", (30, 90 * self.SCALE), **self.text_params)
+        frame_out = cv2.putText(frame_out,
+                                f"Current reprojection error: {txt}",
+                                (30, 90 * self.SCALE),
+                                **self.text_params)
 
         avg_intr_err = np.nanmean(self._intrinsics_errors)
         txt = f"{avg_intr_err:.3f} px" if np.all(avg_intr_err != np.inf) else '-'
-        frame_out = cv2.putText(frame_out, f"Best average reprojection error: {txt}", (30, 120 * self.SCALE), **self.text_params)
-
-        f_mm = self.focal_mm
-        txt = f"{f_mm:.2f} mm" if f_mm is not None else '-'
-        frame_out = cv2.putText(frame_out, f"Estimated focal: {txt}", (30, 150 * self.SCALE),
+        frame_out = cv2.putText(frame_out,
+                                f"Best average reprojection error: {txt}",
+                                (30, 120 * self.SCALE),
                                 **self.text_params)
 
+        f_mm = self.focal_mm
+        txt = f"{f_mm:.2f} mm" if f_mm else '-'
+        frame_out = cv2.putText(frame_out,
+                                f"Estimated focal: {txt}",
+                                (30, 150 * self.SCALE),
+                                **self.text_params)
         return frame_out
 
 
