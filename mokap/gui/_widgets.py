@@ -2,7 +2,7 @@ import os
 import subprocess
 import sys
 import platform
-from typing import Tuple, Union
+from typing import Tuple, Union, Optional
 import psutil
 import screeninfo
 import cv2
@@ -11,25 +11,25 @@ from functools import partial
 from collections import deque
 from datetime import datetime
 from PIL import Image
-from PySide6.QtCore import Qt, QTimer, QEvent, QDir, Signal, Slot, QThread, QPoint, QSize
-from PySide6.QtGui import QIcon, QImage, QPixmap, QCursor, QBrush, QPen, QColor, QFont
+from PySide6.QtCore import (Qt, QTimer, QEvent, Signal, Slot, QThread, QPoint, QSize, QRect)
+from PySide6.QtGui import (QIcon, QImage, QPixmap, QCursor, QBrush, QPen, QColor, QFont, QGuiApplication)
 from PySide6.QtWidgets import (QApplication, QMainWindow, QStatusBar, QSlider, QGraphicsView, QGraphicsScene,
                                QGraphicsRectItem, QComboBox, QLineEdit, QProgressBar, QCheckBox, QScrollArea,
                                QWidget, QLabel, QFrame, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout,
                                QPushButton, QSizePolicy, QGraphicsTextItem, QTextEdit, QFileDialog, QSpinBox,
                                QDialog, QDoubleSpinBox, QDialogButtonBox, QToolButton)
 import pyqtgraph as pg
-from pyqtgraph.opengl import GLViewWidget, GLGridItem, GLLinePlotItem, GLScatterPlotItem, MeshData, GLMeshItem
+from pyqtgraph.opengl import (GLViewWidget, GLGridItem, GLLinePlotItem, GLScatterPlotItem, MeshData, GLMeshItem)
+from mokap.gui.__layout_constants import TASKBAR_H, TOPBAR_H, SPACING
 from mokap.utils import geometry_jax
 from mokap.utils.datatypes import ChessBoard, CharucoBoard
 from mokap.utils import hex_to_rgb, hex_to_hls, pretty_size
 from .workers import *
 
 
-
 # TODO: board params need to be loaded from config file
-DEFAULT_BOARD = CharucoBoard(rows=6, cols=5, square_length=1.5, markers_size=4)
-# DEFAULT_BOARD = ChessBoard(rows=6, cols=5, square_length=1.5)
+# DEFAULT_BOARD = CharucoBoard(rows=6, cols=5, square_length=1.5, markers_size=4)
+DEFAULT_BOARD = ChessBoard(rows=6, cols=5, square_length=1.5)
 
 # DEFAULT_BOARD.to_file(Path.home())
 
@@ -172,17 +172,80 @@ class BoardParamsDialog(QDialog):
         return self._board_params, self.apply_all_checkbox.isChecked()
 
 
-class SecondaryWindowBase(QWidget):
-    """ Stores common stuff for Preview windows and 3D view window """
-    BOTTOM_PANEL_H = 300
-    WINDOW_MIN_W = 550
-    if 'Windows' in platform.system():
-        TASKBAR_H = 48
-        TOPBAR_H = 23
-    else:
-        TASKBAR_H = 48
-        TOPBAR_H = 23
-    SPACING = 5
+class WindowSnapMixin:
+    """
+    Mixin class for window movement helpers
+
+    Methods:
+      snap(Optional[pos]): snap into the passed position on the current monitor, or auto decide based on index
+
+    Any class that uses this mixin should have:
+        self.idx:              the window's index
+        self.selected_monitor:  object with .x, .y, .width, .height as in screeninfo)
+        self.frameGeometry():   full QRect including title bar/borders)
+        self.move(x, y):        Qt's function to reposition the window on screen
+    """
+
+    def snap(self, pos: Optional[str] = None):
+        """
+        Snap this window’s frame so that it touches one of the 9 zones:
+        'nw', 'n', 'ne', 'w', 'c', 'e', 'sw', 's', 'se'
+        """
+
+        monitor = self.selected_monitor
+
+        if pos is None:
+            if monitor.height < monitor.width:
+                # landscape: corners first, then L/R, then T/B, then center
+                positions = ['nw', 'sw', 'ne', 'se', 'n', 's', 'w', 'e', 'c']
+            else:
+                # portrait: corners, then T/B, then L/R, then center
+                positions = ['nw', 'sw', 'ne', 'se', 'w', 'e', 'n', 's', 'c']
+
+            pos = positions[self.idx % len(positions)]
+
+        frame = self.frameGeometry()
+        w, h = frame.width(), frame.height()
+        sp = SPACING
+        tb = TASKBAR_H
+
+        left_x = monitor.x + sp
+        right_x = monitor.x + monitor.width - w - sp
+        center_x = monitor.x + (monitor.width // 2) - (w // 2)
+
+        top_y = monitor.y + sp
+        center_y = monitor.y + (monitor.height // 2) - (h // 2)
+        bottom_y = monitor.y + monitor.height - h - tb - sp
+
+        match pos:
+            case 'nw':
+                self.move(left_x, top_y)
+            case 'n':
+                self.move(center_x, top_y)
+            case 'ne':
+                self.move(right_x, top_y)
+            case 'w':
+                self.move(left_x, center_y)
+            case 'c':
+                self.move(center_x, center_y)
+            case 'e':
+                self.move(right_x, center_y)
+            case 'sw':
+                self.move(left_x, bottom_y)
+            case 's':
+                self.move(center_x, bottom_y)
+            case 'se':
+                self.move(right_x, bottom_y)
+            case _:
+                return
+
+
+class SecondaryWindowBase(QWidget, WindowSnapMixin):
+    """
+    Base for any camera‐preview or 3D window
+      - Worker/thread/timer setup
+      - Window snap via the mixin class
+    """
 
     def __init__(self, main_window_ref):
         super().__init__()
@@ -204,15 +267,21 @@ class SecondaryWindowBase(QWidget):
         self.timer_fast = QTimer(self)
         self.timer_fast.timeout.connect(self._update_fast)
 
+    @property
+    def selected_monitor(self):
+      return self._mainwindow.selected_monitor
+
     def _setup_worker(self, worker_object):
         self.worker_thread = QThread(self)
         self.worker = worker_object
         self.worker.moveToThread(self.worker_thread)
 
     def _update_slow(self):
+        """ Subclasses override if they need a slow update """
         pass
 
     def _update_fast(self):
+        """ Subclasses override if they need a fast (60fps) update """
         pass
 
     def _start_timers(self, fast=FAST_UPDATE, slow=SLOW_UPDATE):
@@ -251,9 +320,6 @@ class VideoWindowBase(SecondaryWindowBase):
 
         self._latest_frame = None
 
-        self._windowpositions = np.array([['nw', 'n', 'ne'],
-                                          ['w', 'c', 'e'],
-                                          ['sw', 's', 'se']])
         # Init clock and counter
         self._clock = datetime.now()
         self._capture_fps = deque(maxlen=10)
@@ -374,7 +440,7 @@ class VideoWindowBase(SecondaryWindowBase):
         self.snap_button.setToolTip("Move current window to a position")
         self.snap_button.setPopupMode(QToolButton.InstantPopup)
 
-        self.snap_popup = SnapPopup(parent=self, move_callback=self.move_to)
+        self.snap_popup = SnapPopup(parent=self, move_callback=self.snap)
         self.snap_button.clicked.connect(self.show_snap_popup)
         statusbar.addPermanentWidget(self.snap_button)
         main_layout.addWidget(statusbar)
@@ -472,8 +538,8 @@ class VideoWindowBase(SecondaryWindowBase):
 
         # If landscape screen
         if self._mainwindow.selected_monitor.height < self._mainwindow.selected_monitor.width:
-            available_h = (self._mainwindow.selected_monitor.height - VideoWindowBase.TASKBAR_H) // 2 - VideoWindowBase.SPACING * 3
-            video_max_h = available_h - self.BOTTOM_PANEL.height() - VideoWindowBase.TOPBAR_H
+            available_h = (self._mainwindow.selected_monitor.height - TASKBAR_H) // 2 - SPACING * 3
+            video_max_h = available_h - self.BOTTOM_PANEL.height() - TOPBAR_H
             video_max_w = video_max_h * self.aspect_ratio
 
             h = int(video_max_h + self.BOTTOM_PANEL.height())
@@ -481,58 +547,13 @@ class VideoWindowBase(SecondaryWindowBase):
 
         # If portrait screen
         else:
-            video_max_w = self._mainwindow.selected_monitor.width // 2 - VideoWindowBase.SPACING * 3
+            video_max_w = self._mainwindow.selected_monitor.width // 2 - SPACING * 3
             video_max_h = video_max_w / self.aspect_ratio
 
             h = int(video_max_h + self.BOTTOM_PANEL.height())
             w = int(video_max_w)
 
         self.resize(w, h)
-
-    def auto_move(self):
-        if self._mainwindow.selected_monitor.height < self._mainwindow.selected_monitor.width:
-            # First corners, then left right, then top and bottom,  and finally centre
-            positions = ['nw', 'sw', 'ne', 'se', 'n', 's', 'w', 'e', 'c']
-        else:
-            # First corners, then top and bottom, then left right, and finally centre
-            positions = ['nw', 'sw', 'ne', 'se', 'w', 'e', 'n', 's', 'c']
-
-        nb_positions = len(positions)
-
-        if self.idx <= nb_positions:
-            pos = positions[self._cam_idx]
-        else:  # Start over to first position
-            pos = positions[self._cam_idx % nb_positions]
-
-        self.move_to(pos)
-
-    def move_to(self, pos):
-
-        monitor = self._mainwindow.selected_monitor
-        w = self.geometry().width()
-        h = self.geometry().height()
-
-        sp = VideoWindowBase.SPACING
-
-        match pos:
-            case 'nw':
-                self.move(monitor.x + sp, monitor.y + sp)
-            case 'n':
-                self.move(monitor.x + monitor.width // 2 - w // 2, monitor.y + sp)
-            case 'ne':
-                self.move(monitor.x - sp + monitor.width - w - 1, monitor.y + sp)
-            case 'w':
-                self.move(monitor.x + sp, monitor.y + monitor.height // 2 - h // 2)
-            case 'c':
-                self.move(monitor.x + monitor.width // 2 - w // 2, monitor.y + monitor.height // 2 - h // 2)
-            case 'e':
-                self.move(monitor.x - sp + monitor.width - w - 1, monitor.y + monitor.height // 2 - h // 2)
-            case 'sw':
-                self.move(monitor.x + sp, monitor.y + monitor.height - h - VideoWindowBase.TASKBAR_H - sp)
-            case 's':
-                self.move(monitor.x + monitor.width // 2 - w // 2, monitor.y + monitor.height - h - VideoWindowBase.TASKBAR_H - sp)
-            case 'se':
-                self.move(monitor.x - sp + monitor.width - w - 1, monitor.y + monitor.height - h - VideoWindowBase.TASKBAR_H - sp)
 
     def toggle_visibility(self, override=None):
 
@@ -1270,7 +1291,7 @@ class MonocularCalibWindow(VideoWindowBase):
         dial = QFileDialog(self)
         dial.setWindowTitle("Choose folder")
         dial.setViewMode(QFileDialog.ViewMode.Detail)
-        dial.setDirectory(QDir(Path(startpath).resolve()))
+        dial.setDirectory(Path(startpath).resolve().as_posix())
 
         if dial.exec():
             selected = dial.selectedFiles()
@@ -1585,9 +1606,9 @@ class MultiviewCalibWindow(SecondaryWindowBase):
         color = tuple(color)
 
         points3d = geometry_jax.back_projection(points2d,
-                                            self._frustum_depth,
-                                            self._multi_cameras_matrices[cam_idx],
-                                             self._multi_extrinsics_matrices[cam_idx, :, :])
+                                                self._frustum_depth,
+                                                self._multi_cameras_matrices[cam_idx],
+                                                self._multi_extrinsics_matrices[cam_idx, :, :])
         points3d = geometry_jax.rotate_points3d(points3d, 180, axis='y')
 
         scatter = GLScatterPlotItem(pos=points3d,
@@ -1657,18 +1678,6 @@ class MultiviewCalibWindow(SecondaryWindowBase):
                                          antialias=antialias)
             self._refreshable_items.append(line_seg)
 
-    # -------------- Temporary --------------------
-    def auto_size(self):
-        # Do nothing on the extrinsics window for now
-        # TODO - implement this
-        pass
-
-    def auto_move(self):
-        # Do nothing on the extrinsics window for now
-        # TODO - implement this
-        pass
-
-    # -------------- TODO --------------------
     @Slot(CalibrationData)
     def handle_payload(self, data: CalibrationData):
         print(f'[Main Thread] Received {data.camera_name} {data.payload}')
@@ -1685,7 +1694,7 @@ class MultiviewCalibWindow(SecondaryWindowBase):
         self.update_scene()
 
 
-class MainWindow(QMainWindow):
+class MainWindow(QMainWindow, WindowSnapMixin):
     INFO_PANEL_MINSIZE_H = 200
     VIDEO_PANEL_MINSIZE_H = 50  # haha
     WINDOW_MIN_W = 630
@@ -2144,6 +2153,27 @@ class MainWindow(QMainWindow):
         except:
             pass
 
+    def _avail_screenspace(self) -> Tuple[int, int, int, int]:
+        """
+        Finds the QScreen that matches the selected_monitor and returns available space
+        """
+
+        # fallback to main screen if nothing matches
+        geom = QGuiApplication.primaryScreen().availableGeometry()
+
+        for screen in QGuiApplication.screens():
+            rect: QRect = screen.geometry()
+            m = self.selected_monitor
+            if (
+                rect.x() == m.x
+                and rect.y() == m.y
+                and rect.width() == m.width
+                and rect.height() == m.height
+            ):
+                geom = screen.availableGeometry()
+
+        return geom.x(), geom.y(), geom.width(), geom.height()
+
     def screen_update(self, val, event):
         # Get current monitor coordinates
         prev_monitor = self.selected_monitor
@@ -2180,84 +2210,79 @@ class MainWindow(QMainWindow):
 
     def autotile_windows(self):
         """
-            Automatically arranges and resizes the windows
+        Automatically arranges and resizes windows
         """
-        for w in self.visible_windows(include_main=True):
-            w.auto_size()
-            w.auto_move()
+        ax, ay, aw, ah = self._avail_screenspace()
+
+        main_frame = self.frameGeometry()
+        main_w, main_h = main_frame.width(), main_frame.height()
+
+        x_main = ax + (aw - main_w) // 2
+        y_main = ay + ah - main_h
+
+        self.move(x_main, y_main)
+
+        # if 3D viewer exists and is visible, place it immediately to the right or main windowa
+        if self.opengl_window and self.opengl_window.isVisible():
+            try:
+                # if the 3D viewer has its own auto_size()
+                self.opengl_window.auto_size()
+            except AttributeError:
+                pass
+
+            ogl_frame = self.opengl_window.frameGeometry()
+            ogl_w, ogl_h = ogl_frame.width(), ogl_frame.height()
+            x_ogl = x_main + main_w + SPACING
+            y_ogl = ay + ah - ogl_h
+
+            self.opengl_window.move(x_ogl, y_ogl)
+
+        for w in self.visible_windows(include_main=False):
+            if w is self.opengl_window:
+                # we just positioned it already
+                continue
+            try:
+                w.auto_size()
+                w.snap()
+            except Exception:
+                # if a window doesn't implement these we just skip it
+                pass
 
     def cascade_windows(self):
+        """
+        Cascade all visible windows
+        """
 
-        monitor = self.selected_monitor
+        # adjust stacking order
+        self.raise_()  # Main window on top
+        if self.opengl_window and self.opengl_window.isVisible():
+            self.opengl_window.lower()  # 3D viewer at back
+
+        ax, ay, aw, ah = self._avail_screenspace()
 
         for win in self.visible_windows(include_main=True):
-            w = win.geometry().width()
-            h = win.geometry().height()
+            fg = win.frameGeometry()
+            w, h = fg.width(), fg.height()
 
+            # if main window, offset by nb of secondaries * 30 px
             if win is self:
-                d_x = 30 * len(self.visible_windows(include_main=False)) + 30
-                d_y = 30 * len(self.visible_windows(include_main=False)) + 30
+                count_secondaries = len(self.visible_windows(include_main=False))
+                dx = 30 * count_secondaries + 30
+                dy = 30 * count_secondaries + 30
             else:
-                d_x = 30 * win.idx + 30
-                d_y = 30 * win.idx + 30
+                # otherwise use each window idx to stagger them
+                dx = 30 * win.idx + 30
+                dy = 30 * win.idx + 30
 
-            # minmax to make sure the window stays inside the monitor
-            new_x = min(max(monitor.x, monitor.x + d_x), self.selected_monitor.width + monitor.x - w)
-            new_y = min(max(monitor.y, monitor.y + d_y), monitor.height + monitor.y - h)
+            # constrain to available space
+            new_x = min(max(ax, ax + dx), ax + aw - w)
+            new_y = min(max(ay, ay + dy), ay + ah - h)
 
             win.move(new_x, new_y)
 
     def auto_size(self):
         # Do nothing on the main window
         pass
-
-    def auto_move(self):
-        if self.selected_monitor.height < self.selected_monitor.width:
-            # First corners, then left right, then top and bottom,  and finally centre
-            positions = ['nw', 'sw', 'ne', 'se', 'n', 's', 'w', 'e', 'c']
-        else:
-            # First corners, then top and bottom, then left right, and finally centre
-            positions = ['nw', 'sw', 'ne', 'se', 'w', 'e', 'n', 's', 'c']
-
-        nb_positions = len(positions)
-
-        idx = len(self.video_windows)
-        if idx <= nb_positions:
-            pos = positions[idx]
-        else:  # Start over to first position
-            pos = positions[idx % nb_positions]
-
-        self.move_to(pos)
-
-    # TODO - The functions auto_move and mote_to are almost the same in the Main window and the secondary windows
-    # this needs to be refactored
-
-    def move_to(self, pos):
-
-        monitor = self.selected_monitor
-        w = self.geometry().width()
-        h = self.geometry().height()
-
-        match pos:
-            case 'nw':
-                self.move(monitor.x, monitor.y)
-            case 'n':
-                self.move(monitor.x + monitor.width // 2 - w // 2, monitor.y)
-            case 'ne':
-                self.move(monitor.x + monitor.width - w - 1, monitor.y)
-            case 'w':
-                self.move(monitor.x, monitor.y + monitor.height // 2 - h // 2)
-            case 'c':
-                self.move(monitor.x + monitor.width // 2 - w // 2, monitor.y + monitor.height // 2 - h // 2)
-            case 'e':
-                self.move(monitor.x + monitor.width - w - 1, monitor.y + monitor.height // 2 - h // 2)
-            case 'sw':
-                self.move(monitor.x, monitor.y + monitor.height - h - VideoWindowBase.TASKBAR_H)
-            case 's':
-                self.move(monitor.x + monitor.width // 2 - w // 2,
-                          monitor.y + monitor.height - h - VideoWindowBase.TASKBAR_H)
-            case 'se':
-                self.move(monitor.x + monitor.width - w - 1, monitor.y + monitor.height - h - VideoWindowBase.TASKBAR_H)
 
     def _update_monitors_buttons(self):
         self.monitors_buttons_scene.clear()
@@ -2329,11 +2354,10 @@ class MainWindow(QMainWindow):
         if self.opengl_window:
             self.opengl_window.worker_thread.quit()
             self.opengl_window.worker_thread.wait()
-
-            self.opengl_window.timer_slow.stop()
-
-            self.opengl_window._force_destroy = True
             self.opengl_window.close()
+            self.opengl_window.timer_slow.stop()
+            self.opengl_window._force_destroy = True
+            self.opengl_window.deleteLater()
             self.opengl_window = None
 
         self.video_windows.clear()
