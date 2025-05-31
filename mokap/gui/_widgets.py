@@ -26,6 +26,22 @@ from mokap.utils import hex_to_rgb, hex_to_hls, pretty_size
 from .workers import *
 
 
+
+# TODO: board params need to be loaded from config file
+DEFAULT_BOARD = CharucoBoard(rows=6, cols=5, square_length=1.5, markers_size=4)
+# DEFAULT_BOARD = ChessBoard(rows=6, cols=5, square_length=1.5)
+
+# DEFAULT_BOARD.to_file(Path.home())
+
+FAST_UPDATE = 16
+SLOW_UPDATE = 200
+GUI_LOGGER = False
+MAX_PLOT_X = 50
+
+
+##
+
+
 def do_nothing():
     print('Nothing')
 
@@ -50,6 +66,7 @@ class GUILogger:
 
     def flush(self):
         pass
+
 
 class SnapPopup(QFrame):
 
@@ -198,7 +215,7 @@ class SecondaryWindowBase(QWidget):
     def _update_fast(self):
         pass
 
-    def _start_timers(self, fast=16, slow=200):
+    def _start_timers(self, fast=FAST_UPDATE, slow=SLOW_UPDATE):
         self.timer_fast.start(fast)
         self.timer_slow.start(slow)
 
@@ -1026,12 +1043,10 @@ class MonocularCalibWindow(VideoWindowBase):
     def __init__(self, camera, main_window_ref):
         super().__init__(camera, main_window_ref)
 
-        # Default board params - TODO: Needs to be loaded from config file
-        self.board_params = CharucoBoard(rows=6, cols=5, square_length=1.5, markers_size=4)
-        # self.board_params = ChessBoard(rows=6, cols=5, square_length=1.5)
+        self.board_params = DEFAULT_BOARD
 
         # Initialize reprojection error data for plotting
-        self.reprojection_errors = deque(maxlen=100)
+        self.reprojection_errors = deque(maxlen=MAX_PLOT_X)
 
         # The worker annotates the frame by itself so we keep a reference to the latest annotated frame
         # TODO - Maybe the anotation should happen here instead, like the recording mode?
@@ -1379,7 +1394,7 @@ class MultiviewCalibWindow(SecondaryWindowBase):
         # Start window update timer
         self.timer_slow = QTimer(self)
         self.timer_slow.timeout.connect(self.update_scene)
-        self.timer_slow.start(200)
+        self.timer_slow.start(SLOW_UPDATE)
 
     #  ============= Worker thread additional setup =============
     def _setup_worker(self, worker_object):
@@ -1711,7 +1726,10 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         self.setWindowTitle('Controls')
-        self.gui_logger = False
+        if GUI_LOGGER:
+            self.gui_logger = GUILogger()
+        else:
+            self.gui_logger = False
 
         self.mc = mc
         self.coordinator = CalibrationCoordinator()
@@ -1743,8 +1761,8 @@ class MainWindow(QMainWindow):
 
         # States
         self.is_editing = False
-        self.is_calibrating = False
         self.calibration_stage = 0
+        self.is_calibrating = False
 
         self._recording_text = ''
 
@@ -1765,7 +1783,7 @@ class MainWindow(QMainWindow):
         # Setup MainWindow update
         self.timer_slow = QTimer(self)
         self.timer_slow.timeout.connect(self._update_main)
-        self.timer_slow.start(200)
+        self.timer_slow.start(SLOW_UPDATE)
 
         self._mem_baseline = psutil.virtual_memory().percent
 

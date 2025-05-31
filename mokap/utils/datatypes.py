@@ -19,6 +19,7 @@ class ChessBoard:
         self.rows = rows
         self.cols = cols
         self.square_length = square_length
+        self.kind = 'chessboard'
 
     def object_points(self) -> np.ndarray:
         """
@@ -63,6 +64,7 @@ class CharucoBoard(ChessBoard):
 
         self.markers_size = markers_size
         self.margin = margin
+        self.kind = 'charuco'
 
         self.all_dict_sizes = [50, 100, 250, 1000]
         self.padding = padding

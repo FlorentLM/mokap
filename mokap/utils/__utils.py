@@ -201,7 +201,13 @@ def generate_board_svg(board_params:    Union["ChessBoard", "CharucoBoard"],
     board_cols = board_params.cols
     square_length_mm = board_params.square_length
 
-    if type(board_params) == CharucoBoard:
+    # We check like this to avoid circular imports
+    if board_params.kind == 'charuco':
+        is_charuco = True
+    else:
+        is_charuco = False
+
+    if is_charuco:
         marker_bits = board_params.markers_size
         marker_length_mm = board_params.marker_length
         markers_dictionary = board_params.aruco_dict
@@ -233,7 +239,7 @@ def generate_board_svg(board_params:    Union["ChessBoard", "CharucoBoard"],
     board_size_bits = np.array([sq_l_bits * board_cols, sq_l_bits * board_rows])
 
     # If only one size, use the one that comes with the board object and position in the centre of the page
-    if type(board_params) == CharucoBoard:
+    if is_charuco:
         filename = f'Charuco{board_rows}x{board_cols}_markers{marker_bits}x{marker_bits}-margin{margin}.svg'
     else:
         filename = f'Chessboard{board_rows}x{board_cols}.svg'
@@ -307,7 +313,7 @@ def generate_board_svg(board_params:    Union["ChessBoard", "CharucoBoard"],
             svg_lines.append(f'        <rect id="{i}" x="{rc[0] * sq_l_bits}" y="{rc[1] * sq_l_bits}" width="{sq_l_bits}" height="{sq_l_bits}" fill="#000000"/>')
         svg_lines.append('      </g>')
 
-        if type(board_params) == CharucoBoard:
+        if is_charuco:
             # Aruco markers group
             svg_lines.append('      <g id="aruco_markers">')
             cc, rr = np.where(~chessboard_arr)
@@ -327,11 +333,11 @@ def generate_board_svg(board_params:    Union["ChessBoard", "CharucoBoard"],
         # Add text with sizes
         bsize_text = f'{board_scale * square_length_mm * board_rows:.1f} x {board_scale * square_length_mm * board_cols:.1f} mm'
         sqsize_text = f'(squares: {board_scale * square_length_mm:.3f} mm)'
-        if type(board_params) == CharucoBoard:
+        if is_charuco:
             msize_text = f'(markers: {board_scale * marker_length_mm:.3f} mm)'
         svg_lines.append(f'    <text x="0" y="{board_size_bits[1] * board_scale + text_h_bits * 4}" font-family="monospace" font-size="{text_h_bits}" font-weight="bold">{bsize_text}</text>')
         svg_lines.append(f'    <text x="0" y="{board_size_bits[1] * board_scale + text_h_bits * 5}" font-family="monospace" font-size="{text_h_bits}" font-weight="bold">{sqsize_text}</text>')
-        if type(board_params) == CharucoBoard:
+        if is_charuco:
             svg_lines.append(f'    <text x="0" y="{board_size_bits[1] * board_scale + text_h_bits * 6}" font-family="monospace" font-size="{text_h_bits}" font-weight="bold">{msize_text}</text>')
         svg_lines.append('  </g>')
 
@@ -340,3 +346,4 @@ def generate_board_svg(board_params:    Union["ChessBoard", "CharucoBoard"],
     file_path.mkdir(parents=True, exist_ok=True)    # TODO - check if user passed the file name in there...
     with open(file_path / filename, 'w') as f:
         f.write('\n'.join(svg_lines))
+        print(f'Saved calibration board as {file_path / filename}')
