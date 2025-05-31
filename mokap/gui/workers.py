@@ -2,8 +2,9 @@ import numpy as np
 np.set_printoptions(precision=3, suppress=True, threshold=5)
 from PySide6.QtCore import QObject, Signal, Slot
 from mokap.calibration import MonocularCalibrationTool, MultiviewCalibrationTool
-from mokap.utils.datatypes import (BoardParams, CalibrationData, IntrinsicsPayload, ExtrinsicsPayload,
+from mokap.utils.datatypes import (ChessBoard, CharucoBoard, CalibrationData, IntrinsicsPayload, ExtrinsicsPayload,
                                    ErrorsPayload, OriginCameraPayload, PosePayload, DetectionPayload)
+from typing import Union
 from numpy.typing import ArrayLike
 
 
@@ -89,7 +90,7 @@ class MonocularWorker(CalibrationProcessingWorker):
 
     annotations = Signal(np.ndarray)       # Annotations are already burned into the image, so emit the whole thing
 
-    def __init__(self, board_params: BoardParams, cam_idx: int, cam_name: str, cam_shape: ArrayLike):
+    def __init__(self, board_params: Union[ChessBoard, CharucoBoard], cam_idx: int, cam_name: str, cam_shape: ArrayLike):
         super().__init__(name=cam_name)
         self.camera_idx = cam_idx
         self.cam_name = cam_name
@@ -99,7 +100,7 @@ class MonocularWorker(CalibrationProcessingWorker):
             board_params=board_params,
             imsize_hw=self.cam_shape[:2],   # pass frame size so it can track coverage
             focal_mm=60,                    # TODO - UI field for these
-            sensor_size='1/2.9"'  #
+            sensor_size='1/2.9"'
         )
         self.monocular_tool.set_visualisation_scale(2)
 

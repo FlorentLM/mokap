@@ -1,13 +1,17 @@
 import sys
 import os
 import subprocess
-from typing import List, Optional, Set, Tuple
+from typing import List, Optional, Set, Tuple, Union
 import colorsys
 import cv2
 from pathlib import Path
 import numpy as np
 from alive_progress import alive_bar
 from tempfile import mkdtemp
+
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from mokap.utils.datatypes import ChessBoard, CharucoBoard
 
 
 class CallbackOutputStream:
@@ -187,51 +191,38 @@ def load_full_video(video_path: Path | str):
     return full_video, temp_file
 
 
-def generate_charuco(rows: int, cols: int, square_length_mm: float = 5.0, markers_size: int = 4, margin: int = 1) -> cv2.aruco.CharucoBoard:
-    """
-    Generates a Charuco board for the given parameters
-    """
-    all_dict_sizes = [50, 100, 250, 1000]
+def generate_board_svg(board_params:    Union["ChessBoard", "CharucoBoard"],
+                       file_path:       Union[Path, str],
+                       multi_size:      bool = False,
+                       factor:          float = 2.0,
+                       dpi:             int = 1200):
 
-    padding = 1     # Black margin inside the markers (i.e. OpenCV's borderBits)
+    board_rows = board_params.rows
+    board_cols = board_params.cols
+    square_length_mm = board_params.square_length
 
-    mk_l_bits = markers_size + padding * 2
-    sq_l_bits = mk_l_bits + margin * 2
+    if type(board_params) == CharucoBoard:
+        marker_bits = board_params.markers_size
+        marker_length_mm = board_params.marker_length
+        markers_dictionary = board_params.aruco_dict
 
-    marker_length_mm = mk_l_bits / sq_l_bits * square_length_mm
+        mk_l_bits = marker_bits + 2
+        sq_l_bits = square_length_mm / marker_length_mm * mk_l_bits
+        if not int(sq_l_bits) == sq_l_bits:
+            raise AssertionError('Error creating board svg :(')         # TODO make sure this never happens
+        else:
+            sq_l_bits = int(sq_l_bits)
 
-    dict_size = next(s for s in all_dict_sizes if s >= rows * cols)
-    dict_name = f'DICT_{markers_size}X{markers_size}_{dict_size}'
+        # Ratios to convert between mm and 'bits' (i.e. pixels ...but not really, since we work with svg here)
+        mm_to_bits = sq_l_bits / square_length_mm
+        margin = int((sq_l_bits - mk_l_bits) / 2)
 
-    aruco_dict = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, dict_name))
-    board = cv2.aruco.CharucoBoard((cols, rows),  # number of chessboard squares in x and y directions
-                                   square_length_mm,  # chessboard square side length (normally in meters)
-                                   marker_length_mm,  # marker side length (same unit than squareLength)
-                                   aruco_dict)
-    return board
-
-
-def generate_board_svg(board: cv2.aruco.CharucoBoard, file_path: Path | str, multi_size=False, factor=2.0, dpi=1200):
-
-    square_length_mm = board.getSquareLength()
-    marker_length_mm = board.getMarkerLength()
-
-    marker_bits = board.getDictionary().markerSize
-
-    mk_l_bits = marker_bits + 2
-    sq_l_bits = square_length_mm / marker_length_mm * mk_l_bits
-    if not int(sq_l_bits) == sq_l_bits:
-        raise AssertionError('Error creating board svg :(')         # TODO make sure this never happens
     else:
-        sq_l_bits = int(sq_l_bits)
-
-    # Ratios to convert between mm and "bits" (i.e. pixels ...but not really, since we work with svg)
-    bits_to_mm = square_length_mm / sq_l_bits
-    mm_to_bits = sq_l_bits / square_length_mm
-
-    margin = int((sq_l_bits - mk_l_bits) / 2)
-
-    board_cols, board_rows = board.getChessboardSize()
+        # For classic chessboard, no markers so 1 'bit' = 1 entire square
+        # 1 bit = 1 square = square_length_mm mm
+        sq_l_bits = 1
+        mm_to_bits = 1.0 / square_length_mm     # 1 mm = 1 / square_length_mm bits
+        margin = 0
 
     chessboard_arr = (~np.indices((board_rows, board_cols)).sum(axis=0) % 2).astype(bool)
 
@@ -241,8 +232,14 @@ def generate_board_svg(board: cv2.aruco.CharucoBoard, file_path: Path | str, mul
     text_h_bits = 3.0 * mm_to_bits
     board_size_bits = np.array([sq_l_bits * board_cols, sq_l_bits * board_rows])
 
+    # If only one size, use the one that comes with the board object and position in the centre of the page
+    if type(board_params) == CharucoBoard:
+        filename = f'Charuco{board_rows}x{board_cols}_markers{marker_bits}x{marker_bits}-margin{margin}.svg'
+    else:
+        filename = f'Chessboard{board_rows}x{board_cols}.svg'
+
     if multi_size:
-        filename = f'Multi_Charuco{board_rows}x{board_cols}_markers{marker_bits}x{marker_bits}-margin{margin}.svg'
+        filename = 'Multi_' + filename
 
         bleed = 15.0 * mm_to_bits
         spacing = 25.0 * mm_to_bits
@@ -275,8 +272,6 @@ def generate_board_svg(board: cv2.aruco.CharucoBoard, file_path: Path | str, mul
                 scale_ref = scales[i]
             positions.append(next_pos)
     else:
-        # If only one size, use the one that comes with the board object and position in the centre of the page
-        filename = f'Charuco{board_rows}x{board_cols}_markers{marker_bits}x{marker_bits}-margin{margin}.svg'
         scales = [1.0]
         positions = [A4_size_bits / 2.0 - board_size_bits / 2.0]    # page centre
 
@@ -301,8 +296,8 @@ def generate_board_svg(board: cv2.aruco.CharucoBoard, file_path: Path | str, mul
         svg_lines.append(f'    <line x1="{board_size_bits[0] * board_scale + 2 * mm_to_bits}" y1="{board_size_bits[1] * board_scale + 2 * mm_to_bits}" x2="{board_size_bits[0] * board_scale + 2 * mm_to_bits}" y2="{board_size_bits[1] * board_scale + 7 * mm_to_bits}" stroke="black" stroke-width="{0.1 * mm_to_bits}" />')
         svg_lines.append(f'    <line x1="{board_size_bits[0] * board_scale + 2 * mm_to_bits}" y1="{board_size_bits[1] * board_scale + 2 * mm_to_bits}" x2="{board_size_bits[0] * board_scale + 7 * mm_to_bits}" y2="{board_size_bits[1] * board_scale + 2 * mm_to_bits}" stroke="black" stroke-width="{0.1 * mm_to_bits}" />')
 
-        # Charuco group with white background
-        svg_lines.append(f'    <g id="charuco" transform="scale({board_scale})">')
+        # subcontainer group with white background
+        svg_lines.append(f'    <g id="subcontainer" transform="scale({board_scale})">')
         svg_lines.append(f'      <rect id="background" x="0" y="0" width="{board_size_bits[0]}" height="{board_size_bits[1]}" fill="#ffffff"/>')
 
         # Chessboard group
@@ -312,29 +307,32 @@ def generate_board_svg(board: cv2.aruco.CharucoBoard, file_path: Path | str, mul
             svg_lines.append(f'        <rect id="{i}" x="{rc[0] * sq_l_bits}" y="{rc[1] * sq_l_bits}" width="{sq_l_bits}" height="{sq_l_bits}" fill="#000000"/>')
         svg_lines.append('      </g>')
 
-        # Aruco markers group
-        svg_lines.append('      <g id="aruco_markers">')
-        cc, rr = np.where(~chessboard_arr)
-        for i, rc in enumerate(zip(rr, cc)):
-            marker = board.getDictionary().generateImageMarker(i, mk_l_bits, mk_l_bits).astype(bool)
-            py, px = np.where(marker)
-            svg_lines.append(f'        <g id="{i}">')
-            svg_lines.append(
-                f'          <rect x="{rc[0] * sq_l_bits + margin}" y="{rc[1] * sq_l_bits + margin}" width="{mk_l_bits}" height="{mk_l_bits}" fill="#000000"/>')
-            for x, y in zip(px, py):
-                svg_lines.append(f'          <rect x="{rc[0] * sq_l_bits + x + margin}" y="{rc[1] * sq_l_bits + y + margin}" width="1" height="1" fill="#ffffff"/>')
-            svg_lines.append('        </g>')
+        if type(board_params) == CharucoBoard:
+            # Aruco markers group
+            svg_lines.append('      <g id="aruco_markers">')
+            cc, rr = np.where(~chessboard_arr)
+            for i, rc in enumerate(zip(rr, cc)):
+                marker = markers_dictionary.generateImageMarker(i, mk_l_bits, mk_l_bits).astype(bool)
+                py, px = np.where(marker)
+                svg_lines.append(f'        <g id="{i}">')
+                svg_lines.append(
+                    f'          <rect x="{rc[0] * sq_l_bits + margin}" y="{rc[1] * sq_l_bits + margin}" width="{mk_l_bits}" height="{mk_l_bits}" fill="#000000"/>')
+                for x, y in zip(px, py):
+                    svg_lines.append(f'          <rect x="{rc[0] * sq_l_bits + x + margin}" y="{rc[1] * sq_l_bits + y + margin}" width="1" height="1" fill="#ffffff"/>')
+                svg_lines.append('        </g>')
 
-        svg_lines.append('      </g>')
+            svg_lines.append('      </g>')
         svg_lines.append('    </g>')
 
         # Add text with sizes
         bsize_text = f'{board_scale * square_length_mm * board_rows:.1f} x {board_scale * square_length_mm * board_cols:.1f} mm'
         sqsize_text = f'(squares: {board_scale * square_length_mm:.3f} mm)'
-        msize_text = f'(markers: {board_scale * marker_length_mm:.3f} mm)'
+        if type(board_params) == CharucoBoard:
+            msize_text = f'(markers: {board_scale * marker_length_mm:.3f} mm)'
         svg_lines.append(f'    <text x="0" y="{board_size_bits[1] * board_scale + text_h_bits * 4}" font-family="monospace" font-size="{text_h_bits}" font-weight="bold">{bsize_text}</text>')
         svg_lines.append(f'    <text x="0" y="{board_size_bits[1] * board_scale + text_h_bits * 5}" font-family="monospace" font-size="{text_h_bits}" font-weight="bold">{sqsize_text}</text>')
-        svg_lines.append(f'    <text x="0" y="{board_size_bits[1] * board_scale + text_h_bits * 6}" font-family="monospace" font-size="{text_h_bits}" font-weight="bold">{msize_text}</text>')
+        if type(board_params) == CharucoBoard:
+            svg_lines.append(f'    <text x="0" y="{board_size_bits[1] * board_scale + text_h_bits * 6}" font-family="monospace" font-size="{text_h_bits}" font-weight="bold">{msize_text}</text>')
         svg_lines.append('  </g>')
 
     svg_lines.append('</svg>')

@@ -2,7 +2,7 @@ import os
 import subprocess
 import sys
 import platform
-from typing import Tuple
+from typing import Tuple, Union
 import psutil
 import screeninfo
 import cv2
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QStatusBar, QSlider, Q
 import pyqtgraph as pg
 from pyqtgraph.opengl import GLViewWidget, GLGridItem, GLLinePlotItem, GLScatterPlotItem, MeshData, GLMeshItem
 from mokap.utils import geometry_jax
+from mokap.utils.datatypes import ChessBoard, CharucoBoard
 from mokap.utils import hex_to_rgb, hex_to_hls, pretty_size
 from .workers import *
 
@@ -94,7 +95,7 @@ class SnapPopup(QFrame):
 
 class BoardParamsDialog(QDialog):
 
-    def __init__(self, board_params: BoardParams, parent=None):
+    def __init__(self, board_params: Union[ChessBoard, CharucoBoard], parent=None):
         super().__init__(parent)
         self.setWindowTitle("Calibration Board Settings")
         self.setModal(True)
@@ -152,6 +153,7 @@ class BoardParamsDialog(QDialog):
 
     def get_values(self):
         return self._board_params, self.apply_all_checkbox.isChecked()
+
 
 class SecondaryWindowBase(QWidget):
     """ Stores common stuff for Preview windows and 3D view window """
@@ -1025,10 +1027,8 @@ class MonocularCalibWindow(VideoWindowBase):
         super().__init__(camera, main_window_ref)
 
         # Default board params - TODO: Needs to be loaded from config file
-        self.board_params = BoardParams(rows=6,
-                                        cols=5,
-                                        square_length=1.5,
-                                        markers_size=4)
+        self.board_params = CharucoBoard(rows=6, cols=5, square_length=1.5, markers_size=4)
+        # self.board_params = ChessBoard(rows=6, cols=5, square_length=1.5)
 
         # Initialize reprojection error data for plotting
         self.reprojection_errors = deque(maxlen=100)
@@ -1292,7 +1292,7 @@ class MonocularCalibWindow(VideoWindowBase):
         r = self.board_params.rows / self.board_params.cols
         h, w = max_h, int(r * max_w)
 
-        board_arr = self.board_params.to_opencv().generateImage((h, w))
+        board_arr = self.board_params.to_image((h, w))
         q_img = QImage(board_arr, h, w, h, QImage.Format.Format_Grayscale8)
         pixmap = QPixmap.fromImage(q_img)
         bounded_pixmap = pixmap.scaled(max_w, max_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)

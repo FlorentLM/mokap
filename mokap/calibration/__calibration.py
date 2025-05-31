@@ -10,7 +10,7 @@ from typing import Optional, Iterable, Tuple, Union
 from numpy.typing import ArrayLike
 
 from mokap.utils import geometry
-from mokap.utils.datatypes import BoardParams
+from mokap.utils.datatypes import ChessBoard, CharucoBoard
 from mokap.calibration import monocular_2
 from mokap.utils import geometry_jax
 
@@ -19,53 +19,118 @@ def _maybe_put(x):
     return jax.device_put(x) if x is not None else None
 
 
-class CharucoDetector:
-    def __init__(self, board_params: BoardParams):
+class ChessboardDetector:
+    """
+    Detects a standard chessboard. Returns 2D corner coords plus a row-major
+    vector of points IDs (0 ... N-1).
+    """
 
-        # Charuco board and detector parameters
-        self.board = board_params.to_opencv()
-        aruco_dict = self.board.getDictionary()
+    def __init__(self, board_params: CharucoBoard):
 
-        self.detector_parameters = cv2.aruco.DetectorParameters()
-        self.detector_parameters.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
-        self.detector = cv2.aruco.ArucoDetector(aruco_dict, detectorParams=self.detector_parameters)
+        self._n_cols, self._n_rows = board_params.cols, board_params.rows
 
-        # Maximum number of board points and distances
-        self._total_points: int = len(self.board.getChessboardCorners())
-        self._total_distances: int = int((self._total_points * (self._total_points - 1)) / 2.0)
+        if self._n_cols < 2 or self._n_rows < 2:
+            raise ValueError("BoardParams must have at least 2x2 squares for a valid chessboard.")
 
         # Create 3D coordinates for board corners (in board-centric coordinates)
-        self._n_cols, self._n_rows = self.board.getChessboardSize()
-        self._board_points_3d = self.board.getChessboardCorners()
+        self._board_points_3d = board_params.object_points()
+        self._board_corners_3d = (
+                np.array([[0, 0, 0],
+                          [0, 1, 0],
+                          [1, 1, 0],
+                          [1, 0, 0]], dtype=np.float32) * [self._n_cols, self._n_rows, 0] * board_params.square_length)
 
-        self._board_corners_3d = (np.array([[0, 0, 0],
-                                           [0, 1, 0],
-                                           [1, 1, 0],
-                                           [1, 0, 0]], dtype=np.float32) *
-                                  [self._n_cols, self._n_rows, 0] * self.board.getSquareLength())
+        # Maximum number of board points and distances
+        self._total_points: int = len(self._board_points_3d)
+        self._total_distances: int = int((self._total_points * (self._total_points - 1)) / 2.0)
+
+        # OpenCV expects this tuple
+        self._n_inner_size: Tuple[int, int] = (self._n_cols - 1, self._n_rows - 1)
+
+        # chessboard detections always returns either all or no points, so we fix the points_ids once
+        self._points2d_ids = np.arange(np.prod(self._n_inner_size), dtype=np.int32)
+
+        # Cache the criteria for subpixel refinement
+        self._win_size:         Tuple[int, int] = (11, 11)
+        self._zero_zone:        Tuple[int, int] = (-1, -1)
+        self._subpix_criteria:  Tuple[int, int, float] = (
+                cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_MAX_ITER,
+                40,     # max iterations
+                0.05    # epsilon
+            )
 
     @property
-    def points3d(self):
+    def points3d(self) -> ArrayLike:
         """ Returns the coordinates of the chessboard points in 3D (in board-centric coordinates) """
         return self._board_points_3d
 
     @property
-    def corners3d(self):
+    def corners3d(self) -> ArrayLike:
+        """ Returns the coordinates of the chessboard outer corners in 3D (in board-centric coordinates) """
         return self._board_corners_3d
 
     @property
-    def total_points(self):
+    def total_points(self) -> int:
         return self._total_points
 
     @property
-    def total_distances(self):
+    def total_distances(self) -> int:
         return self._total_distances
 
     @property
-    def board_dims(self):
+    def board_dims(self) -> Tuple[int, int]:
         return self._n_cols, self._n_rows
 
-    def detect(self, frame, camera_matrix=None, dist_coeffs=None, refine_markers=True, refine_points=False):
+    def detect(self,
+               frame:           ArrayLike,
+               refine_points:   bool = False
+               ) -> Union[Tuple[np.ndarray, np.ndarray], Tuple[None, None]]:
+
+        if frame.ndim == 3:
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+
+        found, chessboard_points = cv2.findChessboardCorners(
+            frame,
+            self._n_inner_size,
+            flags=cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE
+        )
+
+        # If no points detected, abort
+        if not found:
+            return None, None
+
+        if refine_points:
+            try:
+                chessboard_points = cv2.cornerSubPix(frame, chessboard_points,
+                                                     winSize=self._win_size,
+                                                     zeroZone=self._zero_zone,
+                                                     criteria=self._subpix_criteria)
+            except cv2.error as e:
+                print(e)
+
+        # chessboard_points is (N, 1, 2), we want (N, 2)
+        points2d_coords = chessboard_points.reshape(-1, 2).astype(np.float32)
+
+        return points2d_coords, self._points2d_ids
+
+
+class CharucoDetector(ChessboardDetector):
+    def __init__(self, board_params: CharucoBoard):
+        super().__init__(board_params)
+
+        # We need to keep references to the OpenCV Charuco board object and detector parameters
+        self.board = board_params.to_opencv()
+        self._detector_parameters = cv2.aruco.DetectorParameters()
+        self._detector_parameters.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+        self._detector = cv2.aruco.ArucoDetector(self.board.getDictionary(), detectorParams=self._detector_parameters)
+
+    def detect(self,
+               frame:           ArrayLike,
+               camera_matrix:   Optional[ArrayLike] = None,
+               dist_coeffs:     Optional[ArrayLike] = None,
+               refine_markers:  bool = True,
+               refine_points:   bool = False
+               ) -> Union[Tuple[np.ndarray, np.ndarray], Tuple[None, None]]:
 
         if frame.ndim == 3:
             frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
@@ -74,7 +139,7 @@ class CharucoDetector:
         points2d_ids = None
 
         # Detect and refine aruco markers
-        markers_coords, marker_ids, rejected = self.detector.detectMarkers(frame)
+        markers_coords, marker_ids, rejected = self._detector.detectMarkers(frame)
 
         if refine_markers:
             markers_coords, marker_ids, rejected, recovered = cv2.aruco.refineDetectedMarkers(
@@ -83,7 +148,7 @@ class CharucoDetector:
                 detectedCorners=markers_coords,     # Input/Output /!\
                 detectedIds=marker_ids,             # Input/Output /!\
                 rejectedCorners=rejected,           # Input/Output /!\
-                parameters=self.detector_parameters,
+                parameters=self._detector_parameters,
                 # Known bug with refineDetectedMarkers, fixed in OpenCV 4.9: https://github.com/opencv/opencv/pull/24139
                 cameraMatrix=camera_matrix if cv2.getVersionMajor() >= 4 and cv2.getVersionMinor() >= 9 else None,
                 distCoeffs=dist_coeffs)
@@ -106,12 +171,10 @@ class CharucoDetector:
             if refine_points and chessboard_points is not None:
                 try:
                     # Refine the chessboard corners
-                    crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 75, 0.01)
-
                     chessboard_points = cv2.cornerSubPix(frame, chessboard_points,
-                                                         winSize=(11, 11),
-                                                         zeroZone=(-1, -1),
-                                                         criteria=crit)
+                                                         winSize=self._win_size,
+                                                         zeroZone=self._zero_zone,
+                                                         criteria=self._subpix_criteria)
                 except cv2.error as e:
                     print(e)
 
@@ -127,14 +190,17 @@ class MonocularCalibrationTool:
     This object is stateful for the intrinsics *only*
     """
     def __init__(self,
-                 board_params:  BoardParams,
-                 imsize_hw:     Optional[Iterable[int]] = None, # OpenCV order (height, width)
+                 board_params:  Union[ChessBoard, CharucoBoard],
+                 imsize_hw:     Optional[Iterable[int]] = None,  # OpenCV order (height, width)
                  min_stack:     int = 15,
                  max_stack:     int = 100,
                  focal_mm:      Optional[int] = None,
-                 sensor_size:   Optional[Tuple[float]] = None):
+                 sensor_size:   Optional[Union[Tuple[float], str]] = None):
 
-        self.dt: CharucoDetector = CharucoDetector(board_params)
+        if type(board_params) is ChessBoard:
+            self.dt: ChessboardDetector = ChessboardDetector(board_params)
+        else:
+            self.dt: CharucoDetector = CharucoDetector(board_params)
 
         # self._min_pts: int = 3   # SQPNP method needs at least 3 points
         # self._min_pts: int = 4   # ITERATIVE method needs at least 4 points
@@ -440,15 +506,26 @@ class MonocularCalibrationTool:
             current_dist_coeffs = None
 
         try:
-            # Compute calibration using all the frames we selected
-            global_intr_error, new_camera_matrix, new_dist_coeffs, stack_rvecs, stack_tvecs, std_intrinsics, std_extrinsics, stack_intr_errors = cv2.aruco.calibrateCameraCharucoExtended(
-                charucoCorners=self.stack_points2d,
-                charucoIds=self.stack_points_ids,
-                board=self.dt.board,
-                imageSize=(self.w, self.h),
-                cameraMatrix=current_camera_matrix,     # Input/Output /!\
-                distCoeffs=current_dist_coeffs,         # Input/Output /!\
-                flags=calib_flags)
+            if type(self.dt) is ChessboardDetector:
+                global_intr_error, new_camera_matrix, new_dist_coeffs, stack_rvecs, stack_tvecs, std_intrinsics, std_extrinsics, stack_intr_errors = cv2.calibrateCameraExtended(
+                    objectPoints=self.dt.points3d,
+                    imagePoints=self.stack_points2d,
+                    imageSize=(self.w, self.h),
+                    cameraMatrix=current_camera_matrix,  # Input/Output /!\
+                    distCoeffs=current_dist_coeffs,      # Input/Output /!\
+                    flags=calib_flags
+                )
+
+            else:
+                # Compute calibration using all the frames we selected
+                global_intr_error, new_camera_matrix, new_dist_coeffs, stack_rvecs, stack_tvecs, std_intrinsics, std_extrinsics, stack_intr_errors = cv2.aruco.calibrateCameraCharucoExtended(
+                    charucoCorners=self.stack_points2d,
+                    charucoIds=self.stack_points_ids,
+                    board=self.dt.board,
+                    imageSize=(self.w, self.h),
+                    cameraMatrix=current_camera_matrix,     # Input/Output /!\
+                    distCoeffs=current_dist_coeffs,         # Input/Output /!\
+                    flags=calib_flags)
 
             # std_cam_mat, std_dist_coeffs = np.split(std_intrinsics.squeeze(), [4])
             # std_rvecs, std_tvecs =  std_extrinsics.reshape(2, -1, 3)
@@ -528,12 +605,15 @@ class MonocularCalibrationTool:
             self._pose_error = np.inf
             return
 
-        # If the points are collinear, extrinsics estimation is garbage, so abort
-        if cv2.aruco.testCharucoCornersCollinear(self.dt.board, self._points_ids):
-            self._rvec, self._tvec = None, None
-            self._rvec_j, self._tvec_j = None, None
-            self._pose_error = np.inf
-            return
+        if type(self.dt) is CharucoDetector:
+            # TODO: Check collinearity for classic chessboards too
+
+            # If the points are collinear, extrinsics estimation is garbage, so abort
+            if cv2.aruco.testCharucoCornersCollinear(self.dt.board, self._points_ids):
+                self._rvec, self._tvec = None, None
+                self._rvec_j, self._tvec_j = None, None
+                self._pose_error = np.inf
+                return
 
         # pnp_flags = cv2.SOLVEPNP_ITERATIVE
 
@@ -572,12 +652,12 @@ class MonocularCalibrationTool:
             # - "Pose Estimation for Augmented Reality: A Hands-On Survey", 2015
             #   Eric Marchand, Hideaki Uchiyama, Fabien Spindler, 10.1109/TVCG.2015.2513408
             rvec, tvec = cv2.solvePnPRefineVVS(
-                self.dt.points3d[self._points_ids],
-                self._points2d,
-                self._camera_matrix,
-                self._dist_coeffs,
-                rvec,      # Input/Output /!\
-                tvec,      # Input/Output /!\
+                objectPoints=self.dt.points3d[self._points_ids],
+                imagePoints=self._points2d,
+                cameraMatrix=self._camera_matrix,
+                distCoeffs=self._dist_coeffs,
+                rvec=rvec,      # Input/Output /!\
+                tvec=tvec,      # Input/Output /!\
                 VVSlambda=1.0)
 
             # TODO - Test whether the Levenberg-Marquardt alternative solvePnPRefineLM() is better or not
@@ -614,13 +694,15 @@ class MonocularCalibrationTool:
         np.copyto(self._frame_in[:], frame)
 
         # Detect
-        self._points2d, self._points_ids = self.dt.detect(
-            self._frame_in,
-            camera_matrix=self._camera_matrix,
-            dist_coeffs=self._dist_coeffs,
-            refine_markers=True,
-            refine_points=True
-        )
+        if type(self.dt) is ChessboardDetector:
+            self._points2d, self._points_ids = self.dt.detect(self._frame_in,
+                                                              refine_points=True)
+        else:
+            self._points2d, self._points_ids = self.dt.detect(self._frame_in,
+                                                              camera_matrix=self._camera_matrix,
+                                                              dist_coeffs=self._dist_coeffs,
+                                                              refine_markers=True,
+                                                              refine_points=True)
 
     def auto_register_area_based(self,
                                  area_threshold:        float = 0.2,
