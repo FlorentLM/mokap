@@ -25,7 +25,8 @@ class ChessboardDetector:
     vector of points IDs (0 ... N-1).
     """
 
-    def __init__(self, board_params: CharucoBoard):
+    def __init__(self, board_params: CharucoBoard,
+                 downsample_size: int = 480):
 
         self._n_cols, self._n_rows = board_params.cols, board_params.rows
 
@@ -50,13 +51,22 @@ class ChessboardDetector:
         # chessboard detections always returns either all or no points, so we fix the points_ids once
         self._points2d_ids = np.arange(np.prod(self._n_inner_size), dtype=np.int32)
 
+        # classic chessboard detection is much slower than charuco so we kinda have to downsample
+        self._downsample_size = downsample_size
+
+        # Cache detection flags
+        self._detection_flags = (cv2.CALIB_CB_ADAPTIVE_THRESH |
+                                 cv2.CALIB_CB_NORMALIZE_IMAGE |
+                                 cv2.CALIB_CB_FAST_CHECK |  # quickly dismisses frames with no board in view
+                                 cv2.CALIB_CB_FILTER_QUADS) # pre‐filters candidate quads before full points grouping
+
         # Cache the criteria for subpixel refinement
         self._win_size:         Tuple[int, int] = (11, 11)
         self._zero_zone:        Tuple[int, int] = (-1, -1)
         self._subpix_criteria:  Tuple[int, int, float] = (
                 cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_MAX_ITER,
-                40,     # max iterations
-                0.05    # epsilon
+                20,     # max iterations
+                0.1     # epsilon is the minimum allowed movement (in pixels) of a point from one iteration to the next
             )
 
     @property
@@ -82,22 +92,35 @@ class ChessboardDetector:
         return self._n_cols, self._n_rows
 
     def detect(self,
-               frame:           ArrayLike,
-               refine_points:   bool = False
+               frame: ArrayLike,
+               refine_points: bool = False
                ) -> Union[Tuple[np.ndarray, np.ndarray], Tuple[None, None]]:
 
         if frame.ndim == 3:
             frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
 
+        # Downsample image if bigger - otherwise chessboard detection is way too slow
+        h_full, w_full = frame.shape[:2]
+        max_dim = max(h_full, w_full)
+
+        scale = self._downsample_size / float(max_dim) if max_dim > self._downsample_size else 1.0
+
+        if scale < 1.0:
+            new_w = int(w_full * scale)
+            new_h = int(h_full * scale)
+            frame_small = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+
         found, chessboard_points = cv2.findChessboardCorners(
-            frame,
+            frame_small if scale < 1.0 else frame,
             self._n_inner_size,
-            flags=cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE
+            flags=self._detection_flags
         )
 
         # If no points detected, abort
         if not found:
             return None, None
+
+        chessboard_points = chessboard_points.astype(np.float32) / scale
 
         if refine_points:
             try:
@@ -123,6 +146,15 @@ class CharucoDetector(ChessboardDetector):
         self._detector_parameters = cv2.aruco.DetectorParameters()
         self._detector_parameters.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
         self._detector = cv2.aruco.ArucoDetector(self.board.getDictionary(), detectorParams=self._detector_parameters)
+
+        # Cache the criteria for subpixel refinement
+        self._win_size:         Tuple[int, int] = (11, 11)
+        self._zero_zone:        Tuple[int, int] = (-1, -1)
+        self._subpix_criteria:  Tuple[int, int, float] = (
+                cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_MAX_ITER,
+                20,     # max iterations
+                0.1     # epsilon is the minimum allowed movement (in pixels) of a point from one iteration to the next
+            )
 
     def detect(self,
                frame:           ArrayLike,
@@ -482,8 +514,6 @@ class MonocularCalibrationTool:
             print('No current camera matrix guess, unfixing aspect ratio.')
             fix_aspect_ratio = False
 
-        # calib_flags = cv2.CALIB_USE_LU
-        # calib_flags = cv2.CALIB_USE_QR
         calib_flags = 0
 
         if fix_aspect_ratio:
@@ -507,8 +537,11 @@ class MonocularCalibrationTool:
 
         try:
             if type(self.dt) is ChessboardDetector:
+
+                object_points_list = [self.dt.points3d.astype(np.float32)] * len(self.stack_points2d)
+
                 global_intr_error, new_camera_matrix, new_dist_coeffs, stack_rvecs, stack_tvecs, std_intrinsics, std_extrinsics, stack_intr_errors = cv2.calibrateCameraExtended(
-                    objectPoints=self.dt.points3d,
+                    objectPoints=object_points_list,
                     imagePoints=self.stack_points2d,
                     imageSize=(self.w, self.h),
                     cameraMatrix=current_camera_matrix,  # Input/Output /!\
@@ -517,6 +550,10 @@ class MonocularCalibrationTool:
                 )
 
             else:
+
+                calib_flags |= cv2.CALIB_USE_LU
+                # calib_flags |= cv2.CALIB_USE_QR
+
                 # Compute calibration using all the frames we selected
                 global_intr_error, new_camera_matrix, new_dist_coeffs, stack_rvecs, stack_tvecs, std_intrinsics, std_extrinsics, stack_intr_errors = cv2.aruco.calibrateCameraCharucoExtended(
                     charucoCorners=self.stack_points2d,
