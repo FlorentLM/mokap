@@ -8,6 +8,9 @@ from typing import Union
 from numpy.typing import ArrayLike
 
 
+DEBUG_SIGNALS_FLOW = True
+VERBOSE = True
+
 class CalibrationWorker(QObject):
     """ Base class for all the Calibration workers. Sends/Receives CalibrationData objects. """
     error = Signal(Exception)
@@ -26,7 +29,9 @@ class CalibrationWorker(QObject):
     @Slot(CalibrationData)
     def _handle_payload(self, data: CalibrationData):
         # This signal is coming from the receive_payload proxy, which always comes from the Coordinator
-        print(f'[{self.name.title()}] Received (from Coordinator): ({data.camera_name}) {data.payload}')
+        if DEBUG_SIGNALS_FLOW:
+            print(f'[{self.name.title()}] Received (from Coordinator): ({data.camera_name}) {data.payload}')
+
 
 class ProcessingWorker(QObject):
     """ Base class for all processing workers. Can be paused. """
@@ -45,6 +50,7 @@ class ProcessingWorker(QObject):
     def handle_frame(self, frame, frame_idx):
         if self._paused:
             return
+
 
 class MovementWorker(ProcessingWorker):
 
@@ -73,6 +79,7 @@ class MovementWorker(ProcessingWorker):
         # TESTING - Fake bounding box around (100,100) of size (50,40)
         return [(100, 100, 50, 40)]
 
+
 class CalibrationProcessingWorker(CalibrationWorker, ProcessingWorker):
     """ Base class for calibration processing workers (i.e. MonocularWorker and MultiviewWorker) """
 
@@ -84,7 +91,9 @@ class CalibrationProcessingWorker(CalibrationWorker, ProcessingWorker):
     def set_stage(self, stage: int):
         """ Update worker's internal stage (can be overridden) """
         self._current_stage = stage
-        print(f"[{self.name.title()}] Received calibration stage: {stage}")
+        if DEBUG_SIGNALS_FLOW:
+            print(f"[{self.name.title()}] Received calibration stage: {stage}")
+
 
 class MonocularWorker(CalibrationProcessingWorker):
 
@@ -239,6 +248,7 @@ class MonocularWorker(CalibrationProcessingWorker):
                                                                     self.monocular_tool.intrinsics_errors))
             data.to_file(file_path)
 
+
 class MultiviewWorker(CalibrationProcessingWorker):
 
     def __init__(self, cameras_names, origin_camera_name):
@@ -250,7 +260,8 @@ class MultiviewWorker(CalibrationProcessingWorker):
 
         self.multiview_tool = MultiviewCalibrationTool(len(self._cameras_names),
                                                        origin_camera_idx=self._origin_camera_idx,
-                                                       min_poses=3)
+                                                       min_poses=3,
+                                                       verbose=VERBOSE)
 
     @Slot(CalibrationData)
     def _handle_payload(self, data: CalibrationData):
@@ -300,6 +311,7 @@ class MultiviewWorker(CalibrationProcessingWorker):
         else:
             pass
 
+
 class CalibrationCoordinator(QObject):
 
     broadcast_stage = Signal(int)
@@ -330,7 +342,9 @@ class CalibrationCoordinator(QObject):
         self._current_stage = stage
         # Broadcast to all workers
         self.broadcast_stage.emit(stage)
-        print(f"[{self.name.title()}] Broadcasting calibration stage: {stage}")
+
+        if DEBUG_SIGNALS_FLOW:
+            print(f"[{self.name.title()}] Broadcasting calibration stage: {stage}")
 
     @Slot(str)
     def set_origin_camera(self, camera_name: str):
@@ -342,7 +356,8 @@ class CalibrationCoordinator(QObject):
     def _handle_payload_from_main(self, data: CalibrationData):
         """ Main thread entry point for CalibrationData """
 
-        print(f'[{self.name.title()}] Received (from Main): ({data.camera_name}) {data.payload}')
+        if DEBUG_SIGNALS_FLOW:
+            print(f'[{self.name.title()}] Received (from Main): ({data.camera_name}) {data.payload}')
 
         if isinstance(data.payload, IntrinsicsPayload) or isinstance(data.payload, ExtrinsicsPayload):
             # Send to respective MonocularWorker and MultiviewWorker
@@ -354,7 +369,8 @@ class CalibrationCoordinator(QObject):
 
         sending_worker = self.sender()
         # This signal carries the source sender still
-        print(f'[{self.name.title()}] Received (from {sending_worker.name.title()}): ({data.camera_name}) {data.payload}')
+        if DEBUG_SIGNALS_FLOW:
+            print(f'[{self.name.title()}] Received (from {sending_worker.name.title()}): ({data.camera_name}) {data.payload}')
 
         if isinstance(data.payload, IntrinsicsPayload):
             if sending_worker.name == 'multiview':
