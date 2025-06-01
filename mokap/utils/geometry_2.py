@@ -39,16 +39,16 @@ def filter_outliers(values, strong=False):
         return filtered
 
 
-def bestguess_rtvecs(n_m_rvecs, n_m_tvecs):
+def bestguess_rtvecs(rvecs, tvecs):
     """
-    Finds a first best guess, for N cameras, of their real extrinsics parameters, from M samples per camera
+        Finds a first best guess, for C cameras, of their real extrinsics parameters, from M samples per camera
     """
-    # TODO - This could be fully JAX-ified using the https://github.com/google/jaxopt addons
+    # TODO: This could be fully JAX-ified using the https://github.com/google/jaxopt addons
 
-    N = len(n_m_rvecs)
+    C = len(rvecs)
 
-    n_optimised_rvecs = np.zeros((N, 3))
-    n_optimised_tvecs = np.zeros((N, 3))
+    rvecs_estim = np.zeros((C, 3))
+    tvecs_estim = np.zeros((C, 3))
 
     # Huber loss instead of simply doing mahalanobis distance makes the influence of 'flipped' detections less strong
     # (flipped detections being the ones resulting from an ambiguity in the monocular pose estimation)
@@ -70,12 +70,13 @@ def bestguess_rtvecs(n_m_rvecs, n_m_tvecs):
         loss = huberloss(mahal)
         return np.sum(loss)
 
-    for i in range(N):
-        if n_m_rvecs[i].size == 0:  # no samples -> skip
+    for c in range(C):
+
+        if rvecs[c].size == 0:  # no samples -> skip
             continue
 
-        all_rvecs = filter_outliers(n_m_rvecs[i])
-        all_tvecs = filter_outliers(n_m_tvecs[i])
+        all_rvecs = filter_outliers(rvecs[c])
+        all_tvecs = filter_outliers(tvecs[c])
 
         median_rvecs = np.median(all_rvecs, axis=0)
         median_tvecs = np.median(all_tvecs, axis=0)
@@ -90,7 +91,9 @@ def bestguess_rtvecs(n_m_rvecs, n_m_tvecs):
         else:
             cov_t = np.eye(3)   # if not enough samples, we use the identity matrix
 
-        # we can use L-BFGS-B here even though it's quite sensitive because the huber loss should take care of problematic values
+        # We can use L-BFGS-B here even though it's quite sensitive,
+        # because the Huber loss should take care of the problematic values
+
         # Minimize orientation
         try:
             res_r = minimize(objective_func, x0=median_rvecs, args=(all_rvecs, cov_r), method='L-BFGS-B')
@@ -107,15 +110,15 @@ def bestguess_rtvecs(n_m_rvecs, n_m_tvecs):
             print("Optimization error for tvec:", e)
             opt_t = median_tvecs
 
-        n_optimised_rvecs[i, :] = opt_r
-        n_optimised_tvecs[i, :] = opt_t
+        rvecs_estim[c, :] = opt_r
+        tvecs_estim[c, :] = opt_t
 
-    return n_optimised_rvecs, n_optimised_tvecs
+    return rvecs_estim, tvecs_estim
 
 
 def common_points(
-        points2d: List[np.ndarray],
-        points_ids: List[np.ndarray]
+        points2d:       List[np.ndarray],
+        points_ids:     List[np.ndarray]
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Finds the common points and points IDs in a list of variable number of detected points
@@ -152,7 +155,7 @@ def triangulation(
         tvecs_world:        np.ndarray,
         camera_matrices:    np.ndarray,
         dist_coeffs:        np.ndarray,
-) -> Tuple[jnp.ndarray, np.ndarray]:
+) -> jnp.ndarray:
     """
     Triangulate points 2D seen by C cameras
 
