@@ -14,3 +14,6 @@ uv.lock
 # Mokap files
 .env
 config.yaml
+
+# IDE
+.idea/
