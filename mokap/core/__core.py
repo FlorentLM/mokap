@@ -1,7 +1,7 @@
 import subprocess
 from threading import Thread, Event
 from multiprocessing import RawArray
-from typing import NoReturn, Union, List
+from typing import NoReturn, Union, List, Optional
 from pathlib import Path
 from datetime import datetime
 import cv2
@@ -769,7 +769,7 @@ class MultiCam:
         return self._saving_ext.lower().lstrip('.').strip("'").strip('"')
 
     @property
-    def saved(self) -> np.array:
+    def saved(self) -> np.ndarray:
         """
             Number of frames saved for all recording cameras
             NB: These counts may be slightly off, they should not be used for anything critical!!
@@ -783,7 +783,7 @@ class MultiCam:
         # The buffer is non-atomic so the counts might be slightly off - they should not be used for anything critical
         return np.frombuffer(self._cnt_saved, dtype=np.uint32)
 
-    def get_current_framebuffer(self, i: int = None) -> Union[np.array, list[np.array]]:
+    def get_current_framebuffer(self, i: Optional[int] = None) -> Union[np.ndarray, list[np.ndarray]]:
         """
             Returns the current display frame buffer(s) for one or all cameras.
             NB: These arrays are not atomically readable - they are just for visualisation.
