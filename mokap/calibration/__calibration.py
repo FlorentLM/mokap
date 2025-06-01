@@ -6,13 +6,11 @@ import scipy.stats as stats
 from scipy.spatial.distance import cdist
 import jax.numpy as jnp
 import jax
-from typing import Optional, Iterable, Tuple, Union
+from typing import Optional, Iterable, Tuple, Union, List
 from numpy.typing import ArrayLike
-
-from mokap.utils import geometry
 from mokap.utils.datatypes import ChessBoard, CharucoBoard
-from mokap.calibration import monocular_2
-from mokap.utils import geometry_jax
+from mokap.calibration import monocular_2, bundle_adjustment_2
+from mokap.utils import geometry_jax, geometry_2
 
 
 def _maybe_put(x):
@@ -227,12 +225,15 @@ class MonocularCalibrationTool:
                  min_stack:     int = 15,
                  max_stack:     int = 100,
                  focal_mm:      Optional[int] = None,
-                 sensor_size:   Optional[Union[Tuple[float], str]] = None):
+                 sensor_size:   Optional[Union[Tuple[float], str]] = None,
+                 verbose:       bool = False):
 
         if type(board_params) is ChessBoard:
             self.dt: ChessboardDetector = ChessboardDetector(board_params)
         else:
             self.dt: CharucoDetector = CharucoDetector(board_params)
+
+        self._verbose: bool = verbose
 
         # self._min_pts: int = 3   # SQPNP method needs at least 3 points
         # self._min_pts: int = 4   # ITERATIVE method needs at least 4 points
@@ -511,7 +512,7 @@ class MonocularCalibrationTool:
             return  # Abort and keep the stacks
 
         if self._camera_matrix_j is None and fix_aspect_ratio:
-            print('No current camera matrix guess, unfixing aspect ratio.')
+            print('[WARN] [MonocularCalibrationTool] No current camera matrix guess, unfixing aspect ratio.')
             fix_aspect_ratio = False
 
         calib_flags = 0
@@ -606,7 +607,8 @@ class MonocularCalibrationTool:
 
                 self._intrinsics_errors = stack_intr_errors
 
-                print(f"---Computed intrinsics---")
+                if self._verbose:
+                    print(f"[INFO] [MonocularCalibrationTool] Computed intrinsics")
 
             # or update them if this stack's errors are better
             elif self._check_new_errors(stack_intr_errors, self._intrinsics_errors):
@@ -618,10 +620,11 @@ class MonocularCalibrationTool:
 
                 self._intrinsics_errors = stack_intr_errors
 
-                print(f"---Updated intrinsics---")
+                if self._verbose:
+                    print(f"[INFO] [MonocularCalibrationTool] Updated intrinsics")
 
         except cv2.error as e:
-            print(e)
+            print(f"[WARN] [MonocularCalibrationTool] OpenCV Error:\n\n{e}")
 
         if clear_stack:
             self.clear_stacks()
@@ -913,45 +916,349 @@ class MonocularCalibrationTool:
 
 
 class MultiviewCalibrationTool:
+
     """
-    Class to aggregate multiple monocular detections into multi-view samples, compute, and refine cameras poses
+    aggregates per‐camera intrinsics and per‐frame monocular pose estimations
+    then (when enough data is available) runs a first estimation of the shared reference poses
+    and refines with a bundle adjustment step
     """
 
-    def __init__(self, nb_cameras, origin_camera_idx=0, min_poses=15, max_poses=100, min_detections=15, max_detections=100):
-
+    def __init__(self,
+        nb_cameras:         int,
+        origin_camera_idx:  int = 0,
+        min_poses:          int = 15,
+        max_poses:          int = 100,
+        min_detections:     int = 15,
+        max_detections:     int = 100,
+        verbose:            bool = True,
+    ):
         self.nb_cameras = nb_cameras
         self._origin_idx = origin_camera_idx
         self._min_poses = min_poses
+        self._max_poses = max_poses
         self._min_detections = min_detections
+        self._max_detections = max_detections
+        self._verbose = verbose
+
+        # --- Intrinsics slots
+        self._intrinsics_known = np.zeros(self.nb_cameras, dtype=bool)
+        self._cam_matrices = np.zeros((self.nb_cameras, 3, 3), dtype=np.float64)
+        self._dist_coeffs = np.zeros((self.nb_cameras, 8), dtype=np.float64)
+        self._cam_matrices_refined = np.zeros_like(self._cam_matrices)
+        self._dist_coeffs_refined = np.zeros_like(self._dist_coeffs)
+
+        # --- Monocular poses (per frame, per cam)
+        #   We collect {frame_idx: {cam_idx: (rvec, tvec)}}
+        #   and we remap to world as soon as origin cam + ≥1 other appear, then append to per‐cam lists
+        self._poses_by_frame = defaultdict(dict)
+        self._poses_per_camera = {ci: deque(maxlen=self._max_poses) for ci in range(self.nb_cameras)}
+        self._nb_stored_poses = 0
+        self._rvecs_estimated = None  # (C, 3) once bestguess_rtvecs runs
+        self._tvecs_estimated = None
+        self._rvecs_refined = None
+        self._tvecs_refined = None
+
+        # --- 2D detections
+        #   {frame_idx: {cam_idx: (pts2d, pts_ids)}} for calibration object points detections
+        #   origin cam + ≥1 other
+        self._detections_by_frame = defaultdict(dict)
+        self._detections_stack = deque(maxlen=self._max_detections)
+
+        # Once we call set_reference_board(N), we know how big N is:
+        self._N_grid_points = None
+        self._point3d_theoretical = None    # (N, 3) jnp array of board corners
 
         self._is_refined = False
-        self._intrinsics_records = np.zeros(self.nb_cameras, dtype=bool)
 
-        self._multi_cam_mat = np.zeros((nb_cameras, 3, 3))
-        self._multi_dist_coeffs = np.zeros((nb_cameras, 14))
-        self._multi_cam_mat_refined = np.zeros((nb_cameras, 3, 3))
-        self._multi_dist_coeffs_refined = np.zeros((nb_cameras, 14))
+    def set_reference_board(self, points3d_th: ArrayLike):
+        """
+        Called once with the (N, 3) numpy array of object points 3D (calibration board)
+        """
+        self._N_grid_points = int(points3d_th.shape[0])
+        self._point3d_theoretical = jnp.asarray(points3d_th, dtype=jnp.float32)
 
-        self._detections_by_frame = defaultdict(dict)
-        self._poses_by_frame = defaultdict(dict)
+    def register_intrinsics(self,
+            cam_idx:        int,
+            camera_matrix:  ArrayLike,
+            dist_coeffs:    ArrayLike,
+    ):
+        self._cam_matrices[cam_idx] = np.asarray(camera_matrix, dtype=np.float64)
+        d = np.asarray(dist_coeffs, dtype=np.float64)
+        self._dist_coeffs[cam_idx, : d.shape[0]] = d
+        self._intrinsics_known[cam_idx] = True
+        if self._verbose:
+            print(f"[INFO] [MultiviewCalibrationTool] got intrinsics for camera {cam_idx}.")
 
-        self._detections_stack = deque(maxlen=max_detections)
-        self._poses_stack = deque(maxlen=max_poses)
+    def register_pose(
+            self,
+            frame_idx:  int,
+            cam_idx:    int,
+            rvec:       ArrayLike,
+            tvec:       ArrayLike,
+    ):
+        """
+            When any camera solves PnP, call register_pose(frame, cam, r,t)
+            It stores [board -> cam]. As soon as origin cam + ≥1 other exist for that frame
+            we remap [board -> cam] to [cam -> world] and append to self._poses_per_camera[cam]
+        """
 
-        self._poses_per_camera = {cam_idx: [] for cam_idx in range(nb_cameras)}
+        # TODO: We probably want to use extrinsics matrices everywhere instead of rvec, tvec
+        # TODO: Unnecessary conversions between host and GPU (but the estimation function needs to be JAX-ified first)
 
-        self._multi_rvecs_estim: Optional[ArrayLike] = None     # when not None, shape is (self.nb_cams, 3)
-        self._multi_tvecs_estim: Optional[ArrayLike] = None     # when not None, shape is (self.nb_cams, 3)
-        self._multi_rvecs_refined: Optional[ArrayLike] = None   # when not None, shape is (self.nb_cams, 3)
-        self._multi_tvecs_refined: Optional[ArrayLike] = None   # when not None, shape is (self.nb_cams, 3)
+        d = self._poses_by_frame[frame_idx]
+        d[cam_idx] = jnp.asarray(rvec), jnp.asarray(tvec)
+
+        # If origin cam + ≥1 other have a pose at this frame
+        if (self._origin_idx in d) and (len(d) >= 2):
+            sample = self._poses_by_frame.pop(frame_idx)
+            origin_r, origin_t = sample[self._origin_idx]
+
+            # Remap each camera's [board -> cam] to [cam -> world] using the origin cam as reference
+            for ci, (r_c2oc, t_c2oc) in sample.items():
+
+                r_cam2w, t_cam2w = geometry_jax.remap_rtvecs(r_c2oc, t_c2oc, origin_r, origin_t)
+                remapped_pose = np.asarray(r_cam2w), np.asarray(t_cam2w)
+
+                self._poses_per_camera[ci].append(remapped_pose)
+
+            self._nb_stored_poses += 1
+
+            if self._verbose:
+                print(f"[INFO] [MultiviewCalibrationTool] Stored remapped pose for frame {frame_idx} (total = {self._nb_stored_poses})")
+
+    def estimate_extrinsics(self) -> bool:
+        """
+            Finds a first best guess, for C cameras, of their real extrinsics parameters, from M samples per camera
+        """
+
+        if self._nb_stored_poses < self._min_poses:
+            return False
+
+        all_rtvecs = np.concatenate([np.asarray(poses) for poses in self._poses_per_camera.values()], axis=0)
+
+        # Estimate the rvec and tvec for each camera in world coordinates
+        r_est, t_est = geometry_2.bestguess_rtvecs(all_rtvecs[:, 0, :], all_rtvecs[:, 1, :])
+
+        self._rvecs_estimated = np.asarray(r_est)  # (C, 3)
+        self._tvecs_estimated = np.asarray(t_est)  # (C, 3)
+
+        if self._verbose:
+            print("[INFO] [MultiviewCalibrationTool] Computed initial extrinsics (cam → world)")
+        return True
+
+    def register_detection(
+            self,
+            frame_idx:  int,
+            cam_idx:    int,
+            points2d:   ArrayLike,  # (n_pts, 2)
+            points_ids: ArrayLike,  # (n_pts)
+    ):
+
+        """
+            This is called whenever a camera detects calibration points in 2D.
+            We only wait for frames where origin cam + ≥1 other saw something.
+            Then this is immediately turned into a multi‐camera sample.
+            (NaNs for any camera that didn't detect anything at that frame)
+        """
+        d = self._detections_by_frame[frame_idx]
+        d[cam_idx] = (points2d.copy(), points_ids.copy())
+
+        # If origin cam + ≥1 other have detections at this frame
+        if (self._origin_idx in d) and (len(d) >= 2):
+            sample_dict = self._detections_by_frame.pop(frame_idx)
+            # Build a list (length C) where missing cameras get (None, None)
+            sample_list = []
+            for ci in range(self.nb_cameras):
+                if ci in sample_dict:
+                    sample_list.append(sample_dict[ci])
+                else:
+                    # (pts2d, ids) = (None, None) for that camera (we will fill nans later)
+                    sample_list.append((None, None))
+
+            self._detections_stack.append(sample_list)
+            if self._verbose:
+                print(f"[INFO] [MultiviewCalibrationTool] Collected sample #{len(self._detections_stack)} at frame {frame_idx}")
+
+    def _compute_board_world_poses(self,
+            detections_stack:   deque[List[Tuple[np.ndarray, np.ndarray]]],
+            cam_rvecs_est:      np.ndarray,
+            cam_tvecs_est:      np.ndarray
+        ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Given:
+            detections_stack: list of P samples, where each is a length C list of (pts2d, ids) or (None, None)
+            cam_rvecs_est, cam_tvecs_est: are [cam i -> world] guesses, both (C, 3)
+
+        Returns two arrays of the board (P, 3):
+            board_rvecs_world[p]
+            board_tvecs_world[p]
+        """
+        P = len(detections_stack)
+        C = self.nb_cameras
+
+        # allocate numpy arrays as buffers - we convert to JAX at the end
+        board_rvecs = np.zeros((P, 3), dtype=np.float32)
+        board_tvecs = np.zeros((P, 3), dtype=np.float32)
+
+        for p_idx, sample in enumerate(detections_stack):
+            # choose which camera provided the pose (prefer origin cam if possible)
+            if sample[self._origin_idx][0] is not None:
+                cam_i = self._origin_idx
+            else:
+                # pick first other camera that isn't None
+                cam_i = next(ci for ci in range(C) if ci != self._origin_idx and sample[ci][0] is not None)
+
+            # grab the stored pose [board -> cam i] vecors that were registered earlier
+            board_rvec_pnp, board_tvec_pnp = self._poses_per_camera[cam_i][p_idx]
+            # convert all the [board -> cam i] vectors to matrices
+            E_board_cam = geometry_jax.extrinsics_matrix(
+                jnp.asarray(board_rvec_pnp),
+                jnp.asarray(board_tvec_pnp)
+            )  # (4, 4)
+
+            # grab vectors and get Matrices for all the [cam i -> world]
+            cam_r_w = cam_rvecs_est[cam_i]      # (3,)
+            cam_t_w = cam_tvecs_est[cam_i]      # (3,)
+            E_cam_w = geometry_jax.extrinsics_matrix(
+                jnp.asarray(cam_r_w),
+                jnp.asarray(cam_t_w)
+            )  # (4, 4)
+
+            # Matrices for [board -> world] are [cam i -> world] @ [board -> cam i]
+            # and back to vectors
+            E_board_w = E_cam_w @ E_board_cam
+            r_bw, t_bw = geometry_jax.extmat_to_rtvecs(E_board_w)
+
+            board_rvecs[p_idx] = np.array(r_bw)
+            board_tvecs[p_idx] = np.array(t_bw)
+
+        return board_rvecs, board_tvecs
+
+    def refine_all(self, keep_afterwards: bool = True) -> bool:
+        """
+            Once we have enough detections with origin cam + ≥1 other, AND if we have an initial guess,
+            runs the bundle adjustment.
+        """
+        if (len(self._detections_stack) < self._min_detections
+                or not self.has_intrinsics
+                or self._rvecs_estimated is None):
+            return False
+
+        P = len(self._detections_stack)
+        C = self.nb_cameras
+        N = self._N_grid_points
+
+        # Build (C, P, N, 2) and (C, P, N) with nans/masks
+        pts2d_buf = np.full((C, P, N, 2), np.nan, dtype=np.float32)
+        vis_buf = np.zeros((C, P, N), dtype=bool)
+
+        for p_idx, sample in enumerate(self._detections_stack):
+            # sample is a list of length C containing (pts2d, ids) or (None, None)
+            for ci, (pts2d, ids) in enumerate(sample):
+                if pts2d is not None:
+                    pts2d_buf[ci, p_idx, ids, :] = pts2d
+                    vis_buf[ci, p_idx, ids] = True
+                # else leave pts2d_buf[ci, p_idx, :, :] as nan and vis_buf as False
+
+        K_init = self._cam_matrices
+        dist_init = self._dist_coeffs
+        r_init = self._rvecs_estimated
+        t_init = self._tvecs_estimated
+        pts3d_th = self._point3d_theoretical
+
+        # compute board positions in a shared world reference
+        board_rvecs_world, board_tvecs_world = self._compute_board_world_poses(
+            self._detections_stack,
+            r_init,     # (C, 3)
+            t_init      # (C, 3)
+        )
+
+        # run the bundle adjustment
+        (K_opt, dist_opt,
+         cam_r_opt, cam_t_opt,
+         board_r_opt, board_t_opt) = bundle_adjustment_2.run_bundle_adjustment(
+
+            camera_matrices=K_init,
+            distortion_coeffs=dist_init,
+            cam_rvecs=r_init,
+            cam_tvecs=t_init,
+            board_rvecs=board_rvecs_world,
+            board_tvecs=board_tvecs_world,
+
+            points2d=pts2d_buf,
+            visibility_mask=vis_buf,
+            points3d_th=pts3d_th,
+
+            simple_focal=False,
+            simple_distortion=False,
+            complex_distortion=True,
+            shared=False
+        )
+
+        self._cam_matrices_refined = K_opt
+        self._dist_coeffs_refined = dist_opt
+        self._rvecs_refined = cam_r_opt
+        self._tvecs_refined = cam_t_opt
+
+        self._is_refined = True
+
+        if self._verbose:
+            print("[INFO] [MultiviewCalibrationTool] Bundle adjustment complete.")
+
+        if not keep_afterwards:
+            self.clear_detections()
+            self.clear_poses()
+
+        return True
 
     @property
-    def nb_detection_samples(self):
+    def intrinsics(self):
+        if self._is_refined:
+            return (self._cam_matrices_refined, self._dist_coeffs_refined)
+        else:
+            return (self._cam_matrices, self._dist_coeffs)
+
+    @property
+    def extrinsics(self):
+        if self._is_refined:
+            return (self._rvecs_refined, self._tvecs_refined)
+        else:
+            return (self._rvecs_estimated, self._tvecs_estimated)
+
+    @property
+    def has_intrinsics(self) -> bool:
+        return self._intrinsics_known.all()
+
+    @property
+    def has_extrinsics(self):
+        rvecs, tvecs = self.extrinsics
+        return rvecs is not None and tvecs is not None
+
+    @property
+    def is_refined(self):
+        return self._is_refined
+
+    def clear_poses(self):
+        self._poses_by_frame = defaultdict(dict)
+        self._poses_per_camera = {ci: deque(maxlen=self._max_poses) for ci in range(self.nb_cameras)}
+        self._nb_stored_poses = 0
+        self._rvecs_estimated = None
+        self._tvecs_estimated = None
+        self._rvecs_refined = None
+        self._tvecs_refined = None
+        self._is_refined = False
+
+    def clear_detections(self):
+        self._detections_stack.clear()
+        self._detections_by_frame = defaultdict(dict)
+
+    @property
+    def nb_detections(self):
         return len(self._detections_stack)
 
     @property
-    def nb_pose_samples(self):
-        return len(self._poses_stack)
+    def nb_poses(self):
+        return self._nb_stored_poses
 
     @property
     def origin_camera(self):
@@ -961,133 +1268,5 @@ class MultiviewCalibrationTool:
     def origin_camera(self, value: int):
         self._origin_idx = value
         self.clear_poses()
-        print(f'[MultiviewCalibrationTool] Origin set to camera {self._origin_idx}')
-
-    @property
-    def has_extrinsics(self):
-        rvecs, tvecs = self.extrinsics
-        return rvecs is not None and tvecs is not None
-
-    @property
-    def has_intrinsics(self):
-        return np.all(self._intrinsics_records)
-
-    @property
-    def is_refined(self):
-        return self._is_refined
-
-    @property
-    def extrinsics(self):
-        if self._is_refined:
-            return self._multi_rvecs_refined, self._multi_tvecs_refined
-        else:
-            return self._multi_rvecs_estim, self._multi_tvecs_estim
-
-    def register_intrinsics(self, cam_idx: int, camera_matrix: ArrayLike, dist_coeffs: ArrayLike):
-        self._multi_cam_mat[cam_idx, :, :] = camera_matrix
-        self._multi_dist_coeffs[cam_idx, :len(dist_coeffs)] = dist_coeffs
-        self._intrinsics_records[cam_idx] = True
-
-    def intrinsics(self):
-        if self._is_refined:
-            return self._multi_cam_mat_refined, self._multi_dist_coeffs_refined
-        else:
-            return self._multi_cam_mat, self._multi_dist_coeffs
-
-    def register_pose(self, frame_idx: int, cam_idx: int, rvec: ArrayLike, tvec: ArrayLike):
-        """
-        This registers estimated monocular camera poses and stores them as complete pose samples
-        """
-        self._poses_by_frame[frame_idx][cam_idx] = (rvec, tvec)
-
-        # Check if we have the reference camera and at least another one
-        if self._origin_idx in self._poses_by_frame[frame_idx].keys() and len(self._poses_by_frame[frame_idx]) > 1:
-            sample = self._poses_by_frame.pop(frame_idx)
-            origin_rvec, origin_tvec = sample[self._origin_idx]
-
-            # Remap the poses to a common origin (i.e. the reference camera)
-            for cam, (rvec, tvec) in sample.items():
-                remapped_rvec, remapped_tvec = geometry.remap_rtvecs(rvec, tvec, origin_rvec, origin_tvec)
-                self._poses_per_camera[cam].append((remapped_rvec, remapped_tvec))
-
-    def register_detection(self, frame_idx: int, cam_idx: int, points2d: ArrayLike, points_ids: ArrayLike):
-        """
-        This registers points detections from multiple cameras and stores them as a complete detection samples
-        """
-        self._detections_by_frame[frame_idx][cam_idx] = (points2d, points_ids)
-
-        # Check if we have all cameras for that frame
-        if len(self._detections_by_frame[frame_idx]) == self.nb_cameras:
-            dbf = self._detections_by_frame.pop(frame_idx)
-            # list of lists of tuples of arrays: M[N[(P_points, P_ids)]] because the number of points P is variable
-            sample = [dbf[cidx] for cidx in range(self.nb_cameras)]
-            self._detections_stack.append(sample)
-
-            # Prepare data for triangulation
-            points2d_list = [det[0] for det in sample]
-            points2d_ids_list = [det[1] for det in sample]
-
-            # Only triangulate if extrinsics are available
-            if self.has_intrinsics and self.has_extrinsics:
-                points3d, points3d_ids = multiview.triangulation(points2d_list, points2d_ids_list,
-                                                                 self._multi_rvecs_estim, self._multi_tvecs_estim,
-                                                                 self._multi_cam_mat, self._multi_dist_coeffs)
-                if points3d is not None:
-                    print("Triangulation succeeded, emitting 3D points.")
-                else:
-                    print("Triangulation failed or returned no points.")
-            else:
-                print("Extrinsics or Intrinsics not available yet; cannot triangulate.")
-
-    def clear_intrinsics(self, clear_refined=True):
-        self._intrinsics_records.fill(False)
-        self._multi_cam_mat.fill(0)
-        self._multi_dist_coeffs.fill(0)
-        if clear_refined:
-            self._multi_cam_mat_refined.fill(0)
-            self._multi_dist_coeffs_refined.fill(0)
-
-    def clear_extrinsics(self, clear_refined=True):
-        self._multi_rvecs_estim = None
-        self._multi_tvecs_estim = None
-        if clear_refined:
-            self._multi_rvecs_refined = None
-            self._multi_tvecs_refined = None
-
-    def clear_poses(self):
-        self._poses_per_camera = {cam_idx: [] for cam_idx in range(self.nb_cameras)}
-        self._poses_by_frame = defaultdict(dict)
-
-    def clear_detections(self):
-        self._detections_stack.clear()
-        self._detections_by_frame = defaultdict(dict)
-
-    def estimate_extrinsics(self, clear_poses_stack=True):
-        """
-        This uses the complete pose samples to compute a first estimate of the cameras arrangement
-        """
-        if not all(len(self._poses_per_camera[cam_idx]) >= self._min_poses for cam_idx in range(self.nb_cameras)):
-            # print(f"Waiting for at least {self._min_poses} samples per camera; "
-            #       f"current counts: {[len(self._poses_per_camera[cam]) for cam in range(self.nb_cameras)]}")
-            return
-
-        # Each camera’s list is converted to an array of shape (M, 3) where M varies
-        n_m_rvecs = []
-        n_m_tvecs = []
-        for cam_idx in range(self.nb_cameras):
-            samples = self._poses_per_camera.get(cam_idx, [])
-            if not samples:
-                # If no samples are available for this camera -> empty array
-                n_m_rvecs.append(np.empty([0, 3]))
-                n_m_tvecs.append(np.empty([0, 3]))
-            else:
-                samples_arr = np.array(samples)  # shape: (M, 2, 3) because each sample is (rvec, tvec)
-                m_rvecs = samples_arr[:, 0, :]
-                m_tvecs = samples_arr[:, 1, :]
-                n_m_rvecs.append(m_rvecs)
-                n_m_tvecs.append(m_tvecs)
-
-        self._multi_rvecs_estim, self._multi_tvecs_estim = multiview.bestguess_rtvecs(n_m_rvecs, n_m_tvecs)
-
-        if clear_poses_stack:
-            self.clear_poses()
+        if self._verbose:
+            print(f"[INFO] [MultiviewCalibrationTool] Origin set to camera {self._origin_idx}")
