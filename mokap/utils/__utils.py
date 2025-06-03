@@ -154,6 +154,13 @@ def probe_video(video_path: Path | str):
     return frame.shape, nb_frames
 
 
+def pad_dist_coeffs(dist_coeffs, max_nb=8):
+    dist_coeffs = np.asarray(dist_coeffs)
+    dist_coeffs_pad = np.zeros(max_nb, dtype=np.float32)
+    dist_coeffs_pad[:len(dist_coeffs[:max_nb])] = dist_coeffs[:max_nb]
+    return dist_coeffs_pad
+
+
 def load_full_video(video_path: Path | str):
     video_path = Path(video_path)
 

@@ -2,7 +2,6 @@ from dataclasses import dataclass
 from copy import deepcopy
 import cv2
 import numpy as np
-np.set_printoptions(precision=3, suppress=True, threshold=5)
 from numpy.typing import ArrayLike
 from typing import Optional, Union
 from pathlib import Path
@@ -117,6 +116,17 @@ class DetectionPayload:
     pointsIDs: np.ndarray
 
 @dataclass
+class DetectionWithPosePayload:
+    """
+    Monocular detection of points 2D and pose estimation of the camera
+    """
+    frame: int
+    points2D: np.ndarray
+    pointsIDs: np.ndarray
+    rvec: np.ndarray
+    tvec: np.ndarray
+
+@dataclass
 class IntrinsicsPayload:
     """
     Monocular intrinsics parameters
@@ -149,7 +159,7 @@ class CalibrationData:
     Encapsulation of a payload with the camera name
     """
     camera_name: str
-    payload: IntrinsicsPayload | ExtrinsicsPayload | DetectionPayload | PosePayload | ErrorsPayload | OriginCameraPayload
+    payload: IntrinsicsPayload | ExtrinsicsPayload | DetectionPayload | DetectionWithPosePayload | PosePayload | ErrorsPayload | OriginCameraPayload
 
     def to_file(self, filepath):
         if isinstance(self.payload, IntrinsicsPayload):

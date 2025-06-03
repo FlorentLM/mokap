@@ -164,28 +164,37 @@ def intrinsics_bounds(
         simple_distortion: bool,
         complex_distortion: bool
 ):
+    k_lo = -0.25
+    k_hi = 0.25
+    p_lo = -0.1
+    p_hi = 0.1
+    f_lo = 0.0
+    f_hi = np.inf
+    c_lo = 0.0
+    c_hi = np.inf  # TODO: use image centre +- a small margin
+
     # focal and principal point
     # if simple_focal is True, we only optimise for [f, cx, cy] else [fx, fy, cx, cy]
     if simple_focal:
-        intr_lo = [0.0, 0.0, 0.0]
-        intr_hi = [np.inf, np.inf, np.inf]
+        intr_lo = [f_lo, c_lo, c_lo]
+        intr_hi = [f_hi, c_hi, c_hi]
     else:
-        intr_lo = [0.0, 0.0, 0.0, 0.0]
-        intr_hi = [np.inf, np.inf, np.inf, np.inf]
+        intr_lo = [f_lo, f_lo, c_lo, c_lo]
+        intr_hi = [f_hi, f_hi, c_hi, c_hi]
 
     # distortion
     if simple_distortion and not complex_distortion:
         # k1, k2, p1, p2  (4)
-        intr_lo += [-0.5, -0.5, -0.1, -0.1]
-        intr_hi += [ 0.5,  0.5,  0.1,  0.1]
+        intr_lo += [k_lo, k_lo, p_lo, p_lo]
+        intr_hi += [k_hi, k_hi, p_hi, p_hi]
     elif complex_distortion and not simple_distortion:
         # k1, k2, p1, p2, k3, k4, k5, k6  (8)
-        intr_lo += [-0.5] * 2 + [-0.1, -0.1] + [-0.5] * 4
-        intr_hi += [ 0.5] * 2 + [ 0.1,  0.1] + [ 0.5] * 4
+        intr_lo += [k_lo] * 2 + [p_lo, p_lo] + [k_lo] * 4
+        intr_hi += [k_hi] * 2 + [p_hi, p_hi] + [k_hi] * 4
     else:
         # default 5-coef: k1, k2, p1, p2, k3
-        intr_lo += [-0.5, -0.5, -0.1, -0.1, -0.5]
-        intr_hi += [ 0.5,  0.5,  0.1,  0.1,  0.5]
+        intr_lo += [k_lo, k_lo, p_lo, p_lo, k_lo]
+        intr_hi += [k_hi, k_hi, p_hi, p_hi, k_hi]
 
     return np.array(intr_lo), np.array(intr_hi)
 
@@ -237,7 +246,6 @@ def cost_func(
 
     resid_pc = jnp.where(m, reproj - obs_pc, 0.0)  # (P, C, N, 2)
     return np.array(resid_pc.ravel())
-
 
 def run_bundle_adjustment(
         camera_matrices:    np.ndarray,  # (C, 3, 3)

@@ -41,7 +41,7 @@ def filter_outliers(values, strong=False):
 
 def bestguess_rtvecs(rvecs, tvecs):
     """
-        Finds a first best guess, for C cameras, of their real extrinsics parameters, from M samples per camera
+    Finds a first best guess, for C cameras, of their real extrinsics parameters, from M samples per camera
     """
     # TODO: This could be fully JAX-ified using the https://github.com/google/jaxopt addons
 
@@ -116,45 +116,14 @@ def bestguess_rtvecs(rvecs, tvecs):
     return rvecs_estim, tvecs_estim
 
 
-def common_points(
-        points2d:       List[np.ndarray],
-        points_ids:     List[np.ndarray]
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Finds the common points and points IDs in a list of variable number of detected points
-
-    Args:
-        points2d: list containing N arrays of points coordinates, each of shape (?, 2)
-        points_ids: list containing N arrays of points IDs, each of shape (?, )
-
-    Returns:
-        common_pts: 2D coordinates of the M points that are common to all cameras
-        common_ids: IDs of the M points that are common to all cameras
-    """
-
-    common_ids = reduce(np.intersect1d, points_ids)
-
-    N = len(points2d)
-    M = len(common_ids)
-    D = points2d[0].shape[1]
-    common_pts = np.zeros((N, M, D), dtype=points2d[0].dtype)
-
-    for i in range(N):
-        _, _, idx_in_cam = np.intersect1d(common_ids,
-                                          points_ids[i],
-                                          return_indices=True)
-        common_pts[i] = points2d[i][idx_in_cam]
-
-    return common_pts, common_ids
-
 
 def triangulation(
         points2d:           jnp.ndarray,
         visibility_mask:    jnp.ndarray,
-        rvecs_world:        np.ndarray,
-        tvecs_world:        np.ndarray,
-        camera_matrices:    np.ndarray,
-        dist_coeffs:        np.ndarray,
+        rvecs_world:        jnp.ndarray,
+        tvecs_world:        jnp.ndarray,
+        camera_matrices:    jnp.ndarray,
+        dist_coeffs:        jnp.ndarray,
 ) -> jnp.ndarray:
     """
     Triangulate points 2D seen by C cameras
@@ -172,10 +141,7 @@ def triangulation(
 
     """
 
-    rvecs_world = jnp.asarray(rvecs_world)
-    tvecs_world = jnp.asarray(tvecs_world)
-    camera_matrices = jnp.asarray(camera_matrices)
-    dist_coeffs = jnp.asarray(dist_coeffs)
+    # TODO: we probably want to get rid of this wrapper and use P matrices anywhere we can
 
     # this is converted back to a float array because the triangulate_svd accepts actual weights
     # we can multiply the visibility weights by a confidence score
