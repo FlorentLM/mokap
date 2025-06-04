@@ -229,6 +229,8 @@ def robust_translation_mean(
     return jax.lax.cond(M == 0, no_data, with_data)
 
 
+
+
 def estimate_initial_poses(
     rt_stack_flat: jnp.ndarray,  # (C, M_max, 7): rt vector [q_w, q_x, q_y, q_z, t_x, t_y, t_z]
     lengths:       jnp.ndarray   # (C,) integers

@@ -1113,25 +1113,31 @@ class MultiviewCalibrationTool:
 
         # [root -> world] already in self._cams_world_medians[root_cam] as a 7 rt vector
         q_med, t_med = self._cams_world_medians[root_cam]
-        rvec_med = geometry_2.quaternion_to_axis_angle(q_med)
+        rvec_med = geometry_2.quaternion_to_axisangle(q_med)
         E_root2world_j = geometry_jax.extrinsics_matrix(rvec_med, t_med)
 
         # Remap all cams in this frame from [board -> cam] to [cam -> world]
         rvecs_cam2world_j, tvecs_cam2world_j = self._remap_phase1(E_board2cam_stack,
                                                                   E_root2world_j,
                                                                   cams.index(root_cam))
-        quaternions_cam2world_j = geometry_2.axis_angle_batch_to_quat(rvecs_cam2world_j) # (M, 4)
+        quaternions_cam2world_j = geometry_2.axisangle_to_quaternion_batched(rvecs_cam2world_j) # (M, 4)
 
         for i, cam in enumerate(cams):
             rt_flat = jnp.concatenate([quaternions_cam2world_j[i], tvecs_cam2world_j[i]], axis=0)  # (7,)
             self._cams_world_poses[cam].append(rt_flat)
 
-            # Recompute that camera's medians
-            arr_rt = jnp.stack(list(self._cams_world_poses[cam]), axis=0)
-            quats = arr_rt[:, :4]  # (m, 4)
-            tvecs = arr_rt[:, 4:]  # (m, 3)
-            q_med = geometry_2.quaternion_average(quats)  # (4,)
-            t_med = jnp.median(tvecs, axis=0)  # (3,)
+            # Now recompute that camera's median
+            arr_rt = jnp.stack(list(self._cams_world_poses[cam]), axis=0)  # (m, 7)
+            m = arr_rt.shape[0]
+
+            # We create a dummy batch of 1 because estimate_initial_poses expects a batch of C cams
+            length_one = jnp.array([m], dtype=jnp.int32)  # (1, M_max)
+            rt_padded = geometry_2.pad_to_length(arr_rt, self._max_poses, axis=0, pad_value=0.0)  # (M_max, 7)
+            rt_batch = rt_padded[jnp.newaxis, :, :]             # (1, M_max, 7)
+
+            q_batch, t_batch = geometry_2.estimate_initial_poses(rt_batch, length_one)
+            q_med, t_med = q_batch[0], t_batch[0]
+
             self._cams_world_medians[cam] = (q_med, t_med)
 
         # frame has now been processed, we can discard if from the frame pose buffer
