@@ -1,120 +1,35 @@
-import numpy as np
-from functools import reduce
-from scipy.optimize import minimize
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 import jax.numpy as jnp
+import jax
 from mokap.utils import geometry_jax
 
 
-def filter_outliers(values, strong=False):
-
-    # Use z score to find outliers
-    if (values == 0).all():
-        return values
-    else:
-        if not (values.std(axis=0) == 0).any():
-            z = (values - values.mean(axis=0)) / values.std(axis=0)
-        else:
-            z = (values - values.mean(axis=0))
-        outliers_z = (np.abs(z) > 2.5).any(axis=1)
-
-        # Use IQR to find outliers
-        if strong:
-            q_1 = np.quantile(values, 0.125, axis=0)
-            q_3 = np.quantile(values, 0.875, axis=0)
-        else:
-            q_1 = np.quantile(values, 0.25, axis=0)
-            q_3 = np.quantile(values, 0.75, axis=0)
-
-        iqr = q_3 - q_1
-        lower = q_1 - 1.5 * iqr
-        upper = q_3 + 1.5 * iqr
-
-        outliers_iqr = np.any(values < lower, axis=1) | np.any(values > upper, axis=1)
-
-        outliers_both = outliers_iqr | outliers_z
-
-        filtered = values[~outliers_both]
-
-        return filtered
+# Pre-allocate identity quaternion constant and zero translation
+ID_QUAT = jnp.array([1.0, 0.0, 0.0, 0.0], dtype=jnp.float32)
+ZERO_T = jnp.zeros((3,), dtype=jnp.float32)
 
 
-def bestguess_rtvecs(rvecs, tvecs):
+def pad_to_length(
+    arr:        jnp.ndarray,
+    target_len: int,
+    axis:       int = 0,
+    pad_value:  Optional[float] = 0.0,
+) -> jnp.ndarray:
     """
-    Finds a first best guess, for C cameras, of their real extrinsics parameters, from M samples per camera
+    Pad an array arr along specified axis up to size target_len by concatenating
+    a constant array of shape [..., pad_amt, ...] with pad_value.
+    If arr.shape[axis] >= target_len, it returns arr unchanged
     """
-    # TODO: This could be fully JAX-ified using the https://github.com/google/jaxopt addons
+    current = arr.shape[axis]
+    pad_amt = target_len - current
+    if pad_amt <= 0:
+        return arr
 
-    C = len(rvecs)
+    pad_shape = list(arr.shape)
+    pad_shape[axis] = pad_amt
 
-    rvecs_estim = np.zeros((C, 3))
-    tvecs_estim = np.zeros((C, 3))
-
-    # Huber loss instead of simply doing mahalanobis distance makes the influence of 'flipped' detections less strong
-    # (flipped detections being the ones resulting from an ambiguity in the monocular pose estimation)
-    def huberloss(residual, delta=0.0):
-        # delta is the threshold between quadratic and linear behavior
-        abs_r = np.abs(residual)
-        quadratic = np.minimum(abs_r, delta)
-        linear = abs_r - quadratic
-        return 0.5 * quadratic ** 2 + delta * linear
-
-    def objective_func(estimated, observed, cov):
-        # regularize covariance matrix to avoid singularities
-        cov_reg = cov + np.eye(cov.shape[0]) * 1e-6
-        cov_inv = np.linalg.inv(cov_reg)
-        residuals = observed - estimated
-        # Mahalanobis residuals
-        mahal = np.sqrt(np.einsum('ij,jk,ik->i', residuals, cov_inv, residuals))
-
-        loss = huberloss(mahal)
-        return np.sum(loss)
-
-    for c in range(C):
-
-        if rvecs[c].size == 0:  # no samples -> skip
-            continue
-
-        all_rvecs = filter_outliers(rvecs[c])
-        all_tvecs = filter_outliers(tvecs[c])
-
-        median_rvecs = np.median(all_rvecs, axis=0)
-        median_tvecs = np.median(all_tvecs, axis=0)
-
-        # covariance matrices
-        if all_rvecs.shape[0] > 1:
-            cov_r = np.cov(all_rvecs, rowvar=False)
-        else:
-            cov_r = np.eye(3)
-        if all_tvecs.shape[0] > 1:
-            cov_t = np.cov(all_tvecs, rowvar=False)
-        else:
-            cov_t = np.eye(3)   # if not enough samples, we use the identity matrix
-
-        # We can use L-BFGS-B here even though it's quite sensitive,
-        # because the Huber loss should take care of the problematic values
-
-        # Minimize orientation
-        try:
-            res_r = minimize(objective_func, x0=median_rvecs, args=(all_rvecs, cov_r), method='L-BFGS-B')
-            opt_r = res_r.x
-        except Exception as e:
-            print("Optimization error for rvec:", e)
-            opt_r = median_rvecs
-
-        # Minimize position
-        try:
-            res_t = minimize(objective_func, x0=median_tvecs, args=(all_tvecs, cov_t), method='L-BFGS-B')
-            opt_t = res_t.x
-        except Exception as e:
-            print("Optimization error for tvec:", e)
-            opt_t = median_tvecs
-
-        rvecs_estim[c, :] = opt_r
-        tvecs_estim[c, :] = opt_t
-
-    return rvecs_estim, tvecs_estim
-
+    filler = jnp.full(pad_shape, pad_value, dtype=arr.dtype)
+    return jnp.concatenate([arr, filler], axis=axis)
 
 
 def triangulation(
@@ -156,3 +71,209 @@ def triangulation(
     pts3d = geometry_jax.triangulate_svd(pts2d_ud, P_all, weights=visibility_mask)  # (N, 3)
 
     return pts3d
+
+
+@jax.jit
+def axisangle_to_quaternion(rvec: jnp.ndarray) -> jnp.ndarray:
+    """
+    Convert one axis–angle (Rodrigues) vector rvec ∈ ℝ³ into a unit quaternion [w,x,y,z].
+    If ‖rvec‖ < eps, returns [1,0,0,0].
+    """
+    theta = jnp.linalg.norm(rvec)
+    eps = 1e-8
+
+    def small_angle_quat():
+        return ID_QUAT
+
+    def normal_quat():
+        axis = rvec / theta
+        half = 0.5 * theta
+        w = jnp.cos(half)
+        xyz = axis * jnp.sin(half)
+        return jnp.concatenate([jnp.array([w], dtype=rvec.dtype), xyz], axis=0)
+
+    return jax.lax.cond(theta < eps, small_angle_quat, normal_quat)
+
+# Batch version maps over axis=0 of an (N, 3) array and returns an (N, 4)
+axisangle_to_quaternion_batched = jax.jit(
+    jax.vmap(axisangle_to_quaternion, in_axes=0, out_axes=0)
+)
+
+
+@jax.jit
+def quaternion_to_axisangle (q: jnp.ndarray) -> jnp.ndarray:
+    """
+    Convert one quaternion q = [w, x, y, z] to a rvec ∈ ℝ³ (axis–angle).
+    If sin(theta/2) ~ 0, it returns [0, 0, 0].
+    """
+    w, x, y, z = q
+    # Clamp w into [-1, 1] to avoid NaNs
+    w_clamped = jnp.clip(w, -1.0, 1.0)
+    theta = 2.0 * jnp.arccos(w_clamped)
+    s2 = 1.0 - w_clamped * w_clamped
+    s = jnp.sqrt(s2 + 1e-12)
+    eps = 1e-8
+
+    # For numeric stability, branch on whether sin(theta/2) is ~ zero
+    def normal_case():
+        axis = jnp.array([x, y, z]) / s
+        return axis * theta
+
+    def small_case():
+        return jnp.zeros((3,), dtype=q.dtype)
+
+    return jax.lax.cond(s2 < (eps * eps), small_case, normal_case)
+
+# Batched version maps over axis=0 of an (N, 4) array and returns a (N, 3)
+quaternion_to_axisangle_batched = jax.jit(
+    jax.vmap(quaternion_to_axisangle , in_axes=0, out_axes=0)
+)
+
+
+@jax.jit
+def _principal_ev4(M: jnp.ndarray, num_iters: int = 6) -> jnp.ndarray:
+    """
+    Compute the principal (largest) eigenvector of a 4x4 symmetric matrix M with power‐method
+    """
+    def body_fn(i_v):
+        i, v = i_v
+        v_next = M @ v
+        v_next = v_next / (jnp.linalg.norm(v_next) + 1e-12)
+        return (i + 1, v_next)
+
+    def cond_fn(i_v):
+        i, _ = i_v
+        return i < num_iters
+
+    v0 = jnp.array([1.0, 0.0, 0.0, 0.0], dtype=M.dtype)
+    _, v_star = jax.lax.while_loop(cond_fn, body_fn, (0, v0))
+    return v_star
+
+
+@jax.jit
+def quaternion_average(quats: jnp.ndarray, weights: jnp.ndarray = None) -> jnp.ndarray:
+    """
+    Compute the Markley‐style average of N unit quaternions via principal eigenvector.
+
+    Args:
+        quats: (N,4) array of unit quaternions [w, x, y, z]
+        weights: optional (N,) array. If None, it assumes uniform weights = 1/N
+    Returns:
+        q_avg ∈ ℝ⁴ (unit quaternion)
+    """
+    # Build 4x4 symmetric matrix M = ∑ w_i * (q_i q_i^T)
+    if weights is None:
+        M = quats.T @ quats                 # (4, 4)
+    else:
+        W = jnp.diag(weights)               # (N, N)
+        M = quats.T @ (W @ quats)           # (4, 4)
+
+    # Compute principal eigenvector with power‐method
+    top = _principal_ev4(M)                 # (4,)
+    top_unit = top / (jnp.linalg.norm(top) + 1e-12)
+
+    # Ensure scalar part ≥ 0
+    top_unit = jax.lax.cond(top_unit[0] < 0.0,
+                             lambda q: -q,
+                             lambda q: q,
+                             top_unit)
+    return top_unit
+
+
+@jax.jit
+def huber_weight(residual_norm: jnp.ndarray, delta: float = 1.0) -> jnp.ndarray:
+    """
+    Compute Huber weight for each ||error||
+
+        w = 1                   if ||error|| <= delta
+        w = delta / ||error||   if ||error|| > delta
+    """
+    return jnp.where(residual_norm <= delta,1.0, delta / (residual_norm + 1e-12))
+
+
+@jax.jit
+def robust_translation_mean(
+        t_samples:  jnp.ndarray,
+        num_iters:  int = 3,
+        delta:      float = 1.0
+    ) -> jnp.ndarray:
+    """
+    Compute a Huber‐weighted mean of M translation samples (M, 3) with IRLS.
+    If M == 0, it returns [0, 0, 0].
+    """
+    M = t_samples.shape[0]
+
+    def no_data():
+        return jnp.zeros((3,), dtype=t_samples.dtype)
+
+    def with_data():
+        # Initialize t0 as component wise median
+        t0 = jnp.median(t_samples, axis=0)          # (3,)
+
+        def body_fn(i_t):
+            i, t_curr = i_t
+            res = t_samples - t_curr                # (M, 3)
+            norms = jnp.linalg.norm(res, axis=1)    # (M,)
+            w = huber_weight(norms, delta)    # (M,)
+            w = w / (jnp.sum(w) + 1e-12)            # normalize to sum=1
+            t_next = jnp.sum(w[:, None] * t_samples, axis=0)  # (3,)
+            return i + 1, t_next
+
+        def cond_fn(i_t):
+            i, _ = i_t
+            return i < num_iters
+
+        _, t_final = jax.lax.while_loop(cond_fn, body_fn, (0, t0))
+        return t_final
+
+    return jax.lax.cond(M == 0, no_data, with_data)
+
+
+def estimate_initial_poses(
+    rt_stack_flat: jnp.ndarray,  # (C, M_max, 7): rt vector [q_w, q_x, q_y, q_z, t_x, t_y, t_z]
+    lengths:       jnp.ndarray   # (C,) integers
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    Loops over each camera
+
+    For each camera c:
+        Take the first lengths[c] rows of rt_stack_flat[c]
+        Split into quaternions (4) and translations (3)
+        Compute Markley mean of quaternions
+        Compute component wise median of tvecs
+
+    Returns:
+        q_estimates: np array (C, 4)
+        t_estimates: np array (C, 3)
+    """
+
+    C, M_max, _ = rt_stack_flat.shape
+
+    q_list = []
+    t_list = []
+
+    for c in range(C):
+        M_c = int(lengths[c])       # slice length for camera c
+        rt_flat = rt_stack_flat[c]  # (M_max, 7)
+
+        if M_c == 0:
+            # No valid samples so return identity quaternion + zero translation
+            q_med = ID_QUAT
+            t_med = ZERO_T
+        else:
+            # Normal case, take the first M_c rows
+            valid = rt_flat[:M_c, :]    # (M_c, 7)
+
+            # Split into quaternions and translations
+            quats = valid[:, :4]        # (M_c, 4)
+            tvecs = valid[:, 4:]        # (M_c, 3)
+
+            q_med = quaternion_average(quats)   # (4,)
+            t_med = jnp.median(tvecs, axis=0)   # (3,)
+
+        q_list.append(q_med)
+        t_list.append(t_med)
+
+    q_estimates = jnp.stack(q_list, axis=0)     # (C, 4)
+    t_estimates = jnp.stack(t_list, axis=0)     # (C, 3)
+    return q_estimates, t_estimates

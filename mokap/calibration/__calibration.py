@@ -938,7 +938,7 @@ class MultiviewCalibrationTool:
         self._cams_world_poses: Dict[int, deque] = {
             ci: deque(maxlen=self._max_poses) for ci in range(self.nb_cameras)
         }
-        self._cams_world_medians: Dict[int, jnp.ndarray] = {}
+        self._cams_world_medians: Dict[int, Tuple[jnp.ndarray, jnp.ndarray]] = {}
 
         # Buffers for [cam -> world] extrinsics (set after initial best-guess)
         self._rvecs_cam2world_j = jnp.zeros((self.nb_cameras, 3), dtype=jnp.float32)
@@ -1056,9 +1056,11 @@ class MultiviewCalibrationTool:
         # Only the first time the origin camera appears
         if not self._origin_seeded and cam_idx == self.origin_idx:
             # seed [origin -> world] = identity matrix
-            zero_rt = jnp.zeros((2, 3), dtype=jnp.float32)
-            self._cams_world_poses[self.origin_idx].append(zero_rt)
-            self._cams_world_medians[self.origin_idx] = zero_rt
+            ID_QUAT = geometry_2.ID_QUAT
+            ZERO_T = jnp.zeros((3,), dtype=jnp.float32)
+            rt_flat = jnp.concatenate([ID_QUAT, ZERO_T], axis=0)  # (7,)
+            self._cams_world_poses[self.origin_idx].append(rt_flat)
+            self._cams_world_medians[self.origin_idx] = (ID_QUAT, ZERO_T)
             self._origin_seeded = True
 
             # We can process that frame immediately and return because origin is now known
@@ -1102,7 +1104,6 @@ class MultiviewCalibrationTool:
         """
 
         cams = list(self._frame_pose_buffer[frame_idx].keys())  # which cameras saw this frame
-        M = len(cams)
 
         # Gather all M [board -> cam] matrices
         E_board2cam_stack = jnp.stack(
@@ -1110,23 +1111,28 @@ class MultiviewCalibrationTool:
             axis=0  # (M, 4, 4)
         )
 
-        # [root -> world] already in self._cams_world_medians[root_cam] as two stacked vectors
-        rt_root = self._cams_world_medians[root_cam]
-        E_root2world_j = geometry_jax.extrinsics_matrix(rt_root[0], rt_root[1])  # (4, 4)
+        # [root -> world] already in self._cams_world_medians[root_cam] as a 7 rt vector
+        q_med, t_med = self._cams_world_medians[root_cam]
+        rvec_med = geometry_2.quaternion_to_axis_angle(q_med)
+        E_root2world_j = geometry_jax.extrinsics_matrix(rvec_med, t_med)
 
         # Remap all cams in this frame from [board -> cam] to [cam -> world]
-        rvecs_cam2world_j, tvecs_cam2world_j = self._remap_phase1(
-            E_board2cam_stack, E_root2world_j, cams.index(root_cam)
-        )  # each (M, 3)
+        rvecs_cam2world_j, tvecs_cam2world_j = self._remap_phase1(E_board2cam_stack,
+                                                                  E_root2world_j,
+                                                                  cams.index(root_cam))
+        quaternions_cam2world_j = geometry_2.axis_angle_batch_to_quat(rvecs_cam2world_j) # (M, 4)
 
-        # Append into each cam’s deque as a single (2,3):
         for i, cam in enumerate(cams):
-            one_rt = jnp.stack([rvecs_cam2world_j[i], tvecs_cam2world_j[i]], axis=0)  # (2,3)
-            self._cams_world_poses[cam].append(one_rt)
-            # Recompute that camera's median
-            LAST_SAMPLES = 15
-            arr_pairs = jnp.stack(list(self._cams_world_poses[cam]), axis=0)  # (m, 2, 3)
-            self._cams_world_medians[cam] = jnp.median(arr_pairs[-LAST_SAMPLES:], axis=0)  # (2, 3)
+            rt_flat = jnp.concatenate([quaternions_cam2world_j[i], tvecs_cam2world_j[i]], axis=0)  # (7,)
+            self._cams_world_poses[cam].append(rt_flat)
+
+            # Recompute that camera's medians
+            arr_rt = jnp.stack(list(self._cams_world_poses[cam]), axis=0)
+            quats = arr_rt[:, :4]  # (m, 4)
+            tvecs = arr_rt[:, 4:]  # (m, 3)
+            q_med = geometry_2.quaternion_average(quats)  # (4,)
+            t_med = jnp.median(tvecs, axis=0)  # (3,)
+            self._cams_world_medians[cam] = (q_med, t_med)
 
         # frame has now been processed, we can discard if from the frame pose buffer
         del self._frame_pose_buffer[frame_idx]
@@ -1136,20 +1142,36 @@ class MultiviewCalibrationTool:
             self._compute_initial_extrinsics()
 
     def _compute_initial_extrinsics(self):
-        # Build point clouds per camera from the deques
-        cloud_r = []
-        cloud_t = []
-        for c in range(self.nb_cameras):
-            arr = jnp.stack(self._cams_world_poses[c], axis=0)  # (m_c, 2, 3)
-            cloud_r.append(np.asarray(arr[:, 0, :]))  # (m_c, 3)
-            cloud_t.append(np.asarray(arr[:, 1, :]))  # (m_c, 3)
 
-        r_c2w, t_c2w = geometry_2.bestguess_rtvecs(cloud_r, cloud_t)  # (C, 3) each
-        self._rvecs_cam2world_j = jnp.asarray(r_c2w)
-        self._tvecs_cam2world_j = jnp.asarray(t_c2w)
+        # Each self._cams_world_poses[c] is a deque of (2, 3) JAX array, each with a diff length
+        rt_samples = []
+        lengths = []
+        for c in range(self.nb_cameras):
+            rt_flat = jnp.stack(self._cams_world_poses[c], axis=0)  # (m, 7)
+            rt_samples.append(rt_flat)
+            lengths.append(rt_flat.shape[0])
+
+        lengths = jnp.array(lengths, dtype=jnp.int32)
+
+        # Pad to (C, M_max, 7)
+        M_max = int(jnp.max(lengths))
+
+        rt_stack_flat = jnp.stack([
+            geometry_2.pad_to_length(arr_c, M_max, axis=0, pad_value=0.0)
+            for arr_c in rt_samples
+        ], axis=0)  # (C, M_max, 7)
+
+        # assume estimate_initial_poses_flat takes (C, M_max, 7) plus lengths
+        q_cam_j, t_cam_j = geometry_2.estimate_initial_poses(rt_stack_flat, lengths)
+
+        # Convert quaternions back to axis–angle vectors
+        rvecs_cam_j = geometry_2.quaternion_batch_to_axis_angle(q_cam_j)  # (C, 3)
+
+        self._rvecs_cam2world_j = rvecs_cam_j
+        self._tvecs_cam2world_j = t_cam_j
 
         self._estimated = True
-        self._last_frame = np.full(self.nb_cameras, -1, dtype=int)  # reset for Phase 2
+        self._last_frame = np.full(self.nb_cameras, -1, dtype=int) # reset for Phase 2
 
     # -------------------------- PHASE 2 --------------------------
 
