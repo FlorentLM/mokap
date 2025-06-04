@@ -1169,7 +1169,7 @@ class MultiviewCalibrationTool:
         q_cam_j, t_cam_j = geometry_2.estimate_initial_poses(rt_stack_flat, lengths)
 
         # Convert quaternions back to axis–angle vectors
-        rvecs_cam_j = geometry_2.quaternion_batch_to_axis_angle(q_cam_j)  # (C, 3)
+        rvecs_cam_j = geometry_2.quaternion_to_axisangle_batched(q_cam_j)  # (C, 3)
 
         self._rvecs_cam2world_j = rvecs_cam_j
         self._tvecs_cam2world_j = t_cam_j

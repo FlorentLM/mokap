@@ -131,53 +131,16 @@ quaternion_to_axisangle_batched = jax.jit(
 
 
 @jax.jit
-def _principal_ev4(M: jnp.ndarray, num_iters: int = 6) -> jnp.ndarray:
-    """
-    Compute the principal (largest) eigenvector of a 4x4 symmetric matrix M with power‐method
-    """
-    def body_fn(i_v):
-        i, v = i_v
-        v_next = M @ v
-        v_next = v_next / (jnp.linalg.norm(v_next) + 1e-12)
-        return (i + 1, v_next)
-
-    def cond_fn(i_v):
-        i, _ = i_v
-        return i < num_iters
-
-    v0 = jnp.array([1.0, 0.0, 0.0, 0.0], dtype=M.dtype)
-    _, v_star = jax.lax.while_loop(cond_fn, body_fn, (0, v0))
-    return v_star
-
-
-@jax.jit
-def quaternion_average(quats: jnp.ndarray, weights: jnp.ndarray = None) -> jnp.ndarray:
-    """
-    Compute the Markley‐style average of N unit quaternions via principal eigenvector.
-
-    Args:
-        quats: (N,4) array of unit quaternions [w, x, y, z]
-        weights: optional (N,) array. If None, it assumes uniform weights = 1/N
-    Returns:
-        q_avg ∈ ℝ⁴ (unit quaternion)
-    """
-    # Build 4x4 symmetric matrix M = ∑ w_i * (q_i q_i^T)
-    if weights is None:
-        M = quats.T @ quats                 # (4, 4)
-    else:
-        W = jnp.diag(weights)               # (N, N)
-        M = quats.T @ (W @ quats)           # (4, 4)
-
-    # Compute principal eigenvector with power‐method
-    top = _principal_ev4(M)                 # (4,)
-    top_unit = top / (jnp.linalg.norm(top) + 1e-12)
-
-    # Ensure scalar part ≥ 0
-    top_unit = jax.lax.cond(top_unit[0] < 0.0,
-                             lambda q: -q,
-                             lambda q: q,
-                             top_unit)
-    return top_unit
+def quaternion_average(quats: jnp.ndarray) -> jnp.ndarray:
+    # Build M = ∑ q_i q_i^T
+    M = quats.T @ quats
+    # eigh returns (eigenvalues, eigenvectors) sorted ascending by value
+    w, V = jnp.linalg.eigh(M)
+    top = V[:, -1]  # principal eigenvector
+    top = top / (jnp.linalg.norm(top) + 1e-12)
+    # force w >= 0
+    top = jax.lax.cond(top[0] < 0.0, lambda q: -q, lambda q: q, top)
+    return top
 
 
 @jax.jit
@@ -271,7 +234,7 @@ def estimate_initial_poses(
             tvecs = valid[:, 4:]        # (M_c, 3)
 
             q_med = quaternion_average(quats)   # (4,)
-            t_med = jnp.median(tvecs, axis=0)   # (3,)
+            t_med = robust_translation_mean(tvecs, num_iters=4, delta=1.0)   # (3,)
 
         q_list.append(q_med)
         t_list.append(t_med)
