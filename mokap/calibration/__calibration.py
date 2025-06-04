@@ -1056,11 +1056,9 @@ class MultiviewCalibrationTool:
         # Only the first time the origin camera appears
         if not self._origin_seeded and cam_idx == self.origin_idx:
             # seed [origin -> world] = identity matrix
-            ID_QUAT = geometry_2.ID_QUAT
-            ZERO_T = jnp.zeros((3,), dtype=jnp.float32)
-            rt_flat = jnp.concatenate([ID_QUAT, ZERO_T], axis=0)  # (7,)
+            rt_flat = jnp.concatenate([geometry_2.ID_QUAT, geometry_2.ZERO_T], axis=0)  # (7,)
             self._cams_world_poses[self.origin_idx].append(rt_flat)
-            self._cams_world_medians[self.origin_idx] = (ID_QUAT, ZERO_T)
+            self._cams_world_medians[self.origin_idx] = (geometry_2.ID_QUAT, geometry_2.ZERO_T)
             self._origin_seeded = True
 
             # We can process that frame immediately and return because origin is now known
