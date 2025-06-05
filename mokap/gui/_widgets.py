@@ -28,8 +28,8 @@ from .workers import *
 
 
 # TODO: board params need to be loaded from config file
-# DEFAULT_BOARD = CharucoBoard(rows=6, cols=5, square_length=1.5, markers_size=4)
-DEFAULT_BOARD = ChessBoard(rows=6, cols=5, square_length=1.5)
+DEFAULT_BOARD = CharucoBoard(rows=6, cols=5, square_length=1.5, markers_size=4)
+# DEFAULT_BOARD = ChessBoard(rows=6, cols=5, square_length=1.5)
 
 # DEFAULT_BOARD.to_file(Path.home())
 
@@ -37,7 +37,7 @@ FAST_UPDATE = 16
 SLOW_UPDATE = 200
 GUI_LOGGER = False
 MAX_PLOT_X = 50
-
+VERBOSE = True
 
 ##
 
@@ -172,7 +172,7 @@ class BoardParamsDialog(QDialog):
         return self._board_params, self.apply_all_checkbox.isChecked()
 
 
-class WindowSnapMixin:
+class SnapMixin:
     """
     Mixin class for window movement helpers
 
@@ -240,7 +240,7 @@ class WindowSnapMixin:
                 return
 
 
-class SecondaryWindowBase(QWidget, WindowSnapMixin):
+class Base(QWidget, SnapMixin):
     """
     Base for any camera‐preview or 3D window
       - Worker/thread/timer setup
@@ -288,7 +288,7 @@ class SecondaryWindowBase(QWidget, WindowSnapMixin):
         self.timer_fast.start(fast)
         self.timer_slow.start(slow)
 
-class VideoWindowBase(SecondaryWindowBase):
+class PreviewBase(Base):
 
     send_frame = Signal(np.ndarray, int)
 
@@ -648,7 +648,7 @@ class VideoWindowBase(SecondaryWindowBase):
             self._clock = now
             self._last_capture_count = ind
 
-class RecordingWindow(VideoWindowBase):
+class Recording(PreviewBase):
 
     def __init__(self, camera, main_window_ref):
         super().__init__(camera, main_window_ref)
@@ -1056,7 +1056,7 @@ class RecordingWindow(VideoWindowBase):
                     window.camera_controls_sliders[label].setValue(w_new_val)
                     window.update_param(label)
 
-class MonocularCalibWindow(VideoWindowBase):
+class Monocular(PreviewBase):
 
     request_load = Signal(str)
     request_save = Signal(str)
@@ -1070,10 +1070,9 @@ class MonocularCalibWindow(VideoWindowBase):
         self.reprojection_errors = deque(maxlen=MAX_PLOT_X)
 
         # The worker annotates the frame by itself so we keep a reference to the latest annotated frame
-        # TODO - Maybe the anotation should happen here instead, like the recording mode?
         self.annotated_frame = None
 
-        self._setup_worker(MonocularWorker(self.board_params, self.idx, self.name, self.source_shape))
+        self._setup_worker(MonocularWorker(self.board_params, self.idx, self.name, self.source_shape, verbose=VERBOSE))
 
         # Finish building the UI by calling the other constructors
         self._init_common_ui()
@@ -1195,7 +1194,6 @@ class MonocularCalibWindow(VideoWindowBase):
     #  ============= Update frame =============
     def _update_fast(self):
         self._refresh_framebuffer()
-        # frame = self._frame_buffer.copy()
         frame = self._frame_buffer
 
         if not self._worker_busy:
@@ -1224,8 +1222,7 @@ class MonocularCalibWindow(VideoWindowBase):
         if self.annotated_frame is not None and self.annotated_frame.size > 0:
 
             # Resize image to current viewport dimensions
-            scale = min(disp_w / self.annotated_frame.shape[1],
-                        disp_h / self.annotated_frame.shape[0])
+            scale = min(disp_w / self.annotated_frame.shape[1], disp_h / self.annotated_frame.shape[0])
             out = cv2.resize(self.annotated_frame, (0, 0), fx=scale, fy=scale)
 
             # Paste resized image into display buffer
@@ -1315,7 +1312,7 @@ class MonocularCalibWindow(VideoWindowBase):
             if bool_apply_all:
                 # Loop over all secondary windows in the main app
                 for w in self._mainwindow.video_windows:
-                    if isinstance(w, MonocularCalibWindow):
+                    if isinstance(w, Monocular):
                         w.board_params = new_board_params.copy()
                         w._update_board_preview()
             else:
@@ -1335,10 +1332,12 @@ class MonocularCalibWindow(VideoWindowBase):
         self.board_preview_label.setPixmap(bounded_pixmap)
 
 
-class MultiviewCalibWindow(SecondaryWindowBase):
+class Multiview3D(Base):
 
     def __init__(self, main_window_ref):
         super().__init__(main_window_ref)
+
+        self.board_params = DEFAULT_BOARD
 
         self.nb_cams = main_window_ref.nb_cams
         self.idx = self.nb_cams + 1
@@ -1386,13 +1385,13 @@ class MultiviewCalibWindow(SecondaryWindowBase):
             [3, 0, 4], [3, 4, 7]   # Left
         ], dtype=np.int32)
 
-        # # Initialise where to store intrinsics and extrinsics for all cams
+        # Initialise where to store intrinsics and extrinsics for all cams
         self._multi_cameras_matrices = np.zeros((self.nb_cams, 3, 3), dtype=np.float32)
         self._multi_dist_coeffs = np.zeros((self.nb_cams, 14), dtype=np.float32)
         self._multi_extrinsics_matrices = np.zeros((self.nb_cams, 3, 4), dtype=np.float32)
 
         # Setup worker
-        self._setup_worker(MultiviewWorker(self._cameras_names, self._origin_camera))
+        self._setup_worker(MultiviewWorker(self.board_params, self._cameras_names, self._origin_camera, self._sources_shapes[0])) # TODO: needs to deal with multiple sizes instead of using the first one
         self.worker_thread.start()
 
         # References to displayed items
@@ -1694,7 +1693,7 @@ class MultiviewCalibWindow(SecondaryWindowBase):
         self.update_scene()
 
 
-class MainWindow(QMainWindow, WindowSnapMixin):
+class MainControls(QMainWindow, SnapMixin):
     INFO_PANEL_MINSIZE_H = 200
     VIDEO_PANEL_MINSIZE_H = 50  # haha
     WINDOW_MIN_W = 630
@@ -2327,15 +2326,15 @@ class MainWindow(QMainWindow, WindowSnapMixin):
     def _start_secondary_windows(self):
         if self.is_calibrating:
             # Create 3D visualization window
-            self.opengl_window = MultiviewCalibWindow(self)
+            self.opengl_window = Multiview3D(self)
             self.opengl_window.setWindowTitle("3D Calibration View")
             self.opengl_window.show()
 
         for i, cam in enumerate(self.mc.cameras):
             if self.is_calibrating:
-                w = MonocularCalibWindow(cam, self)
+                w = Monocular(cam, self)
             else:
-                w = RecordingWindow(cam, self)
+                w = Recording(cam, self)
             self.video_windows.append(w)
             self.secondary_windows_visibility_buttons[i].setText(f" {w.name.title()} camera")
             self.secondary_windows_visibility_buttons[i].setStyleSheet(f"border-radius: 5px; padding: 0 10 0 10; color: {w.secondary_colour}; background-color: {w.colour};")

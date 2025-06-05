@@ -257,6 +257,8 @@ def run_bundle_adjustment(
         points2d:           np.ndarray,  # (C, P, N, 2)
         visibility_mask:    np.ndarray,  # (C, P, N)
         points3d_th,
+        image_size = None,     # (2,)    # TODO: Needs to support multiple sizes
+        priors_weight=0.0,
         simple_focal=False,
         simple_distortion=False,
         complex_distortion=False,
@@ -293,7 +295,7 @@ def run_bundle_adjustment(
             result = least_squares(cost_func,
                                    x0,          # x0 contains all the optimisable variables
                                    verbose=2,
-                                   bounds=(lb, ub),
+                                   # bounds=(lb, ub),
                                    x_scale='jac',
                                    ftol=1e-8,
                                    method='trf',

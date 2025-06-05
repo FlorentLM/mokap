@@ -57,7 +57,7 @@ def distortion(
         dy: tangential distortion in y
     """
 
-    k1, k2, k3, k4, k5, k6, p1, p2 = pad_dist_coeffs(dist_coeffs)
+    k1, k2, p1, p2, k3, k4, k5, k6 = pad_dist_coeffs(dist_coeffs)
     r2 = x * x + y * y
     radial = (1
               + k1 * r2
