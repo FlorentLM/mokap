@@ -2,11 +2,44 @@ from typing import List, Tuple, Optional
 import jax.numpy as jnp
 import jax
 from mokap.utils import geometry_jax
-
+import numpy as np
 
 # Pre-allocate identity quaternion constant and zero translation
 ID_QUAT = jnp.array([1.0, 0.0, 0.0, 0.0], dtype=jnp.float32)
 ZERO_T = jnp.zeros((3,), dtype=jnp.float32)
+
+
+def filter_outliers(values, strong=False):
+
+    # Use z score to find outliers
+    if (values == 0).all():
+        return values
+    else:
+        if not (values.std(axis=0) == 0).any():
+            z = (values - values.mean(axis=0)) / values.std(axis=0)
+        else:
+            z = (values - values.mean(axis=0))
+        outliers_z = (np.abs(z) > 2.5).any(axis=1)
+
+        # Use IQR to find outliers
+        if strong:
+            q_1 = np.quantile(values, 0.125, axis=0)
+            q_3 = np.quantile(values, 0.875, axis=0)
+        else:
+            q_1 = np.quantile(values, 0.25, axis=0)
+            q_3 = np.quantile(values, 0.75, axis=0)
+
+        iqr = q_3 - q_1
+        lower = q_1 - 1.5 * iqr
+        upper = q_3 + 1.5 * iqr
+
+        outliers_iqr = np.any(values < lower, axis=1) | np.any(values > upper, axis=1)
+
+        outliers_both = outliers_iqr | outliers_z
+
+        filtered = values[~outliers_both]
+
+        return filtered
 
 
 def pad_to_length(
