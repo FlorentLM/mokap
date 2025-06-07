@@ -537,4 +537,12 @@ def run_bundle_adjustment(
         complex_distortion=complex_distortion,
         shared=shared)
 
-    return camera_matrices_opt, distortion_coeffs_opt, cam_rvecs_opt, cam_tvecs_opt, board_rvecs_opt, board_tvecs_opt
+    ret_vals = {
+        'K_opt': camera_matrices_opt,
+        'D_opt': distortion_coeffs_opt,
+        'cam_r_opt': cam_rvecs_opt,
+        'cam_t_opt': cam_tvecs_opt,
+        'board_r_opt': board_rvecs_opt,
+        'board_t_opt': board_tvecs_opt,
+    }
+    return result.success, ret_vals

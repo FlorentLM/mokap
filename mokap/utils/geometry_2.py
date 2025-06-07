@@ -162,6 +162,28 @@ quaternion_to_axisangle_batched = jax.jit(
     jax.vmap(quaternion_to_axisangle , in_axes=0, out_axes=0)
 )
 
+from mokap.utils.geometry_jax import rodrigues
+@jax.jit
+def quaternion_inverse(q: jnp.ndarray) -> jnp.ndarray:
+    """
+    Invert a unit quaternion q = [w, x, y, z].
+    For a unit quaternion, q^{-1} = [w, -x, -y, -z].
+    """
+    w, x, y, z = q
+    return jnp.array([w, -x, -y, -z], dtype=q.dtype)
+
+@jax.jit
+def rotate_vector(q: jnp.ndarray, v: jnp.ndarray) -> jnp.ndarray:
+    """
+    Rotate a 3D vector v by the unit‐quaternion q.
+    """
+    # 1) turn q→axis–angle
+    rvec = quaternion_to_axisangle(q)
+    # 2) build R via Rodrigues
+    R = rodrigues(rvec)
+    # 3) apply
+    return R @ v
+
 
 @jax.jit
 def quaternion_average(quats: jnp.ndarray) -> jnp.ndarray:

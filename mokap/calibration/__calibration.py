@@ -6,7 +6,7 @@ import scipy.stats as stats
 from scipy.spatial.distance import cdist
 import jax
 import jax.numpy as jnp
-from collections import deque
+from collections import deque, defaultdict
 from typing import Dict, Set, Tuple, List, Optional, Iterable, Union
 from mokap.utils.datatypes import ChessBoard, CharucoBoard, PosePayload, DetectionWithPosePayload
 from mokap.calibration import monocular_2, bundle_adjustment_2
@@ -181,7 +181,7 @@ class CharucoDetector(ChessboardDetector):
                 cameraMatrix=camera_matrix if cv2.getVersionMajor() >= 4 and cv2.getVersionMinor() >= 9 else None,
                 distCoeffs=dist_coeffs)
 
-        if marker_ids is None:
+        if marker_ids is None or len(marker_ids) == 0:
             return None, None
 
         # If any marker has been detected, try to detect the chessboard points
@@ -432,7 +432,7 @@ class MonocularCalibrationTool:
     @staticmethod
     def _check_new_errors(errors_new: ArrayLike, errors_prev: ArrayLike, p_val=0.05, confidence_lvl=0.95):
 
-        mean_new, se_new, l_new = np.mean(errors_new), stats.sem(errors_new), len(np.atleast_1d(errors_prev))
+        mean_new, se_new, l_new = np.mean(errors_new), stats.sem(errors_new), len(np.atleast_1d(errors_new))
         mean_prev, se_prev, l_prev = np.mean(errors_prev), stats.sem(errors_prev), len(np.atleast_1d(errors_prev))
 
         # Cumulative scores and return choice
@@ -512,7 +512,7 @@ class MonocularCalibrationTool:
         if self.has_intrinsics:
             calib_flags |= cv2.CALIB_USE_INTRINSIC_GUESS  # Important, otherwise it ignores the existing intrinsics
 
-        calib_flags |= cv2.CALIB_FIX_PRINCIPAL_POINT
+        # calib_flags |= cv2.CALIB_FIX_PRINCIPAL_POINT
 
         # We need to copy to a new array, because OpenCV uses these as Input/Output buffers
         if self.has_intrinsics:
@@ -911,11 +911,16 @@ class MonocularCalibrationTool:
         return frame_out
 
 
+
+# TODO: This can be improved
+
 class MultiviewCalibrationTool:
 
     def __init__(self,
                  nb_cameras: int,
+                 image_size,
                  origin_camera_idx: int = 0,
+                 min_cams_per_frame: Optional[int] = None,
                  min_poses: int = 15,
                  max_poses: int = 100,
                  min_detections: int = 15,
@@ -923,6 +928,9 @@ class MultiviewCalibrationTool:
 
         self.nb_cameras = nb_cameras
         self.origin_idx = origin_camera_idx
+        self._image_size = image_size
+
+        self.min_cams_per_frame = min_cams_per_frame or nb_cameras
 
         self._min_poses = min_poses
         self._max_poses = max_poses
@@ -932,7 +940,6 @@ class MultiviewCalibrationTool:
 
         # ----------- PHASE 1: pose collection -----------
         self._frame_pose_buffer: Dict[int, Dict[int, jnp.ndarray]] = {}
-        self._frames_stale: Set[int] = set()
 
         # per‐camera deque of samples in world frame for median estimation
         self._cams_world_poses: Dict[int, deque] = {
@@ -962,8 +969,13 @@ class MultiviewCalibrationTool:
         # Final outputs
         self._cam_matrices_refined: Optional[jnp.ndarray] = None
         self._dist_coeffs_refined: Optional[jnp.ndarray] = None
-        self._rvecs_refined: Optional[np.ndarray] = None
-        self._tvecs_refined: Optional[np.ndarray] = None
+        self._cams_rvecs_refined: Optional[np.ndarray] = None
+        self._cams_tvecs_refined: Optional[np.ndarray] = None
+        self._board_rvecs_refined: Optional[jnp.ndarray] = None
+        self._board_tvecs_refined: Optional[jnp.ndarray] = None
+
+        self._ba_points2d: Optional[jnp.ndarray] = None
+        self._ba_pointsids: Optional[jnp.ndarray] = None
 
     @property
     def has_estimate(self) -> bool:
@@ -992,7 +1004,7 @@ class MultiviewCalibrationTool:
     @property
     def refined_extrinsics(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         if self._refined:
-            return self._rvecs_refined, self._tvecs_refined
+            return self._cams_rvecs_refined, self._cams_tvecs_refined
         return None, None
 
     def _find_stale_frames(self, buffers: List[Dict[int, any]]) -> List[int]:
@@ -1008,20 +1020,30 @@ class MultiviewCalibrationTool:
 
     def _flush_frames(self):
         """
-        This marks any frame waiting as ready to be processed (or it discards it if it can't be processed)
+        Phase 1: as soon as a frame f becomes stale, check how many cameras saw it
+        if >= min_cams_per_frame we link it, otherwise we discard it
         """
         if not self._estimated:
-            # Phase 1: if a stale frame has fewer than the required cameras to compute a root‐world chain,
-            # it waits until enough data arrives
+            # Find all stale frames
             stale = self._find_stale_frames([self._frame_pose_buffer])
-            self._frames_stale.update(stale)
+            for f in stale:
+                cams_in_f = list(self._frame_pose_buffer[f].keys()) # which cameras saw frame f
+
+                # no more cameras can arrive for that frame (because it's stale)
+                if len(cams_in_f) < 2:
+                    # so if fewer than 2 cameras ever saw it, we drop it
+                    del self._frame_pose_buffer[f]
+                    continue
+
+                # otherwise, at least min_cams_per_frame saw f, so we can process it
+                self._process_pose(f)
+                del self._frame_pose_buffer[f]
+
         else:
-            # Phase 2: we immediately discard any stale frame that has fewer than two cameras
             stale = self._find_stale_frames(self._detection_buffer)
             for f in stale:
                 cams = [c for c in range(self.nb_cameras) if f in self._detection_buffer[c]]
                 if len(cams) >= 2:
-                    # build BA sample
                     sample = []
                     for ci in range(self.nb_cameras):
                         if ci in cams:
@@ -1031,7 +1053,6 @@ class MultiviewCalibrationTool:
                             sample.append((None, None, None))
                     self.ba_samples.append(sample)
                 else:
-                    # discard stale detection
                     for cam in cams:
                         self._detection_buffer[cam].pop(f, None)
 
@@ -1061,42 +1082,12 @@ class MultiviewCalibrationTool:
             self._cams_world_medians[self.origin_idx] = (geometry_2.ID_QUAT, geometry_2.ZERO_T)
             self._origin_seeded = True
 
-            # We can process that frame immediately and return because origin is now known
-            self._attempt_process_pending()
             return
 
         self._flush_frames()
         # Try to process any stale frames whose root camera is now known
-        self._attempt_process_pending()
 
-    def _attempt_process_pending(self):
-        """
-        Repeatedly scan pending phase 1 frames to see if any can now be linked to an existing world camera
-        Keep looping until no more frames in _frames_stale qualify
-        """
-
-        made_progress = True
-        while made_progress:
-            made_progress = False
-
-            for f in list(self._frames_stale):
-                cams = set(self._frame_pose_buffer[f].keys())
-
-                # If a camera in this frame is already known (in cam_to_world), use it as root
-                known = cams.intersection(self._cams_world_medians.keys())
-                if known:
-                    root_cam = next(iter(known))
-                else:
-                    # No available root in this frame, skip for now
-                    continue
-
-                # We have a root_cam so we can process frame f
-                self._process_pose(f, root_cam)
-                self._frames_stale.remove(f)
-                made_progress = True
-                break  # rescan from scratch because cam_to_world has changed
-
-    def _process_pose(self, frame_idx: int, root_cam: int):
+    def _process_pose(self, frame_idx: int):
         """
         Propagate world extrinsic from the root cam in this frame to all other cams in this frame
         """
@@ -1109,73 +1100,133 @@ class MultiviewCalibrationTool:
             axis=0  # (M, 4, 4)
         )
 
-        # [root -> world] already in self._cams_world_medians[root_cam] as a 7 rt vector
-        q_med, t_med = self._cams_world_medians[root_cam]
-        rvec_med = geometry_2.quaternion_to_axisangle(q_med)
-        E_root2world_j = geometry_jax.extrinsics_matrix(rvec_med, t_med)
+        # Among those cameras, which ones already have a known world pose
+        known_roots = [c for c in cams if c in self._cams_world_medians]
 
-        # Remap all cams in this frame from [board -> cam] to [cam -> world]
-        rvecs_cam2world_j, tvecs_cam2world_j = self._remap_phase1(E_board2cam_stack,
-                                                                  E_root2world_j,
-                                                                  cams.index(root_cam))
-        quaternions_cam2world_j = geometry_2.axisangle_to_quaternion_batched(rvecs_cam2world_j) # (M, 4)
+        # If none of them is known yet, we cannot link anything—leave this frame pending
+        if len(known_roots) == 0:
+            return
 
-        for i, cam in enumerate(cams):
-            rt_flat = jnp.concatenate([quaternions_cam2world_j[i], tvecs_cam2world_j[i]], axis=0)  # (7,)
-            self._cams_world_poses[cam].append(rt_flat)
+        # For each known root cam i, compute [E_board -> world_i] = [E_cam -> world] . [E_board -> cam_i]
+        q_candidates = []
+        t_candidates = []
+        for c in known_roots:
+            idx = cams.index(c)  # index in E_board2cam_stack
+            # (rvec_med, t_med) was stored as camera c's median pose in world
+            q_med_c, t_med_c = self._cams_world_medians[c]  # (4,), (3,)
 
-            # Now recompute that camera's median
-            arr_rt = jnp.stack(list(self._cams_world_poses[cam]), axis=0)  # (m, 7)
+            # convert (q_med_c, t_med_c) to extrinsics matrix [E_cam -> world]
+            rvec_med_c = geometry_2.quaternion_to_axisangle(q_med_c)        # (3,)
+            E_c2w = geometry_jax.extrinsics_matrix(rvec_med_c, t_med_c)     # (4, 4)
+            E_b2c = E_board2cam_stack[idx]  # (4, 4) for this root
+            E_b2w_i = E_c2w @ E_b2c         # (4, 4)
+
+            # Split into (q, t)
+            r_bi, t_bi = geometry_jax.extmat_to_rtvecs(E_b2w_i)     # each (3,) in axis–angle
+            Q_bi = geometry_2.axisangle_to_quaternion(r_bi)         # (4,)
+            q_candidates.append(Q_bi)
+            t_candidates.append(t_bi)
+
+        # Average all those [board -> world] candidates
+        Q_b_stack = jnp.stack(q_candidates, axis=0)  # (M_known, 4)
+        T_b_stack = jnp.stack(t_candidates, axis=0)  # (M_known, 3)
+
+        Q_b_avg = geometry_2.quaternion_average(Q_b_stack)  # (4,)
+        T_b_avg = geometry_2.robust_translation_mean(T_b_stack, num_iters=4, delta=1.0)  # (3,)
+
+        r_b_avg = geometry_2.quaternion_to_axisangle(Q_b_avg)  # (3,)
+
+        E_b2w_avg = geometry_jax.extrinsics_matrix(r_b_avg, T_b_avg)  # (4×4)
+
+        # Now link every cam j ∈ cams via [E_cj -> world] = E_b2w_avg @ inv(E_b2c)
+        for c in cams:
+            idx = cams.index(c)
+            E_b2c = E_board2cam_stack[idx]  # (4, 4)
+
+            E_c2b = geometry_jax.invert_extrinsics_matrix(E_b2c)  # (4, 4)
+            E_c2w = E_b2w_avg @ E_c2b  # (4, 4)
+
+            # extract quaternion + translation
+            r_cj, t_cj = geometry_jax.extmat_to_rtvecs(E_c2w)   # (3,), (3,)
+            Q_cj = geometry_2.axisangle_to_quaternion(r_cj)     # (4,)
+
+            # append to camera c's deque
+            rt_flat = jnp.concatenate([Q_cj, t_cj], axis=0)  # shape (7,)
+            self._cams_world_poses[c].append(rt_flat)
+
+            # Now recompute that camera’s median with outlier‐rejection:
+            arr_rt = jnp.stack(list(self._cams_world_poses[c]), axis=0)  # (m, 7)
             m = arr_rt.shape[0]
+            rt_pad = geometry_2.pad_to_length(arr_rt, self._max_poses, axis=0, pad_value=0.0)
 
-            # We create a dummy batch of 1 because estimate_initial_poses expects a batch of C cams
-            length_one = jnp.array([m], dtype=jnp.int32)  # (1, M_max)
-            rt_padded = geometry_2.pad_to_length(arr_rt, self._max_poses, axis=0, pad_value=0.0)  # (M_max, 7)
-            rt_batch = rt_padded[jnp.newaxis, :, :]             # (1, M_max, 7)
+            q_med_c, t_med_c = outliers_rejection.filter_rt_samples(
+                rt_stack=rt_pad,
+                length=m,
+                ang_thresh=np.deg2rad(30.0),
+                trans_thresh=1.0
+            )
 
-            q_batch, t_batch = geometry_2.estimate_initial_poses(rt_batch, length_one)
-            q_med, t_med = q_batch[0], t_batch[0]
+            # Now that we have a filtered q_med0 / t_med0 we do exactly what the final estimate_initial_poses would do:
+            #    same Markley‐mean + robust‐median, but on the filtered subset we supply now
+            # We can just call estimate_initial_poses on an rt_stack that's been filtered
 
-            self._cams_world_medians[cam] = (q_med, t_med)
+            # So first find which indices survived
+            # We could rewrite a small JAX loop that rebuilds a (k, 7) array of only the kept rows,
+            # then give that to estimate_initial_poses...
+            # ...or just use the (q_med0, t_med0) we just got
 
-        # frame has now been processed, we can discard if from the frame pose buffer
+            # It's probably easier to just skip that and trust that (q_med0, t_med0) already the robust estimate...
+            q_med, t_med = q_med_c, t_med_c
+
+            # TODO: try to feed a smaller subset into estimate_initial_poses
+
+            # store back into cams_world_medians
+            self._cams_world_medians[c] = (q_med, t_med)
+
+        # Remove this frame from the buffer
         del self._frame_pose_buffer[frame_idx]
 
-        # Once every camera has ≥ min_poses samples, we can compute the best guess
-        if not self._estimated and all(len(dq) >= self._min_poses for dq in self._cams_world_poses.values()):
+        # Check if all cameras have ≥ min_poses and if so, finish phase 1
+        if (not self._estimated) and all(len(self._cams_world_poses[c]) >= self._min_poses
+                                         for c in range(self.nb_cameras)):
             self._compute_initial_extrinsics()
 
     def _compute_initial_extrinsics(self):
+        filtered_Qs = []
+        filtered_Ts = []
 
-        # Each self._cams_world_poses[c] is a deque of (2, 3) JAX array, each with a diff length
-        rt_samples = []
-        lengths = []
+        lengths = [len(self._cams_world_poses[c]) for c in range(self.nb_cameras)]
+        M_max = max(lengths) if any(lengths) else 0
+
         for c in range(self.nb_cameras):
-            rt_flat = jnp.stack(self._cams_world_poses[c], axis=0)  # (m, 7)
-            rt_samples.append(rt_flat)
-            lengths.append(rt_flat.shape[0])
+            if len(self._cams_world_poses[c]) == 0:
+                # never got any sample so default to (identity, zero)
+                filtered_Qs.append(geometry_2.ID_QUAT)
+                filtered_Ts.append(geometry_2.ZERO_T)
+                continue
 
-        lengths = jnp.array(lengths, dtype=jnp.int32)
+            arr_rt = jnp.stack(self._cams_world_poses[c], axis=0)  # (m_c, 7)
+            m_c = arr_rt.shape[0]
+            rt_pad = geometry_2.pad_to_length(arr_rt, M_max, axis=0, pad_value=0.0)
+            q_med_c, t_med_c = outliers_rejection.filter_rt_samples(
+                rt_stack   = rt_pad,
+                length     = m_c,
+                ang_thresh = np.deg2rad(30.0),
+                trans_thresh= 1.0
+            )
+            filtered_Qs.append(q_med_c)
+            filtered_Ts.append(t_med_c)
 
-        # Pad to (C, M_max, 7)
-        M_max = int(jnp.max(lengths))
+        Q_stack = jnp.stack(filtered_Qs, axis=0)  # (C, 4)
+        T_stack = jnp.stack(filtered_Ts, axis=0)  # (C, 3)
 
-        rt_stack_flat = jnp.stack([
-            geometry_2.pad_to_length(arr_c, M_max, axis=0, pad_value=0.0)
-            for arr_c in rt_samples
-        ], axis=0)  # (C, M_max, 7)
-
-        # assume estimate_initial_poses_flat takes (C, M_max, 7) plus lengths
-        q_cam_j, t_cam_j = geometry_2.estimate_initial_poses(rt_stack_flat, lengths)
-
-        # Convert quaternions back to axis–angle vectors
-        rvecs_cam_j = geometry_2.quaternion_to_axisangle_batched(q_cam_j)  # (C, 3)
-
-        self._rvecs_cam2world_j = rvecs_cam_j
-        self._tvecs_cam2world_j = t_cam_j
+        # But really, Q_stack/T_stack *is* the final 'median' over time for each camera...
+        # So we can simply store:
+        self._rvecs_cam2world_j = geometry_2.quaternion_to_axisangle_batched(Q_stack)
+        self._tvecs_cam2world_j = T_stack
 
         self._estimated = True
-        self._last_frame = np.full(self.nb_cameras, -1, dtype=int) # reset for Phase 2
+        self._last_frame = np.full(self.nb_cameras, -1, dtype=int)  # reset for Phase 2
 
     # -------------------------- PHASE 2 --------------------------
 
@@ -1292,8 +1343,7 @@ class MultiviewCalibrationTool:
         r_board_w, t_board_w = geometry_jax.extmat_to_rtvecs(E_board2world) # both (P, 3)
 
         # Finally call BA with exactly one 6‐DoF per cam and one per board‐sample
-        K_opt, D_opt, cam_r_opt, cam_t_opt, board_r_opt, board_t_opt = \
-            bundle_adjustment_2.run_bundle_adjustment(
+        success, retvals = bundle_adjustment_2.run_bundle_adjustment(
                 camera_matrices,    # (C, 3, 3)
                 dist_coeffs,        # (C, ≤8)
                 np.asarray(self._rvecs_cam2world_j),  # (C, 3)
@@ -1303,24 +1353,31 @@ class MultiviewCalibrationTool:
                 pts2d_buf,      # (C, P, N, 2)
                 vis_buf,        # (C, P, N)
                 points3d_th,    # (N, 3)
+                self._image_size,
+                priors_weight=0.0,
                 simple_focal=simple_focal,
                 simple_distortion=simple_distortion,
                 complex_distortion=complex_distortion,
                 shared=shared
             )
 
-        self.ba_samples.clear()
+        if success:
 
-        # Store the refined intrinsics and extrinsics
-        self._cam_matrices_refined = K_opt
-        self._dist_coeffs_refined = D_opt
-        self._rvecs_refined = np.asarray(cam_r_opt)  # (C, 3)
-        self._tvecs_refined = np.asarray(cam_t_opt)  # (C, 3)
-        self._refined = True
+            self.ba_samples.clear()
 
-        # Store the 2d points
-        self._debug_points2d = pts2d_buf
-        self._debug_pointsids = vis_buf
+            # Store the refined intrinsics and extrinsics
+            self._cam_matrices_refined = retvals['K_opt']
+            self._dist_coeffs_refined = retvals['D_opt']
+            self._cams_rvecs_refined = np.asarray(retvals['cam_r_opt'])     # (C, 3)
+            self._cams_tvecs_refined = np.asarray(retvals['cam_t_opt'])     # (C, 3)
+            self._board_rvecs_refined = np.asarray(retvals['board_r_opt'])  # (C, 3)
+            self._board_tvecs_refined = np.asarray(retvals['board_t_opt'])  # (C, 3)
+            self._refined = True
 
-        return True
-    
+            # Store the 2d points
+            self._ba_points2d = pts2d_buf
+            self._ba_pointsids = vis_buf
+
+            return True
+        else:
+            return False
