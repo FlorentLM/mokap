@@ -9,7 +9,7 @@ import jax.numpy as jnp
 from collections import deque, defaultdict
 from typing import Dict, Set, Tuple, List, Optional, Iterable, Union
 from mokap.utils.datatypes import ChessBoard, CharucoBoard, PosePayload, DetectionWithPosePayload
-from mokap.calibration import monocular_2, bundle_adjustment_2
+from mokap.calibration import monocular_2, bundle_adjustment_2, outliers_rejection
 from mokap.utils import geometry_jax, geometry_2, pad_dist_coeffs
 
 
@@ -919,7 +919,7 @@ class MultiviewCalibrationTool:
     def __init__(self,
                  nb_cameras: int,
                  image_size,
-                 origin_camera_idx: int = 0,
+                 origin_idx: int = 0,
                  min_cams_per_frame: Optional[int] = None,
                  min_poses: int = 15,
                  max_poses: int = 100,
@@ -927,7 +927,7 @@ class MultiviewCalibrationTool:
                  max_detections: int = 100):
 
         self.nb_cameras = nb_cameras
-        self.origin_idx = origin_camera_idx
+        self.origin_idx = origin_idx
         self._image_size = image_size
 
         self.min_cams_per_frame = min_cams_per_frame or nb_cameras
