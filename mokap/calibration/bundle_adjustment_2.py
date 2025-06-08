@@ -509,7 +509,7 @@ def run_bundle_adjustment(
     result = least_squares(cost_func,
                            x0,          # x0 contains all the optimisable variables
                            verbose=2,
-                           # bounds=(lower_bounds, upper_bounds),
+                           bounds=(lower_bounds, upper_bounds),
                            x_scale='jac',
                            ftol=1e-8,
                            method='trf',

@@ -1369,7 +1369,7 @@ class MultiviewCalibrationTool:
             vis_buf,                # (C, P, N)
             self._object_points,    # (N, 3)
             self.images_sizes_wh,
-            priors_weight=0.0,
+            priors_weight=0.7,          # TODO: Add this to init
             simple_focal=simple_focal,
             simple_distortion=simple_distortion,
             complex_distortion=complex_distortion,
