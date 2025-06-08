@@ -1,277 +1,520 @@
-import numpy as np
-np.set_printoptions(precision=3, suppress=True, threshold=150)
+from collections import deque
 import cv2
-from functools import reduce
-from scipy.optimize import minimize
-from scipy.spatial.distance import cdist
-from mokap.utils import geometry
-from mokap.calibration import monocular
-
-# Defines functions that relate to processing stuff from N cameras
-
-def filter_outliers(values, strong=False):
-
-    # Use z score to find outliers
-    if (values == 0).all():
-        return values
-    else:
-        if not (values.std(axis=0) == 0).any():
-            z = (values - values.mean(axis=0)) / values.std(axis=0)
-        else:
-            z = (values - values.mean(axis=0))
-        outliers_z = (np.abs(z) > 2.5).any(axis=1)
-
-        # Use IQR to find outliers
-        if strong:
-            q_1 = np.quantile(values, 0.125, axis=0)
-            q_3 = np.quantile(values, 0.875, axis=0)
-        else:
-            q_1 = np.quantile(values, 0.25, axis=0)
-            q_3 = np.quantile(values, 0.75, axis=0)
-
-        iqr = q_3 - q_1
-        lower = q_1 - 1.5 * iqr
-        upper = q_3 + 1.5 * iqr
-
-        outliers_iqr = np.any(values < lower, axis=1) | np.any(values > upper, axis=1)
-
-        outliers_both = outliers_iqr | outliers_z
-
-        filtered = values[~outliers_both]
-
-        return filtered
+import numpy as np
+from jax import numpy as jnp
+from numpy.typing import ArrayLike
+from mokap.calibration import bundle_adjustment
+from mokap.utils.datatypes import DetectionPayload
+from mokap.utils.geometry.stats import filter_rt_samples, quaternion_average
+from mokap.utils.geometry.transforms import extrinsics_matrix, extmat_to_rtvecs, axisangle_to_quaternion_batched, \
+    quaternion_to_axisangle, invert_extrinsics_matrix, invert_extrinsics
 
 
-def bestguess_rtvecs(n_m_rvecs, n_m_tvecs):
-    """
-        Finds a first best guess, for N cameras, of their real extrinsics parameters, from M samples per camera
-    """
+class MultiviewCalibrationTool:
+    def __init__(self,
+                 nb_cameras: int,
+                 images_sizes_wh: ArrayLike,
+                 origin_idx: int,
+                 init_cam_matrices: ArrayLike,
+                 init_dist_coeffs: ArrayLike,
+                 object_points: ArrayLike,
+                 intrinsics_window: int = 10,
+                 min_detections: int = 15,
+                 max_detections: int = 100,
+                 angular_thresh: float = 15.0,        # in degrees
+                 translational_thresh: float = 15.0,  # in object_points' units
+                 refine_intrinsics_online: bool = True,
+                 debug_print = True):
 
-    N = len(n_m_rvecs)
+        # TODO: Typing and optimising this class
 
-    n_optimised_rvecs = np.zeros((N, 3))
-    n_optimised_tvecs = np.zeros((N, 3))
+        self._debug_print = debug_print
 
-    # Huber loss instead of simply doing mahalanobis distance makes the influence of 'flipped' detections less strong
-    # (flipped detections being the ones resulting from an ambiguity in the monocular pose estimation)
-    def robust_loss(residual, delta=0.0):
-        # delta is the threshold between quadratic and linear behavior
-        abs_r = np.abs(residual)
-        quadratic = np.minimum(abs_r, delta)
-        linear = abs_r - quadratic
-        return 0.5 * quadratic ** 2 + delta * linear
+        self.nb_cameras = nb_cameras
+        self.origin_idx = origin_idx
 
-    def objective_func(estimated, observed, cov):
-        # regularize covariance matrix to avoid singularities
-        cov_reg = cov + np.eye(cov.shape[0]) * 1e-6
-        cov_inv = np.linalg.inv(cov_reg)
-        residuals = observed - estimated
-        # Mahalanobis residuals
-        mahal = np.sqrt(np.einsum('ij,jk,ik->i', residuals, cov_inv, residuals))
+        images_sizes_wh = np.asarray(images_sizes_wh)
+        assert images_sizes_wh.ndim == 2 and images_sizes_wh.shape[0] == self.nb_cameras
+        self.images_sizes_wh = images_sizes_wh[:, :2]
 
-        loss = robust_loss(mahal)
-        return np.sum(loss)
+        self._refine_intrinsics_online = refine_intrinsics_online
 
-    for i in range(N):
-        if n_m_rvecs[i].size == 0:  # no samples -> skip
-            continue
+        self._angular_thresh = angular_thresh
+        self._translational_thresh = translational_thresh
 
-        all_rvecs = filter_outliers(n_m_rvecs[i])
-        all_tvecs = filter_outliers(n_m_tvecs[i])
+        # Known 3D board model points (N, 3)
+        self._object_points = np.asarray(object_points, dtype=np.float32)
 
-        median_rvecs = np.median(all_rvecs, axis=0)
-        median_tvecs = np.median(all_tvecs, axis=0)
+        # buffers for incoming frames
+        self._detection_buffer = [dict() for _ in range(nb_cameras)]
+        self._last_frame = np.full(nb_cameras, -1, dtype=int)
 
-        # covariance matrices
-        # if not enough samples, use identity matrix
-        if all_rvecs.shape[0] > 1:
-            cov_r = np.cov(all_rvecs, rowvar=False)
-        else:
-            cov_r = np.eye(3)
-        if all_tvecs.shape[0] > 1:
-            cov_t = np.cov(all_tvecs, rowvar=False)
-        else:
-            cov_t = np.eye(3)
+        # extrinsics state
+        self._has_ext = [False] * nb_cameras
+        self._rvecs_cam2world = jnp.zeros((nb_cameras, 3), dtype=jnp.float32)
+        self._tvecs_cam2world = jnp.zeros((nb_cameras, 3), dtype=jnp.float32)
+        self._estimated = False
 
+        # intrinsics state & buffer per camera
+        self._cam_matrices = [np.asarray(init_cam_matrices[c], dtype=np.float32) for c in range(nb_cameras)]
+        self._dist_coeffs = [np.asarray(init_dist_coeffs[c], dtype=np.float32) for c in range(nb_cameras)]
+        self._intrinsics_buffer = {c: deque(maxlen=intrinsics_window) for c in range(nb_cameras)}
+        self._intrinsics_window = intrinsics_window
+
+        # triangulation & BA buffers
+        self.ba_samples = deque(maxlen=max_detections)
+        self.min_detections = min_detections
+
+        # bs results
+        self._refined_intrinsics = None
+        self._refined_extrinsics = None
+        self._refined_board_poses = None
+        self._ba_points2d = None
+        self._ba_pointsids = None
+
+    def register(self, cam_idx: int, detection: DetectionPayload):
+
+        if detection.pointsIDs is None or detection.points2D is None:
+            return
+
+        if len(detection.pointsIDs) < 4:
+            return
+
+        # Get the current best intrinsics for this camera
+        K = self._cam_matrices[cam_idx]
+        D = self._dist_coeffs[cam_idx]
+
+        # Prepare the 3D and 2D points for solvePnP
+        ids = detection.pointsIDs
+        obj_pts_subset = self._object_points[ids]
+        img_pts_subset = detection.points2D
+
+        # Reestimate the board-to-camera pose and validate it
         try:
-            # We can use L-BFGS-B here even though it's quite sensitive - because the robust_loss should take care of
-            # problematic values
-            res_r = minimize(objective_func, x0=median_rvecs, args=(all_rvecs, cov_r), method='L-BFGS-B')
-            opt_r = res_r.x
-        # except np.linalg.LinAlgError:
-        except Exception as e:
-            print("Optimization error for rvec:", e)
-            opt_r = median_rvecs
-        try:
-            res_t = minimize(objective_func, x0=median_tvecs, args=(all_tvecs, cov_t), method='L-BFGS-B')
-            opt_t = res_t.x
-        # except np.linalg.LinAlgError:
-        except Exception as e:
-            print("Optimization error for tvec:", e)
-            opt_t = median_tvecs
+            success, rvec, tvec = cv2.solvePnP(
+                objectPoints=obj_pts_subset,
+                imagePoints=img_pts_subset,
+                cameraMatrix=K,
+                distCoeffs=D,
+                flags=cv2.SOLVEPNP_ITERATIVE
+            )
+            # If PnP fails, return
+            if not success:
+                return
 
-        n_optimised_rvecs[i, :] = opt_r
-        n_optimised_tvecs[i, :] = opt_t
+            rvec = rvec.squeeze()
+            tvec = tvec.squeeze()
 
-    return n_optimised_rvecs, n_optimised_tvecs
+            # if PnP placed the board behind the camera, return
+            if tvec[2] <= 0:
+                return
 
+        except cv2.error:
+            return
 
-def common_points(n_p_points, n_p_points_ids):
-    """
-        Extracts the points and their IDs that are common to N cameras
-    """
-    nb_cameras = len(n_p_points)
+        #--- From here on, we know rvec tvec are sane ---
 
-    common_points_ids = reduce(np.intersect1d, n_p_points_ids)
+        f = detection.frame
+        self._last_frame[cam_idx] = f
 
-    common_points = np.zeros((nb_cameras, len(common_points_ids), n_p_points[0].shape[1]))
+        E_b2c = extrinsics_matrix(
+            jnp.asarray(rvec), jnp.asarray(tvec)
+        )
+        self._detection_buffer[cam_idx][f] = (E_b2c, detection.points2D, detection.pointsIDs)
 
-    for n in range(nb_cameras):
-        _, _, c = np.intersect1d(common_points_ids, n_p_points_ids[n], return_indices=True)
-        common_points[n, :] = n_p_points[n][c]
+        if cam_idx == self.origin_idx and not self._has_ext[cam_idx]:
+            self._has_ext[cam_idx] = True
+            # The pose is already (0, 0, 0) we can continue
 
-    return common_points, common_points_ids
+        self._flush_frames()
 
-# (n_p_points2d, n_cam_mats, n_dist_coeffs) = (common_points2d, n_cam_mats, n_dist_coeffs)
-def undistortion(n_p_points2d, n_cam_mats, n_dist_coeffs):
-    """
-        Undistort 2D points for each of N cameras (each camera can have a different number of points)
-    """
-    nb_cameras = len(n_cam_mats)
+    def _find_stale_frames(self):
+        global_min = int(self._last_frame.min())
+        pending = set()
+        for buf in self._detection_buffer:
+            pending.update(buf.keys())
+        stale = [f for f in pending if f < global_min]
+        return stale
 
-    # we use a list here because it's not necessarily the same number of points in all cameras
-    points2d_undist = [monocular.undistortion(n_p_points2d[n], n_cam_mats[n], n_dist_coeffs[n]) for n in range(nb_cameras)]
+    def _flush_frames(self):
+        for f in self._find_stale_frames():
+            cams = [c for c in range(self.nb_cameras) if f in self._detection_buffer[c]]
+            if len(cams) < 2:
+                for c in cams:
+                    self._detection_buffer[c].pop(f, None)
+                continue
+            entries = [(c, *self._detection_buffer[c].pop(f)) for c in cams]
+            self._process_frame(entries)
 
-    return points2d_undist
+    def _process_frame(self, entries):
+        """
+        Uses a 'surgical reset' of extrinsics whenever intrinsics are updated,
+        to prevent stale state propagation
+        """
 
-# (n_p_points2d, n_p_points_ids, n_rvecs_world, n_tvecs_world, n_cam_mats, n_dist_coeffs) = (this_m_points2d, this_m_points2d_ids, rvecs, tvecs, camera_matrices, distortion_coeffs)
-def triangulation(n_p_points2d, n_p_points_ids, n_rvecs_world, n_tvecs_world, n_cam_mats, n_dist_coeffs):
-    """
-        Triangulate observations from N cameras, with each camera having its own number of points P,
-        and obtain the 3D coordinates for points that are common to N cameras.
-    """
-    nb_cameras = len(n_rvecs_world)
+        if not any(self._has_ext):
+            return
 
-    P_mats = [geometry.projection_matrix(n_cam_mats[n], geometry.invert_extrinsics_matrix(
-        geometry.extrinsics_matrix(n_rvecs_world[n], n_tvecs_world[n]))) for n in range(nb_cameras)]
+        if self._refine_intrinsics_online:
+            # STEP 1- Refine intrinsics and check if a system-wide reset is needed
+            # ================================================================
 
-    common_points2d, common_points_ids = common_points(n_p_points2d, n_p_points_ids)
+            intrinsics_were_updated = self._refine_intrinsics_per_camera()
 
-    if len(common_points_ids) < 3:
-        return None, None
+            if intrinsics_were_updated:
+                if self._debug_print:
+                    print("[STATE_RESET] Intrinsics updated. Invalidating all non-origin extrinsics.")
+                # We acknowledge that the world geometry is now different, so we force every non-origin camera
+                # to be re-seeded from scratch
+                for c in range(self.nb_cameras):
+                    if c != self.origin_idx:
+                        self._has_ext[c] = False
 
-    points2d_undist = undistortion(common_points2d, n_cam_mats, n_dist_coeffs)
+                # Abort the rest of this frame's processing. The system will recover
+                # on subsequent frames by re-seeding the cameras one by one
+                return
 
-    points3d_svd = geometry.triangulate_points_svd(points2d_undist, P_mats)
+        # If we are here, the system state is stable. Proceed with normal estimation
+        # ===========================================================================
 
-    return points3d_svd, common_points_ids
+        # STEP 2- Recompute board-to-camera poses for this frame
+        recomputed_entries = []
+        for cam_idx, _, pts2D, ids in entries:
+            K = self._cam_matrices[cam_idx]
+            D = self._dist_coeffs[cam_idx]
+            obj_pts_subset = self._object_points[np.asarray(ids).flatten()]
+            img_pts_subset = np.asarray(pts2D)
+            if len(ids) < 4: continue
 
+            success, rvec, tvec = cv2.solvePnP(obj_pts_subset, img_pts_subset, K, D)
+            if not success or tvec.squeeze()[2] <= 0:
+                continue
 
-def reprojection(points3d_world, n_rvecs_world, n_tvecs_world, n_cam_mats, n_dist_coeffs):
-    """
-        Compute the reprojection of 3D points (world coordinates) for each of N cameras
-    """
-    nb_cameras = len(n_rvecs_world)
+            rvec, tvec = rvec.flatten(), tvec.flatten()
+            E_b2c = extrinsics_matrix(jnp.asarray(rvec), jnp.asarray(tvec))
+            recomputed_entries.append((cam_idx, E_b2c, pts2D, ids))
 
-    points2d_reproj = np.zeros((nb_cameras, points3d_world.shape[0], 2))
-    for n in range(nb_cameras):
+        if not recomputed_entries:
+            return
 
-        # Need to be n-camera-centric, so we invert them from world-centric
-        cam_rvec, cam_tvec = geometry.invert_extrinsics_2(n_rvecs_world[n], n_tvecs_world[n])
+        known = [e for e in recomputed_entries if self._has_ext[e[0]]]
 
-        points2d_reproj[n, :, :] = monocular.reprojection(points3d_world, n_cam_mats[n], n_dist_coeffs[n], cam_rvec, cam_tvec)
+        # STEP 3- Estimate board-to-world pose
+        E_b2w = None
+        if known:
+            E_votes = []
+            for cam_idx, E_b2c, _, _ in known:
+                E_c2w_current = extrinsics_matrix(
+                    self._rvecs_cam2world[cam_idx], self._tvecs_cam2world[cam_idx]
+                )
+                E_votes.append(E_c2w_current @ E_b2c)
 
-    return points2d_reproj
+            E_stack = jnp.stack(E_votes, axis=0)
 
+            # Convert all pose votes into (quaternion, translation) format
+            r_stack, t_stack = extmat_to_rtvecs(E_stack)
+            q_stack = axisangle_to_quaternion_batched(r_stack)
+            rt_stack = jnp.concatenate([q_stack, t_stack], axis=1)  # (num_known, 7)
 
-def compute_3d_errors(points2d, points2d_ids,
-                      points3d_world, points3d_ids, points3d_theor,
-                      n_rvecs_world, n_tvecs_world, n_cam_mats, n_dist_coeffs,
-                      fill_value=np.nan):
-    """
-        Compute the multi-view reprojection error (i.e. the error in 2D of the reprojected 3D triangulation) for each of
-        N cameras, AND the 3D consistency error (i.e. the error in the distances between points in 3D)
-    """
-    if type(fill_value) is str:
-        _fill_value = np.nan
-    else:
-        _fill_value = fill_value
+            # robust filtering and averaging
+            q_med, t_med = filter_rt_samples(
+                rt_stack=rt_stack,
+                ang_thresh=np.deg2rad(self._angular_thresh),
+                trans_thresh=self._translational_thresh
+            )
 
-    nb_cameras = len(n_rvecs_world)
+            E_b2w = extrinsics_matrix(
+                quaternion_to_axisangle(q_med), t_med
+            )
 
-    max_nb_points = points3d_theor.shape[0]
-    max_nb_dists = int((max_nb_points * (max_nb_points - 1)) / 2.0)
+            # Update all non-origin camera extrinsics based on the new E_b2w
+            # (this new state will be used in the next iteration of this loop)
+            if E_b2w is not None:
+                for cam_idx, E_b2c, _, _ in recomputed_entries:
+                    if cam_idx != self.origin_idx:
+                        E_c2b = invert_extrinsics_matrix(E_b2c)
+                        E_c2w = E_b2w @ E_c2b
+                        r_c2w, t_c2w = extmat_to_rtvecs(E_c2w)
+                        self._rvecs_cam2world = self._rvecs_cam2world.at[cam_idx].set(r_c2w)
+                        self._tvecs_cam2world = self._tvecs_cam2world.at[cam_idx].set(t_c2w)
+                    self._has_ext[cam_idx] = True
 
-    errors_2d_reproj = np.ones((nb_cameras, max_nb_points, 2)) * _fill_value
-    errors_3d_consistency = np.ones(max_nb_dists) * _fill_value
+        # STEP 4- Final buffering (using the stabilized state)
+        if E_b2w is not None:
+            board_pts_hom = np.hstack([self._object_points, np.ones((self._object_points.shape[0], 1))])
+            world_pts = (E_b2w @ board_pts_hom.T).T[:, :3]
 
-    tri_idx = np.tril_indices(max_nb_points, k=-1)
+            for cam_idx, E_b2c, pts2D, ids in recomputed_entries:
+                uv_obs = np.asarray(pts2D, dtype=np.float32)
 
-    ideal_distances = cdist(points3d_theor, points3d_theor)
-    measured_distances = np.ones_like(ideal_distances) * _fill_value
-    visibility_mask = np.zeros_like(ideal_distances, dtype=bool)
+                if cam_idx == self.origin_idx:
+                    r_b2c, t_b2c = extmat_to_rtvecs(E_b2c)
+                    obj_pts_local = self._object_points[ids]
+                    proj_pts, _ = cv2.projectPoints(
+                        np.asarray(obj_pts_local).reshape(-1, 1, 3), np.asarray(r_b2c), np.asarray(t_b2c),
+                        self._cam_matrices[cam_idx], self._dist_coeffs[cam_idx]
+                    )
+                else:
+                    current_r_c2w = self._rvecs_cam2world[cam_idx]
+                    current_t_c2w = self._tvecs_cam2world[cam_idx]
+                    r_w2c, t_w2c = invert_extrinsics(current_r_c2w, current_t_c2w)
+                    obj_pts_world = world_pts[ids]
+                    proj_pts, _ = cv2.projectPoints(
+                        np.asarray(obj_pts_world).reshape(-1, 1, 3), np.asarray(r_w2c), np.asarray(t_w2c),
+                        self._cam_matrices[cam_idx], self._dist_coeffs[cam_idx]
+                    )
 
-    reprojected_points = reprojection(points3d_world, n_rvecs_world, n_tvecs_world, n_cam_mats, n_dist_coeffs)
+                uv_proj = proj_pts.reshape(-1, 2)
+                errs = np.linalg.norm(uv_proj - uv_obs, axis=1)
+                if self._debug_print:
+                    print(f"[REPROJ_ERR] cam={cam_idx}, mean={errs.mean():.2f}px, max={errs.max():.2f}px")
 
-    # We can only compare the reprojection to the points that are detected in 2D,
-    # but it can be a different set of points for each camera
-    for n in range(nb_cameras):
-        common_indices, i_3d, i_2d = np.intersect1d(points3d_ids, points2d_ids[n], return_indices=True)
-        errors_2d_reproj[n, common_indices, :] = reprojected_points[n, i_3d, :] - points2d[n][i_2d, :]
+            self._estimated = True
 
-    sq_idx = np.ix_(points3d_ids, points3d_ids)
+        # Buffer data for final BA
+        for cam_idx, _, pts2D, ids in recomputed_entries:
+            if len(ids) >= 6:
+                board_pts_subset = self._object_points[ids].astype(np.float32)
+                img_pts = np.asarray(pts2D, dtype=np.float32)
+                self._intrinsics_buffer[cam_idx].append((board_pts_subset, img_pts))
 
-    measured_distances[sq_idx] = cdist(points3d_world, points3d_world)
-    visibility_mask[sq_idx] = True
+        self.ba_samples.append(recomputed_entries)
 
-    visible_ideal_distances = np.copy(ideal_distances)
-    visible_ideal_distances[~visibility_mask] = _fill_value
+    def _refine_intrinsics_per_camera(self):
+        """
+        Refines intrinsics for any camera with a full buffer of views
+        """
+        update_happened = False
 
-    tri_measured_distances = measured_distances[tri_idx]
-    tri_ideal_distances = visible_ideal_distances[tri_idx]
+        for ci in range(self.nb_cameras):
+            buf = self._intrinsics_buffer[ci]
+            if len(buf) < self._intrinsics_window:
+                continue
 
-    errors_3d_consistency[:] = tri_measured_distances - tri_ideal_distances
+            if self._debug_print:
+                print(f"[REFINE_INTR] Starting for cam={ci} with {len(buf)} views.")
 
-    if type(fill_value) is str:
-        match fill_value:
-            case 'mean':
-                fill_e2d = np.nanmean(errors_2d_reproj, axis=1, keepdims=True)
-                fill_e3d = np.nanmean(errors_3d_consistency)
-            case 'median':
-                fill_e2d = np.nanmedian(errors_2d_reproj, axis=1, keepdims=True)
-                fill_e3d = np.nanmedian(errors_3d_consistency)
-            case 'max':
-                fill_e2d = np.nanmax(errors_2d_reproj, axis=1, keepdims=True)
-                fill_e3d = np.nanmax(errors_3d_consistency)
-            case _:
-                raise AttributeError(f"fill value '{fill_value}' is unknown (must be either a scalar, or 'mean', 'median' or 'max')")
-        nans_e2d = np.isnan(errors_2d_reproj)
-        nans_e3d = np.isnan(errors_3d_consistency)
-        errors_2d_reproj[nans_e2d] = np.broadcast_to(fill_e2d, errors_2d_reproj.shape)[nans_e2d]
-        errors_3d_consistency[nans_e3d] = fill_e3d
+            object_points_views, image_points_views = zip(*buf)
+            initial_K = self._cam_matrices[ci].copy()
+            initial_D = self._dist_coeffs[ci].copy()
 
-    return errors_2d_reproj, errors_3d_consistency
+            try:
+                ret, K_new, D_new, _, _, _, _, _ = cv2.calibrateCameraExtended(
+                    objectPoints=list(object_points_views),
+                    imagePoints=list(image_points_views),
+                    imageSize=self.images_sizes_wh[ci],
+                    cameraMatrix=initial_K,
+                    distCoeffs=initial_D,
 
+                    # flags=(cv2.CALIB_USE_INTRINSIC_GUESS |
+                    #        cv2.CALIB_FIX_PRINCIPAL_POINT |
+                    #        cv2.CALIB_FIX_K3)
 
-def interpolate3d(points3d_svd, points3d_ids, points3d_theoretical):
-    """
-        Use triangulated 3D points and theoretical board layout to interpolate missing points
-    """
-    detected_theoretical = points3d_theoretical[points3d_ids]
+                    # flags=(cv2.CALIB_USE_INTRINSIC_GUESS)
 
-    # Build a design matrix by appending a column of ones to account for translation
-    # Each row is [x, y, z, 1] for a detected theoretical point
-    N_detected = detected_theoretical.shape[0]
-    A = np.hstack([detected_theoretical, np.ones((N_detected, 1), dtype=detected_theoretical.dtype)])
+                    flags=(cv2.CALIB_USE_INTRINSIC_GUESS |
+                           cv2.CALIB_FIX_PRINCIPAL_POINT |
+                           cv2.CALIB_FIX_ASPECT_RATIO |  # Very important for stability
+                           cv2.CALIB_ZERO_TANGENT_DIST |  # Often improves stability
+                           cv2.CALIB_FIX_K3 |  # Solve for k1, k2 only
+                           cv2.CALIB_FIX_K4 |
+                           cv2.CALIB_FIX_K5 |
+                           cv2.CALIB_FIX_K6
+                           )
+                )
 
-    # Solve for the transformation matrix T (a 4x3 matrix) that best maps
-    # [theoretical_point, 1] * T  to measured point (i.e. tje SVD result)
-    T, residuals, rank, s = np.linalg.lstsq(A, points3d_svd, rcond=None)
+                # Sanity checks to prevent numerical instability from bad optimizations
+                is_valid_K = np.all(np.isfinite(K_new))
+                is_valid_D = np.all(np.isfinite(D_new))
+                focal_lengths_ok = K_new[0, 0] > 0 and K_new[1, 1] > 0
+                w, h = self.images_sizes_wh[ci]
+                principal_point_ok = (0 < K_new[0, 2] < w) and (0 < K_new[1, 2] < h)
+                dist_coeffs_ok = np.all(np.abs(D_new.flatten()) < 100.0)
 
-    # then apply T to all the theoretical board points
-    N_total = points3d_theoretical.shape[0]
-    A_full = np.hstack([points3d_theoretical, np.ones((N_total, 1), dtype=points3d_theoretical.dtype)])
-    points3d_full = A_full.dot(T)
+                if is_valid_K and is_valid_D and focal_lengths_ok and principal_point_ok and dist_coeffs_ok:
 
-    points3d_ids_full = np.arange(N_total)
-    return points3d_full, points3d_ids_full
+                    D_new_squeezed = D_new.squeeze()
+
+                    # Pad the shorter array with zeros to match the length of the longer one
+                    if len(initial_D) > len(D_new_squeezed):
+                        padded_D_new = np.zeros_like(initial_D)
+                        padded_D_new[:len(D_new_squeezed)] = D_new_squeezed
+                        D_to_compare = padded_D_new
+                    elif len(D_new_squeezed) > len(initial_D):
+                        padded_initial_D = np.zeros_like(D_new_squeezed)
+                        padded_initial_D[:len(initial_D)] = initial_D
+                        initial_D = padded_initial_D
+                        D_to_compare = D_new_squeezed
+                    else:
+                        D_to_compare = D_new_squeezed
+
+                    # Now we can safely compare them
+                    k_changed = not np.allclose(initial_K, K_new, atol=1e-2, rtol=1e-2)
+                    d_changed = not np.allclose(initial_D, D_to_compare, atol=1e-3, rtol=1e-3)
+
+                    if k_changed or d_changed:
+                        if self._debug_print:
+                            print(f"[REFINE_INTR] cam={ci} finished. RMS: {ret:.4f}px. Update ACCEPTED.")
+                        self._cam_matrices[ci] = K_new
+                        self._dist_coeffs[ci] = D_to_compare
+                        print(self._cam_matrices)
+                        update_happened = True
+                    else:
+                        if self._debug_print:
+                            print(f"[REFINE_INTR] cam={ci} finished. RMS: {ret:.4f}px. No significant change.")
+
+                self._intrinsics_buffer[ci].clear()
+
+            except cv2.error as e:
+                if self._debug_print:
+                    print(f"[REFINE_INTR] cam={ci} failed with OpenCV error: {e}")
+                self._intrinsics_buffer[ci].clear()
+
+        return update_happened
+
+    def refine_all(self,
+                   simple_focal: bool = False,
+                   simple_distortion: bool = False,
+                   complex_distortion: bool = False,
+                   shared: bool = False,
+                   ) -> bool:
+        """
+        Performs a global bundle adjustment (BA) over all collected samples
+
+            - Format the 2D detections and visibility masks from all samples
+            - Use the current best estimates for camera intrinsics and extrinsics
+            - For each sample frame, calculate a robust initial guess for the board's world pose
+            by averaging the poses implied by each camera that saw it
+            - Call the BA solver
+            - Store the final globally optimized results
+        """
+
+        if not self._estimated:
+            print("[BA] Error: Initial extrinsics have not been estimated yet.")
+            return False
+
+        P = self.ba_sample_count
+        if P < self.min_detections:
+            print(f"[BA] Not enough samples for bundle adjustment. Have {P}, need {self.min_detections}.")
+            return False
+
+        if self._debug_print:
+            print(f"[BA] Starting Bundle Adjustment with {P} samples.")
+
+        C = self.nb_cameras
+        N = self._object_points.shape[0]
+
+        # Prepare 2D Detections and Visibility Mask
+        # =========================================================================
+        pts2d_buf = np.full((C, P, N, 2), 0.0, dtype=np.float32)
+        vis_buf = np.zeros((C, P, N), dtype=bool)
+
+        for p_idx, entries in enumerate(self.ba_samples):
+            for cam_idx, _, pts2D, ids in entries:
+                pts2d_buf[cam_idx, p_idx, ids, :] = pts2D
+                vis_buf[cam_idx, p_idx, ids] = True
+
+        # Prepare initial guess for board poses (one per sample)
+        # =========================================================================
+        r_board_w_list = []
+        t_board_w_list = []
+
+        # Get the current best camera-to-world extrinsics
+        E_c2w_all = extrinsics_matrix(self._rvecs_cam2world, self._tvecs_cam2world)
+
+        for p_idx, entries in enumerate(self.ba_samples):
+            E_b2w_votes = []
+            for cam_idx, E_b2c, _, _ in entries:
+                # For each camera in the sample, calculate its 'vote' for the board's world pose
+                E_c2w = E_c2w_all[cam_idx]
+                E_b2w_vote = E_c2w @ E_b2c
+                E_b2w_votes.append(E_b2w_vote)
+
+            # Robustly average the votes to get the initial guess for this sample's board pose
+            E_stack = jnp.stack(E_b2w_votes, axis=0)
+            r_stack, t_stack = extmat_to_rtvecs(E_stack)
+            q_stack = axisangle_to_quaternion_batched(r_stack)
+            q_med = quaternion_average(q_stack)
+            t_med = jnp.median(t_stack, axis=0)
+
+            r_board_w_list.append(quaternion_to_axisangle(q_med))
+            t_board_w_list.append(t_med)
+
+        # Convert lists to final np arrays for the BA function
+        r_board_w_init = np.asarray(jnp.stack(r_board_w_list))  # (P, 3)
+        t_board_w_init = np.asarray(jnp.stack(t_board_w_list))  # (P, 3)
+
+        # Prepare initial guesses for camera parameters
+        # =========================================================================
+        # Use the latest refined parameters as starting point
+        K_init = np.stack(self._cam_matrices)
+        D_init = np.stack(self._dist_coeffs)
+        cam_r_init = np.asarray(self._rvecs_cam2world)
+        cam_t_init = np.asarray(self._tvecs_cam2world)
+
+        # Run the Bundle Adjustment
+        # =========================================================================
+
+        # TODO: Clip the distortion coefficients to the BA solver's defined bounds?
+
+        success, retvals = bundle_adjustment_2.run_bundle_adjustment(
+            K_init,                 # (C, 3, 3)
+            D_init,                 # (C, <=8)
+            cam_r_init,             # (C, 3)
+            cam_t_init,             # (C, 3)
+            r_board_w_init,         # (P, 3)
+            t_board_w_init,         # (P, 3)
+            pts2d_buf,              # (C, P, N, 2)
+            vis_buf,                # (C, P, N)
+            self._object_points,    # (N, 3)
+            self.images_sizes_wh,
+            priors_weight=0.7,          # TODO: Add this to init
+            simple_focal=simple_focal,
+            simple_distortion=simple_distortion,
+            complex_distortion=complex_distortion,
+            shared=shared
+        )
+
+        # Store Refined Results
+        # =========================================================================
+        if success:
+            print("[BA] Bundle Adjustment successful.")
+            self.ba_samples.clear()
+
+            self._refined_intrinsics = (retvals['K_opt'], retvals['D_opt'])
+            self._refined_extrinsics = (retvals['cam_r_opt'], retvals['cam_t_opt'])
+            self._refined_board_poses = (retvals['board_r_opt'], retvals['board_t_opt'])
+
+            self._ba_points2d = pts2d_buf   # for visualization
+            self._ba_pointsids = vis_buf    # for visualization
+
+            self._refined = True
+            return True
+
+        else:
+            print("[BA] Bundle Adjustment failed.")
+            return False
+
+    @property
+    def initial_extrinsics(self):
+        return np.array(self._rvecs_cam2world), np.array(self._tvecs_cam2world)
+
+    @property
+    def refined_intrinsics(self):
+        return self._refined_intrinsics
+
+    @property
+    def refined_extrinsics(self):
+        return self._refined_extrinsics
+
+    @property
+    def refined_board_poses(self):
+        return self._refined_board_poses
+
+    @property
+    def image_points(self):
+        return self._ba_points2d, self._ba_pointsids
+
+    @property
+    def ba_sample_count(self):
+        return len(self.ba_samples)

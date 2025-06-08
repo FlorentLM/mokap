@@ -5,12 +5,12 @@ from typing import List, Optional, Set, Tuple, Union
 import colorsys
 import cv2
 from pathlib import Path
+import jax
 import numpy as np
 from alive_progress import alive_bar
-from tempfile import mkdtemp
 
 from typing import TYPE_CHECKING
-if TYPE_CHECKING:
+if TYPE_CHECKING:   # TODO: This check might be useless now after restructuring?
     from mokap.utils.datatypes import ChessBoard, CharucoBoard
 
 
@@ -122,6 +122,8 @@ def pretty_size(value: int, verbose=False, decimal=False) -> str:
     prefixes, _i = (prefixes_dec, '') if decimal else (prefixes_bin, 'i')
 
     suffix = 'Byte'
+    div = 1
+    prefix = ''
     for p, prefix in enumerate(prefixes, start=-len(prefixes) + 1):
         div = 1000 ** -p if decimal else 1 << -p * 10
         if value >= div:
@@ -152,50 +154,6 @@ def probe_video(video_path: Path | str):
     cap.release()
 
     return frame.shape, nb_frames
-
-
-def pad_dist_coeffs(dist_coeffs, max_nb=8):
-    dist_coeffs = np.asarray(dist_coeffs)
-    dist_coeffs_pad = np.zeros(max_nb, dtype=np.float32)
-    dist_coeffs_pad[:len(dist_coeffs[:max_nb])] = dist_coeffs[:max_nb]
-    return dist_coeffs_pad
-
-
-def load_full_video(video_path: Path | str):
-    video_path = Path(video_path)
-
-    if not video_path.exists():
-        raise FileNotFoundError(video_path.resolve())
-
-    cap = cv2.VideoCapture(video_path.as_posix())
-    nb_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    r, frame = cap.read()
-    if not r:
-        raise IOError(f"Can't read video {video_path.resolve()}")
-    else:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-
-    try:
-        full_video = np.zeros((nb_frames, *frame.shape), dtype=np.uint8)
-    except np.core._exceptions._ArrayMemoryError:
-        temp_file = Path(mkdtemp()) / f'{video_path.stem}.dat'
-        full_video = np.memmap(temp_file, dtype=np.uint8, mode='w+', shape=(nb_frames, *frame.shape))
-        print(f"Allocated disk-mapped file: {temp_file}")
-
-    with alive_bar(nb_frames, force_tty=True) as bar:
-        for i in range(nb_frames):
-            r, frame = cap.read()
-            if r:
-                np.copyto(full_video[i, ...], frame)
-            bar()
-
-    cap.release()
-
-    if isinstance(full_video, np.memmap):
-        # Flush and reopen in read-only
-        full_video.flush()
-        full_video = np.memmap(temp_file, dtype=np.uint8, mode='r', shape=(nb_frames, *frame.shape))
-    return full_video, temp_file
 
 
 def generate_board_svg(board_params:    Union["ChessBoard", "CharucoBoard"],
@@ -354,3 +312,7 @@ def generate_board_svg(board_params:    Union["ChessBoard", "CharucoBoard"],
     with open(file_path / filename, 'w') as f:
         f.write('\n'.join(svg_lines))
         print(f'Saved calibration board as {file_path / filename}')
+
+
+def maybe_put(x):
+    return jax.device_put(x) if x is not None else None

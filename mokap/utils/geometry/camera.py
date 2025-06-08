@@ -1,5 +1,4 @@
 import numpy as np
-np.set_printoptions(precision=3, suppress=True, threshold=150)
 from numpy.typing import ArrayLike
 
 

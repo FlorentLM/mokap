@@ -369,7 +369,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "alive-progress" },
-    { name = "jax", specifier = ">=0.5.2" },
+    { name = "jax", specifier = ">=0.6.1" },
     { name = "numpy" },
     { name = "opencv-contrib-python" },
     { name = "paramiko" },
