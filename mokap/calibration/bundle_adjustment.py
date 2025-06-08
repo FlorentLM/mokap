@@ -5,7 +5,6 @@ from scipy.sparse import lil_matrix
 from alive_progress import alive_bar
 from typing import Tuple, Optional
 from mokap.utils import CallbackOutputStream
-from mokap.utils import geometry_jax
 import jax
 import jax.numpy as jnp
 

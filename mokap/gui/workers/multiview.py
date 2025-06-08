@@ -2,6 +2,7 @@ from typing import List
 
 from PySide6.QtCore import QTimer, Slot
 
+from mokap.calibration.multiview import MultiviewCalibrationTool
 from mokap.gui.workers import GUI_UPDATE_TIMER, DEBUG_SIGNALS_FLOW
 from mokap.gui.workers.base import CalibrationProcessingWorker
 from mokap.utils.datatypes import CalibrationData, DetectionPayload, ExtrinsicsPayload, IntrinsicsPayload

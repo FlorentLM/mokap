@@ -3,14 +3,14 @@ from typing import Union, Optional, Iterable, Tuple
 import cv2
 import numpy as np
 from jax import numpy as jnp
-from numpy._typing import ArrayLike
+from numpy.typing import ArrayLike
 from scipy import stats as stats
 from scipy.spatial.distance import cdist
-import mokap.utils
 from mokap.calibration.detectors import ChessboardDetector, CharucoDetector
 from mokap.utils import maybe_put
 from mokap.utils.datatypes import ChessBoard, CharucoBoard
-from mokap.utils.geometry.utils import pad_dist_coeffs
+from mokap.utils.geometry.camera import SENSOR_SIZES, estimate_camera_matrix
+from mokap.utils.geometry.projective import project_points
 
 
 class MonocularCalibrationTool:
@@ -76,14 +76,14 @@ class MonocularCalibrationTool:
 
         # Process sensor size input
         if isinstance(sensor_size, str):
-            self._sensor_size = mokap.utils.geometry.camera.SENSOR_SIZES.get(f'''{sensor_size.strip('"')}"''', None)
+            self._sensor_size = SENSOR_SIZES.get(f'''{sensor_size.strip('"')}"''', None)
         elif isinstance(sensor_size, (tuple, list, set, np.ndarray)) and len(sensor_size) == 2:
             self._sensor_size = sensor_size
 
         # compute theoretical camera matrix if possible
         # (this allows to fix the fx/fy ratio and helps the first estimation)
         if None not in (focal_mm, self._sensor_size, self.h, self.w):
-            self._th_camera_matrix_j = maybe_put(mokap.utils.geometry.camera.estimate_camera_matrix(
+            self._th_camera_matrix_j = maybe_put(estimate_camera_matrix(
                 focal_mm,
                 self._sensor_size,
                 (self.w, self.h))
@@ -213,7 +213,9 @@ class MonocularCalibrationTool:
         self._camera_matrix = np.asarray(camera_matrix)
         self._camera_matrix_j = maybe_put(self._camera_matrix)
 
-        self._dist_coeffs = pad_dist_coeffs(dist_coeffs)
+        dist_coeffs_pad = np.zeros(8, dtype=np.float32)
+        dist_coeffs_pad[:max(8, len(dist_coeffs))] = dist_coeffs[:8]
+        self._dist_coeffs = dist_coeffs_pad
         self._dist_coeffs_j = maybe_put(self._dist_coeffs)
 
         if errors is not None:
@@ -598,7 +600,7 @@ class MonocularCalibrationTool:
 
         if self.has_intrinsics and self.has_extrinsics:
             # Display reprojected points: currently detected corners as yellow dots, the others as white dots
-            reproj_points_j = mokap.utils.geometry.projective.project_points(
+            reproj_points_j = project_points(
                 self._points3d_j,
                 self._rvec_j,
                 self._tvec_j,
@@ -670,7 +672,7 @@ class MonocularCalibrationTool:
             if self.has_extrinsics:
                 # we also need to undistort the corner points with the undistorted ('optimal') camera matrix
                 # Note: dist coeffs are 'included' in this optimal camera matrix so we have to pass None here
-                corners2d_j = mokap.utils.geometry.projective.project_points(
+                corners2d_j = project_points(
                     self._cornersd3d_j,
                     camera_matrix=jnp.asarray(optimal_camera_matrix),
                     dist_coeffs=self._zero_coeffs,

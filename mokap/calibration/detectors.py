@@ -1,8 +1,8 @@
 from typing import Tuple, Union, Optional
 import cv2
 import numpy as np
-from numpy._typing import ArrayLike
-from mokap.utils import CharucoBoard
+from numpy.typing import ArrayLike
+from mokap.utils.datatypes import CharucoBoard
 
 
 class ChessboardDetector:
@@ -156,6 +156,9 @@ class CharucoDetector(ChessboardDetector):
 
         # Detect and refine aruco markers
         markers_coords, marker_ids, rejected = self._detector.detectMarkers(frame)
+
+        if marker_ids is None or len(marker_ids) == 0:
+            return None, None
 
         if refine_markers:
             markers_coords, marker_ids, rejected, recovered = cv2.aruco.refineDetectedMarkers(

@@ -25,4 +25,4 @@ dependencies = [
     "jax>=0.6.1",
 ]
 [tool.setuptools]
-py-modules = []
+py-modules = ['mokap']

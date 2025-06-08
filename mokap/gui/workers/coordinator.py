@@ -3,12 +3,13 @@ from typing import Dict, List, Union
 import numpy as np
 from PySide6.QtCore import QObject, Signal, Slot
 
-from mokap.gui import DEBUG_SIGNALS_FLOW
+from mokap.calibration.multiview import MultiviewCalibrationTool
 from mokap.gui.workers.base import CalibrationProcessingWorker
 from mokap.gui.workers.monocular import MonocularWorker
 from mokap.utils.datatypes import ChessBoard, CharucoBoard, CalibrationData, IntrinsicsPayload, ExtrinsicsPayload, DetectionPayload, ErrorsPayload
 
-VERBOSE=True
+DEBUG_SIGNALS_FLOW = True
+VERBOSE = True
 
 
 class CalibrationCoordinator(QObject):

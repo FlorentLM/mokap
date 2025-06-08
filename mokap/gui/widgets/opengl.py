@@ -2,10 +2,14 @@ from PySide6.QtCore import Signal, Qt, Slot
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QHBoxLayout, QFrame, QVBoxLayout, QGroupBox, QGridLayout, QLabel, QComboBox, QPushButton
 from pyqtgraph.opengl import GLGridItem, GLViewWidget, GLScatterPlotItem, GLLinePlotItem, GLMeshItem, MeshData
+import numpy as np
 
 from mokap.gui.widgets import VERBOSE
 from mokap.gui.widgets.base import Base
 from mokap.utils import hex_to_rgb
+from mokap.utils.datatypes import CalibrationData, ExtrinsicsPayload, IntrinsicsPayload, DetectionPayload
+from mokap.utils.geometry.projective import back_projection_batched, back_projection
+from mokap.utils.geometry.transforms import extrinsics_matrix, rotate_points3d, rotate_extrinsics_matrix
 
 
 class Multiview3D(Base):
@@ -286,12 +290,12 @@ class Multiview3D(Base):
 
         # --- Prepare Batched Data ---
         # Note: self._rvecs and self._tvecs are already batched (5, 3)
-        all_E = geometry_jax.extrinsics_matrix(self._rvecs, self._tvecs)  # (5, 4, 4)
+        all_E = extrinsics_matrix(self._rvecs, self._tvecs)  # (5, 4, 4)
         all_K = self._cameras_matrices  # (5, 3, 3)
         all_D = self._dist_coeffs  # (5, 14)
 
         # --- Perform Batched Calculations ---
-        all_frustums_3d = geometry_jax.back_projection_batched(
+        all_frustums_3d = back_projection_batched(
             self._frustums_points2d,  # (5, 4, 2)
             self._frustum_depth,  # scalar, will be broadcast
             all_K,  # (5, 3, 3)
@@ -300,7 +304,7 @@ class Multiview3D(Base):
         ) # (5, 4, 3)
 
         # same for the centers
-        # all_centers_3d = geometry_jax.back_projection_batched(
+        # all_centers_3d = back_projection_batched(
         #     self._centres_points2d,  # (5, 2) -> will be treated as (5, 1, 2)
         #     self._frustum_depth,
         #     all_K, all_E, all_D
@@ -331,18 +335,18 @@ class Multiview3D(Base):
 
         # --- We already have the frustum points, just rotate them for visualization ---
         # The JAX rotation function is fast enough to be called in a loop.
-        frustum_points3d_rot = geometry_jax.rotate_points3d(frustum_points3d, 180, axis='y')
+        frustum_points3d_rot = rotate_points3d(frustum_points3d, 180, axis='y')
 
         # --- We still need to calculate the camera's rotated center and axis ---
-        E = geometry_jax.extrinsics_matrix(self._rvecs[cam_idx], self._tvecs[cam_idx])
-        E_rot = geometry_jax.rotate_extrinsics_matrix(E, 180, axis='y')
+        E = extrinsics_matrix(self._rvecs[cam_idx], self._tvecs[cam_idx])
+        E_rot = rotate_extrinsics_matrix(E, 180, axis='y')
         center_pos = E_rot[:3, 3].reshape(1, -1)
 
         # Calculate the optical axis endpoint
         # Using the non-vmapped function for a single point
-        centre3d = geometry_jax.back_projection(self._centres_points2d[cam_idx], self._frustum_depth,
+        centre3d = back_projection(self._centres_points2d[cam_idx], self._frustum_depth,
                                            self._cameras_matrices[cam_idx], E, self._dist_coeffs[cam_idx])
-        centre3d_rot = geometry_jax.rotate_points3d(centre3d, 180, axis='y')
+        centre3d_rot = rotate_points3d(centre3d, 180, axis='y')
 
         # --- Update GL Items with new data ---
 
@@ -377,10 +381,10 @@ class Multiview3D(Base):
             points2d_subset = self.points_2d[cam_name][:len(ids)]
 
             # Use the single, non-vmapped back projection here too
-            points3d_detections = geometry_jax.back_projection(points2d_subset, self._frustum_depth * 0.95,
+            points3d_detections = back_projection(points2d_subset, self._frustum_depth * 0.95,
                                                           self._multi_cameras_matrices[cam_idx], E,
                                                           self._multi_dist_coeffs[cam_idx])
-            points3d_rot = geometry_jax.rotate_points3d(points3d_detections, 180, axis='y')
+            points3d_rot = rotate_points3d(points3d_detections, 180, axis='y')
 
             gl_items['detections'].setData(pos=points3d_rot)
             gl_items['detections'].setVisible(True)
@@ -397,7 +401,7 @@ class Multiview3D(Base):
         visible_points = self.board_points_3d[self.board_points_3d_vis]
 
         if visible_points.shape[0] > 0:
-            points3d_rot = geometry_jax.rotate_points3d(visible_points, 180, axis='y')
+            points3d_rot = rotate_points3d(visible_points, 180, axis='y')
             board_plot.setData(pos=points3d_rot)
             board_plot.setVisible(True)
         else:

@@ -1,8 +1,8 @@
 from typing import Union
-
 from PySide6.QtCore import Qt, QPoint
 from PySide6.QtWidgets import QFrame, QGridLayout, QPushButton, QDialog, QVBoxLayout, QLabel, QSpinBox, QDoubleSpinBox, \
     QDialogButtonBox
+from mokap.utils.datatypes import ChessBoard, CharucoBoard
 
 
 class SnapPopup(QFrame):

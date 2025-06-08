@@ -3,6 +3,8 @@ import jax
 import numpy as np
 from jax import numpy as jnp
 
+from mokap.utils.geometry.transforms import ZERO_T, ID_QUAT
+
 
 @jax.jit
 def compute_errors_jax(
@@ -176,13 +178,13 @@ def filter_rt_samples(
     length = rt_stack.shape[0]
 
     if length == 0:
-        return geometry_2.ID_QUAT, geometry_2.ZERO_T
+        return ID_QUAT, ZERO_T
 
     quats = rt_stack[:, :4]
     trans = rt_stack[:, 4:]
 
     # provisional mean
-    q_med0 = geometry_2.quaternion_average(quats)
+    q_med0 = quaternion_average(quats)
     t_med0 = jnp.median(trans, axis=0)
 
     # Compute errors
@@ -196,8 +198,8 @@ def filter_rt_samples(
         # Recompute with inliers
         q_filt = quats[keep_mask]
         t_filt = trans[keep_mask]
-        q_med1 = geometry_2.quaternion_average(q_filt)
-        t_med1 = geometry_2.robust_translation_mean(t_filt, num_iters=4, delta=1.0)
+        q_med1 = quaternion_average(q_filt)
+        t_med1 = robust_translation_mean(t_filt, num_iters=4, delta=1.0)
         return q_med1, t_med1
     else:
         # Fallback to provisional mean

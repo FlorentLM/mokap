@@ -1,3 +1,5 @@
+from mokap.utils.datatypes import ChessBoard, CharucoBoard
+
 FAST_UPDATE = 16
 SLOW_UPDATE = 200
 GUI_LOGGER = False

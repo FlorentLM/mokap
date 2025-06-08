@@ -2,9 +2,12 @@ from typing import Union
 import numpy as np
 from PySide6.QtCore import Signal, Slot
 from numpy.typing import ArrayLike
+
+from mokap.calibration.monocular import MonocularCalibrationTool
 from mokap.gui.workers import DEBUG_SIGNALS_FLOW
 from mokap.gui.workers.base import CalibrationProcessingWorker
-from mokap.utils.datatypes import ChessBoard, CharucoBoard, CalibrationData, ErrorsPayload, IntrinsicsPayload, ExtrinsicsPayload, DetectionPayload
+from mokap.utils.datatypes import (ChessBoard, CharucoBoard, CalibrationData, ErrorsPayload,
+                                   IntrinsicsPayload, ExtrinsicsPayload, DetectionPayload)
 
 
 class MonocularWorker(CalibrationProcessingWorker):
