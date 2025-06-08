@@ -457,7 +457,7 @@ class MultiviewCalibrationTool:
 
         # TODO: Clip the distortion coefficients to the BA solver's defined bounds?
 
-        success, retvals = bundle_adjustment_2.run_bundle_adjustment(
+        success, retvals = bundle_adjustment.run_bundle_adjustment(
             K_init,                 # (C, 3, 3)
             D_init,                 # (C, <=8)
             cam_r_init,             # (C, 3)
