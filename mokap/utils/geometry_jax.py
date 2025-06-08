@@ -9,7 +9,6 @@ from functools import partial
 
 # All the projective geometry related functions used throughout the project
 
-
 ## --- Some utilities
 
 _eps = 1e-8 # small epsilon to avoid div by zero
@@ -20,22 +19,32 @@ _AXIS_MAP = {
     'z': jnp.array([0.0, 0.0, 1.0]),
 }
 
+
 @jax.jit
 def pad_dist_coeffs(dist_coeffs: jnp.ndarray) -> jnp.ndarray:
+    # TODO: This one is kinda bad
     """
-    Simple utility to always return 8 distortion coefficients
+    Simple utility to always return 8 distortion coefficients.
+    It pads with zeros if fewer than 8 are provided, and truncates if more are provided.
 
     Args:
-        dist_coeffs: distortion coefficients (≤8,)
-     Returns:
-        coefs8:  distortion coefficients but padded to (8,)
-
+        dist_coeffs: distortion coefficients (any length)
+    Returns:
+        coefs8:  distortion coefficients of shape (8,)
     """
-    coeffs = dist_coeffs.ravel()
-    # pad to length 8 with zeros on the right
-    coefs8 = jnp.pad(coeffs, (0, 8 - coeffs.shape[0]), constant_values=0.0)
-    return coefs8
+    coeffs = jnp.atleast_1d(dist_coeffs).ravel()
 
+    coefs8 = jnp.zeros(8, dtype=coeffs.dtype)
+    num_to_copy = jnp.minimum(coeffs.shape[0], 8)
+
+    # jax.lax.fori_loop to copy elements one by one
+    # This is JIT-compatible because the loop bounds are defined
+    def body_fn(i, val):
+        return val.at[i].set(coeffs[i])
+
+    coefs8 = jax.lax.fori_loop(0, num_to_copy, body_fn, coefs8)
+
+    return coefs8
 
 @jax.jit
 def distortion(
@@ -629,67 +638,66 @@ def remap_points3d(
 
 @jax.jit
 def back_projection(
-    points2d:           jnp.ndarray,
-    depth:              Union[float, jnp.ndarray],
-    camera_matrix:      jnp.ndarray,
-    extrinsics_matrix:  jnp.ndarray,
-    dist_coeffs:        Optional[jnp.ndarray] = None
+        points2d: jnp.ndarray,
+        depth: Union[float, jnp.ndarray],
+        camera_matrix: jnp.ndarray,
+        extrinsics_matrix: jnp.ndarray,
+        dist_coeffs: Optional[jnp.ndarray] = None
 ) -> jnp.ndarray:
     """
     Back-project 2D points into 3D world coords at given depth
-
-    Args:
-        points2d: 2D image coordinates (..., 2)
-        depth: depth value (Z coordinate) at the given 2D image points (or array shape (...) matching points2d)
-        camera_matrix: intrinsics camera matrix K (3, 3)
-        extrinsics_matrix: extrinsics matrix (..., 3, 4) or (..., 4, 4)
-        dist_coeffs: distortion coefficients
-
-    Returns:
-        points3d: Array of the 3D world coordinates for given depth (..., 3)
-
     """
 
-    # flatten all leading dims into a batch of 2D points
-    points2d = jnp.asarray(points2d).reshape((-1, 2))  # (N, 2)
+    original_shape = points2d.shape
+
+    points2d_flat = points2d.reshape((-1, 2))  # (N, 2)
 
     # undistort if needed
     if dist_coeffs is not None:
-        points2d = undistort_points(
-            points2d,
+        points2d_flat = undistort_points(
+            points2d_flat,
             camera_matrix=camera_matrix,
             dist_coeffs=dist_coeffs,
-            R=jnp.eye(3),       # no rectification
-            P=camera_matrix,    # reproject into same camera
+            R=jnp.eye(3),  # no rectification
+            P=camera_matrix,  # reproject into same camera
         )
 
     # make homogeneous image coords [u, v, 1]
-    ones = jnp.ones((points2d.shape[0], 1), dtype=points2d.dtype)  # (N, 1)
-    hom2d = jnp.concatenate([points2d, ones], axis=1)   # (N, 3)
+    ones = jnp.ones((points2d_flat.shape[0], 1), dtype=points2d_flat.dtype)  # (N, 1)
+    hom2d = jnp.concatenate([points2d_flat, ones], axis=1)  # (N, 3)
 
     # normalized camera coords: K^-1 @ hom2d  (3, N).T -> (N, 3)
     invK = jnp.linalg.inv(camera_matrix)
-    cam_dirs = (invK @ hom2d.T).T           # (N, 3)
+    cam_dirs = (invK @ hom2d.T).T  # (N, 3)
 
     # apply depth (broadcast if scalar)
-    depth_arr = jnp.asarray(depth).reshape((-1, 1))     # (N, 1) or (1, 1)
-    cam_pts = cam_dirs * depth_arr          # (N, 3)
+    # The depth should broadcast to the flattened shape
+    depth_arr = jnp.asarray(depth)  # Let JAX handle broadcasting
+    cam_pts = cam_dirs * depth_arr.reshape(-1, 1)  # Ensure depth is (N, 1) or (1, 1) for broadcasting
 
     # camera -> world
-    E_inv = invert_extrinsics_matrix(extrinsics_matrix)     # (..., 4, 4)
+    E_inv = invert_extrinsics_matrix(extrinsics_matrix)  # (..., 4, 4)
 
     # build homogeneous cam_pts [Xc, 1]
     ones4 = jnp.ones((cam_pts.shape[0], 1), dtype=cam_pts.dtype)
-    hom_cam = jnp.concatenate([cam_pts, ones4], axis=1)     # (N, 4)
+    hom_cam = jnp.concatenate([cam_pts, ones4], axis=1)  # (N, 4)
 
     # E_inv @ hom_cam.T   (..., 4, N) → .T → (N, 4)
-    world_h = (E_inv @ hom_cam.T).T     # (N, 4)
-    world_pts = world_h[:, :3]          # (N, 3)
+    world_h = (E_inv @ hom_cam.T).T  # (N, 4)
+    world_pts = world_h[:, :3]  # (N, 3)
 
-    # back to original leading dims
-    out_shape = points2d.shape[:-1] + (3,)
+    # The final dimension is 3 (for x, y, z), the leading dimensions are from the original input
+    out_shape = original_shape[:-1] + (3,)
     return world_pts.reshape(out_shape)
 
+# Do the back projection over n cameras
+back_projection_batched = jax.jit(
+    jax.vmap(
+        back_projection,
+        in_axes=(0, None, 0, 0, 0),
+        out_axes=0
+    )
+)
 
 ## ---- Main functions - Used in Bundle adjustment for calibration, and in most of the downstream tasks
 
@@ -1031,7 +1039,7 @@ def Rmat_from_angle(
 
 # TODO - these 3 below need to be reworked
 
-@jax.jit
+@partial(jax.jit, static_argnames=['axis'])
 def rotate_points3d(
         points3d: jnp.ndarray,
         angle_degrees: float,
@@ -1052,7 +1060,7 @@ def rotate_points3d(
     return points3d_rot
 
 
-@jax.jit
+@partial(jax.jit, static_argnames=['axis'])
 def rotate_pose(
         rvecs:          jnp.ndarray,
         tvecs:          jnp.ndarray,
@@ -1081,7 +1089,7 @@ def rotate_pose(
     return rvecs_rot, tvecs_rot
 
 
-@jax.jit
+@partial(jax.jit, static_argnames=['axis'])
 def rotate_extrinsics_matrix(
     E:              jnp.ndarray,
     angle_degrees:  float,

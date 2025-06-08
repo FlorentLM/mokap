@@ -419,6 +419,12 @@ class MonocularCalibrationTool:
         else:
             self._intrinsics_errors = np.array([np.inf])
 
+    def set_extrinsics(self, rvec: ArrayLike, tvec: ArrayLike):
+        self._rvec = rvec
+        self._tvec = tvec
+        self._rvec_j = jnp.asarray(self._rvec)
+        self._tvec_j = jnp.asarray(self._tvec)
+
     def clear_intrinsics(self):
 
         if self._th_camera_matrix_j is not None:

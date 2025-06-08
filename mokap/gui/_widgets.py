@@ -22,9 +22,11 @@ import pyqtgraph as pg
 from pyqtgraph.opengl import (GLViewWidget, GLGridItem, GLLinePlotItem, GLScatterPlotItem, MeshData, GLMeshItem)
 from mokap.gui.__layout_constants import TASKBAR_H, TOPBAR_H, SPACING
 from mokap.utils import geometry_jax
-from mokap.utils.datatypes import ChessBoard, CharucoBoard
 from mokap.utils import hex_to_rgb, hex_to_hls, pretty_size
 from .workers import *
+
+import cProfile
+import pstats
 
 
 # TODO: board params need to be loaded from config file
@@ -66,7 +68,6 @@ class GUILogger:
 
     def flush(self):
         pass
-
 
 class SnapPopup(QFrame):
 
@@ -116,61 +117,67 @@ class BoardParamsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Calibration Board Settings")
         self.setModal(True)
-        self._board_params = board_params
+        self.is_charuco = isinstance(board_params, CharucoBoard)
+        self.board_params = board_params
         self._init_ui()
 
     def _init_ui(self):
         main_layout = QVBoxLayout(self)
+        grid_layout = QGridLayout()
 
-        # Rows
-        row_layout = QHBoxLayout()
-        row_label = QLabel("Rows:")
+        grid_layout.addWidget(QLabel("Rows:"), 0, 0)
         self.row_spin = QSpinBox()
         self.row_spin.setMinimum(2)
         self.row_spin.setMaximum(30)
-        self.row_spin.setValue(self._board_params.rows)
-        row_layout.addWidget(row_label)
-        row_layout.addWidget(self.row_spin)
-        main_layout.addLayout(row_layout)
+        self.row_spin.setValue(self.board_params.rows)
+        grid_layout.addWidget(self.row_spin, 0, 1)
 
-        # Columns
-        col_layout = QHBoxLayout()
-        col_label = QLabel("Columns:")
+        grid_layout.addWidget(QLabel("Columns:"), 1, 0)
         self.col_spin = QSpinBox()
         self.col_spin.setMinimum(2)
         self.col_spin.setMaximum(30)
-        self.col_spin.setValue(self._board_params.cols)
-        col_layout.addWidget(col_label)
-        col_layout.addWidget(self.col_spin)
-        main_layout.addLayout(col_layout)
+        self.col_spin.setValue(self.board_params.cols)
+        grid_layout.addWidget(self.col_spin, 1, 1)
 
-        # Square size
-        sq_layout = QHBoxLayout()
-        sq_label = QLabel("Square length (mm):")
+        grid_layout.addWidget(QLabel("Square length (cm):"), 2, 0)
         self.sq_spin = QDoubleSpinBox()
         self.sq_spin.setMinimum(0.01)
         self.sq_spin.setMaximum(1000.0)
         self.sq_spin.setDecimals(2)
-        self.sq_spin.setValue(self._board_params.square_length)
-        sq_layout.addWidget(sq_label)
-        sq_layout.addWidget(self.sq_spin)
-        main_layout.addLayout(sq_layout)
+        self.sq_spin.setValue(self.board_params.square_length)
+        grid_layout.addWidget(self.sq_spin, 2, 1)
 
-        # 'Apply to all' checkbox
-        self.apply_all_checkbox = QCheckBox("Apply to all cameras")
-        self.apply_all_checkbox.setChecked(True)
-        main_layout.addWidget(self.apply_all_checkbox)
+        if self.is_charuco:
+            grid_layout.addWidget(QLabel("Marker margin:"), 3, 0)
+            self.marker_spin = QSpinBox()
+            self.marker_spin.setMinimum(0)
+            self.marker_spin.setMaximum(10)
+            self.marker_spin.setValue(self.board_params.marker_length)
+            grid_layout.addWidget(self.marker_spin, 3, 1)
+
+        main_layout.addLayout(grid_layout)
 
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=self)
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         main_layout.addWidget(btns)
-
         self.setLayout(main_layout)
 
     def get_values(self):
-        return self._board_params, self.apply_all_checkbox.isChecked()
-
+        # Create and return a new board object based on the dialog values
+        if self.is_charuco:
+            return CharucoBoard(
+                rows=self.row_spin.value(),
+                cols=self.col_spin.value(),
+                square_length=self.sq_spin.value(),
+                margin=self.marker_spin.value()
+            )
+        else:
+            return ChessBoard(
+                rows=self.row_spin.value(),
+                cols=self.col_spin.value(),
+                square_length=self.sq_spin.value()
+            )
 
 class SnapMixin:
     """
@@ -238,7 +245,6 @@ class SnapMixin:
                 self.move(right_x, bottom_y)
             case _:
                 return
-
 
 class Base(QWidget, SnapMixin):
     """
@@ -325,7 +331,6 @@ class PreviewBase(Base):
         self._capture_fps = deque(maxlen=10)
         self._last_capture_count = 0
 
-    #  ============= Worker thread setup =============
     def _setup_worker(self, worker_object):
         super()._setup_worker(worker_object)
 
@@ -337,7 +342,6 @@ class PreviewBase(Base):
         self.worker.finished.connect(self.on_worker_finished)
         self.worker.blocking.connect(self.blocking_toggle)
 
-    #  ============= UI constructors =============
     def _init_common_ui(self):
         """
         This constructor creates all the UI elements that are common to all modes
@@ -528,7 +532,6 @@ class PreviewBase(Base):
         return self._source_shape[1] / self._source_shape[0]
 
     #  ============= Some common video window-related methods =============
-    # TODO - Some of these should be moved to parent class to be usable by OpenGL window
 
     def show_snap_popup(self):
         button_pos = self.snap_button.mapToGlobal(QPoint(0, self.snap_button.height()))
@@ -689,7 +692,6 @@ class Recording(PreviewBase):
         self.worker_thread.start()
         self._start_timers()
 
-    #  ============= UI constructors =============
     def _init_specific_ui(self):
         """
         This constructor creates the UI elements specific to Recording mode
@@ -856,7 +858,6 @@ class Recording(PreviewBase):
 
         return super().eventFilter(obj, event)
 
-    #  ============= Update frame =============
     def _annotate(self):
 
         # Get new coordinates
@@ -976,7 +977,6 @@ class Recording(PreviewBase):
         # And blit
         self._blit_image()
 
-    # ============= Worker communication =============
     @Slot(list)
     def on_worker_result(self, bboxes):
         self._bboxes = bboxes
@@ -1056,15 +1056,16 @@ class Recording(PreviewBase):
                     window.camera_controls_sliders[label].setValue(w_new_val)
                     window.update_param(label)
 
-class Monocular(PreviewBase):
 
+# ===================================================================
+# MONOCULAR WIDGET
+# ===================================================================
+class Monocular(PreviewBase):
     request_load = Signal(str)
     request_save = Signal(str)
 
-    def __init__(self, camera, main_window_ref):
+    def __init__(self, camera, main_window_ref, board_params):
         super().__init__(camera, main_window_ref)
-
-        self.board_params = DEFAULT_BOARD
 
         # Initialize reprojection error data for plotting
         self.reprojection_errors = deque(maxlen=MAX_PLOT_X)
@@ -1072,7 +1073,8 @@ class Monocular(PreviewBase):
         # The worker annotates the frame by itself so we keep a reference to the latest annotated frame
         self.annotated_frame = None
 
-        self._setup_worker(MonocularWorker(self.board_params, self.idx, self.name, self.source_shape, verbose=VERBOSE))
+        # Registration is handled by MainControls
+        self._setup_worker(MonocularWorker(board_params, self.idx, self.name, self.source_shape))
 
         # Finish building the UI by calling the other constructors
         self._init_common_ui()
@@ -1082,14 +1084,12 @@ class Monocular(PreviewBase):
         self.worker_thread.start()
         self._start_timers()
 
-    #  ============= Worker thread additional setup =============
     def _setup_worker(self, worker_object):
         super()._setup_worker(worker_object)
-        self._mainwindow.coordinator.register_worker(worker_object)
+        # Connect signals for loading/saving which are specific to this worker
         self.request_load.connect(worker_object.load_intrinsics)
         self.request_save.connect(worker_object.save_intrinsics)
 
-    #  ============= UI constructors =============
     def _init_specific_ui(self):
         """
         This constructor creates the UI elements specific to Calib mode
@@ -1097,22 +1097,7 @@ class Monocular(PreviewBase):
         layout = QHBoxLayout(self.RIGHT_GROUP)
         layout.setContentsMargins(5, 5, 5, 5)
 
-        board_group = QWidget()
-        board_layout = QVBoxLayout(board_group)
-
-        # A label to show the board preview
-        self.board_preview_label = QLabel()
-        self.board_preview_label.setAlignment(Qt.AlignCenter)
-        board_layout.addWidget(self.board_preview_label)
-
-        board_settings_button = QPushButton("Board Settings...")
-        board_settings_button.clicked.connect(self._show_board_dialog)
-        board_layout.addWidget(board_settings_button)
-
-        layout.addWidget(board_group)
-
         # Detection and sampling
-
         sampling_group = QWidget()
         sampling_layout = QVBoxLayout(sampling_group)
 
@@ -1188,10 +1173,6 @@ class Monocular(PreviewBase):
 
         layout.addWidget(calib_io_group)
 
-        # Now that the UI is ready, generate the calibration board image once
-        self._update_board_preview()
-
-    #  ============= Update frame =============
     def _update_fast(self):
         self._refresh_framebuffer()
         frame = self._frame_buffer
@@ -1238,12 +1219,33 @@ class Monocular(PreviewBase):
 
         self._blit_image()
 
-    # ============= Worker communication =============
+    @Slot(CalibrationData)
+    def handle_payload(self, data: CalibrationData):
+        """ Receives data from the main window's router """
+
+        if isinstance(data.payload, ErrorsPayload):
+            mean_error = np.mean(data.payload.errors)
+            self.reprojection_errors.append(mean_error)
+            self.error_plot_curve.setData(list(self.reprojection_errors))
+            self.load_save_message.setText(f"Intrinsics updated. Mean err: {mean_error:.3f} px")
+
+        elif isinstance(data.payload, IntrinsicsPayload):
+            self.load_save_message.setText(f"Intrinsics updated from {data.camera_name}.")
+        # Extrinsics are handled by the worker for visualization, no UI update needed here
+
+    def on_save_parameters(self):
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Intrinsics",
+            str(self._mainwindow.mc.full_path.resolve()),
+            "TOML Files (*.toml)")
+
+        if file_path:
+            self.request_save.emit(file_path)
+            self.load_save_message.setText(f"Intrinsics saved to\n{Path(file_path).name}")
+
     @Slot(np.ndarray)
     def on_worker_result(self, annotated_frame):
         self.annotated_frame = annotated_frame
-
-    #  ============= Handle additional worker communication =============
 
     def on_clear_intrinsics(self):
         # Clear plot
@@ -1257,28 +1259,6 @@ class Monocular(PreviewBase):
         if file_path and file_path.is_file():   # Might still be None if the picker did not succeed
             self.request_load.emit(file_path.as_posix())
             self.load_save_message.setText(f"Intrinsics <b>loaded</b> from {file_path.parent}")
-
-    def on_save_parameters(self, data: CalibrationData):
-        file_path = self._mainwindow.mc.full_path / "parameters.toml"
-        self.request_save.emit(file_path.as_posix())
-        self.load_save_message.setText(f"Intrinsics <b>saved</b> as \r{file_path}")
-
-    # @Slot(np.ndarray, np.ndarray, bool)
-    # def on_intrinsics_update(self, camera_matrix, dist_coeffs, update_message=True):
-    #     self._mainwindow.opengl_window.update_intrinsics(self.idx, camera_matrix, dist_coeffs)
-    #     if update_message:
-    #         self.load_save_message.setText(f"Intrinsics <b>not</b> saved!")
-    #     if DEBUG:
-    #         print(f'[DEBUG] [MainThread] Intrinsics updated for {self.name} camera (idx={self.idx})\r')
-    #
-    # @Slot(np.ndarray)
-    # def on_reprojection_error(self, error):
-    #
-    #     m = np.mean(error)
-    #     # s = np.std(error)
-    #
-    #     self.reprojection_errors.append(m)
-    #     self.error_plot_curve.setData(self.reprojection_errors)
 
     #  ============= Calibration video window functions =============
     def _show_file_dialog(self, startpath: str | Path):
@@ -1298,56 +1278,45 @@ class Monocular(PreviewBase):
                     return file
         return None
 
-    def _show_board_dialog(self):
-        """
-        Opens the small BoardParamsDialog to let the user set board parameters
-        """
-        dlg = BoardParamsDialog(self.board_params)
 
-        ret = dlg.exec_()
-        if ret == QDialog.Accepted:
-            # retrieve updated parameters
-            new_board_params, bool_apply_all = dlg.get_values()
-
-            if bool_apply_all:
-                # Loop over all secondary windows in the main app
-                for w in self._mainwindow.video_windows:
-                    if isinstance(w, Monocular):
-                        w.board_params = new_board_params.copy()
-                        w._update_board_preview()
-            else:
-                self.board_params = new_board_params.copy()
-                self._update_board_preview()
-
-    def _update_board_preview(self):
-        max_w, max_h = 100, 100
-
-        r = self.board_params.rows / self.board_params.cols
-        h, w = max_h, int(r * max_w)
-
-        board_arr = self.board_params.to_image((h, w))
-        q_img = QImage(board_arr, h, w, h, QImage.Format.Format_Grayscale8)
-        pixmap = QPixmap.fromImage(q_img)
-        bounded_pixmap = pixmap.scaled(max_w, max_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self.board_preview_label.setPixmap(bounded_pixmap)
-
-
+# ===================================================================
+# MULTIVIEW3D WIDGET
+# ===================================================================
 class Multiview3D(Base):
+
+    request_board_settings = Signal()
+    request_load_calibration = Signal()
+    request_save_calibration = Signal()
 
     def __init__(self, main_window_ref):
         super().__init__(main_window_ref)
 
-        self.board_params = DEFAULT_BOARD
-
         self.nb_cams = main_window_ref.nb_cams
         self.idx = self.nb_cams + 1
+
         self._cameras_names = self._mainwindow.cameras_names    # Fixed cameras order
         self._origin_camera = self._cameras_names[0]    # default to first one
+
         self._cam_colours_rgba = {cam: np.array([*hex_to_rgb(col), 255], dtype=np.uint8)
                                   for cam, col in self._mainwindow.cams_colours.items()}
         self._cam_colours_rgba_norm = {cam: col / 255
                                        for cam, col in self._cam_colours_rgba.items()}
         self._sources_shapes = self._mainwindow.sources_shapes
+
+        # Data stores for visualization remain the same
+        self._cameras_matrices = np.zeros((self.nb_cams, 3, 3), dtype=np.float32)
+        self._dist_coeffs = np.zeros((self.nb_cams, 14), dtype=np.float32)
+        self._rvecs = np.zeros((self.nb_cams, 3), dtype=np.float32)
+        self._tvecs = np.zeros((self.nb_cams, 3), dtype=np.float32)
+
+        # Data stores for dynamic points
+        self.max_board_points = self._mainwindow.board_params.object_points().shape[0]
+        self.board_points_3d = np.zeros((self.max_board_points, 3))  # Placeholder for global 3D points
+        self.board_points_3d_vis = np.zeros(self.max_board_points, dtype=bool)  # Visibility mask
+
+        # Per-camera 2D detections
+        self.points_2d = {cam_name: np.zeros((self.max_board_points, 2)) for cam_name in self._cameras_names}
+        self.points_2d_ids = {cam_name: np.array([], dtype=int) for cam_name in self._cameras_names}
 
         # These will be aliases to the (rotated for display) rvec and tvec (filled using the fixed camera order)
         self.optical_axes = np.zeros((self.nb_cams, 3), dtype=np.float32)
@@ -1385,15 +1354,6 @@ class Multiview3D(Base):
             [3, 0, 4], [3, 4, 7]   # Left
         ], dtype=np.int32)
 
-        # Initialise where to store intrinsics and extrinsics for all cams
-        self._multi_cameras_matrices = np.zeros((self.nb_cams, 3, 3), dtype=np.float32)
-        self._multi_dist_coeffs = np.zeros((self.nb_cams, 14), dtype=np.float32)
-        self._multi_extrinsics_matrices = np.zeros((self.nb_cams, 3, 4), dtype=np.float32)
-
-        # Setup worker
-        self._setup_worker(MultiviewWorker(self.board_params, self._cameras_names, self._origin_camera, self._sources_shapes[0])) # TODO: needs to deal with multiple sizes instead of using the first one
-        self.worker_thread.start()
-
         # References to displayed items
         self._static_items = []
         self._refreshable_items = []
@@ -1401,8 +1361,15 @@ class Multiview3D(Base):
         self._gridsize = 100
         self._antialiasing = True
 
+        # Dictionary to hold persistent GL items
+        self.camera_gl_items = {}
+        self.global_gl_items = {}
+
         # Finish building the UI and initialise the 3D scene
         self._init_ui()
+
+        # Create GL items after the UI exists
+        self._create_gl_items()
 
         # Add the grid now bc no need to update it later
         self.grid = GLGridItem()
@@ -1411,54 +1378,69 @@ class Multiview3D(Base):
         self.view.addItem(self.grid)
         self.view.opts['distance'] = self._gridsize
 
-        # Start window update timer
-        self.timer_slow = QTimer(self)
-        self.timer_slow.timeout.connect(self.update_scene)
-        self.timer_slow.start(SLOW_UPDATE)
-
-    #  ============= Worker thread additional setup =============
-    def _setup_worker(self, worker_object):
-        super()._setup_worker(worker_object)
-        self._mainwindow.coordinator.register_worker(worker_object)
-        self._mainwindow.coordinator.send_to_main.connect(self.handle_payload)
-
-    #  ============= UI constructors =============
     def _init_ui(self):
         self.view = GLViewWidget()
         self.view.setWindowTitle('3D viewer')
         self.view.setBackgroundColor('k')
 
-        layout = QVBoxLayout(self)
-        layout.addWidget(self.view, 1)
-        self.setLayout(layout)
+        main_layout = QHBoxLayout(self)
+        main_layout.addWidget(self.view, 1)  # The 3D view takes up most space
+        self.setLayout(main_layout)
 
-        buttons_row1 = QWidget()
-        buttons_row1_layout = QHBoxLayout(buttons_row1)
+        # Create a vertical control panel on the right
+        control_panel = QFrame()
+        control_panel.setFrameShape(QFrame.StyledPanel)
+        control_panel.setMaximumWidth(250)
+        panel_layout = QVBoxLayout(control_panel)
+        main_layout.addWidget(control_panel)
 
+        # Group for calibration controls
+        controls_group = QGroupBox("Controls")
+        controls_layout = QGridLayout()
+        controls_group.setLayout(controls_layout)
+
+        controls_layout.addWidget(QLabel("Stage:"), 0, 0)
         self.calibration_stage_combo = QComboBox()
-        self.calibration_stage_combo.addItems(['Intrinsics', 'Extrinsics', 'Refinement'])
+        self.calibration_stage_combo.addItems(['Intrinsics', 'Extrinsics'])
         self.calibration_stage_combo.currentIndexChanged.connect(self._mainwindow.coordinator.set_stage)
-        buttons_row1_layout.addWidget(self.calibration_stage_combo)
+        controls_layout.addWidget(self.calibration_stage_combo, 0, 1)
 
-        # self.estimate_button = QPushButton("Estimate 3D pose")
-        # self.estimate_button.clicked.connect(self.worker.compute)
-        # buttons_row1_layout.addWidget(self.estimate_button)
-
+        controls_layout.addWidget(QLabel("Origin Cam:"), 1, 0)
         self.origin_camera_combo = QComboBox()
         self.origin_camera_combo.addItems(self._cameras_names)
         self.origin_camera_combo.currentTextChanged.connect(self._mainwindow.coordinator.set_origin_camera)
-        buttons_row1_layout.addWidget(self.origin_camera_combo)
+        controls_layout.addWidget(self.origin_camera_combo, 1, 1)
 
-        layout.addWidget(buttons_row1)
+        self.run_ba_button = QPushButton("Run Bundle Adjustment")
+        self.run_ba_button.setStyleSheet(
+            f"background-color: {self._mainwindow.col_darkgreen}; color: {self._mainwindow.col_white};")
+        controls_layout.addWidget(self.run_ba_button, 2, 0, 1, 2)
+        panel_layout.addWidget(controls_group)
 
-        buttons_row_2 = QWidget()
-        buttons_row2_layout = QHBoxLayout(buttons_row_2)
+        # Group for Board and I/O controls
+        io_group = QGroupBox("Global Settings")
+        io_layout = QVBoxLayout(io_group)
 
-        load_multi = QPushButton("Load all intrinsics")
-        load_multi.clicked.connect(do_nothing)
-        buttons_row2_layout.addWidget(load_multi)
+        # board preview
+        self.board_preview_label = QLabel()
+        self.board_preview_label.setAlignment(Qt.AlignCenter)
+        io_layout.addWidget(self.board_preview_label)
 
-        layout.addWidget(buttons_row_2)
+        self.board_settings_button = QPushButton("Edit board")
+        self.board_settings_button.clicked.connect(self.request_board_settings)
+        io_layout.addWidget(self.board_settings_button)
+
+        self.load_calib_button = QPushButton("Load calibration")
+        self.load_calib_button.clicked.connect(self.request_load_calibration)
+        io_layout.addWidget(self.load_calib_button)
+
+        self.save_calib_button = QPushButton("Save calibration")
+        self.save_calib_button.clicked.connect(self.request_save_calibration)
+        io_layout.addWidget(self.save_calib_button)
+
+        panel_layout.addWidget(io_group)
+
+        panel_layout.addStretch()        # Pushes everything to the top
 
         # If landscape screen
         if self._mainwindow.selected_monitor.height < self._mainwindow.selected_monitor.width:
@@ -1467,154 +1449,233 @@ class Multiview3D(Base):
             h = w = self._mainwindow.selected_monitor.width // 2
 
         self.resize(h, w)
-
         self.show()
 
-    #  ============= Rendering methods =============
-    def clear_scene(self):
-        for item in self._refreshable_items:
-            try:
-                self.view.removeItem(item)
-            except ValueError:
-                pass
-        self._refreshable_items.clear()
+    @Slot(CalibrationData)
+    def handle_payload(self, data: CalibrationData):
+
+        if VERBOSE:
+            print(f'[3D Widget] Received {data.camera_name} {data.payload}')
+
+        cam_idx = self._cameras_names.index(data.camera_name)
+        needs_redraw = False
+
+        if isinstance(data.payload, ExtrinsicsPayload):
+            self._rvecs[cam_idx] = data.payload.rvec
+            self._tvecs[cam_idx] = data.payload.tvec
+            needs_redraw = True
+
+        elif isinstance(data.payload, IntrinsicsPayload):
+            self._cameras_matrices[cam_idx] = data.payload.camera_matrix
+            dist_len = len(data.payload.dist_coeffs)
+            self._dist_coeffs[cam_idx, :dist_len] = data.payload.dist_coeffs
+            needs_redraw = True
+
+        elif isinstance(data.payload, DetectionPayload):
+            self.points_2d[data.camera_name] = data.payload.points2D
+            self.points_2d_ids[data.camera_name] = data.payload.pointsIDs
+            self._update_camera_gl(cam_idx, data.camera_name)
+
+        # TODO: Triangulated board points
+        # Placeholder global 3D points update
+        # elif isinstance(data.payload, TriangulatedPointsPayload):
+        #     self.board_points_3d = data.payload.points3D
+        #     self.board_points_3d_vis = data.payload.visibility_mask
+        #     self.update_3d_points()
+
+        if needs_redraw:
+            self.update_scene()
+
+    def update_board_preview(self, board_params):
+        max_w, max_h = 100, 100
+        board_img = board_params.to_image((max_w * 2, max_w * 2))
+        h, w = board_img.shape
+        q_img = QImage(board_img.data, w, h, w, QImage.Format.Format_Grayscale8)
+        pixmap = QPixmap.fromImage(q_img)
+        bounded_pixmap = pixmap.scaled(max_w, max_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.board_preview_label.setPixmap(bounded_pixmap)
+
+    def _create_gl_items(self):
+        """
+        Creates all GL items for all cameras ONCE and adds them to the scene.
+        """
+        for i, cam_name in enumerate(self._cameras_names):
+            color = self._cam_colours_rgba_norm[cam_name]
+            color_translucent_80 = (*color[:3], color[3] * 0.8)
+            color_translucent_50 = (*color[:3], color[3] * 0.5)
+
+            detections_scatter = GLScatterPlotItem(pos=np.zeros((self.max_board_points, 3)),
+                                                   color=color, size=7, pxMode=True)
+            detections_scatter.setVisible(False)    # Initially hidden
+
+            # Create items with placeholder data
+            center_scatter = GLScatterPlotItem(pos=np.zeros((1, 3)), color=color, size=10)
+
+            # 4 corners of frustum + camera center = 5 vertices. 4 lines from center to corners.
+            frustum_lines = GLLinePlotItem(pos=np.zeros((8, 3)), color=color, width=1, antialias=self._antialiasing,
+                                           mode='lines')
+
+            frustum_mesh = GLMeshItem(vertexes=np.zeros((4, 3)), faces=self._frustum_faces,
+                                      smooth=self._antialiasing, shader='shaded', glOptions='translucent',
+                                      drawEdges=True, edgeColor=color_translucent_80, color=color_translucent_50)
+
+            # Dashed line for optical axis requires multiple line items, which is inefficient to update.
+            # We'll replace it with a single, solid line for now for performance.
+            # If dashes are required, a custom shader is the performant way.
+            optical_axis_line = GLLinePlotItem(pos=np.zeros((2, 3)), color=color, width=2, antialias=self._antialiasing)
+
+            # Store references to the items
+            self.camera_gl_items[cam_name] = {
+                'center': center_scatter,
+                'frustum_lines': frustum_lines,
+                'frustum_mesh': frustum_mesh,
+                'optical_axis': optical_axis_line,
+                'detections': detections_scatter
+            }
+
+            # --- Create Global Items ---
+            # Create scatter plot for 3D board points
+            self.global_gl_items['board_3d'] = GLScatterPlotItem(pos=np.zeros((self.max_board_points, 3)),
+                                                                 color=(1, 0, 1, 0.9), size=8, pxMode=True)
+            self.global_gl_items['board_3d'].setVisible(False)  # Initially hidden
+
+            # TODO: Add volume
+
+            # Add items to the view
+            self.view.addItem(center_scatter)
+            self.view.addItem(frustum_lines)
+            self.view.addItem(frustum_mesh)
+            self.view.addItem(optical_axis_line)
+            self.view.addItem(detections_scatter)
+            self.view.addItem(self.global_gl_items['board_3d'])
 
     def update_scene(self):
-        self.clear_scene()
 
-        for cam_name in self._cameras_names:
-            color = self._cam_colours_rgba_norm[cam_name]
-            # self.add_camera(cam_name, color=color)
-            # self.add_points2d(cam_name, points2d, color=color)
-        self.add_focal_point()
+        # # --- PROFILING CODE START ---
+        # profiler = cProfile.Profile()
+        # profiler.enable()
+        # # --- PROFILING CODE END ---
 
-        # draw everything
-        for item in self._refreshable_items:
-            self.view.addItem(item)
+        origin_name = self._mainwindow.coordinator._origin_camera_name
 
-    def add_camera(self, cam_name: str, color=(1, 0, 0, 1)):
+        # --- Prepare Batched Data ---
+        # Note: self._rvecs and self._tvecs are already batched (5, 3)
+        all_E = geometry_jax.extrinsics_matrix(self._rvecs, self._tvecs)  # (5, 4, 4)
+        all_K = self._cameras_matrices  # (5, 3, 3)
+        all_D = self._dist_coeffs  # (5, 14)
+
+        # --- Perform Batched Calculations ---
+        all_frustums_3d = geometry_jax.back_projection_batched(
+            self._frustums_points2d,  # (5, 4, 2)
+            self._frustum_depth,  # scalar, will be broadcast
+            all_K,  # (5, 3, 3)
+            all_E,  # (5, 4, 4)
+            all_D  # (5, 14)
+        ) # (5, 4, 3)
+
+        # same for the centers
+        # all_centers_3d = geometry_jax.back_projection_batched(
+        #     self._centres_points2d,  # (5, 2) -> will be treated as (5, 1, 2)
+        #     self._frustum_depth,
+        #     all_K, all_E, all_D
+        # )
+        # # Result will be (5, 1, 3), so we squeeze it
+        # all_centers_3d = all_centers_3d.squeeze(axis=1)
+
+        # TODO: Compute volume
+
+        # Loop through the results and update each camera's visualization
+        # This Python loop is fine because all the heavy math is already done
+        for i, cam_name in enumerate(self._cameras_names):
+            # We pass the pre-computed 3D points for this specific camera to the update helper.
+            self._update_camera_gl(i, cam_name, frustum_points3d=all_frustums_3d[i])
+
+        # # --- PROFILING CODE START ---
+        # profiler.disable()
+        # stats = pstats.Stats(profiler).sort_stats('cumtime')  # Sort by cumulative time spent
+        # stats.print_stats(20)  # Print the top 20 time-consuming functions
+        # # --- PROFILING CODE END ---
+
+    def _update_camera_gl(self, cam_idx: int, cam_name: str, frustum_points3d: np.ndarray):
         """
-        Add a camera to the OpenGL scene
+        Updates the data of existing GL items for a specific camera.
         """
+        # Retrieve the persistent GL items for this camera
+        gl_items = self.camera_gl_items[cam_name]
 
-        # Recover the correct index to use with arrays
-        cam_idx = self._cameras_names.index(cam_name)
+        # --- We already have the frustum points, just rotate them for visualization ---
+        # The JAX rotation function is fast enough to be called in a loop.
+        frustum_points3d_rot = geometry_jax.rotate_points3d(frustum_points3d, 180, axis='y')
 
-        color_translucent_80 = np.copy(color)
-        color_translucent_80[3] *= 0.8
+        # --- We still need to calculate the camera's rotated center and axis ---
+        E = geometry_jax.extrinsics_matrix(self._rvecs[cam_idx], self._tvecs[cam_idx])
+        E_rot = geometry_jax.rotate_extrinsics_matrix(E, 180, axis='y')
+        center_pos = E_rot[:3, 3].reshape(1, -1)
 
-        color_translucent_50 = np.copy(color)
-        color_translucent_50[3] *= 0.5
+        # Calculate the optical axis endpoint
+        # Using the non-vmapped function for a single point
+        centre3d = geometry_jax.back_projection(self._centres_points2d[cam_idx], self._frustum_depth,
+                                           self._cameras_matrices[cam_idx], E, self._dist_coeffs[cam_idx])
+        centre3d_rot = geometry_jax.rotate_points3d(centre3d, 180, axis='y')
 
-        # Make sure colors are tuples (needed by pyqtgraph)
-        color = tuple(color)
-        color_translucent_80 = tuple(color_translucent_80)
-        color_translucent_50 = tuple(color_translucent_50)
+        # --- Update GL Items with new data ---
 
-        # Apply the 180° rotation around Y axis so the rig appears the right way up
-        ext_mat_rot = geometry_jax.rotate_extrinsics_matrix(self._multi_extrinsics_matrices[cam_idx, :, :], 180, axis='y',)
+        # Update camera center scatter plot
+        gl_items['center'].setData(pos=center_pos)
 
-        # Add camera center as a point
-        center_scatter = GLScatterPlotItem(pos=ext_mat_rot[:3, 3].reshape(1, -1), color=color, size=10)
-        self._refreshable_items.append(center_scatter)
-
-        # Back-project the 2D image corners to 3D
-        frustum_points3d = geometry_jax.back_projection(self._frustums_points2d[cam_idx],
-                                                    self._frustum_depth,
-                                                    self._multi_cameras_matrices[cam_idx],
-                                                     self._multi_extrinsics_matrices[cam_idx, :, :])    # we use the non-rotated points, and rotate below
-        frustum_points3d = geometry_jax.rotate_points3d(frustum_points3d, 180, axis='y')
-
-        # Draw the frustum planes
-        frustum_meshdata = MeshData(vertexes=frustum_points3d, faces=self._frustum_faces)
-        frustum_mesh = GLMeshItem(meshdata=frustum_meshdata,
-                                  smooth=self._antialiasing,
-                                  shader='shaded',
-                                  glOptions='translucent',
-                                  drawEdges=True,
-                                  edgeColor=color_translucent_80,
-                                  color=color_translucent_50)
-        self._refreshable_items.append(frustum_mesh)
-
-        # Draw lines from the camera to each frustum corner
-        for corner in frustum_points3d:
-            line = GLLinePlotItem(pos=np.array([ext_mat_rot[:3, 3], corner]),
-                                  color=color,
-                                  width=1,
-                                  antialias=self._antialiasing)
-            self._refreshable_items.append(line)
-
-        # Compute and draw the optical axis (from camera center toward the image center)
-        centre3d = geometry_jax.back_projection(self._centres_points2d[cam_idx],
-                                            self._frustum_depth,
-                                            self._multi_cameras_matrices[cam_idx],
-                                             self._multi_extrinsics_matrices[cam_idx, :, :])         # we use the non-rotated points, and rotate below
-        centre3d = geometry_jax.rotate_points3d(centre3d, 180, axis='y')
-
-        self.add_dashed_line(ext_mat_rot[:3, 3], centre3d,
-                             dash_length=2.0,
-                             gap_length=2.0,
-                             color=color,
-                             antialias=self._antialiasing,
-                             width=1)
-
-        # Store the rotated camera center
-        self.cam_positions[cam_idx] = ext_mat_rot[:3, 3]
-
-        # Compute and store the (normalized) optical axis direction
-        axis_vec = centre3d - ext_mat_rot[:3, 3]
-        norm = np.linalg.norm(axis_vec)
-        if norm > 0:
-            axis_vec = axis_vec / norm
-        self.optical_axes[cam_idx] = axis_vec
-
-        prev_focal = np.copy(self.focal_point)
-        self.focal_point[0, :] = geometry_jax.focal_point_3d(self.cam_positions, self.optical_axes)
-        self.grid.translate(*(self.focal_point - prev_focal)[0])
-
-    def add_points3d(self, points3d: np.ndarray, errors=None, color=(0, 0, 0, 1)):
-        """
-        Add 3D points to the OpenGL scene
-        If errors are provided, they are mapped to colors
-        """
-
-        color = tuple(color)
-
-        points3d_rot = geometry_jax.rotate_points3d(points3d, 180, axis='y')
-
-        if errors:
-            # TODO - use a fixed scale from green to red instead
-            # normalize error values to [0, 1]
-            min_e = errors - np.nanmin(errors)
-            norm_errors = min_e / np.nanmax(min_e)
-            # pg.intColor returns QColor objects so we convert them to RGBA tuples
-            colors_array = np.array([pg.mkColor(pg.intColor(int(e * 255), 256)).getRgbF() for e in norm_errors])
-
-            scatter = GLScatterPlotItem(pos=points3d_rot, color=colors_array, size=5)
+        # Update the frustum mesh, with a safety check
+        if frustum_points3d_rot.shape == (4, 3):
+            gl_items['frustum_mesh'].setMeshData(vertexes=frustum_points3d_rot)
+            gl_items['frustum_mesh'].setVisible(True)
         else:
-            scatter = GLScatterPlotItem(pos=points3d_rot, color=color, size=5)
+            gl_items['frustum_mesh'].setVisible(False)
 
-        self._refreshable_items.append(scatter)
+        # Update the optical axis line
+        gl_items['optical_axis'].setData(pos=np.vstack([center_pos, centre3d_rot]))
 
-    def add_points2d(self, cam_name, points2d, color=(1, 1, 0, 1)):
+        # Update the lines from the camera center to the frustum corners
+        line_verts = np.empty((8, 3))
+        if frustum_points3d_rot.shape == (4, 3):
+            line_verts[0:2] = np.vstack([center_pos, frustum_points3d_rot[0]])
+            line_verts[2:4] = np.vstack([center_pos, frustum_points3d_rot[1]])
+            line_verts[4:6] = np.vstack([center_pos, frustum_points3d_rot[2]])
+            line_verts[6:8] = np.vstack([center_pos, frustum_points3d_rot[3]])
+            gl_items['frustum_lines'].setData(pos=line_verts)
+            gl_items['frustum_lines'].setVisible(True)
+        else:
+            gl_items['frustum_lines'].setVisible(False)
+
+        # Update the 2D detections scatter plot (this logic remains the same)
+        ids = self.points_2d_ids.get(cam_name)  # Use .get for safety
+        if ids is not None and len(ids) > 0:
+            points2d_subset = self.points_2d[cam_name][:len(ids)]
+
+            # Use the single, non-vmapped back projection here too
+            points3d_detections = geometry_jax.back_projection(points2d_subset, self._frustum_depth * 0.95,
+                                                          self._multi_cameras_matrices[cam_idx], E,
+                                                          self._multi_dist_coeffs[cam_idx])
+            points3d_rot = geometry_jax.rotate_points3d(points3d_detections, 180, axis='y')
+
+            gl_items['detections'].setData(pos=points3d_rot)
+            gl_items['detections'].setVisible(True)
+        else:
+            gl_items['detections'].setVisible(False)
+
+    def update_3d_points(self):
         """
-        Back-project 2D points into 3D and add them to the scene
+        Updates the global 3D board points scatter plot
         """
-        cam_idx = self._cameras_names.index(cam_name)
+        board_plot = self.global_gl_items['board_3d']
 
-        color = tuple(color)
+        # Get only the visible points
+        visible_points = self.board_points_3d[self.board_points_3d_vis]
 
-        points3d = geometry_jax.back_projection(points2d,
-                                                self._frustum_depth,
-                                                self._multi_cameras_matrices[cam_idx],
-                                                self._multi_extrinsics_matrices[cam_idx, :, :])
-        points3d = geometry_jax.rotate_points3d(points3d, 180, axis='y')
-
-        scatter = GLScatterPlotItem(pos=points3d,
-                                    color=color,
-                                    size=5)
-
-        self._refreshable_items.append(scatter)
+        if visible_points.shape[0] > 0:
+            points3d_rot = geometry_jax.rotate_points3d(visible_points, 180, axis='y')
+            board_plot.setData(pos=points3d_rot)
+            board_plot.setVisible(True)
+        else:
+            board_plot.setVisible(False)
 
     def add_cube(self, center: np.ndarray, size: float | np.ndarray, color=(1, 1, 1, 0.5)):
         """
@@ -1684,14 +1745,14 @@ class Multiview3D(Base):
         cam_idx = self._cameras_names.index(data.camera_name)
 
         if isinstance(data.payload, ExtrinsicsPayload):
-            self._multi_extrinsics_matrices[cam_idx, :, :] = geometry_jax.extrinsics_matrix(data.payload.rvec, data.payload.tvec)
+            self._rvecs[cam_idx, :] = data.payload.rvec
+            self._tvecs[cam_idx, :] = data.payload.tvec
 
         elif isinstance(data.payload, IntrinsicsPayload):
-            self._multi_cameras_matrices[cam_idx, :, :] = data.payload.camera_matrix
-            self._multi_dist_coeffs[cam_idx, :len(data.payload.dist_coeffs)] = data.payload.dist_coeffs
+            self._cameras_matrices[cam_idx, :, :] = data.payload.camera_matrix
+            self._dist_coeffs[cam_idx, :len(data.payload.dist_coeffs)] = data.payload.dist_coeffs
 
         self.update_scene()
-
 
 class MainControls(QMainWindow, SnapMixin):
     INFO_PANEL_MINSIZE_H = 200
@@ -1740,7 +1801,12 @@ class MainControls(QMainWindow, SnapMixin):
             self.gui_logger = False
 
         self.mc = mc
+
+        self.board_params = DEFAULT_BOARD
+
         self.coordinator = CalibrationCoordinator()
+        self.multiview_worker = None  # Will be created in _start_secondary_windows
+        self.multiview_thread = None
 
         self.nb_cams = self.mc.nb_cameras
         self._cameras_names = tuple(cam.name for cam in self.mc.cameras)     # This order is fixed
@@ -1787,6 +1853,9 @@ class MainControls(QMainWindow, SnapMixin):
 
         # Start the secondary windows
         self._start_secondary_windows()
+
+        # This connection is the single point of truth for UI updates
+        self.coordinator.send_to_main.connect(self.route_payload_to_widgets)
 
         # Setup MainWindow update
         self.timer_slow = QTimer(self)
@@ -2015,6 +2084,76 @@ class MainControls(QMainWindow, SnapMixin):
         # Now that the UI is ready, refresh the monitors buttons
         self._update_monitors_buttons()
 
+    @Slot(CalibrationData)
+    def route_payload_to_widgets(self, data: CalibrationData):
+        target_name = data.camera_name
+        # Route to the specific monocular window
+        for w in self.video_windows:
+            if isinstance(w, Monocular) and w.name == target_name:
+                w.handle_payload(data)
+                break
+
+        # Always send extrinsics/intrinsics to the 3D view
+        if self.opengl_window and isinstance(data.payload, (IntrinsicsPayload, ExtrinsicsPayload)):
+            self.opengl_window.handle_payload(data)
+
+    @Slot(CalibrationData)
+    def route_payload_to_widgets(self, data: CalibrationData):
+        """
+        Receives ALL data from the coordinator destined for the UI
+        """
+        target_name = data.camera_name
+        payload = data.payload
+
+        # Update the monocular windows
+        for w in self.video_windows:
+            if isinstance(w, Monocular) and w.name == target_name:
+                w.handle_payload(data)
+
+        # Update the 3D view
+        if self.opengl_window and isinstance(payload, (IntrinsicsPayload, ExtrinsicsPayload)):
+            self.opengl_window.handle_payload(data)
+
+    @Slot()
+    def on_load_calibration(self):
+        """
+        Handles loading a single calibration file containing data for all cameras
+        """
+
+        # Ensure we are in the right mode (should be impossible to call from recording mode anyway)
+        if not self.is_calibrating:
+            print("[MainControls] Must be in Calibration mode to load calibration.")
+            return
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Load calibration file",
+            str(self.mc.full_path.resolve()),
+            "TOML Files (*.toml)"
+        )
+
+        if not file_path:
+            return
+
+        print(f"[MainControls] Loading calibration from: {file_path}")
+
+        try:
+            for cam_name in self.cameras_names:
+                # Load intrinsics for the camera
+                intrinsics = IntrinsicsPayload.from_file(file_path, cam_name)
+                if intrinsics.camera_matrix is not None:
+                    self.coordinator.receive_from_main.emit(CalibrationData(cam_name, intrinsics))
+
+                # Load extrinsics for the camera
+                extrinsics = ExtrinsicsPayload.from_file(file_path, cam_name)
+                if extrinsics.rvec is not None:
+                    self.coordinator.receive_from_main.emit(CalibrationData(cam_name, extrinsics))
+
+            # move to the Extrinsics stage
+            # self.opengl_window.calibration_stage_combo.setCurrentIndex(1)
+
+        except Exception as e:
+            print(f"[MainControls] Error loading calibration file: {e}")
+
     #  ============= Qt method overrides =============
     def closeEvent(self, event):
         event.ignore()
@@ -2151,6 +2290,18 @@ class MainControls(QMainWindow, SnapMixin):
                 subprocess.Popen(['open', path])
         except:
             pass
+
+    def show_global_board_dialog(self):
+        dlg = BoardParamsDialog(self.board_params, self)
+        if dlg.exec_() == QDialog.Accepted:
+            new_board_params = dlg.get_values()
+            self.board_params = new_board_params
+
+            if self.opengl_window:
+                self.opengl_window.update_board_preview(self.board_params)
+
+            # Send the new board to the coordinator to trigger a system reset
+            self.coordinator.handle_board_change(self.board_params)
 
     def _avail_screenspace(self) -> Tuple[int, int, int, int]:
         """
@@ -2325,22 +2476,49 @@ class MainControls(QMainWindow, SnapMixin):
 
     def _start_secondary_windows(self):
         if self.is_calibrating:
-            # Create 3D visualization window
+
+            # Create the 3D visualization window first
             self.opengl_window = Multiview3D(self)
-            self.opengl_window.setWindowTitle("3D Calibration View")
+            # now that the window exists, set the board params and get the origin camera name
+            self.opengl_window.update_board_preview(self.board_params)
+
+            self.opengl_window.request_board_settings.connect(self.show_global_board_dialog)
+            self.opengl_window.request_load_calibration.connect(self.on_load_calibration)
+
+            origin_name = self.opengl_window.origin_camera_combo.currentText()
+
+            # Create and start the headless Multiview worker with the correct origin name.
+            self.multiview_thread = QThread(self)
+            self.multiview_worker = MultiviewWorker(self.cameras_names, origin_name)
+            self.multiview_worker.moveToThread(self.multiview_thread)
+            self.multiview_thread.start()
+
+            # register the new worker with the coordinator
+            self.coordinator.register_worker(self.multiview_worker)
+
+            # Connect the 3D window's BA button to the worker's slot
+            self.opengl_window.run_ba_button.clicked.connect(self.multiview_worker.run_bundle_adjustment)
             self.opengl_window.show()
 
+        # Create Monocular/Recording windows and their workers
         for i, cam in enumerate(self.mc.cameras):
             if self.is_calibrating:
-                w = Monocular(cam, self)
+                # Pass the global board_params
+                w = Monocular(cam, self, self.board_params)
+                # Register the monocular worker with the coordinator
+                self.coordinator.register_worker(w.worker)
             else:
                 w = Recording(cam, self)
+
             self.video_windows.append(w)
             self.secondary_windows_visibility_buttons[i].setText(f" {w.name.title()} camera")
-            self.secondary_windows_visibility_buttons[i].setStyleSheet(f"border-radius: 5px; padding: 0 10 0 10; color: {w.secondary_colour}; background-color: {w.colour};")
+            self.secondary_windows_visibility_buttons[i].setStyleSheet(
+                f"border-radius: 5px; padding: 0 10 0 10; color: {w.secondary_colour}; background-color: {w.colour};")
             self.secondary_windows_visibility_buttons[i].clicked.connect(w.toggle_visibility)
             self.secondary_windows_visibility_buttons[i].setChecked(True)
+
             w.show()
+
         self.cascade_windows()
 
     def _stop_secondary_windows(self):
@@ -2358,6 +2536,12 @@ class MainControls(QMainWindow, SnapMixin):
             self.opengl_window._force_destroy = True
             self.opengl_window.deleteLater()
             self.opengl_window = None
+
+        if self.multiview_thread:
+            self.multiview_thread.quit()
+            self.multiview_thread.wait()
+            self.multiview_thread = None
+            self.multiview_worker = None
 
         self.video_windows.clear()
 
