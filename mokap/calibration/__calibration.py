@@ -1120,7 +1120,6 @@ class MultiviewCalibrationTool:
             # robust filtering and averaging
             q_med, t_med = outliers_rejection.filter_rt_samples(
                 rt_stack=rt_stack,
-                length=len(known),           # number of valid poses in the stack
                 ang_thresh=np.deg2rad(self._angular_thresh),
                 trans_thresh=self._translational_thresh
             )
