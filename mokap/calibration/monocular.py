@@ -213,8 +213,11 @@ class MonocularCalibrationTool:
         self._camera_matrix = np.asarray(camera_matrix)
         self._camera_matrix_j = maybe_put(self._camera_matrix)
 
+        dist_coeffs = np.asarray(dist_coeffs)
+        dist_coeffs = dist_coeffs[:max(8, len(dist_coeffs))]
         dist_coeffs_pad = np.zeros(8, dtype=np.float32)
-        dist_coeffs_pad[:max(8, len(dist_coeffs))] = dist_coeffs[:8]
+        dist_coeffs_pad[:len(dist_coeffs)] = dist_coeffs
+
         self._dist_coeffs = dist_coeffs_pad
         self._dist_coeffs_j = maybe_put(self._dist_coeffs)
 
