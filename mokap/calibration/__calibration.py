@@ -1115,7 +1115,7 @@ class MultiviewCalibrationTool:
             # Convert all pose votes into (quaternion, translation) format
             r_stack, t_stack = geometry_jax.extmat_to_rtvecs(E_stack)
             q_stack = geometry_2.axisangle_to_quaternion_batched(r_stack)
-            rt_stack = jnp.concatenate([q_stack, t_stack], axis=1)  # Shape: (num_known, 7)
+            rt_stack = jnp.concatenate([q_stack, t_stack], axis=1)  # (num_known, 7)
 
             # robust filtering and averaging
             q_med, t_med = outliers_rejection.filter_rt_samples(
@@ -1355,6 +1355,8 @@ class MultiviewCalibrationTool:
 
         # Run the Bundle Adjustment
         # =========================================================================
+
+        # TODO: Clip the distortion coefficients to the BA solver's defined bounds?
 
         success, retvals = bundle_adjustment_2.run_bundle_adjustment(
             K_init,                 # (C, 3, 3)
