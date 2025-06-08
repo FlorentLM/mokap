@@ -8,6 +8,9 @@ from mokap.utils import CallbackOutputStream
 import jax
 import jax.numpy as jnp
 
+from mokap.utils.geometry.projective import project_multiple
+from mokap.utils.geometry.transforms import extrinsics_matrix, invert_extrinsics_matrix, extmat_to_rtvecs
+
 
 def flatten_params(
         camera_matrices:    np.ndarray,
@@ -260,11 +263,11 @@ def cost_func(
     cam_tvecs = jnp.asarray(cam_tvecs)
 
     # compute board -> world matrices
-    E_board_w = geometry_jax.extrinsics_matrix(board_rvecs, board_tvecs)  # (P, 4, 4)
+    E_board_w = extrinsics_matrix(board_rvecs, board_tvecs)  # (P, 4, 4)
 
     # compute camera -> world matrices
-    E_cam_w = geometry_jax.extrinsics_matrix(cam_rvecs, cam_tvecs)  # (C, 4, 4)
-    E_world_cam = geometry_jax.invert_extrinsics_matrix(E_cam_w)    # (C, 4, 4)
+    E_cam_w = extrinsics_matrix(cam_rvecs, cam_tvecs)  # (C, 4, 4)
+    E_world_cam = invert_extrinsics_matrix(E_cam_w)    # (C, 4, 4)
 
     # reshape for broadcast
     E_world_cam = E_world_cam[None, :, :, :]    # (1, C, 4, 4)
@@ -272,10 +275,10 @@ def cost_func(
 
     E_board_cam = jnp.matmul(E_world_cam, E_board_w)
 
-    r_bc, t_bc = geometry_jax.extmat_to_rtvecs(E_board_cam) # each is (P, C, 3)
+    r_bc, t_bc = extmat_to_rtvecs(E_board_cam) # each is (P, C, 3)
 
     # we vmap over the P dimension (project_multiple expects (C, 3) inputs)
-    project_frame = lambda rv, tv: geometry_jax.project_multiple(points3d_th, rv, tv, cam_mats, dist_coefs)
+    project_frame = lambda rv, tv: project_multiple(points3d_th, rv, tv, cam_mats, dist_coefs)
     reproj = jax.vmap(project_frame, in_axes=(0, 0))(r_bc, t_bc)  # (P, C, N, 2)
 
     # Weighted residuals
