@@ -6,9 +6,9 @@ import scipy.stats as stats
 from scipy.spatial.distance import cdist
 import jax
 import jax.numpy as jnp
-from collections import deque, defaultdict
-from typing import Dict, Set, Tuple, List, Optional, Iterable, Union
-from mokap.utils.datatypes import ChessBoard, CharucoBoard, PosePayload, DetectionWithPosePayload
+from collections import deque
+from typing import Tuple, Optional, Iterable, Union
+from mokap.utils.datatypes import ChessBoard, CharucoBoard, DetectionPayload
 from mokap.calibration import monocular_2, bundle_adjustment_2
 from mokap.utils import geometry_jax, geometry_2, pad_dist_coeffs, outliers_rejection
 
@@ -973,7 +973,7 @@ class MultiviewCalibrationTool:
         self._ba_points2d = None
         self._ba_pointsids = None
 
-    def register(self, cam_idx: int, detection):
+    def register(self, cam_idx: int, detection: DetectionPayload):
 
         if detection.pointsIDs is None or detection.points2D is None:
             return
