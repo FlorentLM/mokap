@@ -24,3 +24,5 @@ dependencies = [
     "alive_progress",
     "jax>=0.6.1",
 ]
+[tool.setuptools]
+py-modules = []
