@@ -161,15 +161,15 @@ def unflatten_params(
 
 
 def intrinsics_bounds(
-    image_size:         ArrayLike,
-    C:                  int,
+    images_sizes_wh:    ArrayLike,
     simple_focal:       bool,
     simple_distortion:  bool,
     complex_distortion: bool,
     shared:             bool
 ) -> Tuple[np.ndarray, np.ndarray]:
 
-    h, w = np.asarray(image_size)[:2]
+    C = images_sizes_wh.shape[0]
+    w, h = images_sizes_wh[0, :2]   # TODO: Actually use the multiple sizes!!
 
     # Focal length bounds
     f_lo = 0.0
@@ -288,7 +288,7 @@ def cost_func(
 
     # Calculate mean error magnitude only for visible points
     # Use visibility_mask to select valid errors before taking the mean
-    # and to avoid NaNs from norm of [0,0] for invisible points if resid was zeroed out.
+    # (and to avoid NaNs from norm of [0, 0] for invisible points if resid was zeroed out)
     visible_error_magnitudes = jnp.where(visibility_mask, error_magnitudes_per_point, jnp.nan)
     mean_reprojection_error_px = jnp.nanmean(visible_error_magnitudes)
 
@@ -296,7 +296,7 @@ def cost_func(
     visible_weighted_resid_norm = jnp.where(visibility_mask, weighted_resid_norm, jnp.nan)
     mean_weighted_reprojection_error_px = jnp.nanmean(visible_weighted_resid_norm)
 
-    signed_w_mean_error = jnp.nanmean(weighted_resid)  # This is what you had
+    signed_w_mean_error = jnp.nanmean(weighted_resid)
 
     print(f"-- Actual Mean Reprojection Error: {mean_reprojection_error_px:.2f}px "
           f"// Mean Weighted Reprojection Error Mag: {mean_weighted_reprojection_error_px:.2f}px "
@@ -444,7 +444,7 @@ def run_bundle_adjustment(
         points2d:           np.ndarray,  # (C, P, N, 2)
         visibility_mask:    np.ndarray,  # (C, P, N)
         points3d_th:        jnp.ndarray, # (N, 3)
-        image_size:         ArrayLike,   # (2,)
+        images_sizes_wh:    ArrayLike,   # (C, 2 or 3)
         priors_weight:      float = 0.0,
         simple_focal:       bool = False,
         simple_distortion:  bool = False,
@@ -453,6 +453,8 @@ def run_bundle_adjustment(
 
     # Recover the dimensions
     C, P, N = visibility_mask.shape
+
+    images_sizes_wh = np.atleast_2d(images_sizes_wh)
 
     # Flatten all the optimisable variables into a 1-D array
     x0 = flatten_params(
@@ -469,8 +471,7 @@ def run_bundle_adjustment(
 
     # Set bounds on intrinsics parameters
     lb_intr, ub_intr = intrinsics_bounds(
-        image_size,
-        C,
+        images_sizes_wh,
         simple_focal=simple_focal,
         simple_distortion=simple_distortion,
         complex_distortion=complex_distortion,
@@ -508,7 +509,7 @@ def run_bundle_adjustment(
     result = least_squares(cost_func,
                            x0,          # x0 contains all the optimisable variables
                            verbose=2,
-                           bounds=(lower_bounds, upper_bounds),
+                           # bounds=(lower_bounds, upper_bounds),
                            x_scale='jac',
                            ftol=1e-8,
                            method='trf',
