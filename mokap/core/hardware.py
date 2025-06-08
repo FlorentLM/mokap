@@ -218,9 +218,14 @@ class RaspberryTrigger:
         env_ip = os.getenv('TRIGGER_HOST')
         env_user = os.getenv('TRIGGER_USER')
         env_pass = os.getenv('TRIGGER_PASS')
+        env_pin = os.getenv('GPIO_PIN')
 
-        if None in (env_ip, env_user, env_pass):
-            raise EnvironmentError(f'Missing {sum([v is None for v in (env_ip, env_user, env_pass)])} variables.')
+
+        if None in (env_ip, env_user, env_pass, env_pin):
+            raise EnvironmentError(f'Missing {sum([v is None for v in (env_ip, env_user, env_pass, env_pin)])} variables.')
+
+        self.PWM_GPIO_PIN = env_pin
+
 
         try:
             self.client = paramiko.SSHClient()
@@ -357,6 +362,7 @@ class BaslerCamera:
                  framerate=60,
                  exposure=5000,
                  triggered=True,
+                 pixel_format="Mono8",
                  binning=1,
                  binning_mode='sum'):
 
@@ -367,6 +373,7 @@ class BaslerCamera:
         self._serial = ''
         self._name = name
 
+        self._pixel_format = pixel_format
         self._width = 0
         self._height = 0
         self._probe_frame_shape = None  # (height, width)
@@ -396,20 +403,19 @@ class BaslerCamera:
 
     def _set_roi(self) -> NoReturn:
         if not self._is_virtual:
-            self._width = int(self.ptr.WidthMax.GetValue() - (16 // self._binning_value))
-            self._height = int(self.ptr.HeightMax.GetValue() - (8 // self._binning_value))
+            self._width = int(self.ptr.Width.GetValue())  #- (16 // self._binning_value)) #does not seem to work with binning - maxvalue - x // self.binning value goes out of range for camera
+            self._height = int(self.ptr.Height.GetValue()) #- (8 // self._binning_value))
 
             # Apply the dimensions to the ROI
             self.ptr.Width = self._width
             self.ptr.Height = self._height
+
             self.ptr.CenterX = True
             self.ptr.CenterY = True
 
         else:
             self._width = int(self._probe_frame_shape[1])
             self._height = int(self._probe_frame_shape[0])
-            # self.ptr.Width = self._width
-            # self.ptr.Height = self._height
 
     def set_value(self, node_name: str, value: Any):
 
@@ -470,6 +476,7 @@ class BaslerCamera:
             probe_frame = self.ptr.GrabOne(100)
             self._probe_frame_shape = probe_frame.GetArray().shape
 
+
         if not self._is_virtual:
             self.set_value('ExposureTimeMode', 'Standard')
             self.set_value('AutoFunctionROIUseBrightness', False)
@@ -505,6 +512,7 @@ class BaslerCamera:
 
         self.framerate = self._framerate
         self.exposure = self._exposure
+        self.pixel_format = self._pixel_format
         self.blacks = self._blacks
         self.gain = self._gain
         self.gamma = self._gamma
@@ -617,6 +625,26 @@ class BaslerCamera:
     @property
     def exposure(self) -> int:
         return self._exposure
+    
+    @property
+    def pixel_format(self) -> str:
+        return self._pixel_format
+    
+    @pixel_format.setter
+    def pixel_format(self, value: str):
+
+        if value.lower() in ['b','bayer','bg8','bayerbg8','bayer_bg8']:
+            value = 'BayerBG8'
+        elif value.lower() in ['g','m','gray','grey','grayscale','greyscale','mono']:
+            value = 'Mono8'
+        else:
+            value = 'Mono8'
+
+        if self._connected:
+            if not self._is_virtual:
+                self.ptr.PixelFormat.SetValue(value)
+
+        self._pixel_format = value
 
     @property
     def blacks(self) -> float:

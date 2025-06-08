@@ -159,10 +159,14 @@ sources:
 
 ### Start GUI
 
-1. Activate the uv environment `source .venv/bin/activate`
+1. Activate the uv environment within mokap.\
+Linux:`source .venv/bin/activate`\
+Windows: `.venv/Scripts/activate`
 2. Run `./mokap.py`
 
 *Note: There are some default values hardcoded in `mokap.py`, but they can be changed with the GUI*
+
+### Hardware Trigger
 
 **Important**: The default in `mokap.py` is to use a hardware trigger (Raspberry Pi). For this, you **_MUST_** have three environment variables defined.
 The recommended way is to create a file named `.env` that contains the three variables:
@@ -172,6 +176,7 @@ For example (replace with your trigger's IP or hostname, username and passsword)
 TRIGGER_HOST=192.168.0.10
 TRIGGER_USER=pi
 TRIGGER_PASS=hunter2
+GPIO_PIN=18
 ```
 
 You can disable the hardware trigger by editing the `mokap.py` file line 6:
@@ -180,6 +185,22 @@ mc = MultiCam(config='./config.yaml', triggered=False, silent=False)
 ```
 (or the name you chose for the config file)
 
+You must enable the GPIO & SSH interface on the PI using:
+```
+sudo raspi-config
+```
+
+Make sure that the following services are enabled...
+1. On Pi: `Dhcpcd` and `pigpiod` GPIO pin trigger services
+
+2. On Linux connected PC: `systemd-networkd`
+
+
+```
+sudo systemctl status <service>
+```
+You made need to explicitly set IP addresses with subnet in order for PC and Pi to communicate with one another.
+Test by pinging between devices.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -260,3 +281,4 @@ Project Link: [https://github.com/FlorentLM/mokap](https://github.com/github_use
 [issues-shield]: https://img.shields.io/github/issues/github_username/repo_name.svg?style=for-the-badge
 [issues-url]: https://github.com/github_username/repo_name/issues
 [product-screenshot]: screenshot.png
+

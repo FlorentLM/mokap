@@ -309,6 +309,7 @@ class PreviewBase(Base):
         self._source_framerate = self._camera.framerate
         self._cam_colour = self._mainwindow.cams_colours[self._cam_name]
         self._secondary_colour = self._mainwindow.secondary_colours[self._cam_name]
+        self._fmt = self._camera.pixel_format
 
         # Qt things
         self.setWindowTitle(f'{self._camera.name.title()} camera')
@@ -581,9 +582,10 @@ class PreviewBase(Base):
         if self._mainwindow.mc.acquiring:
             arr = self._mainwindow.mc.get_current_framebuffer(self.idx)
             if arr is not None:
-                if len(self.source_shape) == 2:
-                    # Using cv for this is faster than any way using numpy (?)
-                    self._frame_buffer = cv2.cvtColor(arr, cv2.COLOR_GRAY2RGB, dst=self._frame_buffer)
+                if self._fmt == "BayerBG8":
+                    self._frame_buffer = cv2.cvtColor(arr, cv2.COLOR_BayerBG2BGR, dst=self._frame_buffer)
+                elif self._fmt == "Mono8":
+                    self._frame_buffer = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR, dst=self._frame_buffer)
                 else:
                     self._frame_buffer = arr
         else:
