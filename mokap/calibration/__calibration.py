@@ -985,9 +985,6 @@ class MultiviewCalibrationTool:
         obj_pts_subset = self._object_points[ids]
         img_pts_subset = detection.points2D
 
-        rvec = detection.rvec
-        tvec = detection.tvec
-
         # Reestimate the board-to-camera pose and validate it
         try:
             success, rvec, tvec = cv2.solvePnP(
@@ -995,14 +992,19 @@ class MultiviewCalibrationTool:
                 imagePoints=img_pts_subset,
                 cameraMatrix=K,
                 distCoeffs=D,
-                rvec=rvec,
-                tvec=tvec,
-                useExtrinsicGuess=True,
                 flags=cv2.SOLVEPNP_ITERATIVE
             )
-            # If PnP fails or places the board behind the camera, discard the detection
-            if not success or tvec.squeeze()[2] <= 0:
+            # If PnP fails, return
+            if not success:
                 return
+
+            rvec = rvec.squeeze()
+            tvec = tvec.squeeze()
+
+            # if PnP placed the board behind the camera, return
+            if tvec[2] <= 0:
+                return
+
         except cv2.error:
             return
 
@@ -1012,7 +1014,7 @@ class MultiviewCalibrationTool:
         self._last_frame[cam_idx] = f
 
         E_b2c = geometry_jax.extrinsics_matrix(
-            jnp.asarray(rvec.squeeze()), jnp.asarray(tvec.squeeze())
+            jnp.asarray(rvec), jnp.asarray(tvec)
         )
         self._detection_buffer[cam_idx][f] = (E_b2c, detection.points2D, detection.pointsIDs)
 
@@ -1213,7 +1215,7 @@ class MultiviewCalibrationTool:
                 is_valid_K = np.all(np.isfinite(K_new))
                 is_valid_D = np.all(np.isfinite(D_new))
                 focal_lengths_ok = K_new[0, 0] > 0 and K_new[1, 1] > 0
-                w, h = self.images_sizes_wh
+                w, h = self.images_sizes_wh[ci]
                 principal_point_ok = (0 < K_new[0, 2] < w) and (0 < K_new[1, 2] < h)
                 dist_coeffs_ok = np.all(np.abs(D_new.flatten()) < 100.0)
 
