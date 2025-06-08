@@ -922,6 +922,8 @@ class MultiviewCalibrationTool:
                  intrinsics_window: int = 10,
                  min_detections: int = 15,
                  max_detections: int = 100,
+                 angular_thresh: float = 15.0,        # in degrees
+                 translational_thresh: float = 15.0,  # in object_points' units
                  refine_intrinsics_online: bool = True,
                  debug_print = True):
 
@@ -937,6 +939,9 @@ class MultiviewCalibrationTool:
         self.images_sizes_wh = images_sizes_wh[:, :2]
 
         self._refine_intrinsics_online = refine_intrinsics_online
+
+        self._angular_thresh = angular_thresh
+        self._translational_thresh = translational_thresh
 
         # Known 3D board model points (N, 3)
         self._object_points = np.asarray(object_points, dtype=np.float32)
@@ -1107,10 +1112,19 @@ class MultiviewCalibrationTool:
 
             E_stack = jnp.stack(E_votes, axis=0)
 
+            # Convert all pose votes into (quaternion, translation) format
             r_stack, t_stack = geometry_jax.extmat_to_rtvecs(E_stack)
             q_stack = geometry_2.axisangle_to_quaternion_batched(r_stack)
-            q_med = geometry_2.quaternion_average(q_stack)
-            t_med = jnp.median(t_stack, axis=0)
+            rt_stack = jnp.concatenate([q_stack, t_stack], axis=1)  # Shape: (num_known, 7)
+
+            # robust filtering and averaging
+            q_med, t_med = outliers_rejection.filter_rt_samples(
+                rt_stack=rt_stack,
+                length=len(known),           # number of valid poses in the stack
+                ang_thresh=np.deg2rad(self._angular_thresh),
+                trans_thresh=self._translational_thresh
+            )
+
             E_b2w = geometry_jax.extrinsics_matrix(
                 geometry_2.quaternion_to_axisangle(q_med), t_med
             )
