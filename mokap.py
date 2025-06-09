@@ -1,28 +1,35 @@
 #!/usr/bin/env python
 import sys
-from mokap.core import MultiCam
-from mokap.gui import QApplication, MainWindow
+from mokap.core.manager import MultiCam
+from mokap.gui import QApplication, MainControls, QMessageBox
+from mokap.utils import fileio
 
-mc = MultiCam(config='./config.yaml', triggered=True, silent=False)
+def main():
+    """ Main entry point for the Mokap GUI """
+    try:
+        config = fileio.read_config('./config.yaml')
+    except FileNotFoundError:
+        QMessageBox.critical(None, "Error", "Configuration file 'config.yaml' not found. Please create one.")
+        sys.exit(1)
 
-# Example:
-# Set some default parameters for all cameras at once
-
-mc.exposure = 9000
-mc.framerate = 60
-mc.gamma = 1.0
-mc.blacks = 1.0
-mc.gain = 1.0
-mc.pixel_format = "bayer"
-
-
-if __name__ == '__main__':
     app = QApplication(sys.argv)
 
-    if mc.nb_cameras == 0:
-        exit()
+    mc = MultiCam(config=config)
 
-    main_window = MainWindow(mc)
+    if mc.nb_cameras == 0:
+        msg = ("No cameras were found or connected.\n\n"
+               "Please check:\n"
+               "  - Camera connections and power.\n"
+               "  - Vendor SDK installation (Basler Pylon, FLIR Spinnaker...).\n"
+               "  - 'sources' configuration in config.yaml")
+
+        QMessageBox.warning(None, "No Cameras Found", msg)
+
+    main_window = MainControls(mc)
     main_window.show()
 
     sys.exit(app.exec())
+
+
+if __name__ == '__main__':
+    main()

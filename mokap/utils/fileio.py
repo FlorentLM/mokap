@@ -47,7 +47,7 @@ def exists_check(path):
     return path
 
 
-def read_config(config_file='config.yml'):
+def read_config(config_file='config.yaml'):
     config_file = Path(config_file)
 
     if not config_file.exists():

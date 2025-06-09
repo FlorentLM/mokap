@@ -6,17 +6,15 @@ from datetime import datetime
 from functools import partial
 from pathlib import Path
 from typing import Tuple
-import numpy as np
 import psutil
 import screeninfo
-from PIL import Image
 from PySide6.QtCore import QTimer, Qt, Slot, QRect, QThread
 from PySide6.QtGui import QIcon, QFont, QGuiApplication, QCursor, QBrush, QColor, QPen
 from PySide6.QtWidgets import QMainWindow, QVBoxLayout, QWidget, QFrame, QHBoxLayout, QLabel, QComboBox, QPushButton, \
     QSizePolicy, QGroupBox, QLineEdit, QScrollArea, QCheckBox, QGraphicsView, QGraphicsScene, QTextEdit, QStatusBar, \
     QProgressBar, QFileDialog, QApplication, QDialog, QGraphicsRectItem, QGraphicsTextItem
 
-from mokap.gui.style.commons import SPACING
+from mokap.gui.style.commons import *
 from mokap.gui.widgets import DEFAULT_BOARD, SLOW_UPDATE, GUI_LOGGER
 from mokap.gui.widgets.base import SnapMixin
 from mokap.gui.widgets.dialogs import BoardParamsDialog
@@ -24,7 +22,7 @@ from mokap.gui.widgets.liveviews import Monocular, Recording
 from mokap.gui.widgets.opengl import Multiview3D
 from mokap.gui.workers.coordinator import CalibrationCoordinator
 from mokap.gui.workers.multiview import MultiviewWorker
-from mokap.utils import hex_to_rgb, hex_to_hls, pretty_size
+from mokap.utils import hex_to_hls, pretty_size
 from mokap.utils.datatypes import CalibrationData, IntrinsicsPayload, ExtrinsicsPayload
 
 
@@ -51,43 +49,8 @@ class GUILogger:
 
 
 class MainControls(QMainWindow, SnapMixin):
-    INFO_PANEL_MINSIZE_H = 200
-    VIDEO_PANEL_MINSIZE_H = 50  # haha
-    WINDOW_MIN_W = 630
 
-    # Colours
-    col_white = "#ffffff"
-    col_white_rgb = hex_to_rgb(col_white)
-    col_black = "#000000"
-    col_black_rgb = hex_to_rgb(col_black)
-    col_lightgray = "#e3e3e3"
-    col_lightgray_rgb = hex_to_rgb(col_lightgray)
-    col_midgray = "#c0c0c0"
-    col_midgray_rgb = hex_to_rgb(col_midgray)
-    col_darkgray = "#515151"
-    col_darkgray_rgb = hex_to_rgb(col_darkgray)
-    col_red = "#FF3C3C"
-    col_red_rgb = hex_to_rgb(col_red)
-    col_darkred = "#bc2020"
-    col_darkred_rgb = hex_to_rgb(col_darkred)
-    col_orange = "#FF9B32"
-    col_orange_rgb = hex_to_rgb(col_orange)
-    col_darkorange = "#cb782d"
-    col_darkorange_rgb = hex_to_rgb(col_darkorange)
-    col_yellow = "#FFEB1E"
-    col_yellow_rgb = hex_to_rgb(col_yellow)
-    col_yelgreen = "#A5EB14"
-    col_yelgreen_rgb = hex_to_rgb(col_yelgreen)
-    col_green = "#00E655"
-    col_green_rgb = hex_to_rgb(col_green)
-    col_darkgreen = "#39bd50"
-    col_darkgreen_rgb = hex_to_rgb(col_green)
-    col_blue = "#5ac3f5"
-    col_blue_rgb = hex_to_rgb(col_blue)
-    col_purple = "#c887ff"
-    col_purple_rgb = hex_to_rgb(col_purple)
-
-    def __init__(self, mc):
+    def __init__(self, manager):
         super().__init__()
 
         self.setWindowTitle('Controls')
@@ -96,7 +59,7 @@ class MainControls(QMainWindow, SnapMixin):
         else:
             self.gui_logger = False
 
-        self.mc = mc
+        self.manager = manager
 
         self.board_params = DEFAULT_BOARD
 
@@ -104,30 +67,22 @@ class MainControls(QMainWindow, SnapMixin):
         self.multiview_worker = None  # Will be created in _start_secondary_windows
         self.multiview_thread = None
 
-        self.nb_cams = self.mc.nb_cameras
-        self._cameras_names = tuple(cam.name for cam in self.mc.cameras)     # This order is fixed
-
         # Set cameras info
-        self.sources_shapes = {cam.name: np.array(cam.shape)[:2] for cam in self.mc.cameras}
-        self.cams_colours = {cam.name: f'#{self.mc.colours[cam.name].lstrip("#")}' for cam in self.mc.cameras}
-        self.secondary_colours = {k: self.col_white if hex_to_hls(v)[1] < 60 else self.col_black for k, v in
+        self.nb_cams = self.manager.nb_cameras
+        self._cameras_names = tuple(cam.name for cam in self.manager.cameras)
+
+        # Note: The new camera interface uses .roi to get width/height, not .shape
+        self.sources_shapes = {cam.name: (cam.roi[3], cam.roi[2]) for cam in self.manager.cameras}  # (height, width)
+
+        # The colours dict is keyed by serial, but we can map it here to the friendly name
+        self.cams_colours = {cam.name: self.manager.colours[cam.unique_id] for cam in self.manager.cameras}
+        self.secondary_colours = {k: col_white if hex_to_hls(v)[1] < 60 else col_black for k, v in
                                   self.cams_colours.items()}
 
         # Identify monitors
         self.selected_monitor = None
         self._monitors = screeninfo.get_monitors()
         self.set_monitor()
-
-        # Icons
-        resources_path = [p for p in Path().cwd().glob('./**/*') if p.is_dir() and p.name == 'icons'][0]
-
-        self.icon_capture = QIcon((resources_path / 'capture.png').as_posix())
-        self.icon_capture_bw = QIcon((resources_path / 'capture_bw.png').as_posix())
-        self.icon_snapshot = QIcon((resources_path / 'snapshot.png').as_posix())
-        self.icon_snapshot_bw = QIcon((resources_path / 'snapshot_bw.png').as_posix())
-        self.icon_rec_on = QIcon((resources_path / 'rec.png').as_posix())
-        self.icon_rec_bw = QIcon((resources_path / 'rec_bw.png').as_posix())
-        self.icon_move_bw = QIcon((resources_path / 'move.png').as_posix())     # TODO make an icon - this is a temp one
 
         # States
         self.is_editing = False
@@ -165,6 +120,17 @@ class MainControls(QMainWindow, SnapMixin):
         # Return a copy of the tuple, as a list
         return list(self._cameras_names)
 
+    def get_camera_index(self, unique_id: str) -> int:
+        """
+        Safely finds the list index for a camera given its unique ID (serial number)
+        """
+        for i, cam in enumerate(self.manager.cameras):
+            if cam.unique_id == unique_id:
+                return i
+
+        # This should ideally never happen if the GUI is in sync with the manager
+        raise ValueError(f"Could not find camera with unique_id '{unique_id}' in the manager's list.")
+
     def init_gui(self):
         self.MAIN_LAYOUT = QVBoxLayout()
         self.MAIN_LAYOUT.setContentsMargins(5, 5, 5, 5)
@@ -193,7 +159,7 @@ class MainControls(QMainWindow, SnapMixin):
         self.button_exit = QPushButton("Exit (Esc)")
         self.button_exit.clicked.connect(self.quit)
         self.button_exit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.button_exit.setStyleSheet(f"background-color: {self.col_red}; color: {self.col_white};")
+        self.button_exit.setStyleSheet(f"background-color: {col_red}; color: {col_white};")
         toolbar_layout.addWidget(self.button_exit)
 
         self.MAIN_LAYOUT.addWidget(toolbar)
@@ -243,14 +209,14 @@ class MainControls(QMainWindow, SnapMixin):
         line_2_layout = QHBoxLayout(line_2)
 
         self.save_dir_current = QLabel()
-        self.save_dir_current.setStyleSheet(f"color: {self.col_darkgray};")
+        self.save_dir_current.setStyleSheet(f"color: {col_darkgray};")
         self.save_dir_current.setWordWrap(True)
         folderpath_label_font = QFont()
         folderpath_label_font.setPointSize(10)
         self.save_dir_current.setFont(folderpath_label_font)
         line_2_layout.addWidget(self.save_dir_current, 1)
 
-        self.save_dir_current.setText(f'{self.mc.full_path.resolve()}')
+        self.save_dir_current.setText(f'{self.manager.full_path.resolve()}')
 
         f_name_and_path_layout.addWidget(line_2)
 
@@ -280,7 +246,7 @@ class MainControls(QMainWindow, SnapMixin):
         self.button_snapshot = QPushButton("Snapshot")
         self.button_snapshot.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.button_snapshot.clicked.connect(self._take_snapshot)
-        self.button_snapshot.setIcon(self.icon_snapshot_bw)
+        self.button_snapshot.setIcon(icon_snapshot_bw)
         self.button_snapshot.setDisabled(True)
         f_buttons_layout.addWidget(self.button_snapshot, 1)
 
@@ -288,7 +254,7 @@ class MainControls(QMainWindow, SnapMixin):
         self.button_recpause.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.button_recpause.setCheckable(True)
         self.button_recpause.clicked.connect(self._toggle_recording)
-        self.button_recpause.setIcon(self.icon_rec_bw)
+        self.button_recpause.setIcon(icon_rec_bw)
         self.button_recpause.setDisabled(True)
         f_buttons_layout.addWidget(self.button_recpause, 1)
 
@@ -373,7 +339,7 @@ class MainControls(QMainWindow, SnapMixin):
         statusbar.addWidget(self._mem_pressure_bar)
 
         self.frames_saved_label = QLabel()
-        self.frames_saved_label.setText(f'Saved frames: {self.mc.saved} (0 bytes)')
+        self.frames_saved_label.setText(f'Saved frames: {self.manager.saved} (0 bytes)')
         self.frames_saved_label.setStyleSheet(f"background-color: {'#00000000'}")
         statusbar.addPermanentWidget(self.frames_saved_label)
 
@@ -396,7 +362,7 @@ class MainControls(QMainWindow, SnapMixin):
     @Slot(CalibrationData)
     def route_payload_to_widgets(self, data: CalibrationData):
         """
-        Receives ALL data from the coordinator destined for the UI
+        Receives all data from the coordinator destined for the UI
         """
         target_name = data.camera_name
         payload = data.payload
@@ -423,7 +389,7 @@ class MainControls(QMainWindow, SnapMixin):
 
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Load calibration file",
-            str(self.mc.full_path.resolve()),
+            str(self.manager.full_path.resolve()),
             "TOML Files (*.toml)"
         )
 
@@ -460,9 +426,7 @@ class MainControls(QMainWindow, SnapMixin):
         self._stop_secondary_windows()
 
         # Stop camera acquisition
-        self.mc.off()
-
-        self.mc.disconnect()
+        self.manager.off()
 
         # Close the main window
         QWidget.close(self)
@@ -477,7 +441,7 @@ class MainControls(QMainWindow, SnapMixin):
 
             self._stop_secondary_windows()
 
-            if self.mc.acquiring:
+            if self.manager.acquiring:
                 self.button_snapshot.setDisabled(False)
                 self.button_recpause.setDisabled(False)
 
@@ -508,39 +472,40 @@ class MainControls(QMainWindow, SnapMixin):
         elif self.is_editing and override is False:
             self.acq_name_textbox.setDisabled(True)
             self.acq_name_edit_btn.setText('Edit')
-            self.mc.session_name = self.acq_name_textbox.text()
-            self.save_dir_current.setText(f'{self.mc.full_path.resolve()}')
+            self.manager.session_name = self.acq_name_textbox.text()
+            self.save_dir_current.setText(f'{self.manager.full_path.resolve()}')
             self.is_editing = True
 
     def _toggle_acquisition(self, override=None):
 
         if override is None:
-            override = not self.mc.acquiring
+            override = not self.manager.acquiring
 
         # If we're currently acquiring, then we should stop
-        if self.mc.acquiring and override is False:
+        if self.manager.acquiring and override is False:
             self._toggle_recording(False)
-            self.mc.off()
+            self.manager.off()
             # Reset Acquisition folder name
             self.acq_name_textbox.setText('')
             self.save_dir_current.setText('')
             self.button_acquisition.setText("Acquisition off")
-            self.button_acquisition.setIcon(self.icon_capture_bw)
+            self.button_acquisition.setIcon(icon_capture_bw)
             self.button_snapshot.setDisabled(True)
             self.button_recpause.setDisabled(True)
-            # Re-enable the framerate sliders (only in case of hardware-triggered cameras)
-            if not self.is_calibrating and self.mc.triggered:
+            # Re-enable the framerate sliders when acquisition stops
+            if self.manager.triggered and not self.is_calibrating:
                 for w in self.video_windows:
-                    w.camera_controls_sliders['framerate'].setDisabled(True)
+                    if isinstance(w, Recording):  # Make sure it's the right window type
+                        w.camera_controls_sliders['framerate'].setDisabled(False)
 
-        elif not self.mc.acquiring and override is True:
-            self.mc.on()
-            if not self.is_calibrating and self.mc.triggered:
-                for w in self.video_windows:
-                    w.camera_controls_sliders['framerate'].setDisabled(True)
-            self.save_dir_current.setText(f'{self.mc.full_path.resolve()}')
+        elif not self.manager.acquiring and override is True:
+            self.manager.on()
+            # if not self.is_calibrating and self.manager.triggered:
+            #     for w in self.video_windows:
+            #         w.camera_controls_sliders['framerate'].setDisabled(True)
+            self.save_dir_current.setText(f'{self.manager.full_path.resolve()}')
             self.button_acquisition.setText("Acquiring")
-            self.button_acquisition.setIcon(self.icon_capture)
+            self.button_acquisition.setIcon(icon_capture)
             self.button_snapshot.setDisabled(False)
             if not self.is_calibrating:
                 self.button_recpause.setDisabled(False)
@@ -548,35 +513,32 @@ class MainControls(QMainWindow, SnapMixin):
     def _toggle_recording(self, override=None):
 
         if override is None:
-            override = not self.mc.recording
+            override = not self.manager.recording
 
         # If we're currently recording, then we should stop
-        if self.mc.acquiring:
+        if self.manager.acquiring:
 
-            if self.mc.recording and override is False:
-                self.mc.pause()
+            if self.manager.recording and override is False:
+                self.manager.pause()
                 self._recording_text = ''
                 self.button_recpause.setText("Not recording (Space to toggle)")
-                self.button_recpause.setIcon(self.icon_rec_bw)
-            elif not self.mc.recording and override is True:
-                self.mc.record()
+                self.button_recpause.setIcon(icon_rec_bw)
+            elif not self.manager.recording and override is True:
+                self.manager.record()
                 self._recording_text = '[Recording]'
                 self.button_recpause.setText("Recording... (Space to toggle)")
-                self.button_recpause.setIcon(self.icon_rec_on)
+                self.button_recpause.setIcon(icon_rec_on)
 
     def _take_snapshot(self):
         """
         Takes an instantaneous snapshot from all cameras
         """
         now = datetime.now().strftime('%y%m%d-%H%M%S')
-        if self.mc.acquiring:
-            arrays = self.mc.get_current_framebuffer()
-            for i, arr in enumerate(arrays):
-                img = Image.fromarray(arr, mode='RGB' if arr.ndim == 3 else 'L')
-                img.save(self.mc.full_path.resolve() / f"snapshot_{now}_{self.mc.cameras[i].name}.bmp")
+        if self.manager.acquiring:
+            self.manager.take_snapshot(folder=self.manager.full_path, base_name=f"snapshot_{now}")
 
     def open_session_folder(self):
-        path = self.mc.full_path.resolve()
+        path = self.manager.full_path.resolve()
         try:
             if 'Linux' in platform.system():
                 subprocess.Popen(['xdg-open', path])
@@ -797,7 +759,7 @@ class MainControls(QMainWindow, SnapMixin):
             self.opengl_window.show()
 
         # Create Monocular/Recording windows and their workers
-        for i, cam in enumerate(self.mc.cameras):
+        for i, cam in enumerate(self.manager.cameras):
             if self.is_calibrating:
                 # Pass the global board_params
                 w = Monocular(cam, self, self.board_params)
@@ -825,8 +787,9 @@ class MainControls(QMainWindow, SnapMixin):
             w.close()
 
         if self.opengl_window:
-            self.opengl_window.worker_thread.quit()
-            self.opengl_window.worker_thread.wait()
+            if self.opengl_window.worker_thread:
+                self.opengl_window.worker_thread.quit()
+                self.opengl_window.worker_thread.wait()
             self.opengl_window.close()
             self.opengl_window.timer_slow.stop()
             self.opengl_window._force_destroy = True
@@ -844,17 +807,13 @@ class MainControls(QMainWindow, SnapMixin):
     def _update_main(self):
 
         # Get an estimation of the saved data size
-        if self.mc._estim_file_size is None:
-            self.frames_saved_label.setText(f'Saved frames: {self.mc.saved} (0 bytes)')
-
-        elif self.mc._estim_file_size == -1:
-            size = sum(sum(os.path.getsize(os.path.join(res[0], element)) for element in res[2]) for res in
-                       os.walk(self.mc.full_path))
-            self.frames_saved_label.setText(f'Saved frames: {self.mc.saved} ({pretty_size(size)})')
-        else:
-            saved = self.mc.saved
-            size = sum(self.mc._estim_file_size * saved)
-            self.frames_saved_label.setText(f'Saved frames: {saved} ({pretty_size(size)})')
+        try:
+            # This works for both image sequences and video files
+            size = sum(f.stat().st_size for f in self.manager.full_path.glob('**/*') if f.is_file())
+            self.frames_saved_label.setText(f'Saved frames: {self.manager.saved} ({pretty_size(size)})')
+        except FileNotFoundError:
+            # This can happen if the folder doesn't exist yet
+            self.frames_saved_label.setText(f'Saved frames: {self.manager.saved} (0 bytes)')
 
         # Update memory pressure estimation
         self._mem_pressure += (psutil.virtual_memory().percent - self._mem_baseline) / self._mem_baseline * 100

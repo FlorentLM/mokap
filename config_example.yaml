@@ -1,28 +1,55 @@
-# Where the recordings will be stored
-base_path: D:/
-save_format: 'mp4'
-save_quality: 80    # 0 - 100%
-gpu: true
+# ----------------------------------
+#  Mokap Example Configuration File
+# ----------------------------------
 
-# Add your sources below
+# --- Global Acquisition Settings ---
+base_path: D:/MokapTests    # Where the recordings will be stored
+silent: false
+triggered: true
+framerate: 10
+
+# --- Global Saving & Encoding Settings ---
+save_format: 'mp4'        # or 'png', 'jpg', 'bmp', 'tiff'
+save_quality: 90          # 0-100 scale (meaning depends on format)
+frame_buffer_size: 200    # max number of frames to buffer in RAM (per camera)
+
+# --- Video encoding parameters ---
+ffmpeg:
+  path: 'ffmpeg'   # Path to the ffmpeg executable
+  gpu: true        # Master switch to enable GPU encoding if available
+
+  # --- Encoder-specific parameters ---
+  # The writer will automatically pick the correct one based on OS and the 'gpu' flag
+  params:
+    cpu: '-c:v libx265 -preset ultrafast -tune zerolatency -crf 23 -pix_fmt yuv420p'
+
+    # NVIDIA NVENC for Windows/Linux
+    gpu_nvenc: '-c:v hevc_nvenc -preset fast -tune ll -zerolatency true -rc cbr -b:v 30M -pix_fmt yuv420p'
+
+    # Apple VideoToolbox for macOS
+    gpu_videotoolbox: '-c:v hevc_videotoolbox -realtime true -q:v 65 -pix_fmt yuv420p'
+
+# --- Camera-Specific Definitions ---
+
+# This is where you add your cameras
 sources:
-    strawberry:         # Choose a name
-        type: basler
+    my-first-camera: # This is your defined, friendly name for this camera :)
+        vendor: basler
         serial: xxxxxxxx
         color: da141d
-    avocado:
-        type: basler
+#        # Camera-specific settings can override globals
+#        settings:
+#            exposure: 9000
+#            gain: 1.0
+#            gamma: 1.0
+#            pixel_format: 'Mono8'
+#            blacks: 1.0
+#            binning: 1
+    some-other-camera:
+        vendor: basler
         serial: xxxxxxxx
         color: 7a9c21
-    banana:
-        type: basler
+    awesomecamera:
+        vendor: basler
         serial: xxxxxxxx
         color: f3d586
-    blueberry:
-        type: basler
-        serial: xxxxxxxx
-        color: 443e93
-    coconut:
-        type: basler
-        serial: xxxxxxxx
-        color: efeee7

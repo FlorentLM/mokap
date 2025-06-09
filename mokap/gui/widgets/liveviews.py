@@ -1,5 +1,4 @@
 from collections import deque
-from pathlib import Path
 import numpy as np
 
 import cv2
@@ -8,6 +7,7 @@ from PySide6.QtCore import Qt, QEvent, Slot, Signal
 from PySide6.QtWidgets import QHBoxLayout, QWidget, QVBoxLayout, QGroupBox, QLabel, QSlider, QCheckBox, QSizePolicy, \
     QPushButton, QFileDialog
 
+from mokap.gui.style.commons import *
 from mokap.gui.widgets import MAX_PLOT_X
 from mokap.gui.widgets.base import PreviewBase
 from mokap.gui.workers.monocular import MonocularWorker
@@ -73,8 +73,8 @@ class Recording(PreviewBase):
         self.camera_controls_sliders_scales = {}
         self._val_in_sync = {}
 
-        slider_params = [
-            ('framerate', (int, 1, int(self._mainwindow.mc.cameras[self.idx].max_framerate), 1, 1)),
+        slider_params = [       # TODO: To we want real accessors to get min and max from the cameras instead of hard limits
+            ('framerate', (int, 1, 240, 1, 1)),
             ('exposure', (int, 21, 100000, 5, 1)),  # in microseconds - 100000 microseconds ~ 10 fps
             ('blacks', (float, 0.0, 32.0, 0.5, 3)),
             ('gain', (float, 0.0, 36.0, 0.5, 3)),
@@ -100,7 +100,7 @@ class Recording(PreviewBase):
             line_layout.setContentsMargins(1, 1, 1, 1)
             line_layout.setSpacing(2)
 
-            param_value = getattr(self._mainwindow.mc.cameras[self.idx], label)
+            param_value = getattr(self._camera, label)
 
             slider_label = QLabel(f'{label.title()}:')
             slider_label.setFixedWidth(70)
@@ -136,6 +136,7 @@ class Recording(PreviewBase):
             slider.setMinimumWidth(100)
             slider.valueChanged.connect(lambda value, lbl=label: self._slider_changed(lbl, value))
             slider.sliderReleased.connect(lambda lbl=label: self._slider_released(lbl))
+
             line_layout.addWidget(slider, 1)
 
             value_label = QLabel(f"{param_value}")
@@ -234,8 +235,8 @@ class Recording(PreviewBase):
         x_west, y_west = 0, h // 2
 
         # Draw crosshair
-        cv2.line(self._display_buffer, (x_west, y_west), (x_east, y_east), self._mainwindow.col_white_rgb, 1)
-        cv2.line(self._display_buffer, (x_north, y_north), (x_south, y_south), self._mainwindow.col_white_rgb, 1)
+        cv2.line(self._display_buffer, (x_west, y_west), (x_east, y_east), col_white_rgb, 1)
+        cv2.line(self._display_buffer, (x_north, y_north), (x_south, y_south), col_white_rgb, 1)
 
         if self._magnifier_enabled:
 
@@ -270,7 +271,7 @@ class Recording(PreviewBase):
             target_y2 = int((target_cy_fb + self.magn_window_h / 2) * ratio_h)
             self._display_buffer = cv2.rectangle(self._display_buffer,
                                                  (target_x1, target_y1), (target_x2, target_y2),
-                                                 self._mainwindow.col_yellow_rgb, 1)
+                                                 col_yellow_rgb, 1)
 
             # Paste the zoom window into the display buffer
             magn_x1 = min(self._display_buffer.shape[0], max(0, self.magn_window_x))
@@ -282,27 +283,26 @@ class Recording(PreviewBase):
             # Add frame around the magnification
             self._display_buffer = cv2.rectangle(self._display_buffer,
                                                  (magn_y1, magn_x1), (magn_y2, magn_x2),
-                                                 self._mainwindow.col_yellow_rgb, 1)
+                                                 col_yellow_rgb, 1)
 
         # Position the 'Recording' indicator
         font, txtsiz, txtth = cv2.FONT_HERSHEY_DUPLEX, 1.0, 2
         textsize = cv2.getTextSize(self._mainwindow._recording_text, font, txtsiz, txtth)[0]
         self._display_buffer = cv2.putText(self._display_buffer, self._mainwindow._recording_text,
                                            (int(x_centre - textsize[0] / 2), int(1.5 * y_centre - textsize[1])),
-                                           font, txtsiz, self._mainwindow.col_red_rgb, txtth, cv2.LINE_AA)
+                                           font, txtsiz, col_red_rgb, txtth, cv2.LINE_AA)
 
         # Position the 'Warning' indicator
         if self._warning:
             textsize = cv2.getTextSize(self._warning_text, font, txtsiz, txtth)[0]
             self._display_buffer = cv2.putText(self._display_buffer, self._warning_text,
                                                (int(x_north - textsize[0] / 2), int(y_centre / 2 - textsize[1])),
-                                               font, txtsiz, self._mainwindow.col_orange_rgb, txtth, cv2.LINE_AA)
+                                               font, txtsiz, col_orange_rgb, txtth, cv2.LINE_AA)
 
     def _update_fast(self):
+
         # Grab camera frame
-        self._refresh_framebuffer()
         frame = self._frame_buffer
-        # frame = self._frame_buffer.copy()
 
         # if worker is free, send frame
         if not self._worker_busy:
@@ -341,6 +341,31 @@ class Recording(PreviewBase):
         # And blit
         self._blit_image()
 
+    @Slot(str, object)
+    def update_slider_ui(self, label, value):
+        """
+        This runs on the main GUI thread
+        Called by the polling loop in PreviewBase._update_slow when a parameter change is detected on the
+        camera object
+        """
+        if label not in self.camera_controls_sliders:
+            return
+
+        slider = self.camera_controls_sliders[label]
+        scale = self.camera_controls_sliders_scales.get(label, 1)
+        value_label = self.camera_controls_sliders_labels[label]
+
+        # Block signals to prevent triggering the _slider_changed or _slider_released callbacks
+        slider.blockSignals(True)
+        slider.setValue(int(value * scale))
+        slider.blockSignals(False)
+
+        # Update the text label next to the slider to show the new value
+        if isinstance(value, int) or (isinstance(value, float) and value.is_integer()):
+            value_label.setText(f'{int(value)}')
+        else:
+            value_label.setText(f'{value:.2f}')
+
     @Slot(list)
     def on_worker_result(self, bboxes):
         self._bboxes = bboxes
@@ -351,7 +376,7 @@ class Recording(PreviewBase):
             self.n_button.setStyleSheet('')
             self._n_enabled = False
         else:
-            self.n_button.setStyleSheet(f'background-color: #80{self._mainwindow.col_green.lstrip("#")};')
+            self.n_button.setStyleSheet(f'background-color: #80{col_green.lstrip("#")};')
             self._n_enabled = True
 
     def _toggle_mag_display(self):
@@ -360,66 +385,45 @@ class Recording(PreviewBase):
             # self.magn_slider.setDisabled(True)
             self._magnifier_enabled = False
         else:
-            self.magn_button.setStyleSheet(f'background-color: #80{self._mainwindow.col_yellow.lstrip("#")};')
+            self.magn_button.setStyleSheet(f'background-color: #80{col_yellow.lstrip("#")};')
             # self.magn_slider.setDisabled(False)
             self._magnifier_enabled = True
 
-    def update_param(self, label):
-        if label == 'framerate' and self._mainwindow.mc.triggered and self._mainwindow.mc.acquiring:
-            return
-
-        slider = self.camera_controls_sliders[label]
-
-        new_val_float = slider.value() / self.camera_controls_sliders_scales[label]
-
-        setattr(self._mainwindow.mc.cameras[self.idx], label, new_val_float)
-
-        # And update the slider to the actual new value (can be different from the one requested)
-        read_back = getattr(self._mainwindow.mc.cameras[self.idx], label)
-
-        actual_new_val = int(read_back * self.camera_controls_sliders_scales[label])
-        slider.setValue(actual_new_val)
-
-        if label == 'exposure':
-            # Refresh exposure value for UI display
-            self.exposure_value.setText(f"{self._mainwindow.mc.cameras[self.idx].exposure} µs")
-
-            # We also need to update the framerate slider to current resulting fps after exposure change
-            self.update_param('framerate')
-
-        elif label == 'framerate':
-            # Keep a local copy to warn user if actual framerate is too different from requested fps
-            wanted_fps_val = slider.value() / self.camera_controls_sliders_scales[label]
-            self._wanted_fps = wanted_fps_val
-
-            if self._mainwindow.mc.triggered:
-                self._mainwindow.mc.framerate = self._wanted_fps
-            else:
-                self._mainwindow.mc.cameras[self.idx].framerate = self._wanted_fps
-
-            new_max = int(self._mainwindow.mc.cameras[self.idx].max_framerate * self.camera_controls_sliders_scales[label])
-            self.camera_controls_sliders['framerate'].setMaximum(new_max)
-
     def _slider_changed(self, label, int_value):
-        value_float = self.camera_controls_sliders[label].value() / self.camera_controls_sliders_scales[label]
-        self.camera_controls_sliders_labels[label].setText(f'{int(value_float)}' if value_float.is_integer() else f'{value_float:.2f}')
+        """
+        Updates the text label next to a slider as it's being moved.
+        This provides real-time feedback to the user before the value is set.
+        """
+        # This function should NOT set the hardware. It only updates the text.
+        scale = self.camera_controls_sliders_scales.get(label, 1)
+        value_float = int_value / scale
+
+        # Use a clean format for the text display
+        if value_float.is_integer():
+            self.camera_controls_sliders_labels[label].setText(f'{int(value_float)}')
+        else:
+            self.camera_controls_sliders_labels[label].setText(f'{value_float:.2f}')
 
     def _slider_released(self, label):
+        """
+        Called when the user releases a slider
+        either sets the parameter on one camera or broadcasts it via the manager
+        """
+        slider = self.camera_controls_sliders[label]
+        scale = self.camera_controls_sliders_scales.get(label, 1)
+        value = slider.value() / scale
 
-        self.update_param(label)
-        should_apply = bool(self._val_in_sync[label].isChecked())
-
-        if should_apply:
-            # This should not be needed, the scale is supposed to be the same anyway but... just in case
-            new_val_float = self.camera_controls_sliders[label].value() / self.camera_controls_sliders_scales[label]
-
-            for window in self._mainwindow.video_windows:
-                if window is not self and bool(window._val_in_sync[label].isChecked()):
-                    # Apply the window's scale (which should be the same anyway)
-                    w_new_val = int(new_val_float * window.camera_controls_sliders_scales[label])
-                    window.camera_controls_sliders[label].setValue(w_new_val)
-                    window.update_param(label)
-
+        if self._val_in_sync[label].isChecked():
+            # SYNCED: Tell the manager to broadcast the setting to everyone.
+            # The manager will command all cameras. The polling loop in each
+            # GUI window will later detect the change and update the UI.
+            self._mainwindow.manager.set_all_cameras(label, value)
+        else:
+            # NOT SYNCED: Set the parameter only on this specific camera.
+            # The camera's smart setter will handle constraints. The polling
+            # loop in this window will later update the UI if the value was
+            # clamped or caused a side-effect.
+            setattr(self._camera, label, value)
 
 class Monocular(PreviewBase):
     request_load = Signal(str)
@@ -472,7 +476,7 @@ class Monocular(PreviewBase):
 
         self.sample_button = QPushButton("Add sample")
         self.sample_button.clicked.connect(self.worker.add_sample)
-        self.sample_button.setStyleSheet(f"background-color: {self._mainwindow.col_darkgreen}; color: {self._mainwindow.col_white};")
+        self.sample_button.setStyleSheet(f"background-color: {col_darkgreen}; color: {col_white};")
         sampling_btns_layout.addWidget(self.sample_button)
 
         self.clear_samples_button = QPushButton("Clear samples")
@@ -535,7 +539,7 @@ class Monocular(PreviewBase):
         layout.addWidget(calib_io_group)
 
     def _update_fast(self):
-        self._refresh_framebuffer()
+
         frame = self._frame_buffer
 
         if not self._worker_busy:
@@ -597,7 +601,7 @@ class Monocular(PreviewBase):
     def on_save_parameters(self):
         file_path, _ = QFileDialog.getSaveFileName(
             self, "Save Intrinsics",
-            str(self._mainwindow.mc.full_path.resolve()),
+            str(self._mainwindow.manager.full_path.resolve()),
             "TOML Files (*.toml)")
 
         if file_path:
@@ -616,7 +620,7 @@ class Monocular(PreviewBase):
         self.load_save_message.setText('')
 
     def on_load_parameters(self):
-        file_path = self._show_file_dialog(self._mainwindow.mc.full_path.parent)
+        file_path = self._show_file_dialog(self._mainwindow.manager.full_path.parent)
         if file_path and file_path.is_file():   # Might still be None if the picker did not succeed
             self.request_load.emit(file_path.as_posix())
             self.load_save_message.setText(f"Intrinsics <b>loaded</b> from {file_path.parent}")

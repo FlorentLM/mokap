@@ -4,6 +4,7 @@ from PySide6.QtWidgets import QHBoxLayout, QFrame, QVBoxLayout, QGroupBox, QGrid
 from pyqtgraph.opengl import GLGridItem, GLViewWidget, GLScatterPlotItem, GLLinePlotItem, GLMeshItem, MeshData
 import numpy as np
 
+from mokap.gui.style.commons import *
 from mokap.gui.widgets import VERBOSE
 from mokap.gui.widgets.base import Base
 from mokap.utils import hex_to_rgb
@@ -143,7 +144,7 @@ class Multiview3D(Base):
 
         self.run_ba_button = QPushButton("Run Bundle Adjustment")
         self.run_ba_button.setStyleSheet(
-            f"background-color: {self._mainwindow.col_darkgreen}; color: {self._mainwindow.col_white};")
+            f"background-color: {col_darkgreen}; color: {col_white};")
         controls_layout.addWidget(self.run_ba_button, 2, 0, 1, 2)
         panel_layout.addWidget(controls_group)
 
