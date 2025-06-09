@@ -6,7 +6,7 @@
 base_path: D:/MokapTests    # Where the recordings will be stored
 silent: false
 triggered: true
-framerate: 10
+framerate: 60
 
 # --- Global Saving & Encoding Settings ---
 save_format: 'mp4'        # or 'png', 'jpg', 'bmp', 'tiff'

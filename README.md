@@ -53,7 +53,7 @@ Mokap is an easy to use multi-camera acquisition software developed for animal b
 * Cross platform (Linux, Windows, macOS)
 * Supports synchronised cameras (only using a Raspberry Pi for now, but other modes will come soon)
 * Supports encoding to individual frames or straight to video (with or without GPU encoding)
-* (Coming soon) Live camera calibration for 3D triangulation 
+* Live multi-camera calibration
 
 <p>(<a href="#readme-top">back to top</a>)</p>
 
@@ -125,39 +125,68 @@ We recommend using uv to manage Python environments and install Mokap easily.
 
 1. Customise `config_example.yaml` and rename it to `config.yaml` (or whatever you want)
 
-Starting example for 5 cameras (replace the xxxxx by your cameras' serial numbers):
+Starting example for 3 cameras (replace the xxxxx by your cameras' serial numbers):
 ```yaml
-# General parameters
-base_path: D:/            # Where the recordings will be saved
-save_format: 'mp4'        # or jpg, bmp, tif, png
-save_quality: 80          # 0 - 100%
-gpu: True                 # Only used by the video encoder (i.e. if you use mp4 in save_format)
+# ----------------------------------
+#  Mokap Example Configuration File
+# ----------------------------------
 
-# Add/remove sources below
+# --- Global Acquisition Settings ---
+base_path: D:/MokapTests    # Where the recordings will be stored
+silent: false
+triggered: true
+framerate: 60
+
+# --- Global Saving & Encoding Settings ---
+save_format: 'mp4'        # or 'png', 'jpg', 'bmp', 'tiff'
+save_quality: 90          # 0-100 scale (meaning depends on format)
+frame_buffer_size: 200    # max number of frames to buffer in RAM (per camera)
+
+# --- Video encoding parameters ---
+ffmpeg:
+  path: 'ffmpeg'   # Path to the ffmpeg executable
+  gpu: true        # Master switch to enable GPU encoding if available
+
+  # --- Encoder-specific parameters ---
+  # The writer will automatically pick the correct one based on OS and the 'gpu' flag
+  params:
+    cpu: '-c:v libx265 -preset ultrafast -tune zerolatency -crf 23 -pix_fmt yuv420p'
+
+    # NVIDIA NVENC for Windows/Linux
+    gpu_nvenc: '-c:v hevc_nvenc -preset fast -tune ll -zerolatency true -rc cbr -b:v 30M -pix_fmt yuv420p'
+
+    # Apple VideoToolbox for macOS
+    gpu_videotoolbox: '-c:v hevc_videotoolbox -realtime true -q:v 65 -pix_fmt yuv420p'
+
+# --- Camera-Specific Definitions ---
+
+# This is where you add your cameras
 sources:
-    strawberry:
-        type: basler
-        serial: 401xxxxx
+    my-first-camera: # This is your defined, friendly name for this camera :)
+        vendor: basler
+        serial: xxxxxxxx
         color: da141d
-    avocado:
-        type: basler
-        serial: 401xxxxx
+#        # Camera-specific settings can override globals
+#        settings:
+#            exposure: 9000
+#            gain: 1.0
+#            gamma: 1.0
+#            pixel_format: 'Mono8'
+#            blacks: 1.0
+#            binning: 1
+    some-other-camera:
+        vendor: basler
+        serial: xxxxxxxx
         color: 7a9c21
-    banana:
-        type: basler
-        serial: 401xxxxx
+    awesomecamera:
+        vendor: basler
+        serial: xxxxxxxx
         color: f3d586
-    blueberry:
-        type: basler
-        serial: 401xxxxx
-        color: 443e93
-    coconut:
-        type: basler
-        serial: 401xxxxx
-        color: efeee7
 ```
 
 ### Start GUI
+
+Note: This is temporary, an actual commandline interface will come soon
 
 1. Activate the uv environment within mokap.\
 Linux:`source .venv/bin/activate`\
@@ -179,12 +208,6 @@ TRIGGER_PASS=hunter2
 GPIO_PIN=18
 ```
 
-You can disable the hardware trigger by editing the `mokap.py` file line 6:
-```python
-mc = MultiCam(config='./config.yaml', triggered=False, silent=False)
-```
-(or the name you chose for the config file)
-
 You must enable the GPIO & SSH interface on the PI using:
 ```
 sudo raspi-config
@@ -199,7 +222,7 @@ Make sure that the following services are enabled...
 ```
 sudo systemctl status <service>
 ```
-You made need to explicitly set IP addresses with subnet in order for PC and Pi to communicate with one another.
+You may need to explicitly set IP addresses with subnet in order for PC and Pi to communicate with one another.
 Test by pinging between devices.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
@@ -215,10 +238,9 @@ Test by pinging between devices.
 
 - [x] Allow GPU video encoding
 - [x] Replace Tk with Qt as the GUI framework
-- [ ] Finish calibration mode
+- [x] Finish calibration mode
 - [ ] Add support for other camera brands (FLIR, etc)
 - [ ] Add support for other kinds of triggers (primary/secondary cameras, Arduino, etc)
-- [ ] Remember settings set with the GUI instead of using hardcoded values in `mokap.py`
 
 <p>(<a href="#readme-top">back to top</a>)</p>
 
@@ -265,7 +287,7 @@ Distributed under the MIT License. See `LICENSE.txt` for more information.
 <!-- CONTACT -->
 ## Contact
 
-Florent Le Moel - [@optic_flo](https://twitter.com/optic_flo)
+Florent Le Moël - [@opticflo.xyz](https://bsky.app/profile/opticflo.xyz)
 
 Project Link: [https://github.com/FlorentLM/mokap](https://github.com/github_username/mokap)
 
