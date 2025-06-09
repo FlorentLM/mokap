@@ -181,13 +181,13 @@ class AbstractCamera(abc.ABC):
 
     @property
     @abc.abstractmethod
-    def trigger_mode(self) -> bool:
+    def hardware_triggered(self) -> bool:
         """ True if hardware trigger is enabled, False otherwise. """
         pass
 
-    @trigger_mode.setter
+    @hardware_triggered.setter
     @abc.abstractmethod
-    def trigger_mode(self, enabled: bool):
+    def hardware_triggered(self, enabled: bool):
         pass
 
     # --- Other (read-only) information propertiews ---

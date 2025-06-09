@@ -255,7 +255,7 @@ class PreviewBase(Base):
         self.brightness_value = QLabel()
         self.temperature_value = QLabel()
 
-        self.triggered_value.setText("Yes" if self._camera.trigger_mode else "No")
+        self.triggered_value.setText("Yes" if self._camera.hardware_triggered else "No")
         self.resolution_value.setText(f"{self.source_shape[1]}×{self.source_shape[0]} px")
         self.capturefps_value.setText(f"Off")
         self.exposure_value.setText(f"{self._camera.exposure} µs")

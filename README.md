@@ -134,7 +134,7 @@ Starting example for 3 cameras (replace the xxxxx by your cameras' serial number
 # --- Global Acquisition Settings ---
 base_path: D:/MokapTests    # Where the recordings will be stored
 silent: false
-triggered: true
+hardware_trigger: true
 framerate: 60
 
 # --- Global Saving & Encoding Settings ---

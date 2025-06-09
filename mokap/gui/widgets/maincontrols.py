@@ -493,7 +493,7 @@ class MainControls(QMainWindow, SnapMixin):
             self.button_snapshot.setDisabled(True)
             self.button_recpause.setDisabled(True)
             # Re-enable the framerate sliders when acquisition stops
-            if self.manager.triggered and not self.is_calibrating:
+            if self.manager.hardware_triggered and not self.is_calibrating:
                 for w in self.video_windows:
                     if isinstance(w, Recording):  # Make sure it's the right window type
                         w.camera_controls_sliders['framerate'].setDisabled(False)

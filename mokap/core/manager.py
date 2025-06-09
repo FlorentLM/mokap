@@ -29,7 +29,7 @@ class MultiCam:
                  session_name:   Optional[str] = None):
 
         # --- Configuration ---
-        self.config = config if config else fileio.read_config('config.yml')
+        self.config = config if config else fileio.read_config('config.yaml')
         self._base_folder = Path(self.config.get('base_path', './MokapRecordings'))
         self._base_folder.mkdir(parents=True, exist_ok=True)
 
@@ -48,20 +48,18 @@ class MultiCam:
         # internal value for the framerate used to broadcast to all cameras
         self._trigger_framerate = self.config.get('framerate', 60)
 
-        print(f"MultiCam {self._trigger_framerate=}")
-
         # --- Hardware and Cameras ---
         self.cameras: List[AbstractCamera] = []
         self.camera_colours: Dict[str, str] = {}
         self.connect_cameras()
 
         # Optional hardware trigger
-        self.trigger: Optional[RaspberryTrigger] = None
+        self._trigger_instance: Optional[RaspberryTrigger] = None
         if self.config.get('triggered', False):
-            self.trigger = RaspberryTrigger(silent=self._silent)
-            if not self.trigger.connected:
+            self._trigger_instance = RaspberryTrigger(silent=self._silent)
+            if not self._trigger_instance.connected:
                 print("[ERROR] Failed to connect to trigger. Disabling triggered mode.")
-                self.trigger = None
+                self._trigger_instance = None
 
         # --- Threading Resources ---
         buffer_size = self.config.get('frame_buffer_size', 200)
@@ -110,6 +108,17 @@ class MultiCam:
             print("[WARN] No cameras defined in the 'sources' section of the config file.")
             return
 
+        # Define the list of global keys that can be applied to cameras
+        valid_global_settings = [
+            'exposure', 'gain', 'gamma', 'pixel_format', 'blacks',
+            'binning', 'framerate', 'hardware_trigger', 'roi'
+        ]
+
+        # Create a base dictionary of global settings found in the config
+        base_cam_config = {
+            key: self.config[key] for key in valid_global_settings if key in self.config
+        }
+
         for friendly_name, cam_config in configured_sources.items():
             serial = str(cam_config.get('serial'))  # ensure serial is a string
 
@@ -130,12 +139,16 @@ class MultiCam:
                 try:
                     cam.name = friendly_name
 
-                    initial_settings = cam_config.get('settings', {})
-                    initial_settings.setdefault('trigger_mode', self.config.get('triggered', False))
-                    initial_settings.setdefault('framerate', self.config.get('framerate', 60))
+                    # Start with a copy of the global settings
+                    final_settings = base_cam_config.copy()
+
+                    # Get camera-specific overrides and merge them in
+                    camera_overrides = cam_config.get('settings', {})
+                    if camera_overrides:
+                        final_settings.update(camera_overrides)
 
                     # Connect and apply the settings
-                    cam.connect(config=initial_settings)
+                    cam.connect(config=final_settings)
 
                     # Add the successfully connected camera to our list
                     self.cameras.append(cam)
@@ -150,8 +163,6 @@ class MultiCam:
                 except Exception as e:
                     print(f"[ERROR] Failed to connect or configure camera '{friendly_name}' (S/N: {serial}): {e}")
 
-                print(f"Camera {cam.name}: {cam.framerate=}")
-
     def start_acquisition(self):
         """ Starts all background threads for grabbing and displaying frames """
         if self._acquiring:
@@ -165,8 +176,8 @@ class MultiCam:
         self._acquiring = True
         self._threads = []
 
-        if self.trigger and self.trigger.connected:
-            self.trigger.start(self._trigger_framerate)
+        if self._trigger_instance and self._trigger_instance.connected:
+            self._trigger_instance.start(self._trigger_framerate)
 
         for i, cam in enumerate(self.cameras):
             # Start one grabber and one writer thread per camera
@@ -195,8 +206,8 @@ class MultiCam:
             thread.join(timeout=2.0)
 
         # Stop trigger if enabled
-        if self.trigger and self.trigger.connected:
-            self.trigger.stop()
+        if self._trigger_instance and self._trigger_instance.connected:
+            self._trigger_instance.stop()
 
         # Cleanly disconnect all cameras
         for cam in self.cameras:
@@ -496,12 +507,12 @@ class MultiCam:
         return None
 
     def set_all_cameras(self, parameter: str, value: Any):
-        """
-        Broadcasts a setting to all cameras
-        """
+        """ Broadcasts a setting to all cameras """
+        # TODO: we probably want to have framerate, exposure, etc setters that will call this
+
         print(f"[INFO] Broadcasting '{parameter} = {value}' to all cameras.")
 
-        # If setting framerate in triggered mode, we also set the trigger speed
+        # If setting framerate in hardware trigger mode, we also set the trigger speed
         if parameter == 'framerate' and self.config.get('triggered', False):
             self.trigger_framerate = value
 
@@ -556,12 +567,11 @@ class MultiCam:
     @trigger_framerate.setter
     def trigger_framerate(self, value: float):
         """ Sets the framerate for the external trigger """
+
         self._trigger_framerate = float(value)
         # If acquisition is running, we can even update the trigger on the fly
-        if self._acquiring and self.trigger and self.trigger.connected:
-            self.trigger.start(self._trigger_framerate)
-
-    # TODO: Get rid of the shim
+        if self._acquiring and self._trigger_instance and self._trigger_instance.connected:
+            self._trigger_instance.start(self._trigger_framerate)
 
     @property
     def acquiring(self) -> bool:
@@ -574,20 +584,17 @@ class MultiCam:
         return self._recording
 
     @property
-    def triggered(self) -> bool:
-        """ Provides backward compatibility for the old '.triggered' property """
-        return self.trigger is not None and self.trigger.connected
+    def hardware_triggered(self) -> bool:
+        return self._trigger_instance is not None and self._trigger_instance.connected
 
     @property
     def saved(self) -> int:
-        """
-        Provides a real-time sum of frames saved in the current session
-        """
+        """ Provides a real-time sum of frames saved in the current session """
         return sum(self._session_frame_counts)
 
     @property
     def colours(self) -> Dict[str, str]:
-        """ Alias for camera_colours for backward compatibility """
+        """ Alias for camera_colours """
         return self.camera_colours
 
     def on(self):

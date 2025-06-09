@@ -47,7 +47,7 @@ class BaslerCamera(AbstractCamera):
             'gain': 1.0,
             'framerate': 60.0,
             'pixel_format': 'Mono8',
-            'trigger_mode': True,
+            'trigger': True,
             'trigger_line': 4,
             'binning': 1,
             'binning_mode': 'sum',
@@ -63,7 +63,7 @@ class BaslerCamera(AbstractCamera):
         self._pixel_format = settings['pixel_format']
         self._binning = settings['binning']
         self._binning_mode = settings['binning_mode']
-        self._trigger_mode = settings['trigger_mode']
+        self._hardware_triggered = settings['trigger']
         self._trigger_line = settings['trigger_line']
         self._framerate = settings['framerate']
         self._exposure = settings['exposure']
@@ -82,7 +82,7 @@ class BaslerCamera(AbstractCamera):
         self.pixel_format = self._pixel_format
         self.binning = self._binning            # must be set before roi
         self.binning_mode = self._binning_mode  # must be set before roi
-        self.trigger_mode = self._trigger_mode  # must be set before framerate
+        self.hardware_triggered = self._hardware_triggered  # must be set before framerate
         self.framerate = self._framerate
         self.exposure = self._exposure
         self.gain = self._gain
@@ -217,7 +217,7 @@ class BaslerCamera(AbstractCamera):
     @framerate.setter
     def framerate(self, value: float):
         # If externally triggered, the camera's internal clock is off. We just cache the target value.
-        if self.trigger_mode:
+        if self.hardware_triggered:
             self._framerate = value
             return
 
@@ -243,11 +243,11 @@ class BaslerCamera(AbstractCamera):
         self._pixel_format = actual_value
 
     @property
-    def trigger_mode(self) -> bool:
-        return self._trigger_mode
+    def hardware_triggered(self) -> bool:
+        return self._hardware_triggered
 
-    @trigger_mode.setter
-    def trigger_mode(self, enabled: bool):
+    @hardware_triggered.setter
+    def hardware_triggered(self, enabled: bool):
 
         if enabled:
             self._set_feature('TriggerSelector', 'FrameStart')
@@ -259,7 +259,7 @@ class BaslerCamera(AbstractCamera):
             self._set_feature('AcquisitionFrameRateEnable', True)
 
         # Update the cache
-        self._trigger_mode = enabled
+        self._hardware_triggered = enabled
 
         # Changing trigger mode can affect framerate, so we re-apply the target
         self.framerate = self._framerate
