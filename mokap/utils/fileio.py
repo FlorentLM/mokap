@@ -205,15 +205,24 @@ def SLP_to_df(slp_content, camera_name=None, session=None):
         tracking_score = float(instance.tracking_score) if hasattr(instance, 'tracking_score') else int(is_manual)
 
         values = []
-        for node in instance.skeleton.nodes:
-            if not instance.points[node].visible:
+        for i, node in enumerate(instance.skeleton.nodes):
+            # if not instance.points[node].visible:
+            if not instance.points[i]['visible']:
                 x = np.nan
                 y = np.nan
                 s = 0.0
             else:
-                x = float(instance.points[node].x) if hasattr(instance.points[node], 'x') else np.nan
-                y = float(instance.points[node].y) if hasattr(instance.points[node], 'y') else np.nan
-                s = float(instance.points[node].score) if hasattr(instance.points[node], 'score') else 1.0
+                # x = float(instance.points[node].x) if hasattr(instance.points[node], 'x') else np.nan
+                # y = float(instance.points[node].y) if hasattr(instance.points[node], 'y') else np.nan
+                # s = float(instance.points[node].score) if hasattr(instance.points[node], 'score') else 1.0
+                try:
+                    x, y = instance.points[i]['xy']
+                    s = instance.points[i]['score']
+                except:
+                    x = y = np.nan
+                    s = 1.0
+                x, y, s = float(x), float(y), float(s)
+
             values.extend([x, y, s])
         return values + [instance_score, tracking_score, original_track]
 
@@ -225,8 +234,8 @@ def SLP_to_df(slp_content, camera_name=None, session=None):
     rows = []
     for frame_content in slp_content.labeled_frames:
         source_video = Path(frame_content.video.filename)
-        if camera_name in source_video.stem or camera_name is None:  # if name is not passed, assume we load everything
-            if session in source_video.stem or session is None:
+        if camera_name is None or camera_name in source_video.stem:  # if name is not passed, assume we load everything
+            if session is None or str(session) in source_video.stem:
                 for i, instance in enumerate(frame_content.instances):
                     is_manual = instance in frame_content.user_instances
                     row = instance_to_row(instance, is_manual)
