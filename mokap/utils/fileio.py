@@ -50,9 +50,16 @@ def exists_check(path):
 def read_config(config_file='config.yaml'):
     config_file = Path(config_file)
 
-    if not config_file.exists():
+    yaml_file = config_file.with_suffix('.yaml')
+    yml_file = config_file.with_suffix('.yml')
+
+    if not yaml_file.exists() and not yml_file.exists():
         print('[WARN] Config file not found. Defaulting to example config.')
         config_file = Path('config_example.yaml')
+    elif yaml_file.exists() and not yml_file.exists():
+        config_file = yaml_file
+    elif yml_file.exists() and not yaml_file.exists():
+        config_file = yml_file
 
     with open(config_file, 'r') as f:
         config_content = yaml.safe_load(f)
