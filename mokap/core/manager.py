@@ -57,13 +57,16 @@ class MultiCam:
 
         # setup hardware trigger
         self._trigger_instance: Optional[AbstractTrigger] = None
-        if self.config.get('triggered', False):
+        if self.config.get('hardware_trigger', False):
 
-            trigger_kind = self.config.get('trigger', {}).get('kind', '')
+            trigger_conf = self.config.get('trigger', {})
+            trigger_kind = trigger_conf.get('kind', '')
+
             if trigger_kind == 'raspberry':
-                self._trigger_instance = RaspberryTrigger(config=self.config, silent=self._silent)
+                print(trigger_kind)
+                self._trigger_instance = RaspberryTrigger(config=trigger_conf, silent=self._silent)
             elif trigger_kind == 'arduino':
-                self._trigger_instance = ArduinoTrigger(config=self.config, silent=self._silent)
+                self._trigger_instance = ArduinoTrigger(config=trigger_conf, silent=self._silent)
 
             if not self._trigger_instance.connected:
                 print("[ERROR] Failed to connect to trigger. Disabling triggered mode.")
