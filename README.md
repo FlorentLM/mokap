@@ -51,7 +51,7 @@ Mokap is an easy to use multi-camera acquisition software developed for animal b
 
 ### Features
 * Cross platform (Linux, Windows, macOS)
-* Supports hardware-synchronisation of cameras (using a Raspberry Pi or an Aduino)
+* Supports hardware-synchronisation of cameras (using a Raspberry Pi, or an Aduino, or a USB-to-TTL adapter)
 * Supports encoding to individual frames or straight to video (with or without GPU acceleration)
 * Live multi-camera calibration and pose estimation
 
@@ -136,9 +136,8 @@ base_path: D:/MokapTests    # Where the recordings will be stored
 silent: false
 hardware_trigger: true
 framerate: 60
-gain: 1.0
 exposure: 15000
-# gamma, roi, etc
+# Other values are supported (gain, gamma, roi, etc)
 
 # --- Global Saving & Encoding Settings ---
 save_format: 'mp4'        # or 'png', 'jpg', 'bmp', 'tiff'
@@ -146,17 +145,24 @@ save_quality: 90          # 0-100 scale (meaning depends on format)
 frame_buffer_size: 200    # max number of frames to buffer in RAM (per camera)
 
 # --- Hardware trigger parameters ---
-# You can use a Raspberry Pi...
+# You can use a Raspberry Pi
 trigger:
   kind: raspberry
-  gpio_pin: 18
+  pin: 18           # The GPIO pin you connect your cameras to. Pin 18 is recommended.
 
-# ...or an Arduino
+## or an Arduino
 #trigger:
 #  kind: arduino
-#  port: COM5
-#  baudrate: 115200
-#  gpio_pin: 11
+#  port: COM5        # 'COMX' on Windows, '/dev/ttyUSBX' on Linux, '/dev/cu.usbserial-XXXX' on macOS
+#  pin: 11           # The GPIO pin you connect your cameras to. Usually 3 or 11 on Arduino
+#  baudrate: 115200  # Optional. If you use one of the two firmwares provided with Mokap, you should not change this
+
+## or a USB-to-TTL adapter (this is less accurate though)
+#trigger:
+#  kind: ftdi
+#  port: COM3         # 'COMX' on Windows, '/dev/ttyUSBX' on Linux, '/dev/cu.usbserial-XXXX' on macOS
+#  pin: RTS           # Optional, can be 'RTS' or 'DTR'
+#  baudrate: 9600     # Optional. Should not matter too much
 
 # --- Video encoding parameters ---
 ffmpeg:
@@ -243,12 +249,16 @@ Test by pinging between devices.
 
 Any Arduino board should be compatible. You just have to flash your Arduino board with one of the two provided firmwares, located in `mokap/triggers/arduino_firmware`.
 
-- `trigger_millis_v1.ino`: Good precision, jitter is of the microsecond order. Supports any frequency and any duty cycle.
+- `trigger_millis_v1.ino`: Good precision, jitter is in the microsecond order. Supports any frequency and any duty cycle.
 - `trigger_tone_v1.ino`: Highest precision, jitter is negligible (nanosecond). Only supports 50% duty rate, and frequencies >= 31 Hz on 16 MHz boards (Arduino Uno for instance).
 
 If you're recording at more than 100 frames per second, then you will _want_ to use the `trigger_tone_v1.ino` firmware.
 If you're recording at less than 31 fps you will **have** to use the `trigger_millis_v1.ino` firmware.
 
+#### USB-to-TTL (FTDI)
+
+This is a very cheap and easy solution. But the timing is under the control of your host computer, so it is less accurate than the other alternatives.
+(jitter is in the order of 1-15+ milliseconds). Not recommended for recording above 30 fps.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 

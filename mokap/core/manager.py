@@ -15,6 +15,7 @@ from mokap.core.cameras import CameraFactory
 from mokap.core.triggers.interface import AbstractTrigger
 from mokap.core.triggers.raspberry import RaspberryTrigger
 from mokap.core.triggers.arduino import ArduinoTrigger
+from mokap.core.triggers.ftdi import FTDITrigger
 from mokap.core.writers import FrameWriter, ImageSequenceWriter, FFmpegWriter
 from mokap.utils import fileio
 from mokap.utils.system import setup_ulimit
@@ -67,9 +68,15 @@ class MultiCam:
                 self._trigger_instance = RaspberryTrigger(config=trigger_conf, silent=self._silent)
             elif trigger_kind == 'arduino':
                 self._trigger_instance = ArduinoTrigger(config=trigger_conf, silent=self._silent)
+            elif trigger_kind == 'ftdi':
+                self._trigger_instance = FTDITrigger(config=trigger_conf, silent=self._silent)
+                print("[INFO] FTDI Trigger is not recommended for high-precision applications.")
+            else:
+                print("[ERROR] No valid trigger 'kind' found in config. Running without hardware trigger.")
+                self._trigger_instance = None
 
-            if not self._trigger_instance.connected:
-                print("[ERROR] Failed to connect to trigger. Disabling triggered mode.")
+            if self._trigger_instance and not self._trigger_instance.connected:
+                print("[ERROR] Failed to connect to trigger. Running without hardware trigger.")
                 self._trigger_instance = None
 
         # --- Threading Resources ---
