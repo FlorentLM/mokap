@@ -16,6 +16,19 @@ save_format: 'mp4'        # or 'png', 'jpg', 'bmp', 'tiff'
 save_quality: 90          # 0-100 scale (meaning depends on format)
 frame_buffer_size: 200    # max number of frames to buffer in RAM (per camera)
 
+# --- Hardware trigger parameters ---
+# You can use a Raspberry Pi...
+trigger:
+  kind: raspberry
+  gpio_pin: 18
+
+# ...or an Arduino
+#trigger:
+#  kind: arduino
+#  port: COM5
+#  baudrate: 115200
+#  gpio_pin: 11
+
 # --- Video encoding parameters ---
 ffmpeg:
   path: 'ffmpeg'   # Path to the ffmpeg executable
