@@ -1,19 +1,11 @@
-# In hardware.py
-
 import os
 import time
-from dotenv import load_dotenv
-from typing import NoReturn, Optional
-
-import warnings
-from cryptography.utils import CryptographyDeprecationWarning
-
-with warnings.catch_warnings():
-    warnings.filterwarnings('ignore', category=CryptographyDeprecationWarning)
-    import paramiko
+from typing import Optional, Dict
+from mokap.core.triggers.interface import AbstractTrigger
+import paramiko
 
 
-class RaspberryTrigger:
+class RaspberryTrigger(AbstractTrigger):
     """
     Manages a hardware trigger signal from a Raspberry Pi using pigpio
 
@@ -28,22 +20,22 @@ class RaspberryTrigger:
         - TRIGGER_HOST: The IP address or hostname of the Raspberry Pi
         - TRIGGER_USER: The username for the SSH connection
         - TRIGGER_PASS: The password for the SSH connection
-        - GPIO_PIN: The BCM pin number to use for the PWM signal (e.g., 18)
-
-        # TODO: GPIO pin has no business being in the env file, it's not a secret
     """
 
-    def __init__(self, silent: bool = False):
-        self._silent = silent
+    def __init__(self, config: Optional[Dict] = None, silent: bool = False):
+        super().__init__(config=config, silent=silent)
         self.client: Optional[paramiko.SSHClient] = None
         self._connected: bool = False
 
         # Load configuration from .env file
-        load_dotenv()
         self.host = os.getenv('TRIGGER_HOST')
         self.user = os.getenv('TRIGGER_USER')
         self.password = os.getenv('TRIGGER_PASS')
-        self.gpio_pin = os.getenv('GPIO_PIN')
+
+        if self._config.get('kind', '') == 'raspberry':
+            self.gpio_pin = self._config.get('gpio_pin', 18)
+        else:
+            raise EnvironmentError(f"Missing required config (did you define the Raspberry Pi trigger in the config file?")
 
         self._connect()
 
@@ -53,7 +45,6 @@ class RaspberryTrigger:
             "TRIGGER_HOST": self.host,
             "TRIGGER_USER": self.user,
             "TRIGGER_PASS": self.password,
-            "GPIO_PIN": self.gpio_pin
         }
         missing_vars = [name for name, val in required_vars.items() if val is None]
         if missing_vars:
@@ -80,10 +71,6 @@ class RaspberryTrigger:
             print(f"[ERROR] Trigger connection failed: {e}")
             self.client = None
             self._connected = False
-
-    @property
-    def connected(self) -> bool:
-        return self._connected
 
     def start(self, frequency: float, duty_cycle_percent: int = 50):
         """
@@ -145,25 +132,22 @@ class RaspberryTrigger:
             if not self._silent:
                 print("[INFO] Trigger disconnected.")
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.stop()
-
 
 if __name__ == '__main__':
     # This just a debug mini script
     # .env file with the required variables is needed
+
+    secs = 5
+    freq = 10
 
     print("--- Testing RaspberryTrigger ---")
 
     try:
         with RaspberryTrigger(silent=False) as trigger:
             if trigger.connected:
-                print("\nStarting trigger for 5 seconds...")
-                trigger.start(frequency=100)
-                time.sleep(5)
+                print(f"Starting trigger for {secs} seconds...")
+                trigger.start(frequency=freq)
+                time.sleep(secs)
                 print("Stopping trigger...")
 
         print("\nTest complete. Trigger should be stopped and disconnected.")

@@ -36,23 +36,23 @@ ffmpeg:
 
 # This is where you add your cameras
 sources:
-    my-first-camera: # This is your defined, friendly name for this camera :)
-        vendor: basler
-        serial: xxxxxxxx
-        color: da141d
-#        # Camera-specific settings can override globals
-#        settings:
-#            exposure: 9000
-#            gain: 1.0
-#            gamma: 1.0
-#            pixel_format: 'Mono8'
-#            blacks: 1.0
-#            binning: 1
-    some-other-camera:
-        vendor: basler
-        serial: xxxxxxxx
-        color: 7a9c21
-    awesomecamera:
-        vendor: basler
-        serial: xxxxxxxx
-        color: f3d586
+  my-first-camera: # This is your defined, friendly name for this camera :)
+    vendor: basler
+    serial: xxxxxxxx
+    color: da141d
+#    # Camera-specific settings can override globals
+#    settings:
+#      exposure: 9000
+#      gain: 1.0
+#      gamma: 1.0
+#      pixel_format: 'Mono8'
+#      blacks: 1.0
+#      binning: 1
+  some-other-camera:
+    vendor: basler
+    serial: xxxxxxxx
+    color: 7a9c21
+  awesomecamera:
+    vendor: basler
+    serial: xxxxxxxx
+    color: f3d586

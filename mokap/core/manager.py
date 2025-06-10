@@ -5,17 +5,19 @@ from datetime import datetime
 from pathlib import Path
 from queue import Queue, Empty
 from threading import Thread, Event, Lock
-from typing import List, Dict, Optional, Union, Tuple, Any
+from typing import List, Dict, Optional, Tuple, Any
 
 import numpy as np
 from PIL import Image
 
 from mokap.core.cameras.interface import AbstractCamera, CAMERAS_COLOURS
 from mokap.core.cameras import CameraFactory
+from mokap.core.triggers.interface import AbstractTrigger
+from mokap.core.triggers.raspberry import RaspberryTrigger
+from mokap.core.triggers.arduino import ArduinoTrigger
 from mokap.core.writers import FrameWriter, ImageSequenceWriter, FFmpegWriter
 from mokap.utils import fileio
 from mokap.utils.system import setup_ulimit
-from mokap.core.triggers.raspberry import RaspberryTrigger
 
 
 class MultiCam:
@@ -53,10 +55,16 @@ class MultiCam:
         self.camera_colours: Dict[str, str] = {}
         self.connect_cameras()
 
-        # Optional hardware trigger
-        self._trigger_instance: Optional[RaspberryTrigger] = None
+        # setup hardware trigger
+        self._trigger_instance: Optional[AbstractTrigger] = None
         if self.config.get('triggered', False):
-            self._trigger_instance = RaspberryTrigger(silent=self._silent)
+
+            trigger_kind = self.config.get('trigger', {}).get('kind', '')
+            if trigger_kind == 'raspberry':
+                self._trigger_instance = RaspberryTrigger(config=self.config, silent=self._silent)
+            elif trigger_kind == 'arduino':
+                self._trigger_instance = ArduinoTrigger(config=self.config, silent=self._silent)
+
             if not self._trigger_instance.connected:
                 print("[ERROR] Failed to connect to trigger. Disabling triggered mode.")
                 self._trigger_instance = None

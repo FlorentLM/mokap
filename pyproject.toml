@@ -23,6 +23,7 @@ dependencies = [
     "sleap-io>=0.2.0",
     "alive_progress",
     "jax>=0.6.1",
+    "pyserial>=3.5",
 ]
 [tool.setuptools]
 py-modules = ['mokap']
