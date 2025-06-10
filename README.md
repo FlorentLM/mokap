@@ -51,9 +51,9 @@ Mokap is an easy to use multi-camera acquisition software developed for animal b
 
 ### Features
 * Cross platform (Linux, Windows, macOS)
-* Supports synchronised cameras (only using a Raspberry Pi for now, but other modes will come soon)
-* Supports encoding to individual frames or straight to video (with or without GPU encoding)
-* Live multi-camera calibration
+* Supports hardware-synchronisation of cameras (using a Raspberry Pi or an Aduino)
+* Supports encoding to individual frames or straight to video (with or without GPU acceleration)
+* Live multi-camera calibration and pose estimation
 
 <p>(<a href="#readme-top">back to top</a>)</p>
 
@@ -81,7 +81,7 @@ If you wish to use straight-to-video encoding, you will need [ffmpeg](https://ww
    ```sh
    brew install ffmpeg
    ```
-If you do not want to use ffmpeg, you can still use Mokap in image mode (videos will be written as individual frames)
+If you do not want to use ffmpeg, you can still use Mokap in image mode (videos will be written as individual frames), but be aware that this is much slower.
 
 #### uv:
 
@@ -136,11 +136,27 @@ base_path: D:/MokapTests    # Where the recordings will be stored
 silent: false
 hardware_trigger: true
 framerate: 60
+gain: 1.0
+exposure: 15000
+# gamma, roi, etc
 
 # --- Global Saving & Encoding Settings ---
 save_format: 'mp4'        # or 'png', 'jpg', 'bmp', 'tiff'
 save_quality: 90          # 0-100 scale (meaning depends on format)
 frame_buffer_size: 200    # max number of frames to buffer in RAM (per camera)
+
+# --- Hardware trigger parameters ---
+# You can use a Raspberry Pi...
+trigger:
+  kind: raspberry
+  gpio_pin: 18
+
+# ...or an Arduino
+#trigger:
+#  kind: arduino
+#  port: COM5
+#  baudrate: 115200
+#  gpio_pin: 11
 
 # --- Video encoding parameters ---
 ffmpeg:
@@ -162,26 +178,26 @@ ffmpeg:
 
 # This is where you add your cameras
 sources:
-    my-first-camera: # This is your defined, friendly name for this camera :)
-        vendor: basler
-        serial: xxxxxxxx
-        color: da141d
-#        # Camera-specific settings can override globals
-#        settings:
-#            exposure: 9000
-#            gain: 1.0
-#            gamma: 1.0
-#            pixel_format: 'Mono8'
-#            blacks: 1.0
-#            binning: 1
-    some-other-camera:
-        vendor: basler
-        serial: xxxxxxxx
-        color: 7a9c21
-    awesomecamera:
-        vendor: basler
-        serial: xxxxxxxx
-        color: f3d586
+  my-first-camera: # This is your defined, friendly name for this camera :)
+    vendor: basler
+    serial: xxxxxxxx
+    color: da141d
+#    # Camera-specific settings can override globals
+#    settings:
+#      exposure: 9000
+#      gain: 1.0
+#      gamma: 1.0
+#      pixel_format: 'Mono8'
+#      blacks: 1.0
+#      binning: 1
+  some-other-camera:
+    vendor: basler
+    serial: xxxxxxxx
+    color: 7a9c21
+  awesomecamera:
+    vendor: basler
+    serial: xxxxxxxx
+    color: f3d586
 ```
 
 ### Start GUI
@@ -197,33 +213,42 @@ Windows: `.venv/Scripts/activate`
 
 ### Hardware Trigger
 
-**Important**: The default in `mokap.py` is to use a hardware trigger (Raspberry Pi). For this, you **_MUST_** have three environment variables defined.
-The recommended way is to create a file named `.env` that contains the three variables:
+Mokap supports both Raspberry Pi and Arduino boards to act as hardware triggers.
 
-For example (replace with your trigger's IP or hostname, username and passsword):
+#### Raspberry Pi
+For the Raspberry Pi option, the commands are sent from the host PC to the Pi via the network, so you **_MUST_** have three environment variables defined.
+The recommended way is to create a file named `.env` that contains the three variables:
 ```dotenv
 TRIGGER_HOST=192.168.0.10
 TRIGGER_USER=pi
 TRIGGER_PASS=hunter2
-GPIO_PIN=18
 ```
+(Replace with your trigger's IP or hostname, username and passsword)
 
-You must enable the GPIO & SSH interface on the PI using:
+You must first enable the GPIO & SSH interface on the PI using:
 ```
 sudo raspi-config
 ```
-
-Make sure that the following services are enabled...
-1. On Pi: `Dhcpcd` and `pigpiod` GPIO pin trigger services
-
-2. On Linux connected PC: `systemd-networkd`
-
-
+Make sure that the `pigpiod` service is enabled on the Pi
 ```
-sudo systemctl status <service>
+sudo systemctl status pigpiod
 ```
-You may need to explicitly set IP addresses with subnet in order for PC and Pi to communicate with one another.
+
+You have to make sure the two decives can find each other on the network. If they are on the same local subnet and you're using DHCP, this whould be straightforward.
+Otherwise you may need to explicitly set IP addresses and subnets.
+We recommend using a tunnel like plain WireGuard or Tailscale for secure communication between the devices (_especially_ if they are not on the same subnet!!)
 Test by pinging between devices.
+
+#### Arduino
+
+Any Arduino board should be compatible. You just have to flash your Arduino board with one of the two provided firmwares, located in `mokap/triggers/arduino_firmware`.
+
+- `trigger_millis_v1.ino`: Good precision, jitter is of the microsecond order. Supports any frequency and any duty cycle.
+- `trigger_tone_v1.ino`: Highest precision, jitter is negligible (nanosecond). Only supports 50% duty rate, and frequencies >= 31 Hz on 16 MHz boards (Arduino Uno for instance).
+
+If you're recording at more than 100 frames per second, then you will _want_ to use the `trigger_tone_v1.ino` firmware.
+If you're recording at less than 31 fps you will **have** to use the `trigger_millis_v1.ino` firmware.
+
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -239,8 +264,9 @@ Test by pinging between devices.
 - [x] Allow GPU video encoding
 - [x] Replace Tk with Qt as the GUI framework
 - [x] Finish calibration mode
+- [x] Add support for Arduino triggers 
+- [ ] Add support for daisy-chained cameras as trigger
 - [ ] Add support for other camera brands (FLIR, etc)
-- [ ] Add support for other kinds of triggers (primary/secondary cameras, Arduino, etc)
 
 <p>(<a href="#readme-top">back to top</a>)</p>
 

@@ -7,7 +7,8 @@ import paramiko
 
 class RaspberryTrigger(AbstractTrigger):
     """
-    Manages a hardware trigger signal from a Raspberry Pi using pigpio
+    Manages a hardware trigger signal from a Raspberry Pi using pigpio:
+    https://abyz.me.uk/rpi/pigpio/
 
     This class establishes a persistent SSH connection to send commands that start and
     stop a Pulse Width Modulation signal on a specified GPIO pin
