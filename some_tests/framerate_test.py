@@ -25,7 +25,7 @@ cam.UserSetLoad.Execute()
 
 ##
 
-# Configure the GPIO Line 4 as input (Line 4 is on pin 3, see ./pins.png)
+# Configure the GPIO Line 4 as input (Line 4 is on pin 3, see ./basler_pins.png)
 cam.LineSelector = "Line4"
 cam.LineMode = "Input"
 

@@ -137,6 +137,8 @@ class RaspberryTrigger(AbstractTrigger):
 if __name__ == '__main__':
     # This just a debug mini script
     # .env file with the required variables is needed
+    # you also need a config.yaml file in the project root
+    # (or to pass the config dictionary directly)
 
     secs = 5
     freq = 10
