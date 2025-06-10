@@ -16,4 +16,4 @@ uv.lock
 config.yaml
 
 # IDE
-.idea/
+.idea/*
