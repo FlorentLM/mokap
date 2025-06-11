@@ -21,8 +21,8 @@ class MultiviewCalibrationTool:
                  intrinsics_window: int = 10,
                  min_detections: int = 15,
                  max_detections: int = 100,
-                 angular_thresh: float = 15.0,        # in degrees
-                 translational_thresh: float = 15.0,  # in object_points' units
+                 angular_thresh: float = 10.0,         # in degrees
+                 translational_thresh: float = 10.0,   # in object_points' units
                  refine_intrinsics_online: bool = False,
                  debug_print = True):
 
@@ -147,10 +147,6 @@ class MultiviewCalibrationTool:
             self._process_frame(entries)
 
     def _process_frame(self, entries):
-        """
-        Uses a 'surgical reset' of extrinsics whenever intrinsics are updated,
-        to prevent stale state propagation
-        """
 
         if not any(self._has_ext):
             return
@@ -174,8 +170,8 @@ class MultiviewCalibrationTool:
                 # on subsequent frames by re-seeding the cameras one by one
                 return
 
-        # If we are here, the system state is stable. Proceed with normal estimation
-        # ===========================================================================
+        # If we are here, the system state is stable, so we proceed with normal estimation
+        # ==============================================================================
 
         # STEP 2- Recompute board-to-camera poses for this frame
         recomputed_entries = []
@@ -373,24 +369,15 @@ class MultiviewCalibrationTool:
         return update_happened
 
     def refine_all(self,
-                   priors_weight: float = 0.0,
                    simple_focal: bool = False,
-                   simple_distortion: bool = False,
-                   complex_distortion: bool = False,
-                   shared: bool = False,
-                   fix_intrinsics: bool = False,
-                   fix_extrinsics: bool = False,
-                   fix_distortion: bool = False
                    ) -> bool:
         """
-        Performs a global bundle adjustment (BA) over all collected samples
+        Performs a global, three-stage bundle adjustment (BA) over all collected samples
+        (Sort of graduated non-convexity process)
 
-            - Format the 2D detections and visibility masks from all samples
-            - Use the current best estimates for camera intrinsics and extrinsics
-            - For each sample frame, calculate a robust initial guess for the board's world pose
-            by averaging the poses implied by each camera that saw it
-            - Call the BA solver
-            - Store the final globally optimized results
+        - Stage 1: Solves for a stable global geometry with shared intrinsics and no distortion
+        - Stage 2: Refines per-camera intrinsics (still no distortion)
+        - Stage 3: Performs a full refinement with all parameters (including distortion)
         """
 
         if not self._estimated:
@@ -403,13 +390,13 @@ class MultiviewCalibrationTool:
             return False
 
         if self._debug_print:
-            print(f"[BA] Starting Bundle Adjustment with {P} samples.")
+            print(f"[BA] Starting 3-Stage Bundle Adjustment with {P} samples.")
 
         C = self.nb_cameras
         N = self._object_points.shape[0]
 
-        # Prepare 2D Detections and Visibility Mask
-        # =========================================================================
+        # --------Prepare the data-----------
+
         pts2d_buf = np.full((C, P, N, 2), 0.0, dtype=np.float32)
         vis_buf = np.zeros((C, P, N), dtype=bool)
 
@@ -418,88 +405,107 @@ class MultiviewCalibrationTool:
                 pts2d_buf[cam_idx, p_idx, ids, :] = pts2D
                 vis_buf[cam_idx, p_idx, ids] = True
 
-        # Prepare initial guess for board poses (one per sample)
-        # =========================================================================
-        r_board_w_list = []
-        t_board_w_list = []
-
-        # Get the current best camera-to-world extrinsics
+        # Initial guess for board poses (from online estimation)
+        r_board_w_list, t_board_w_list = [], []
         E_c2w_all = extrinsics_matrix(self._rvecs_cam2world, self._tvecs_cam2world)
 
         for p_idx, entries in enumerate(self.ba_samples):
-            E_b2w_votes = []
-            for cam_idx, E_b2c, _, _ in entries:
-                # For each camera in the sample, calculate its 'vote' for the board's world pose
-                E_c2w = E_c2w_all[cam_idx]
-                E_b2w_vote = E_c2w @ E_b2c
-                E_b2w_votes.append(E_b2w_vote)
-
-            # Robustly average the votes to get the initial guess for this sample's board pose
+            E_b2w_votes = [E_c2w_all[c] @ E_b2c for c, E_b2c, _, _ in entries]
             E_stack = jnp.stack(E_b2w_votes, axis=0)
             r_stack, t_stack = extmat_to_rtvecs(E_stack)
             q_stack = axisangle_to_quaternion_batched(r_stack)
-            q_med = quaternion_average(q_stack)
-            t_med = jnp.median(t_stack, axis=0)
+            r_board_w_list.append(quaternion_to_axisangle(quaternion_average(q_stack)))
+            t_board_w_list.append(jnp.median(t_stack, axis=0))
 
-            r_board_w_list.append(quaternion_to_axisangle(q_med))
-            t_board_w_list.append(t_med)
+        board_r_init = np.asarray(jnp.stack(r_board_w_list))
+        board_t_init = np.asarray(jnp.stack(t_board_w_list))
 
-        # Convert lists to final np arrays for the BA function
-        r_board_w_init = np.asarray(jnp.stack(r_board_w_list))  # (P, 3)
-        t_board_w_init = np.asarray(jnp.stack(t_board_w_list))  # (P, 3)
-
-        # Prepare initial guesses for camera parameters
-        # =========================================================================
-        # Use the latest refined parameters as starting point
+        # Initial guess for camera parameters (from online estimation)
         K_init = np.stack(self._cam_matrices)
         D_init = np.stack(self._dist_coeffs)
         cam_r_init = np.asarray(self._rvecs_cam2world)
         cam_t_init = np.asarray(self._tvecs_cam2world)
 
-        # Run the Bundle Adjustment
-        # =========================================================================
-
-        # TODO: Clip the distortion coefficients to the BA solver's defined bounds?
-
-        success, retvals = bundle_adjustment.run_bundle_adjustment(
-            K_init,                 # (C, 3, 3)
-            D_init,                 # (C, <=8)
-            cam_r_init,             # (C, 3)
-            cam_t_init,             # (C, 3)
-            r_board_w_init,         # (P, 3)
-            t_board_w_init,         # (P, 3)
-            pts2d_buf,              # (C, P, N, 2)
-            vis_buf,                # (C, P, N)
-            self._object_points,    # (N, 3)
-            self.images_sizes_wh,
-            priors_weight=priors_weight,
+        # STAGE 1: Ideal Pinhole World (Shared Intrinsics, No Distortion)
+        # ----------------------------
+        print("\n" + "=" * 80)
+        print(">>> STAGE 1: BA on Ideal World (Shared Intrinsics, No Distortion)")
+        print("=" * 80)
+        success_s1, results_s1 = bundle_adjustment.run_bundle_adjustment(
+            K_init, D_init, cam_r_init, cam_t_init, board_r_init, board_t_init,
+            pts2d_buf, vis_buf, self._object_points, self.images_sizes_wh,
             simple_focal=simple_focal,
-            simple_distortion=simple_distortion,
-            complex_distortion=complex_distortion,
-            shared=shared,
-            fix_intrinsics=fix_intrinsics,
-            fix_extrinsics=fix_extrinsics,
-            fix_distortion=fix_distortion
+            shared=True,
+            fix_distortion=True  # Force zero distortion
         )
 
-        # Store Refined Results
-        # =========================================================================
-        if success:
-            print("[BA] Bundle Adjustment successful.")
+        if not success_s1:
+            print("[ERROR] BA Stage 1 failed. Aborting calibration.")
+            return False
+
+        # Use results of S1 as initial guess for S2
+        K_s2_init = results_s1['K_opt']
+        D_s2_init = results_s1['D_opt']
+        cam_r_s2_init = results_s1['cam_r_opt']
+        cam_t_s2_init = results_s1['cam_t_opt']
+        board_r_s2_init = results_s1['board_r_opt']
+        board_t_s2_init = results_s1['board_t_opt']
+
+        # STAGE 2: Per-camera pinhole world (Per-camera intrinsics, no Distortion)
+        # ---------------------------------
+        print("\n" + "=" * 80)
+        print(">>> STAGE 2: BA on Pinhole World (Per-Camera Intrinsics, No Distortion)")
+        print("=" * 80)
+        success_s2, results_s2 = bundle_adjustment.run_bundle_adjustment(
+            K_s2_init, D_s2_init, cam_r_s2_init, cam_t_s2_init, board_r_s2_init, board_t_s2_init,
+            pts2d_buf, vis_buf, self._object_points, self.images_sizes_wh,
+            simple_focal=simple_focal,
+            shared=False,
+            fix_distortion=True  # Still no distortion
+        )
+
+        if not success_s2:
+            print("[ERROR] BA Stage 2 failed. Aborting calibration.")
+            return False
+
+        # Use results of stage 2 as initial guess for stage 3
+        K_s3_init = results_s2['K_opt']
+        D_s3_init = results_s2['D_opt']
+        cam_r_s3_init = results_s2['cam_r_opt']
+        cam_t_s3_init = results_s2['cam_t_opt']
+        board_r_s3_init = results_s2['board_r_opt']
+        board_t_s3_init = results_s2['board_t_opt']
+
+        # STAGE 3: Real world (Full Refinement with Distortion)
+        # -------------------
+        print("\n" + "=" * 80)
+        print(">>> STAGE 3: BA on Real World (Full Refinement with Distortion)")
+        print("=" * 80)
+        success_s3, final_results = bundle_adjustment.run_bundle_adjustment(
+            K_s3_init, D_s3_init, cam_r_s3_init, cam_t_s3_init, board_r_s3_init, board_t_s3_init,
+            pts2d_buf, vis_buf, self._object_points, self.images_sizes_wh,
+            simple_focal=simple_focal,
+            shared=False,
+            fix_distortion=False,   # Finally enable distortion
+            priors_weight=0.1       # Add a small regularization to prevent extrinsics from drifting too far
+        )
+
+        # Finish
+        # -----------
+        if success_s3:
+            print("\nBundle adjustment complete. Storing refined parameters.")
             self.ba_samples.clear()
 
-            self._refined_intrinsics = (retvals['K_opt'], retvals['D_opt'])
-            self._refined_extrinsics = (retvals['cam_r_opt'], retvals['cam_t_opt'])
-            self._refined_board_poses = (retvals['board_r_opt'], retvals['board_t_opt'])
-
-            self._ba_points2d = pts2d_buf   # for visualization
-            self._ba_pointsids = vis_buf    # for visualization
-
+            # store the globally optimized results
+            self._refined_intrinsics = (final_results['K_opt'], final_results['D_opt'])
+            self._refined_extrinsics = (final_results['cam_r_opt'], final_results['cam_t_opt'])
+            self._refined_board_poses = (final_results['board_r_opt'], final_results['board_t_opt'])
+            self._ba_points2d = pts2d_buf  # for visualization
+            self._ba_pointsids = vis_buf   # for visualization
             self._refined = True
             return True
-
         else:
-            print("[BA] Bundle Adjustment failed.")
+            print("[ERROR] Final BA Stage 3 failed. Aborting calibration.")
             return False
 
     @property

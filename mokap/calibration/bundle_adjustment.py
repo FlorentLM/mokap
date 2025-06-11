@@ -430,7 +430,7 @@ def run_bundle_adjustment(
         board_tvecs:        np.ndarray,  # (P, 3)
         points2d:           np.ndarray,  # (C, P, N, 2)
         visibility_mask:    np.ndarray,  # (C, P, N)
-        points3d_th:        jnp.ndarray, # (N, 3)
+        points3d_th:        np.ndarray,  # (N, 3)
         images_sizes_wh:    ArrayLike,   # (C, 2 or 3)
         priors_weight:      float = 0.0,
         simple_focal:       bool = False,
@@ -477,7 +477,7 @@ def run_bundle_adjustment(
     lower_bounds = np.concatenate([lb_intr.ravel(), np.full(num_extrinsics + num_board_poses, -np.inf)])
     upper_bounds = np.concatenate([ub_intr.ravel(), np.full(num_extrinsics + num_board_poses, np.inf)])
 
-    ## fix parameters by setting their bounds to their initial values
+    # fix parameters by setting their bounds to their initial values
     epsilon = 1e-8
 
     if fix_intrinsics:
