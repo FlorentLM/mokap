@@ -60,17 +60,18 @@ sources:
     serial: xxxxxxxx
     color: da141d
 #    # Camera-specific settings can override globals
-#    settings:
-#      exposure: 9000
-#      gain: 1.0
-#      gamma: 1.0
-#      pixel_format: 'Mono8'
-#      blacks: 1.0
-#      binning: 1
+#    exposure: 9000
+#    gain: 1.0
+#    gamma: 1.0
+#    pixel_format: 'Mono8'
+#    blacks: 1.0
+#    binning: 1
+
   some-other-camera:
-    vendor: basler
+    vendor: flir
     serial: xxxxxxxx
     color: 7a9c21
+
   awesomecamera:
     vendor: basler
     serial: xxxxxxxx

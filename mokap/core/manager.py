@@ -161,9 +161,17 @@ class MultiCam:
                     final_settings = base_cam_config.copy()
 
                     # Get camera-specific overrides and merge them in
-                    camera_overrides = cam_config.get('settings', {})
-                    if camera_overrides:
-                        final_settings.update(camera_overrides)
+                    camera_specific_settings = {
+                        k: v for k, v in cam_config.items()
+                        if k in valid_global_settings
+                    }
+                    final_settings.update(camera_specific_settings)
+
+                    # We used to have a 'settings' block in the cameras, let's keep this for now but we'll trash it
+                    nested_settings = cam_config.get('settings', {})
+                    if nested_settings:
+                        print('[DEPRECATION WARNING] Nested "settings" block inside cameras configs will be deprecated.')
+                        final_settings.update(nested_settings)
 
                     # Connect and apply the settings
                     cam.connect(config=final_settings)
