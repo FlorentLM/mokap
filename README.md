@@ -51,6 +51,7 @@ Mokap is an easy to use multi-camera acquisition software developed for animal b
 
 ### Features
 * Cross platform (Linux, Windows, macOS)
+* Supports Basler and FLIR cameras, but virtually any other vendor supporting the GenICam standard (just ask me 🙂 ).
 * Supports hardware-synchronisation of cameras (using a Raspberry Pi, or an Aduino, or a USB-to-TTL adapter)
 * Supports encoding to individual frames or straight to video (with or without GPU acceleration)
 * Live multi-camera calibration and pose estimation
@@ -107,6 +108,16 @@ We recommend using uv to manage Python environments and install Mokap easily.
 * On systems that do not use GRUB, if you want to the USB memory setting to be persistent, Basler's script won't work. You need to change your bootloader options manually.
     
     For instance, EndeavourOS uses systemd-boot: edit `/efi/loader/entries/YOURDISTRO.conf` (replace `YOURDISTRO` by the name of the entry for your system, typically the machine-id in the case of EndeavourOS) and add `usbcore.usbfs_memory_mb=2048` to the `options` line.
+
+#### FLIR Spinnaker SDK
+
+Refer to FLIR's guide for detailed instructions. But in short:
+
+* Download the [Spinnaker SDK](https://www.teledynevisionsolutions.com/support/support-center/software-firmware-downloads/iis/spinnaker-sdk-download/spinnaker-sdk--download-files/?pn=Spinnaker+SDK&vn=Spinnaker+SDK) from FLIR's website.
+* **Note:** You need _both_ the Full SDK with the binaries _and_ the Python SDK, **and they need to match in version** number. Currently, on Windows and Linux, the Python bindings only support SDK version 3.2.0.62. On macOS, you can install Spinnaker 4.1.
+* Install the full SDK with the installer provided
+* Make sure you have mokap installed, and activate Mokap's virtual env (see below)
+* Install the Spinnaker Python wheels with `uv pip install /path/to/spinnaker_python-3.2.0.62-cp310-cp310-win_amd64.whl` (replace with the path and the name of the `.whl` file you downloaded)
 
 #### Mokap
 
@@ -275,9 +286,10 @@ This is a very cheap and easy solution. But the timing is under the control of y
 - [x] Allow GPU video encoding
 - [x] Replace Tk with Qt as the GUI framework
 - [x] Finish calibration mode
-- [x] Add support for Arduino triggers 
+- [x] Add support for Arduino triggers
+- [x] Add support for FLIR cameras
 - [ ] Add support for daisy-chained cameras as trigger
-- [ ] Add support for other camera brands (FLIR, etc)
+- [ ] Add support for other camera brands
 
 <p>(<a href="#readme-top">back to top</a>)</p>
 
