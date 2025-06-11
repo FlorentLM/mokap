@@ -14,7 +14,7 @@ class AbstractCamera(abc.ABC):
 
     def __init__(self, unique_id: str):
         self._unique_id = unique_id
-        self._name = unique_id  # default name to the serial number
+        self._name = unique_id          # default name to the serial number
         self._is_connected = False
         self._is_grabbing = False
 

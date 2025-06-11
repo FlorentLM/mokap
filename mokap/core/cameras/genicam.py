@@ -41,7 +41,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
             'gain': 1.0,
             'framerate': 60.0,
             'pixel_format': 'Mono8',
-            'trigger': True,
+            'hardware_trigger': True,
             'trigger_line': 'Line4',
             'binning': 1,
             'binning_mode': 'Sum',
@@ -59,7 +59,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         self._pixel_format = settings['pixel_format']
         self._binning = settings['binning']
         self._binning_mode = settings['binning_mode']
-        self._hardware_triggered = settings['trigger']
+        self._hardware_triggered = settings['hardware_trigger']
         self._trigger_line = settings['trigger_line']
         self._framerate = settings['framerate']
         self._exposure = settings['exposure']

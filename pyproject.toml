@@ -3,9 +3,9 @@ name = "mokap"
 version = "0.9"
 description = "An easy to use but powerful multi-camera acquisition software"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = "==3.10.*"
 dependencies = [
-    "numpy",
+    "numpy==1.26.4",
     "paramiko",
     "pillow",
     "psutil",
