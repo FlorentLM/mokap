@@ -148,9 +148,10 @@ class FTDITrigger(AbstractTrigger):
         if self.ser and self.ser.is_open:
             self.ser.close()
             self.ser = None
-            self._connected = False
-            if not self._silent:
-                print('[INFO] FTDI trigger disconnected.')
+
+        self._connected = False
+        if not self._silent:
+            print('[INFO] FTDI trigger disconnected.')
 
 
 if __name__ == '__main__':
@@ -159,7 +160,7 @@ if __name__ == '__main__':
     # (or to pass the config dictionary directly)
 
     secs = 5
-    freq = 20
+    freq = 10
 
     print("--- Testing FtdiTrigger ---")
 
