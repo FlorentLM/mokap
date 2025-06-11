@@ -2,12 +2,11 @@ import numpy as np
 from numpy._typing import ArrayLike
 from scipy.optimize import least_squares
 from scipy.sparse import lil_matrix
-from alive_progress import alive_bar
 from typing import Tuple, Optional
-from mokap.utils import CallbackOutputStream
 import jax
 import jax.numpy as jnp
-
+from mokap.utils import CallbackOutputStream
+from alive_progress import alive_bar
 from mokap.utils.geometry.projective import project_multiple
 from mokap.utils.geometry.transforms import extrinsics_matrix, invert_extrinsics_matrix, extmat_to_rtvecs
 
@@ -285,24 +284,11 @@ def cost_func(
     resid = reproj - points2d
     weighted_resid = jnp.where(visibility_mask[..., None], resid * points_weights[..., None], 0.0)
 
-    # Calculate L2 norm (Euclidean distance) for each point's residual vector
-    error_magnitudes_per_point = jnp.linalg.norm(resid, axis=-1)  # (P, C, N)
-
-    # Calculate mean error magnitude only for visible points
-    # Use visibility_mask to select valid errors before taking the mean
-    # (and to avoid NaNs from norm of [0, 0] for invisible points if resid was zeroed out)
-    visible_error_magnitudes = jnp.where(visibility_mask, error_magnitudes_per_point, jnp.nan)
+    # Calculate mean error for logging
+    visible_error_magnitudes = jnp.where(visibility_mask, jnp.linalg.norm(resid, axis=-1), jnp.nan)
     mean_reprojection_error_px = jnp.nanmean(visible_error_magnitudes)
 
-    weighted_resid_norm = jnp.linalg.norm(weighted_resid, axis=-1)
-    visible_weighted_resid_norm = jnp.where(visibility_mask, weighted_resid_norm, jnp.nan)
-    mean_weighted_reprojection_error_px = jnp.nanmean(visible_weighted_resid_norm)
-
-    signed_w_mean_error = jnp.nanmean(weighted_resid)
-
-    print(f"-- Actual Mean Reprojection Error: {mean_reprojection_error_px:.2f}px "
-          f"// Mean Weighted Reprojection Error Mag: {mean_weighted_reprojection_error_px:.2f}px "
-          f"// Signed Weighted Mean Residual: {signed_w_mean_error:.2f}px")
+    print(f"Mean Reprojection Error: {mean_reprojection_error_px:.2f}px")
 
     # Prior regularization (optional)
     if rvecs_cam_init is not None and tvecs_cam_init is not None:
@@ -435,14 +421,13 @@ def make_jacobian_sparsity(
     return S.tocsr()
 
 
-
 def run_bundle_adjustment(
         camera_matrices:    np.ndarray,  # (C, 3, 3)
         distortion_coeffs:  np.ndarray,  # (C, ≤8)
         cam_rvecs:          np.ndarray,  # (C, 3)
         cam_tvecs:          np.ndarray,  # (C, 3)
-        board_rvecs:        np.ndarray,  # (C, 3)
-        board_tvecs:        np.ndarray,  # (C, 3)
+        board_rvecs:        np.ndarray,  # (P, 3)
+        board_tvecs:        np.ndarray,  # (P, 3)
         points2d:           np.ndarray,  # (C, P, N, 2)
         visibility_mask:    np.ndarray,  # (C, P, N)
         points3d_th:        jnp.ndarray, # (N, 3)
@@ -451,7 +436,11 @@ def run_bundle_adjustment(
         simple_focal:       bool = False,
         simple_distortion:  bool = False,
         complex_distortion: bool = False,
-        shared:             bool = False):
+        shared:             bool = False,
+        fix_intrinsics:     bool = False,
+        fix_extrinsics:     bool = False,
+        fix_distortion:     bool = False
+):
 
     # Recover the dimensions
     C, P, N = visibility_mask.shape
@@ -479,6 +468,7 @@ def run_bundle_adjustment(
         complex_distortion=complex_distortion,
         shared=shared
     )
+
     # Complete with (infinite) bounds for other parameters
     num_params = x0.size
     num_extrinsics = C * 6
@@ -486,6 +476,45 @@ def run_bundle_adjustment(
     num_intrinsics = num_params - num_extrinsics - num_board_poses
     lower_bounds = np.concatenate([lb_intr.ravel(), np.full(num_extrinsics + num_board_poses, -np.inf)])
     upper_bounds = np.concatenate([ub_intr.ravel(), np.full(num_extrinsics + num_board_poses, np.inf)])
+
+    ## fix parameters by setting their bounds to their initial values
+    epsilon = 1e-8
+
+    if fix_intrinsics:
+        print("[BA] Fixing intrinsic parameters.")
+        intr_slice = slice(0, num_intrinsics)
+        fixed_values = x0[intr_slice]
+        lower_bounds[intr_slice] = fixed_values - epsilon
+        upper_bounds[intr_slice] = fixed_values + epsilon
+
+    if fix_extrinsics:
+        print("[BA] Fixing camera extrinsic parameters.")
+        extr_slice = slice(num_intrinsics, num_intrinsics + num_extrinsics)
+        fixed_values = x0[extr_slice]
+        lower_bounds[extr_slice] = fixed_values - epsilon
+        upper_bounds[extr_slice] = fixed_values + epsilon
+
+    if fix_distortion:
+        print("[BA] Fixing distortion parameters to ZERO.")
+        # We need to find where the distortion params are in the flattened vector X
+        n_k = 3 if simple_focal else 4
+        n_d = 4 if simple_distortion else (8 if complex_distortion else 5)
+
+        if shared:
+            # Only one block of intrinsics
+            start_idx = n_k
+            end_idx = n_k + n_d
+            lower_bounds[start_idx:end_idx] = 0.0 - epsilon
+            upper_bounds[start_idx:end_idx] = 0.0 + epsilon
+        else:
+            # One block for each camera
+            per_cam = n_k + n_d
+            for i in range(C):
+                cam_offset = i * per_cam
+                start_idx = cam_offset + n_k
+                end_idx = cam_offset + n_k + n_d
+                lower_bounds[start_idx:end_idx] = 0.0 - epsilon
+                upper_bounds[start_idx:end_idx] = 0.0 + epsilon
 
     # Compute residual weighting
     points_weights = residual_weights(points2d, visibility_mask, camera_matrices)  # TODO: Add reproj weight
@@ -508,31 +537,37 @@ def run_bundle_adjustment(
 
     # with alive_bar(title='Bundle adjustment...', length=20, force_tty=True) as bar:
         # with CallbackOutputStream(bar):
-    result = least_squares(cost_func,
-                           x0,          # x0 contains all the optimisable variables
-                           verbose=2,
-                           # bounds=(lower_bounds, upper_bounds),
-                           x_scale='jac',
-                           ftol=1e-8,
-                           method='trf',
-                           loss='cauchy',
-                           f_scale=20.0,
-                           jac_sparsity=jac_sparsity,
-                           args=(
-                               # All these are passed as a fixed parameters
-                               points2d,
-                               visibility_mask,
-                               points3d_th,
-                               points_weights,
-                               priors_weight,
-                               rvecs_cam_init,
-                               tvecs_cam_init,
-                               simple_focal,
-                               simple_distortion,
-                               complex_distortion,
-                               shared))
+    result = least_squares(
+        cost_func,
+        x0,          # x0 contains all the optimisable variables
+        verbose=2,
+        bounds=(lower_bounds, upper_bounds),
+        ftol=1e-8,
+        xtol=1e-8,
+        gtol=1e-8,
+        max_nfev=200,
+        method='trf',
+        loss='cauchy',
+        f_scale=1.5,
+        x_scale='jac',
+        jac_sparsity=jac_sparsity,
+        args=(
+            # All these are passed as a fixed parameters
+            points2d,
+            visibility_mask,
+            points3d_th,
+            points_weights,
+            priors_weight,
+            rvecs_cam_init,
+            tvecs_cam_init,
+            simple_focal,
+            simple_distortion,
+            complex_distortion,
+            shared
+        )
+    )
 
-    camera_matrices_opt, distortion_coeffs_opt, cam_rvecs_opt, cam_tvecs_opt, board_rvecs_opt, board_tvecs_opt = unflatten_params(
+    K_mats_opt, dist_coeffs_opt, cam_rvecs_opt, cam_tvecs_opt, board_rvecs_opt, board_tvecs_opt = unflatten_params(
         result.x,
         C, P,
         simple_focal=simple_focal,
@@ -541,8 +576,8 @@ def run_bundle_adjustment(
         shared=shared)
 
     ret_vals = {
-        'K_opt': camera_matrices_opt,
-        'D_opt': distortion_coeffs_opt,
+        'K_opt': K_mats_opt,
+        'D_opt': dist_coeffs_opt,
         'cam_r_opt': cam_rvecs_opt,
         'cam_t_opt': cam_tvecs_opt,
         'board_r_opt': board_rvecs_opt,

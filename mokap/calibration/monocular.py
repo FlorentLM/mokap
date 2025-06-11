@@ -521,7 +521,9 @@ class MonocularCalibrationTool:
         cells_indices = np.fliplr(
             np.clip((self._points2d // ((self.h, self.w) / self._grid_shape)).astype(np.int32), [0, 0],
                     np.flip(self._grid_shape - 1)))
-        self._temp_grid[*cells_indices.T] = True
+
+        rows, cols = cells_indices.T
+        self._temp_grid[rows, cols] = True
 
         # Novel area = cells that are in the current grid but not in the cumulative grid
         novel_cells = self._temp_grid & (~self._cumul_grid)
@@ -563,6 +565,7 @@ class MonocularCalibrationTool:
                                  ) -> bool:
 
         novel_area = self._compute_new_area()
+
         if novel_area >= area_threshold and self.nb_points >= nb_points_threshold:
             self.register_sample()
             return True

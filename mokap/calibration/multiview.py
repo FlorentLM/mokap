@@ -23,7 +23,7 @@ class MultiviewCalibrationTool:
                  max_detections: int = 100,
                  angular_thresh: float = 15.0,        # in degrees
                  translational_thresh: float = 15.0,  # in object_points' units
-                 refine_intrinsics_online: bool = True,
+                 refine_intrinsics_online: bool = False,
                  debug_print = True):
 
         # TODO: Typing and optimising this class
@@ -373,10 +373,14 @@ class MultiviewCalibrationTool:
         return update_happened
 
     def refine_all(self,
+                   priors_weight: float = 0.0,
                    simple_focal: bool = False,
                    simple_distortion: bool = False,
                    complex_distortion: bool = False,
                    shared: bool = False,
+                   fix_intrinsics: bool = False,
+                   fix_extrinsics: bool = False,
+                   fix_distortion: bool = False
                    ) -> bool:
         """
         Performs a global bundle adjustment (BA) over all collected samples
@@ -468,11 +472,14 @@ class MultiviewCalibrationTool:
             vis_buf,                # (C, P, N)
             self._object_points,    # (N, 3)
             self.images_sizes_wh,
-            priors_weight=0.7,          # TODO: Add this to init
+            priors_weight=priors_weight,
             simple_focal=simple_focal,
             simple_distortion=simple_distortion,
             complex_distortion=complex_distortion,
-            shared=shared
+            shared=shared,
+            fix_intrinsics=fix_intrinsics,
+            fix_extrinsics=fix_extrinsics,
+            fix_distortion=fix_distortion
         )
 
         # Store Refined Results
