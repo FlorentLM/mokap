@@ -340,13 +340,21 @@ class PreviewBase(Base):
         self._current_frame_metadata = metadata
         self._frame_count_for_fps += 1
 
-        # The frame received is already a color-converted BGR numpy array if needed
-        if self._fmt == "BayerBG8":
-            self._frame_buffer = cv2.cvtColor(frame, cv2.COLOR_BayerBG2BGR, dst=self._frame_buffer)
-        elif self._fmt == "Mono8":
-            self._frame_buffer = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR, dst=self._frame_buffer)
-        else:
-            self._frame_buffer = frame
+        # If the image comes with an effective pixel format (for instance polarised image)
+        pixel_format = metadata.get('pixel_format_effective') or self._fmt
+
+        match pixel_format:
+            case 'BayerBG8':
+                self._frame_buffer = cv2.cvtColor(frame, cv2.COLOR_BAYER_BG2BGR, dst=self._frame_buffer)
+            case 'BayerRG8':
+                self._frame_buffer = cv2.cvtColor(frame, cv2.COLOR_BAYER_RG2BGR, dst=self._frame_buffer)
+            case 'Mono8':
+                self._frame_buffer = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR, dst=self._frame_buffer)
+            case 'RGB8':
+                self._frame_buffer = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR, dst=self._frame_buffer)
+            case _:
+                # just pass it and hope for the best haha
+                self._frame_buffer = frame
 
     #  ============= Qt method overrides =============
     def closeEvent(self, event):

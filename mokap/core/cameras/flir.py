@@ -30,6 +30,18 @@ class FLIRCamera(GenICamCamera):
 
         super().__init__(unique_id=unique_id)
 
+    def _pre_apply_configuration(self, settings: Dict[str, Any]):
+        """ FLIR-specific hook """
+
+        # TODO: check how polarisation is called in other vendors' SDKs
+
+        if 'polarized' in settings.get('pixel_format', '').lower():
+            self._polarisation_sensor = True
+        else:
+            self._polarisation_sensor = False
+
+        super()._pre_apply_configuration(settings)  # call parent class's hook
+
     def connect(self, config: Optional[Dict[str, Any]] = None) -> None:
 
         if self.is_connected:
@@ -47,10 +59,11 @@ class FLIRCamera(GenICamCamera):
 
     def disconnect(self) -> None:
         if self.is_grabbing: self.stop_grabbing()
+
         if self._cam_ptr and self._is_connected: self._cam_ptr.DeInit()
 
         # PySpin's garbage collection requires deleting the camera pointer object
-        # to release the camera itself.
+        # to release the camera itself
         if hasattr(self, '_cam_ptr') and self._cam_ptr is not None:
             del self._cam_ptr
             self._cam_ptr = None
@@ -59,7 +72,7 @@ class FLIRCamera(GenICamCamera):
         print(f"Disconnected from FLIR camera: {self.unique_id}")
 
         # After releasing the camera, we must release the system instance reference
-        # that was acquired when this camera was created.
+        # that was acquired when this camera was created
         if hasattr(self, '_system') and self._system is not None:
             self._system.ReleaseInstance()
             self._system = None
@@ -85,12 +98,24 @@ class FLIRCamera(GenICamCamera):
         image_result = None
         try:
             image_result = self._cam_ptr.GetNextImage(timeout_ms)
+
             if image_result.IsIncomplete():
                 raise IOError(f"Grab failed: Image incomplete with status {image_result.GetImageStatus()}")
             else:
-                # IMPORTANT: GetNDArray returns a view. We must copy it!!
-                return image_result.GetNDArray().copy(), {'frame_number': image_result.GetFrameID(),
-                                                          'timestamp': image_result.GetTimeStamp()}
+                meta = {'frame_number': image_result.GetFrameID(), 'timestamp': image_result.GetTimeStamp()}
+
+                if self._polarisation_sensor:
+                    quad_0 = PySpin.ImageUtilityPolarization.ExtractPolarQuadrant(image_result, 0)
+                    image_arr = quad_0.GetNDArray().copy()
+                    print(image_arr.shape)
+                    meta['pixel_format_effective'] = 'BayerRG8'
+
+                else:
+                    # IMPORTANT: GetNDArray returns a view. We must copy it!!
+                    image_arr = image_result.GetNDArray().copy()
+
+                return image_arr, meta
+
         finally:
             if image_result: image_result.Release()
             if not self.is_grabbing: self._cam_ptr.EndAcquisition()

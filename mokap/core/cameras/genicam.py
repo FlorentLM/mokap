@@ -186,7 +186,14 @@ class GenICamCamera(AbstractCamera, abc.ABC):
 
     @pixel_format.setter
     def pixel_format(self, value: str):
-        self._pixel_format = self._set_feature_value('PixelFormat', value)
+        was_grabbing = self.is_grabbing
+        if was_grabbing:
+            self.stop_grabbing()
+        try:
+            self._pixel_format = self._set_feature_value('PixelFormat', value)
+        finally:
+            if was_grabbing:
+                self.start_grabbing()
 
     @property
     def hardware_triggered(self) -> bool:
