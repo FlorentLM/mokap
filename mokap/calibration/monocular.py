@@ -7,9 +7,9 @@ from numpy.typing import ArrayLike
 from scipy import stats as stats
 from scipy.spatial.distance import cdist
 from mokap.calibration.detectors import ChessboardDetector, CharucoDetector
-from mokap.utils import maybe_put
+from mokap.utils.jax_utils import maybe_put
 from mokap.utils.datatypes import ChessBoard, CharucoBoard
-from mokap.utils.geometry.camera import SENSOR_SIZES, estimate_camera_matrix
+from mokap.utils import SENSOR_SIZES, estimate_camera_matrix
 from mokap.utils.geometry.projective import project_points
 
 

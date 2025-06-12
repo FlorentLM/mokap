@@ -9,6 +9,7 @@ _AXIS_MAP = {
     'y': jnp.array([0.0, 1.0, 0.0]),
     'z': jnp.array([0.0, 0.0, 1.0]),
 }
+
 # Pre-allocate identity quaternion constant and zero translation
 ID_QUAT = jnp.array([1.0, 0.0, 0.0, 0.0], dtype=jnp.float32)
 ZERO_T = jnp.zeros((3,), dtype=jnp.float32)
@@ -18,7 +19,7 @@ ZERO_T = jnp.zeros((3,), dtype=jnp.float32)
 def rodrigues(rvec: jnp.ndarray) -> jnp.ndarray:
     """
     Converts a rotation vector (or several) to a rotation matrix (or several)
-    Analogous to cv2.Rodrigues (when a rvec is passed) but can be compiled with JAX
+    Analogous function to cv2.Rodrigues (when a rvec is passed)
 
     Args:
         rvec: rotation vectors (..., 3)
@@ -57,7 +58,7 @@ def rodrigues(rvec: jnp.ndarray) -> jnp.ndarray:
 def inverse_rodrigues(Rmat: jnp.ndarray) -> jnp.ndarray:
     """
     Converts a rotation matrix (or several) to a rotation vector (or several)
-    Analogous to cv2.Rodrigues (when a Rmat is passed) but can be compiled with JAX
+    Analogous function to cv2.Rodrigues (when a Rmat is passed)
 
     Args:
         Rmat: rotation matrices (..., 3, 3)
@@ -104,11 +105,7 @@ def extrinsics_matrix(
         E: Extrinsics matrix (or matrices) E (..., 4, 4)
     """
 
-    # make sure we have array inputs
-    rvec = jnp.asarray(rvec)
-    tvec = jnp.asarray(tvec)
-
-    # Convert rotation vector into rotation matrix (and jacobian)
+    # Convert rotation vector into rotation matrix
     R = rodrigues(rvec)         # (..., 3, 3)
     t = tvec[..., None]         # (..., 3, 1)
 
@@ -185,7 +182,7 @@ def fundamental_matrix(
     K_pair:     Tuple[jnp.ndarray, jnp.ndarray],
     r_pair:     Tuple[jnp.ndarray, jnp.ndarray],
     t_pair:     Tuple[jnp.ndarray, jnp.ndarray],
-    rank2_tol:  float = 1e-10
+    rank2_tol:  float = 1e-8
 ) -> jnp.ndarray:
     """
     Computes the fundamental matrix between two cameras given their intrinsics and extrinsics
@@ -260,58 +257,20 @@ batched_fundamental_matrices = jax.jit(
     static_argnums=(3,)      # rank2_tol should be static, it won't change at runtime
 )
 
+
 @jax.jit
-def invert_extrinsics(
-    rvec:   jnp.ndarray,
-    tvec:   jnp.ndarray
+def invert_rtvecs(
+        rvec: jnp.ndarray,
+        tvec: jnp.ndarray
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """
-    Inverts extrinsics vectors (camera-space -> world space or vice versa) [ Method 1 ]
-    (rvec, tvec) -> (rvec_inv, tvec_inv)
-
-    Args:
-        rvec: rotation vector(s) (..., 3)
-        tvec: translation vector(s) (..., 3)
-
-    Returns:
-        rvec_inv: inverted rotation vector(s) (..., 3)
-        tvec_inv: inverted rotation vector(s) (..., 3)
+    Inverts extrinsics vectors (rvec, tvec) -> (rvec_inv, tvec_inv)
     """
-
-    # invert rotations
-    R_mat = rodrigues(rvec)             # (..., 3, 3)
-    R_inv = jnp.linalg.inv(R_mat)       # (..., 3, 3)
-    # or R_mat.T because the matrix is orthonormal
-
-    # invert translations
-    tvec = jnp.asarray(tvec)[..., None]     # (..., 3, 1)
-    tvec_inv = (-R_inv @ tvec)[..., 0]      # (..., 3)
-
-    # back to axis-angle rotation vector
-    rvec_inv = inverse_rodrigues(R_inv)     # (..., 3)
+    R_mat = rodrigues(rvec)
+    R_inv = R_mat.transpose(-1, -2)
+    tvec_inv = (-R_inv @ tvec[..., None])[..., 0]
+    rvec_inv = inverse_rodrigues(R_inv)
     return rvec_inv, tvec_inv
-
-
-@jax.jit
-def invert_extrinsics_2(
-    rvec:   jnp.ndarray,
-    tvec:   jnp.ndarray
-) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    """
-    Inverts extrinsics vectors (camera-space -> world space or vice versa) [ Method 2 ]
-    (rvec, tvec) -> (rvec_inv, tvec_inv)
-
-    Args:
-        rvec: rotation vector(s) (..., 3)
-        tvec: translation vector(s) (..., 3)
-
-    Returns:
-        rvec_inv: inverted rotation vector(s) (..., 3)
-        tvec_inv: inverted rotation vector(s) (..., 3)
-    """
-    E = extrinsics_matrix(rvec, tvec)   # (..., 4, 4)
-    E_inv = jnp.linalg.inv(E)           # (..., 4, 4)
-    return extmat_to_rtvecs(E_inv)      # (..., 3), (..., 3)
 
 
 @jax.jit
@@ -346,96 +305,6 @@ def invert_extrinsics_matrix(
     else:
         # catching bad shapes early
         raise ValueError(f"Expected shape (..., 3, 4) or (..., 4, 4), got {last2}")
-
-
-@jax.jit
-def remap_rtvecs(
-    rvec:       jnp.ndarray,
-    tvec:       jnp.ndarray,
-    rvec_ref:   jnp.ndarray,
-    tvec_ref:   jnp.ndarray
-) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    """
-    Remaps extrinsics vectors to another origin's extrinsics vectors
-
-    Args:
-        rvec: rotation vector(s) (..., 3)
-        tvec: translation vector(s) (..., 3)
-        rvec_ref: rotation vector(s) (..., 3)
-        tvec_ref: translation vector(s) (..., 3)
-
-    Returns:
-        rvec_remap: remapped rotation vector(s) (..., 3)
-        tvec_remap: remapped translation vector(s) (..., 3)
-    """
-
-    E = extrinsics_matrix(rvec, tvec)               # (..., 4, 4)
-    E_ref = extrinsics_matrix(rvec_ref, tvec_ref)   # (..., 4, 4)
-
-    # E_new = E_ref @ E^-1
-    E_inv = jnp.linalg.inv(E)
-    E_new = jnp.einsum('...ij,...jk->...ik', E_ref, E_inv)
-
-    rvec_remap, tvec_remap = extmat_to_rtvecs(E_new)
-    return rvec_remap, tvec_remap
-
-
-@jax.jit
-def remap_extmat(
-    E:      jnp.ndarray,
-    E_ref:  jnp.ndarray
-) -> jnp.ndarray:
-    """
-    Re-expresses an extrinsics matrix (or matrices) in the coordinate frame of another origin
-
-    Args:
-       E: extrinsics matrix (or matrices) (..., 3, 4) or (..., 4, 4)
-       E_ref: reference extrinsics matrix (or matrices) (..., 3, 4) or (..., 4, 4)
-
-    Returns:
-       E_remap: remapped extrinsics matrix (or matrices) (..., 4, 4)
-    """
-
-    E_inv = invert_extrinsics_matrix(E)  # (..., 4, 4)
-
-    # pad origin_mat if necessary
-    def pad3x4(E3x4):
-        bottom = jnp.array([0.0, 0.0, 0.0, 1.0])
-        bottom = jnp.broadcast_to(bottom, E3x4.shape[:-2] + (1, 4))
-        return jnp.concatenate([E3x4, bottom], axis=-2)
-
-    is3x4 = (E_ref.shape[-2] == 3)
-    E_ref4 = jax.lax.cond(is3x4, pad3x4, lambda E: E, E_ref)
-
-    return E_ref4 @ E_inv
-
-
-@jax.jit
-def remap_points3d(
-    points3d:   jnp.ndarray,
-    rvec_ref:   jnp.ndarray,
-    tvec_ref:   jnp.ndarray
-) -> jnp.ndarray:
-    """
-    Transform 3D points under a new origin
-
-    Args:
-       points3d: points 3D coordinates to transform (..., 3)
-       rvec_ref: rotation vector(s) (..., 3)
-       tvec_ref: translation vector(s) (..., 3)
-
-
-    Returns:
-       points3d_remap: transformed points 3D coordinates  (..., 3)
-    """
-
-    E_ref = extrinsics_matrix(rvec_ref, tvec_ref)   # (..., 4, 4)
-    E_inv = jnp.linalg.inv(E_ref)       # (..., 4, 4)
-
-    # apply only R and t to each point
-    R_inv = E_inv[..., :3, :3]      # (..., 3, 3)
-    t_inv = E_inv[..., :3, 3]       # (..., 3)
-    return jnp.einsum('...ij,...j->...i', R_inv, points3d) + t_inv
 
 
 @partial(jax.jit, static_argnums=(1,))
@@ -492,7 +361,7 @@ def rotate_points3d(
 
 
 @partial(jax.jit, static_argnames=['axis'])
-def rotate_pose(
+def rotate_rtvecs(
         rvecs:          jnp.ndarray,
         tvecs:          jnp.ndarray,
         angle_degrees:  float,
@@ -571,19 +440,17 @@ def axisangle_to_quaternion(rvec: jnp.ndarray) -> jnp.ndarray:
 
     return jax.lax.cond(theta < eps, small_angle_quat, normal_quat)
 
-
-axisangle_to_quaternion_batched = jax.jit(
-    jax.vmap(axisangle_to_quaternion, in_axes=0, out_axes=0)
-)
+axisangle_to_quaternion_batched = jax.jit(jax.vmap(axisangle_to_quaternion))
 
 
 @jax.jit
-def quaternion_to_axisangle (q: jnp.ndarray) -> jnp.ndarray:
+def quaternion_to_axisangle(q: jnp.ndarray) -> jnp.ndarray:
     """
-    Convert one quaternion q = [w, x, y, z] to a rvec ∈ ℝ³ (axis–angle).
-    If sin(theta/2) ~ 0, it returns [0, 0, 0].
+    Convert one quaternion q = [w, x, y, z] to a rvec ∈ ℝ³ (axis–angle)
+    if sin(theta/2) ~ 0, it returns [0, 0, 0]
     """
     w, x, y, z = q
+
     # Clamp w into [-1, 1] to avoid NaNs
     w_clamped = jnp.clip(w, -1.0, 1.0)
     theta = 2.0 * jnp.arccos(w_clamped)
@@ -601,30 +468,49 @@ def quaternion_to_axisangle (q: jnp.ndarray) -> jnp.ndarray:
 
     return jax.lax.cond(s2 < (eps * eps), small_case, normal_case)
 
-
-quaternion_to_axisangle_batched = jax.jit(
-    jax.vmap(quaternion_to_axisangle , in_axes=0, out_axes=0)
-)
+quaternion_to_axisangle_batched = jax.jit(jax.vmap(quaternion_to_axisangle))
 
 
 @jax.jit
 def quaternion_inverse(q: jnp.ndarray) -> jnp.ndarray:
     """
-    Invert a unit quaternion q = [w, x, y, z].
-    For a unit quaternion, q^{-1} = [w, -x, -y, -z].
+    Invert a unit quaternion q = [w, x, y, z]
+    For a unit quaternion, q^{-1} = [w, -x, -y, -z]
     """
     w, x, y, z = q
     return jnp.array([w, -x, -y, -z], dtype=q.dtype)
 
+quaternion_inverse_batched = jax.jit(jax.vmap(quaternion_inverse))
+
 
 @jax.jit
-def rotate_vector(q: jnp.ndarray, v: jnp.ndarray) -> jnp.ndarray:
+def quaternion_multiply(q1: jnp.ndarray, q2: jnp.ndarray) -> jnp.ndarray:
+    """ Multiplies two quaternions q1 * q2 """
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
+    w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
+    x = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
+    y = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
+    z = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+    return jnp.array([w, x, y, z])
+
+
+@jax.jit
+def rotate_vector_by_quat(q: jnp.ndarray, v: jnp.ndarray) -> jnp.ndarray:
     """
-    Rotate a 3D vector v by the unit‐quaternion q.
+    Rotate a 3D vector v by the unit-quaternion q using q * v * q_inv
     """
-    # 1) turn q→axis–angle
-    rvec = quaternion_to_axisangle(q)
-    # 2) build R via Rodrigues
-    R = rodrigues(rvec)
-    # 3) apply
-    return R @ v
+    # Represent vector v as a pure quaternion [0, x, y, z]
+    v_quat = jnp.concatenate([jnp.array([0.0]), v])
+
+    # Compute the rotated vector
+    q_inv = quaternion_inverse(q)
+    v_rot_quat = quaternion_multiply(q, quaternion_multiply(v_quat, q_inv))
+
+    # Return the vector part
+    return v_rot_quat[1:]
+
+# vmap over v, but not q (to rotate multiple vectors by one quaternion)
+rotate_vectors_by_quat = jax.jit(jax.vmap(rotate_vector_by_quat, in_axes=(None, 0)))
+# vmap over both q and v (to rotate multiple vectors by multiple quaternions)
+rotate_vectors_by_quats = jax.jit(jax.vmap(rotate_vector_by_quat, in_axes=(0, 0)))

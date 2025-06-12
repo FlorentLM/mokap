@@ -1,17 +1,17 @@
 import sys
 import os
-import subprocess
-from typing import List, Optional, Set, Tuple, Union
 import colorsys
-import cv2
-from pathlib import Path
-import jax
 import numpy as np
-from alive_progress import alive_bar
 
 from typing import TYPE_CHECKING
+
+from numpy._typing import ArrayLike
+
 if TYPE_CHECKING:   # TODO: This check might be useless now after restructuring?
-    from mokap.utils.datatypes import ChessBoard, CharucoBoard
+    pass
+
+
+# TODO: Functions in this file need to be moved
 
 
 class CallbackOutputStream:
@@ -91,28 +91,6 @@ def hls_to_hex(*hls):
     return new_hex
 
 
-def USB_on() -> None:
-    subprocess.Popen(["uhubctl", "-l", "4-2", "-a", "1"], stdout=subprocess.PIPE)
-
-
-def USB_off() -> None:
-    subprocess.Popen(["uhubctl", "-l", "4-2", "-a", "0"], stdout=subprocess.PIPE)
-
-
-def USB_status() -> int:
-    ret = subprocess.Popen(["uhubctl", "-l", "4-2"], stdout=subprocess.PIPE)
-    out, error = ret.communicate()
-    if 'power' in str(out):
-        return 0
-    else:
-        return 1
-
-
-def ensure_list(s: Optional[str | List[str] | Tuple[str] | Set[str]]) -> List[str]:
-    # Ref: https://stackoverflow.com/a/56641168/
-    return s if isinstance(s, list) else list(s) if isinstance(s, (tuple, set)) else [] if s is None else [s]
-
-
 def pretty_size(value: int, verbose=False, decimal=False) -> str:
     """ Get sizes in strings in human-readable format """
 
@@ -139,180 +117,123 @@ def pretty_size(value: int, verbose=False, decimal=False) -> str:
     return f"{int(amount)} {unit}" if amount.is_integer() else f"{amount:.2f} {unit}"
 
 
-def probe_video(video_path: Path | str):
-    video_path = Path(video_path)
-
-    if not video_path.exists():
-        raise FileNotFoundError(video_path.resolve())
-
-    cap = cv2.VideoCapture(video_path.as_posix())
-    r, frame = cap.read()
-    if not r:
-        raise IOError(f"Can't read video {video_path.resolve()}")
-
-    nb_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    cap.release()
-
-    return frame.shape, nb_frames
-
-
-def generate_board_svg(board_params:    Union["ChessBoard", "CharucoBoard"],
-                       file_path:       Union[Path, str],
-                       multi_size:      bool = False,
-                       factor:          float = 2.0,
-                       dpi:             int = 1200):
-
-    board_rows = board_params.rows
-    board_cols = board_params.cols
-    square_length_mm = board_params.square_length
-
-    # We check like this to avoid circular imports
-    if board_params.kind == 'charuco':
-        is_charuco = True
-    else:
-        is_charuco = False
-
-    if is_charuco:
-        marker_bits = board_params.markers_size
-        marker_length_mm = board_params.marker_length
-        markers_dictionary = board_params.aruco_dict
-
-        mk_l_bits = marker_bits + 2
-        sq_l_bits = square_length_mm / marker_length_mm * mk_l_bits
-        if not int(sq_l_bits) == sq_l_bits:
-            raise AssertionError('Error creating board svg :(')         # TODO make sure this never happens
-        else:
-            sq_l_bits = int(sq_l_bits)
-
-        # Ratios to convert between mm and 'bits' (i.e. pixels ...but not really, since we work with svg here)
-        mm_to_bits = sq_l_bits / square_length_mm
-        margin = int((sq_l_bits - mk_l_bits) / 2)
-
-    else:
-        # For classic chessboard, no markers so 1 'bit' = 1 entire square
-        # 1 bit = 1 square = square_length_mm mm
-        sq_l_bits = 1
-        mm_to_bits = 1.0 / square_length_mm     # 1 mm = 1 / square_length_mm bits
-        margin = 0
-
-    chessboard_arr = (~np.indices((board_rows, board_cols)).sum(axis=0) % 2).astype(bool)
-
-    A4_mm = np.array([210, 297])
-    A4_size_bits = A4_mm * mm_to_bits
-
-    text_h_bits = 3.0 * mm_to_bits
-    board_size_bits = np.array([sq_l_bits * board_cols, sq_l_bits * board_rows])
-
-    # If only one size, use the one that comes with the board object and position in the centre of the page
-    if is_charuco:
-        filename = f'Charuco{board_rows}x{board_cols}_markers{marker_bits}x{marker_bits}-margin{margin}.svg'
-    else:
-        filename = f'Chessboard{board_rows}x{board_cols}.svg'
-
-    if multi_size:
-        filename = 'Multi_' + filename
-
-        bleed = 15.0 * mm_to_bits
-        spacing = 25.0 * mm_to_bits
-        text_width = 30.0 * mm_to_bits
-
-        # Compute the scales to generate, from 1/4 of the page width, to the theoretical smallest with current dpi
-        min_scale = 1 / dpi * 25.4 * mm_to_bits   # Theoretical smallest marker size with visible bits
-        max_scale = A4_size_bits[1] / 8 / board_size_bits[1]
-
-        nb_scales = int(np.ceil(np.log(max_scale / min_scale) / np.log(factor)) + 1)
-
-        scales = np.array([max_scale / (factor ** i) for i in range(nb_scales)])
-
-        # Position the boards on the page
-        positions = [np.array([bleed, bleed])]
-
-        # These are used when one page width is full
-        x_ref, y_ref = positions[0]
-        scale_ref = scales[0]
-
-        for i in range(1, nb_scales):
-            x, y = positions[i-1]
-            next_x = max(x + text_width + spacing, x + board_size_bits[0] * scales[i-1] + spacing)
-            if max(next_x + text_width, next_x + board_size_bits[0] * scales[i]) < A4_size_bits[0] - bleed:
-                next_pos = np.array([next_x, y_ref])
-            else:
-                next_y = y_ref + board_size_bits[1] * scale_ref + text_h_bits * 4 + spacing
-                next_pos = np.array([x_ref, next_y])
-                x_ref, y_ref = next_pos
-                scale_ref = scales[i]
-            positions.append(next_pos)
-    else:
-        scales = [1.0]
-        positions = [A4_size_bits / 2.0 - board_size_bits / 2.0]    # page centre
-
-    # Start svg content
-    svg_lines = [
-        f'<svg version="1.1" width="100%" height="100%" viewBox="0 0 {A4_size_bits[0]} {A4_size_bits[1]}" xmlns="http://www.w3.org/2000/svg">',
-        f' <rect id="background" x="0" y="0" width="{A4_size_bits[0]}" height="{A4_size_bits[1]}" fill="none" stroke="#000000" stroke-width="0.1"/>'
-    ]
-
-    for board_pos, board_scale in zip(positions, scales):
-
-        # Container group with charuco board, cutting guides and info text
-        svg_lines.append(f'  <g id="container" transform="translate({board_pos[0]}, {board_pos[1]})">')
-
-        # Add cutting guides
-        svg_lines.append(f'    <line x1="{-2 * mm_to_bits}" y1="{-2 * mm_to_bits}" x2="{-2 * mm_to_bits}" y2="{-7 * mm_to_bits}" stroke="black" stroke-width="{0.1 * mm_to_bits}" />')
-        svg_lines.append(f'    <line x1="{-7 * mm_to_bits}" y1="{-2 * mm_to_bits}" x2="{-2 * mm_to_bits}" y2="{-2 * mm_to_bits}" stroke="black" stroke-width="{0.1 * mm_to_bits}" />')
-        svg_lines.append(f'    <line x1="{board_size_bits[0] * board_scale + 2 * mm_to_bits}" y1="{-2 * mm_to_bits}" x2="{board_size_bits[0] * board_scale + 2 * mm_to_bits}" y2="{-7 * mm_to_bits}" stroke="black" stroke-width="{0.1 * mm_to_bits}" />')
-        svg_lines.append(f'    <line x1="{board_size_bits[0] * board_scale + 2 * mm_to_bits}" y1="{-2 * mm_to_bits}" x2="{board_size_bits[0] * board_scale + 7 * mm_to_bits}" y2="{-2 * mm_to_bits}" stroke="black" stroke-width="{0.1 * mm_to_bits}" />')
-        svg_lines.append(f'    <line x1="{-2 * mm_to_bits}" y1="{board_size_bits[1] * board_scale + 2 * mm_to_bits}" x2="{-2 * mm_to_bits}" y2="{board_size_bits[1] * board_scale + 7 * mm_to_bits}" stroke="black" stroke-width="{0.1 * mm_to_bits}" />')
-        svg_lines.append(f'    <line x1="{-7 * mm_to_bits}" y1="{board_size_bits[1] * board_scale + 2 * mm_to_bits}" x2="{-2 * mm_to_bits}" y2="{board_size_bits[1] * board_scale + 2 * mm_to_bits}" stroke="black" stroke-width="{0.1 * mm_to_bits}" />')
-        svg_lines.append(f'    <line x1="{board_size_bits[0] * board_scale + 2 * mm_to_bits}" y1="{board_size_bits[1] * board_scale + 2 * mm_to_bits}" x2="{board_size_bits[0] * board_scale + 2 * mm_to_bits}" y2="{board_size_bits[1] * board_scale + 7 * mm_to_bits}" stroke="black" stroke-width="{0.1 * mm_to_bits}" />')
-        svg_lines.append(f'    <line x1="{board_size_bits[0] * board_scale + 2 * mm_to_bits}" y1="{board_size_bits[1] * board_scale + 2 * mm_to_bits}" x2="{board_size_bits[0] * board_scale + 7 * mm_to_bits}" y2="{board_size_bits[1] * board_scale + 2 * mm_to_bits}" stroke="black" stroke-width="{0.1 * mm_to_bits}" />')
-
-        # subcontainer group with white background
-        svg_lines.append(f'    <g id="subcontainer" transform="scale({board_scale})">')
-        svg_lines.append(f'      <rect id="background" x="0" y="0" width="{board_size_bits[0]}" height="{board_size_bits[1]}" fill="#ffffff"/>')
-
-        # Chessboard group
-        svg_lines.append('      <g id="chessboard">')
-        cc, rr = np.where(chessboard_arr)
-        for i, rc in enumerate(zip(rr, cc)):
-            svg_lines.append(f'        <rect id="{i}" x="{rc[0] * sq_l_bits}" y="{rc[1] * sq_l_bits}" width="{sq_l_bits}" height="{sq_l_bits}" fill="#000000"/>')
-        svg_lines.append('      </g>')
-
-        if is_charuco:
-            # Aruco markers group
-            svg_lines.append('      <g id="aruco_markers">')
-            cc, rr = np.where(~chessboard_arr)
-            for i, rc in enumerate(zip(rr, cc)):
-                marker = markers_dictionary.generateImageMarker(i, mk_l_bits, mk_l_bits).astype(bool)
-                py, px = np.where(marker)
-                svg_lines.append(f'        <g id="{i}">')
-                svg_lines.append(
-                    f'          <rect x="{rc[0] * sq_l_bits + margin}" y="{rc[1] * sq_l_bits + margin}" width="{mk_l_bits}" height="{mk_l_bits}" fill="#000000"/>')
-                for x, y in zip(px, py):
-                    svg_lines.append(f'          <rect x="{rc[0] * sq_l_bits + x + margin}" y="{rc[1] * sq_l_bits + y + margin}" width="1" height="1" fill="#ffffff"/>')
-                svg_lines.append('        </g>')
-
-            svg_lines.append('      </g>')
-        svg_lines.append('    </g>')
-
-        # Add text with sizes
-        bsize_text = f'{board_scale * square_length_mm * board_rows:.1f} x {board_scale * square_length_mm * board_cols:.1f} mm'
-        sqsize_text = f'(squares: {board_scale * square_length_mm:.3f} mm)'
-        if is_charuco:
-            msize_text = f'(markers: {board_scale * marker_length_mm:.3f} mm)'
-        svg_lines.append(f'    <text x="0" y="{board_size_bits[1] * board_scale + text_h_bits * 4}" font-family="monospace" font-size="{text_h_bits}" font-weight="bold">{bsize_text}</text>')
-        svg_lines.append(f'    <text x="0" y="{board_size_bits[1] * board_scale + text_h_bits * 5}" font-family="monospace" font-size="{text_h_bits}" font-weight="bold">{sqsize_text}</text>')
-        if is_charuco:
-            svg_lines.append(f'    <text x="0" y="{board_size_bits[1] * board_scale + text_h_bits * 6}" font-family="monospace" font-size="{text_h_bits}" font-weight="bold">{msize_text}</text>')
-        svg_lines.append('  </g>')
-
-    svg_lines.append('</svg>')
-
-    file_path.mkdir(parents=True, exist_ok=True)    # TODO - check if user passed the file name in there...
-    with open(file_path / filename, 'w') as f:
-        f.write('\n'.join(svg_lines))
-        print(f'Saved calibration board as {file_path / filename}')
+# This can be used to estimate thepretical camera matrices
+# Values from https://www.digicamdb.com/sensor-sizes/
+SENSOR_SIZES = {'1/4"': [3.20, 2.40],
+                '1/3.6"': [4, 3],
+                '1/3.4"': [4.23, 3.17],
+                '1/3.2"': [4.5, 3.37],
+                '1/3"': [4.8, 3.6],
+                '1/2.9"': [4.96, 3.72],
+                '1/2.7"': [5.33, 4],
+                '1/2.5"': [5.75, 4.32],
+                '1/2.4"': [5.90, 4.43],
+                '1/2.35"': [6.03, 4.52],
+                '1/2.33"': [6.08, 4.56],
+                '1/2.3"': [6.16, 4.62],
+                '1/2"': [6.4, 4.8],
+                '1/1.9"': [6.74, 5.05],
+                '1/1.8"': [7.11, 5.33],
+                '1/1.76"': [7.27, 5.46],
+                '1/1.75"': [7.31, 5.49],
+                '1/1.72"': [7.44, 5.58],
+                '1/1.7"': [7.53, 5.64],
+                '1/1.65"': [7.76, 5.81],
+                '1/1.63"': [7.85, 5.89],
+                '1/1.6"': [8, 6],
+                '8.64 x 6 mm': [8.64, 6],
+                '2/3"': [8.8, 6.6],
+                '10.82 x 7.52 mm': [10.82, 7.52],
+                '1"': [13.2, 8.8],
+                '14 x 9.3 mm': [14, 9.3],
+                'Four Thirds': [17.3, 13],
+                '18.1 x 13.5 mm': [18.1, 13.5],
+                '1.5"': [18.7, 14],
+                '20.7 x 13.8 mm': [20.7, 13.8],
+                '21.5 x 14.4 mm': [21.5, 14.4],
+                '22.2 x 14.8 mm': [22.2, 14.8],
+                '22.3 x 14.9 mm': [22.3, 14.9],
+                '22.4 x 15 mm': [22.4, 15],
+                '22.5 x 15 mm': [22.5, 15],
+                '22.7 x 15.1 mm': [22.7, 15.1],
+                '22.8 x 15.5 mm': [22.8, 15.5],
+                '23.1 x 15.4 mm': [23.1, 15.4],
+                '23 x 15.5 mm': [23, 15.5],
+                '23.2 x 15.4 mm': [23.2, 15.4],
+                '23.3 x 15.5 mm': [23.3, 15.5],
+                '23.4 x 15.6 mm': [23.4, 15.6],
+                '23.5 x 15.6 mm': [23.5, 15.6],
+                '23.7 x 15.5 mm': [23.7, 15.5],
+                '23.6 x 15.6 mm': [23.6, 15.6],
+                '23.5 x 15.7 mm': [23.5, 15.7],
+                '23.7 x 15.6 mm': [23.7, 15.6],
+                '23.6 x 15.7 mm': [23.6, 15.7],
+                '23.7 x 15.7 mm': [23.7, 15.7],
+                '23.6 x 15.8 mm': [23.6, 15.8],
+                '24 x 16 mm': [24, 16],
+                '27 x 18 mm': [27, 18],
+                '27.65 x 18.43 mm': [27.65, 18.43],
+                '27.9 x 18.6 mm': [27.9, 18.6],
+                '28.7 x 18.7 mm': [28.7, 18.7],
+                '28.7 x 19.1 mm': [28.7, 19.1],
+                '35.6 x 23.8 mm': [35.6, 23.8],
+                '35.7 x 23.8 mm': [35.7, 23.8],
+                '35.8 x 23.8 mm': [35.8, 23.8],
+                '35.8 x 23.9 mm': [35.8, 23.9],
+                '35.9 x 23.9 mm': [35.9, 23.9],
+                '36 x 23.9 mm': [36, 23.9],
+                '35.9 x 24 mm': [35.9, 24],
+                '36 x 24 mm': [36, 24],
+                '45 x 30 mm': [45, 30],
+                '44 x 33 mm': [44, 33]
+                }
 
 
-def maybe_put(x):
-    return jax.device_put(x) if x is not None else None
+def estimate_camera_matrix(
+    f_mm:           float,
+    sensor_wh_mm:   ArrayLike,
+    image_wh_px:    ArrayLike
+) -> np.ndarray:
+    """
+    Estimate the camera matrix K (a 3x3 matrix of the camera intrinsics parameters) using real-world values:
+    focal length (mm), sensor size (mm) and image size (px)
+
+        [ fx, 0, cx ]
+    K = [ 0, fy, cy ]
+        [ 0,  0,  1 ]
+
+    fx and fy (in pixels) are the focal lengths along the x and y axes
+        since they are estimated from the real-world focal length, they are identical
+
+    cx and cy are the coordinates of the principal point (in pixels)
+        This corresponds to the point where the optical axis intersects the image plane
+        and is usually in the centre of the frame
+
+    Args:
+        f_mm: focal length in mm
+        sensor_wh_mm: sensor size in mm
+        image_wh_px: image size in px
+
+    Returns:
+        camera_matrix: the camera matrix K (as a jax array)
+    """
+
+    sensor_w, sensor_h = sensor_wh_mm
+    image_w, image_h = image_wh_px[:2]
+
+    pixel_size_x = sensor_w / image_w
+    pixel_size_y = sensor_h / image_h
+
+    fx = f_mm / pixel_size_x
+    fy = f_mm / pixel_size_y
+
+    cx = image_w / 2.0
+    cy = image_h / 2.0
+
+    camera_matrix = np.array([
+        [fx,   0.0, cx],
+        [0.0,  fy,  cy],
+        [0.0,  0.0, 1.0]
+    ], dtype=np.float32)
+
+    return camera_matrix

@@ -5,7 +5,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 from typing import Optional, Union
 from pathlib import Path
-from mokap.utils import generate_board_svg
+from mokap.utils.fileio import generate_board_svg
 from mokap.utils import fileio
 
 

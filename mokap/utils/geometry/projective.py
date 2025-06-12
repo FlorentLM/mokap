@@ -2,7 +2,7 @@ from typing import Tuple, Union, Optional
 import jax
 from jax import numpy as jnp
 from mokap.utils.geometry.transforms import rodrigues, extrinsics_matrix, invert_extrinsics_matrix, projection_matrix
-from mokap.utils.geometry.utils import pad_dist_coeffs
+from mokap.utils.jax_utils import pad_to_length
 
 _eps = 1e-8
 
@@ -26,7 +26,7 @@ def distortion(
         dy: tangential distortion in y
     """
 
-    k1, k2, p1, p2, k3, k4, k5, k6 = pad_dist_coeffs(dist_coeffs)
+    k1, k2, p1, p2, k3, k4, k5, k6 = pad_to_length(dist_coeffs.ravel(), 8)
     r2 = x * x + y * y
 
     # TODO: We prob want to support the rational model too
@@ -77,7 +77,7 @@ def project_points(
     cx, cy = camera_matrix[0, 2], camera_matrix[1, 2]
     return jnp.stack([fx * x_d + cx, fy * y_d + cy], axis=-1)
 
-
+# batched version for projecting a set of points into multiple cameras
 project_multiple = jax.jit(
     jax.vmap(project_points,
              in_axes=(None, # object_points is shared
@@ -146,7 +146,7 @@ def undistort_points(
     unsistorted_points = pts_p[..., :2]       # (..., 2)
     return unsistorted_points
 
-
+# undistort a set of points in multiple cameras
 undistort_multiple = jax.jit(
     jax.vmap(undistort_points,
              in_axes=(
@@ -212,7 +212,7 @@ def back_projection(
     out_shape = original_shape[:-1] + (3,)
     return world_pts.reshape(out_shape)
 
-
+# back-project a set of points into multiple cameras
 back_projection_batched = jax.jit(
     jax.vmap(
         back_projection,
@@ -223,191 +223,140 @@ back_projection_batched = jax.jit(
 
 
 @jax.jit
-def triangulate_one(
-    points2d:       jnp.ndarray,
-    P_mats:         jnp.ndarray,
-    weight:         float = 1.0,
-    lambda_reg:     float = 0.0
+def triangulate_points_from_projections(
+        points2d: jnp.ndarray,  # (C, N, 2)
+        P_mats: jnp.ndarray,  # (C, 3, 4)
+        weights: Optional[jnp.ndarray] = None,  # (C, N)
+        lambda_reg: float = 0.0
 ) -> jnp.ndarray:
     """
-    Triangulate one point from C 2D observations and their corresponding projection matrices
-
-        For each i-th 2D point and its corresponding camera matrix, two rows are added to matrix A:
-
-               [ u_1 * P_1_3 - P_1_1 ]
-               [ v_1 * P_1_3 - P_1_2 ]
-        A =    [ u_2 * P_2_3 - P_2_1 ]
-               [ v_2 * P_2_3 - P_2_2 ]
-               [          ...        ]
-               [          ...        ]
-               [          ...        ]
-
-        where P_i_j denotes the j-th row of the i-th camera matrix
-
-    We use SVD to solve the system AX=0. The solution X is the last row of V^t from SVD
-
-    See https://people.math.wisc.edu/~chr/am205/g_act/svd_slides.pdf for more info and sources
+    Triangulates N 3D points from C 2D observations using their corresponding projection matrices
+    This is the core batched triangulation function using SVD
 
     Args:
-        points2d: the 2D observations from C cameras (C, 2)
+        points2d: N 2D points from C cameras (C, N, 2), NaN values are ignored
         P_mats: C projection matrices (C, 3, 4)
-        weight: weight for the 2D points confidence (C,) or None
-        lambda_reg: Regularisation term for Tikhonov Regularisation
+        weights: Optional confidence weights for each 2D observation (C, N)
+                 If None, visibility is inferred from NaNs in points2d and assigned a weight of 1.0
+                 A weight of 0 indicates an invalid/invisible point
+        lambda_reg: Regularisation term for Tikhonov Regularisation.
 
     Returns:
-        point3d: the 3D coordinates for the point (3,)
-
-    """
-
-    w = jnp.atleast_2d(weight)[:, None]
-
-    P0, P1, P2 = P_mats[:, 0, :], P_mats[:, 1, :], P_mats[:, 2, :]
-    u, v = points2d[:, 0], points2d[:, 1]
-
-    # build the (2*C, 4) A-matrix for a single point
-    r1 = (u[:, None] * P2 - P0) * w               # (C, 4)
-    r2 = (v[:, None] * P2 - P1) * w               # (C, 4)
-    A = jnp.concatenate([r1, r2], axis=0)   # (2*C, 4)
-
-    if lambda_reg != 0.0:
-        ATA = A.T@A + lambda_reg * jnp.eye(4)
-        _, _, Vt = jnp.linalg.svd(ATA, full_matrices=False)
-    else:
-        _, _, Vt = jnp.linalg.svd(A, full_matrices=False)
-
-    X = Vt[-1]
-    X = X / (X[-1] + _eps)
-    point3d = X[:3]
-    return point3d  # (3,)
-
-
-@jax.jit
-def triangulate_svd(
-    points2d:   jnp.ndarray,
-    P_mats:     jnp.ndarray,
-    weights:    Optional[jnp.ndarray] = None,
-    lambda_reg: float = 0.0
-) -> jnp.ndarray:
-    """
-    Triangulate 3D points from multiple 2D points and their corresponding projection matrices
-
-        For each i-th 2D point and its corresponding camera matrix, two rows are added to matrix A:
-
-               [ u_1 * P_1_3 - P_1_1 ]
-               [ v_1 * P_1_3 - P_1_2 ]
-        A =    [ u_2 * P_2_3 - P_2_1 ]
-               [ v_2 * P_2_3 - P_2_2 ]
-               [          ...        ]
-               [          ...        ]
-               [          ...        ]
-
-        where P_i_j denotes the j-th row of the i-th camera matrix
-
-    We use SVD to solve the system AX=0. The solution X is the last row of V^t from SVD
-
-    See https://people.math.wisc.edu/~chr/am205/g_act/svd_slides.pdf for more info and sources
-
-    Args:
-        points2d: N 2D points from C cameras (C, N, 2)
-        P_mats: C projection matrices (C, 3, 4)
-        weights: weights for 2D points confidences (C, N, 3) or None
-        lambda_reg: Regularisation term for Tikhonov Regularisation
-
-    Returns:
-        points3d: N 3D points coordinates (N, 3)
-
+        points3d: N 3D points coordinates (N, 3). Unreliable points (seen by < 2 cameras) are NaN
     """
 
     # We want to get rid of invalid values
-    valid_observations = jnp.isfinite(points2d[..., 0]) & jnp.isfinite(points2d[..., 1])  # (C, N)
-    # how many cams saw each point
+    valid_observations = jnp.isfinite(points2d[..., 0])  # (C, N)
     n_obs = jnp.sum(valid_observations, axis=0)  # (N,)
 
-    #so we zero-fill u and v
-    u = jnp.where(valid_observations, points2d[..., 0], 0.0)  # (C, N)
-    v = jnp.where(valid_observations, points2d[..., 1], 0.0)  # (C, N)
+    u = jnp.where(valid_observations, points2d[..., 0], 0.0)
+    v = jnp.where(valid_observations, points2d[..., 1], 0.0)
+
     if weights is None:
-        w = valid_observations.astype(points2d.dtype)            # (C, N)
+        w = valid_observations.astype(points2d.dtype)
     else:
         weights = jnp.asarray(weights)
-        w = jnp.where(valid_observations, weights, 0.0)  # and also zero out any weight where data was invalid
+        w = jnp.where(valid_observations, weights, 0.0)
 
-    # pull out the three rows of each Projection matrix and insert a dummy 'point' axis
-    P0 = P_mats[:, 0, :][:, None, :]  # (C, 1, 4)
-    P1 = P_mats[:, 1, :][:, None, :]  # (C, 1, 4)
-    P2 = P_mats[:, 2, :][:, None, :]  # (C, 1, 4)
+    P0 = P_mats[:, None, 0, :]  # (C, 1, 4)
+    P1 = P_mats[:, None, 1, :]  # (C, 1, 4)
+    P2 = P_mats[:, None, 2, :]  # (C, 1, 4)
 
-    u_exp = u[:, :, None]  # (C, N, 1)
-    v_exp = v[:, :, None]  # (C, N, 1)
-    w_exp = w[:, :, None]  # (C, N, 1)
+    u_exp = u[..., None]  # (C, N, 1)
+    v_exp = v[..., None]  # (C, N, 1)
+    w_exp = w[..., None]  # (C, N, 1)
 
-    # Build all the A's at once
-    # row1_i(p) = u[i,p] * P2[i] - P0[i]
-    # row2_i(p) = v[i,p] * P2[i] - P1[i]
-    # then each multiplied by w[i, p]
     r1 = (u_exp * P2 - P0) * w_exp
     r2 = (v_exp * P2 - P1) * w_exp
 
-    # stack the u and v contributions, then transpose -> (N, 2*C, 4)
-    A = jnp.concatenate([r1, r2], axis=0).transpose(1, 0, 2)
+    A = jnp.concatenate([r1, r2], axis=0).transpose(1, 0, 2)  # (N, 2*C, 4)
 
-    # Batched SVD
     if lambda_reg != 0.0:
-        # build A^T A + λI for each point
+        # build A^T A + lambda I for each point
         ATA = jnp.einsum('pni,pnj->pij', A, A) + lambda_reg * jnp.eye(4)
         _, _, Vh = jnp.linalg.svd(ATA, full_matrices=False)
-        Xh = Vh[:, -1, :]      # (N, 4)
     else:
         _, _, Vh = jnp.linalg.svd(A, full_matrices=False)
-        Xh = Vh[:, -1, :]
 
     # Dehomogenize
+    Xh = Vh[:, -1, :]  # (N, 4)
     Xh = Xh / (Xh[:, 3:4] + _eps)
-    points3d = Xh[:, :3]    # (N, 3)
+    points3d = Xh[:, :3]
 
-    # we only trust points seen by 2 cameras or more so we set the unreliable ones back to nan
-    reliable = n_obs >= 2  # (N,)
-    reliable = reliable[:, None]
-    points3d = jnp.where(reliable, points3d, jnp.nan)
-    return points3d
+    reliable = (n_obs >= 2)[:, None]
+    return jnp.where(reliable, points3d, jnp.nan)
 
 
-def triangulation(
-        points2d:           jnp.ndarray,
-        visibility_mask:    jnp.ndarray,
-        rvecs_world:        jnp.ndarray,
-        tvecs_world:        jnp.ndarray,
-        camera_matrices:    jnp.ndarray,
-        dist_coeffs:        jnp.ndarray,
+@jax.jit
+def triangulate(
+        points2d: jnp.ndarray,  # (C, N, 2)
+        camera_matrices: jnp.ndarray,  # (C, 3, 3)
+        dist_coeffs: jnp.ndarray,  # (C, <=8)
+        rvecs: jnp.ndarray,  # (C, 3)
+        tvecs: jnp.ndarray,  # (C, 3)
+        weights: Optional[jnp.ndarray] = None  # (C, N)
 ) -> jnp.ndarray:
     """
-    Triangulate points 2D seen by C cameras
+    Triangulates 3D points from 2D observations across C cameras
+
+    High-level wrapper that handles undistortion, projection matrix calculation,
+    and calls the core triangulation solver
 
     Args:
-        points2d: points 2D detected by the C cameras (C, N, 2)
-        visibility_mask: visibility mask for points 2D (C, N)
-        rvecs_world: C rotation vectors (C, 3)
-        tvecs_world: C translation vectors (C, 3)
+        points2d: Points 2D detected by the C cameras (C, N, 2)
         camera_matrices: C camera matrices (C, 3, 3)
-        dist_coeffs: C distortion coefficients (C, ≤8)
-
+        dist_coeffs: C distortion coefficients (C, <=8)
+        rvecs: C rotation vectors (world-to-camera) (C, 3)
+        tvecs: C translation vectors (world-to-camera) (C, 3)
+        weights: Optional confidence weights for each 2D observation (C, N)
+                 If None, visibility is inferred from NaNs in points2d and used as a binary weight
     Returns:
         points3d: N 3D coordinates (N, 3)
-
     """
 
-    # TODO: we probably want to get rid of this wrapper and use P matrices anywhere we can
+    # Undistort points first
+    pts2d_ud = undistort_multiple(points2d, camera_matrices, dist_coeffs)
 
-    # this is converted back to a float array because the triangulate_svd accepts actual weights
-    # we can multiply the visibility weights by a confidence score
-    visibility_mask = visibility_mask.astype(jnp.float32)
+    # if no mask is provided, infer it
+    if weights is None:
+        # undistortion might also introduce NaNs, so using the original points2d allows to be exhaustive
+        weights = jnp.isfinite(points2d[..., 0])
+
+    weights = weights.astype(jnp.float32)
 
     # Recover camera-centric extrinsics matrices and compute the projection matrices
-    E_all = extrinsics_matrix(rvecs_world, tvecs_world)    # (C, 4, 4)
-    E_inv_all = invert_extrinsics_matrix(E_all)            # (C, 4, 4)
-    P_all = projection_matrix(camera_matrices, E_inv_all)  # (C, 3, 4)
+    E_all = extrinsics_matrix(rvecs, tvecs)
+    P_all = projection_matrix(camera_matrices, E_all)
 
-    pts2d_ud = undistort_multiple(points2d, camera_matrices, dist_coeffs)
-    pts3d = triangulate_svd(pts2d_ud, P_all, weights=visibility_mask)  # (N, 3)
-
+    # Call the core, batched triangulation function
+    pts3d = triangulate_points_from_projections(pts2d_ud, P_all, weights=weights)
     return pts3d
+
+
+@jax.jit
+def find_rays_intersection_3d(
+    ray_origins:     jnp.ndarray, # (C, 3)
+    ray_directions:  jnp.ndarray  # (C, 3)
+) -> jnp.ndarray:
+    """
+    Finds the 3D point that minimizes the sum of squared distances to a set of rays
+    Each ray is defined by an origin point and a direction vector
+
+    Args:
+        ray_origins: C origin points for C rays (C, 3)
+        ray_directions: C unit direction vectors for C rays (C, 3)
+
+    Returns:
+        intersection_point: The point of closest intersection (3,)
+    """
+
+    D = ray_directions[..., :, None]
+    A = jnp.eye(3)[None, ...] - D @ D.transpose(0, 2, 1)
+
+    C = ray_origins[..., :, None]
+    b = (A @ C)[..., 0]
+
+    A_stack = A.reshape(-1, 3)
+    b_stack = b.reshape(-1)
+    intersection_point, *_ = jnp.linalg.lstsq(A_stack, b_stack, rcond=None)
+    return intersection_point

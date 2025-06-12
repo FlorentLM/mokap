@@ -6,9 +6,9 @@ from jax import numpy as jnp
 from numpy.typing import ArrayLike
 from mokap.calibration import bundle_adjustment
 from mokap.utils.datatypes import DetectionPayload
-from mokap.utils.geometry.stats import filter_rt_samples, quaternion_average
+from mokap.utils.geometry.fitting import quaternion_average, filter_rt_samples
 from mokap.utils.geometry.transforms import extrinsics_matrix, extmat_to_rtvecs, axisangle_to_quaternion_batched, \
-    quaternion_to_axisangle, invert_extrinsics_matrix, invert_extrinsics
+    quaternion_to_axisangle, invert_extrinsics_matrix, invert_rtvecs
 
 
 class MultiviewCalibrationTool:
@@ -227,7 +227,7 @@ class MultiviewCalibrationTool:
             total_pts = 0
             for cam_idx, _, pts2D, ids in recomputed_entries:
                 # Project board points into this camera's view
-                r_w2c, t_w2c = invert_extrinsics(self._rvecs_cam2world[cam_idx], self._tvecs_cam2world[cam_idx])
+                r_w2c, t_w2c = invert_rtvecs(self._rvecs_cam2world[cam_idx], self._tvecs_cam2world[cam_idx])
                 obj_pts_world = world_pts[ids]
                 proj_pts, _ = cv2.projectPoints(
                     np.asarray(obj_pts_world).reshape(-1, 1, 3),
@@ -266,7 +266,7 @@ class MultiviewCalibrationTool:
                     # Get the world->camera transform for this camera
                     current_r_c2w = self._rvecs_cam2world[cam_idx]
                     current_t_c2w = self._tvecs_cam2world[cam_idx]
-                    r_w2c, t_w2c = invert_extrinsics(current_r_c2w, current_t_c2w)
+                    r_w2c, t_w2c = invert_rtvecs(current_r_c2w, current_t_c2w)
 
                     # Get the 3D points in the world frame
                     obj_pts_world = world_pts[ids]
