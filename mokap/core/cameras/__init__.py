@@ -1,7 +1,10 @@
-from typing import List, Dict, Optional, Union, Any
+from typing import List, Dict, Optional, Union, Any, TYPE_CHECKING
 from mokap.core.cameras.interface import AbstractCamera
-from mokap.core.cameras.basler import BaslerCamera
-from mokap.core.cameras.flir import FLIRCamera
+
+if TYPE_CHECKING:
+    from mokap.core.cameras.basler import BaslerCamera
+    from mokap.core.cameras.flir import FLIRCamera
+
 
 
 class CameraFactory:
@@ -28,7 +31,8 @@ class CameraFactory:
                     'native_object': dev_info  # SDK-specific object
                 })
         except ImportError:
-            print("Pylon SDK not found. Skipping Basler camera discovery.")
+            # print("Pylon SDK not found. Skipping Basler camera discovery.")
+            pass
 
         except Exception as e:
             print(f"Error during Basler discovery: {e}")
@@ -71,7 +75,8 @@ class CameraFactory:
             system.ReleaseInstance()
 
         except ImportError:
-            print("PySpin SDK not found. Skipping FLIR camera discovery.")
+            # print("PySpin SDK not found. Skipping FLIR camera discovery.")
+            pass
 
         except Exception as e:
             print(f"Error during FLIR discovery: {e}")
@@ -119,8 +124,15 @@ class CameraFactory:
         vendor = device_info.get('vendor').lower()
 
         if vendor == 'basler':
-            native_obj = device_info.get('native_object')
-            return BaslerCamera(native_obj)
+            try:
+                from mokap.core.cameras.basler import BaslerCamera
+
+                native_obj = device_info.get('native_object')
+                return BaslerCamera(native_obj)
+
+            except ImportError:
+                print("Error: Cannot create Basler camera. The Pylon SDK is not installed.")
+                return None
 
         elif vendor == 'flir':
             # For FLIR, we must re-acquire the camera using its serial number
@@ -131,6 +143,7 @@ class CameraFactory:
 
             system = None
             try:
+                from mokap.core.cameras.flir import FLIRCamera
                 import PySpin
                 # Get the system instance: this increments the reference count
                 system = PySpin.System.GetInstance()
@@ -149,6 +162,11 @@ class CameraFactory:
                     if system:
                         system.ReleaseInstance() # clean up the system instance
                     return None
+
+            except ImportError:
+                print("Error: Cannot create FLIR camera. The PySpin SDK is not installed.")
+                # No need to release system, as PySpin wasn't imported
+                return None
 
             except Exception as e:
                 print(f"Error during FLIR camera re-acquisition: {e}")
