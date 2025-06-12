@@ -145,16 +145,38 @@ def estimate_initial_poses(
 
 
 @jax.jit
-def quaternion_average(quats: jnp.ndarray) -> jnp.ndarray:
-    # Build M = ∑ q_i q_i^T
-    M = quats.T @ quats
-    # eigh returns (eigenvalues, eigenvectors) sorted ascending by value
-    w, V = jnp.linalg.eigh(M)
-    top = V[:, -1]  # principal eigenvector
-    top = top / (jnp.linalg.norm(top) + 1e-12)
-    # force w >= 0
-    top = jax.lax.cond(top[0] < 0.0, lambda q: -q, lambda q: q, top)
-    return top
+def quaternion_average(quats: jnp.ndarray, weights: jnp.ndarray = None) -> jnp.ndarray:
+    """
+    Computes the average of a set of quaternions using Markley's method
+    Handles the q/-q ambiguity by aligning all quaternions to a reference
+    Accepts optional weights for each quaternion
+    """
+
+    # If no weights provided, use uniform weights
+    if weights is None:
+        weights = jnp.ones(quats.shape[0], dtype=quats.dtype)
+
+    # Normalize weights to sum to 1 to avoid numerical issues
+    weights = weights / (jnp.sum(weights) + 1e-8)
+
+    # Pick the quaternion with the highest weight as the reference
+    q_ref = quats[jnp.argmax(weights)]
+
+    # Align all other quaternions to the reference
+    dots = jnp.einsum('i,ji->j', q_ref, quats)
+    flip = jnp.sign(dots)
+    quats_aligned = quats * flip[:, None]
+
+    # Build the weighted M matrix: M = ∑ w_i * q_i * q_i^T
+    # We can do this with broadcasting and einsum.
+    # q_aligned is (N, 4). We want to compute an (N, 4, 4) matrix and sum over N
+    M = jnp.einsum('i,ij,ik->jk', weights, quats_aligned, quats_aligned)
+
+    _, V = jnp.linalg.eigh(M)
+    avg_quat = V[:, -1]
+
+    # Ensure w >= 0 for a canonical representation
+    return jax.lax.cond(avg_quat[0] < 0.0, lambda q: -q, lambda q: q, avg_quat)
 
 
 def _angular_distance(q1: jnp.ndarray, q2: jnp.ndarray) -> jnp.ndarray:
@@ -168,39 +190,58 @@ def _angular_distance(q1: jnp.ndarray, q2: jnp.ndarray) -> jnp.ndarray:
 
 def filter_rt_samples(
         rt_stack: jnp.ndarray,
-        ang_thresh: float = np.pi / 6.0,    # 30 degrees
-        trans_thresh: float = 1.0
-) -> Tuple[jnp.ndarray, jnp.ndarray]:
+        ang_thresh: float = np.pi / 6.0,
+        trans_thresh: float = 1.0,
+        num_iters: int = 3
+) -> Tuple[jnp.ndarray, jnp.ndarray, bool]:
     """
-    Robustly averages a stack of (quaternion, translation) poses
+    Robustly averages a stack of (quaternion, translation) poses using IRLS
     """
-
     length = rt_stack.shape[0]
 
-    if length == 0:
-        return ID_QUAT, ZERO_T
+    def fail_case():
+        return ID_QUAT, ZERO_T, False
 
-    quats = rt_stack[:, :4]
-    trans = rt_stack[:, 4:]
+    def success_case():
+        quats = rt_stack[:, :4]
+        trans = rt_stack[:, 4:]
 
-    # provisional mean
-    q_med0 = quaternion_average(quats)
-    t_med0 = jnp.median(trans, axis=0)
+        # Initial guess
+        q_curr = quaternion_average(quats)
+        t_curr = jnp.median(trans, axis=0)
 
-    # Compute errors
-    ang_errs = jax.vmap(lambda q: _angular_distance(q, q_med0))(quats)
-    trans_errs = jnp.linalg.norm(trans - t_med0, axis=1)
+        def body_fn(i, qt_curr):
+            q_c, t_c = qt_curr
+            # Compute errors from current estimate
+            ang_errs = jax.vmap(lambda q: _angular_distance(q, q_c))(quats)
+            trans_errs = jnp.linalg.norm(trans - t_c, axis=1)
 
-    # Build inlier mask
-    keep_mask = (ang_errs <= ang_thresh) & (trans_errs <= trans_thresh)
+            weights = (ang_errs <= ang_thresh) & (trans_errs <= trans_thresh)
+            weights = weights.astype(jnp.float32)
 
-    if jnp.sum(keep_mask) > 0:
-        # Recompute with inliers
-        q_filt = quats[keep_mask]
-        t_filt = trans[keep_mask]
-        q_med1 = quaternion_average(q_filt)
-        t_med1 = robust_translation_mean(t_filt, num_iters=4, delta=1.0)
-        return q_med1, t_med1
-    else:
-        # Fallback to provisional mean
-        return q_med0, t_med0
+            has_inliers = jnp.sum(weights) > 0
+
+            def update_estimate():
+                q_next = quaternion_average(quats, weights=weights)
+
+                # we use the same weights for the translation mean
+                w_norm = weights / jnp.sum(weights)
+                t_next = jnp.sum(w_norm[:, None] * trans, axis=0)
+                return q_next, t_next
+
+            def keep_estimate():
+                return q_c, t_c
+
+            q_next, t_next = jax.lax.cond(has_inliers, update_estimate, keep_estimate)
+            return q_next, t_next
+
+        q_final, t_final = jax.lax.fori_loop(0, num_iters, body_fn, (q_curr, t_curr))
+
+        # Final check for inliers to determine success
+        ang_errs = jax.vmap(lambda q: _angular_distance(q, q_final))(quats)
+        trans_errs = jnp.linalg.norm(trans - t_final, axis=1)
+        final_inliers = jnp.sum((ang_errs <= ang_thresh) & (trans_errs <= trans_thresh))
+
+        return q_final, t_final, final_inliers > 0
+
+    return jax.lax.cond(length == 0, fail_case, success_case)
