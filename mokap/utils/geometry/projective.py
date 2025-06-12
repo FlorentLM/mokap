@@ -28,13 +28,15 @@ def distortion(
 
     k1, k2, p1, p2, k3, k4, k5, k6 = pad_dist_coeffs(dist_coeffs)
     r2 = x * x + y * y
-    radial = (1
-              + k1 * r2
-              + k2 * r2 ** 2
-              + k3 * r2 ** 3
-              + k4 * r2 ** 4
-              + k5 * r2 ** 5
-              + k6 * r2 ** 6)
+
+    # TODO: We prob want to support the rational model too
+    # # Rational model
+    # numerator = 1 + k1 * r2 + k2 * r2 ** 2 + k3 * r2 ** 3
+    # denominator = 1 + k4 * r2 + k5 * r2 ** 2 + k6 * r2 ** 3
+    # radial = numerator / (denominator + _eps)
+
+    radial = 1 + k1*r2 + k2*r2**2 + k3*r2**3 + k4*r2**4 + k5*r2**5 + k6*r2**6
+
     dx = 2 * p1 * x * y + p2 * (r2 + 2 * x * x)
     dy = p1 * (r2 + 2 * y * y) + 2 * p2 * x * y
     return radial, dx, dy

@@ -1,18 +1,43 @@
 import numpy as np
-from numpy._typing import ArrayLike
 from scipy.optimize import least_squares
 from scipy.sparse import lil_matrix, csr_matrix
-from typing import Tuple, Optional, Dict, List, Literal
+from typing import Tuple, Optional, Dict, Literal, Union
 import jax
 import jax.numpy as jnp
+from jax.typing import ArrayLike
 from mokap.utils import CallbackOutputStream
 from alive_progress import alive_bar
 from mokap.utils.geometry.projective import project_multiple
-from mokap.utils.geometry.transforms import extrinsics_matrix, invert_extrinsics_matrix, extmat_to_rtvecs, invert_extrinsics
+from mokap.utils.geometry.transforms import extrinsics_matrix, invert_extrinsics_matrix, extmat_to_rtvecs
 
-# Type definition for the distortion model
+
 DistortionModel = Literal['none', 'simple', 'standard', 'full']
-DIST_MODEL_MAP = {'none': 0, 'simple': 4, 'standard': 5, 'full': 8}
+DIST_MODEL_MAP = {'none': 0, 'simple': 4, 'standard': 5, 'full': 8}  # TODO: we might want to support rational model too
+
+
+class Scaler:
+    """ A (very) simple class to scale parameters for optimization """
+    def __init__(self):
+        self.mean = 0.0
+        self.scale = 1.0
+
+    def fit_transform(self, x: np.ndarray) -> np.ndarray:
+        """ Calculate scaling factors from x and apply the transform """
+        self.mean = np.mean(x)
+        self.scale = np.std(x)
+        if self.scale < 1e-8:
+            self.scale = 1.0
+        return (x - self.mean) / self.scale
+
+    def inverse_transform(self, x_scaled: np.ndarray) -> np.ndarray:
+        """ Apply the inverse transform using stored mean and scale """
+        return x_scaled * self.scale + self.mean
+
+    def transform_bounds(self, lb, ub):
+        """ Scales the bounds using stored mean and scale """
+        lb_scaled = (lb - self.mean) / self.scale
+        ub_scaled = (ub - self.mean) / self.scale
+        return lb_scaled, ub_scaled
 
 
 def _get_parameter_spec(
@@ -40,7 +65,7 @@ def _get_parameter_spec(
         spec['blocks']['focal_principal'] = {'offset': current_offset, 'size': size}
         current_offset += size
 
-    # --- Distortion Coefficients ---
+    # --- Distortion coefficients ---
     n_d = DIST_MODEL_MAP[distortion_model]
     spec['config']['n_d'] = n_d
     if not fix_distortion and n_d > 0:
@@ -48,7 +73,7 @@ def _get_parameter_spec(
         spec['blocks']['distortion'] = {'offset': current_offset, 'size': size}
         current_offset += size
 
-    # --- Camera Extrinsics ---
+    # --- Camera extrinsics ---
     if not fix_extrinsics:
         size = 6 * nb_cams
         spec['blocks']['extrinsics'] = {'offset': current_offset, 'size': size}
@@ -65,12 +90,19 @@ def _get_parameter_spec(
 
 
 def _pack_params(
-        camera_matrices: np.ndarray, dist_coeffs: np.ndarray,
-        cam_rvecs: np.ndarray, cam_tvecs: np.ndarray,
-        board_rvecs: np.ndarray, board_tvecs: np.ndarray,
+        camera_matrices: ArrayLike,
+        dist_coeffs:     ArrayLike,
+        cam_rvecs:       ArrayLike,
+        cam_tvecs:       ArrayLike,
+        board_rvecs:     ArrayLike,
+        board_tvecs:     ArrayLike,
         spec: Dict
-) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+) -> Tuple[Union[jax.Array, np.ndarray], Dict[str, np.ndarray]]:
     """ Packs parameters into an optimization vector X and a fixed_params dict """
+
+    # the input arrays can be np or jnp and we want to keep them on the device they belong to!
+    is_jax = isinstance(camera_matrices, jax.Array)
+    np_ = jnp if is_jax else np
 
     optim_parts = []
     fixed_params = {}
@@ -81,20 +113,20 @@ def _pack_params(
     if 'focal_principal' in spec['blocks']:
         if cfg['fix_aspect_ratio']:
             f = (camera_matrices[:, 0, 0] + camera_matrices[:, 1, 1]) * 0.5
-            fp_block = np.column_stack([f, camera_matrices[:, 0, 2], camera_matrices[:, 1, 2]])
+            fp_block = np_.column_stack([f, camera_matrices[:, 0, 2], camera_matrices[:, 1, 2]])
         else:
-            fp_block = np.column_stack([camera_matrices[:, 0, 0], camera_matrices[:, 1, 1], camera_matrices[:, 0, 2],
-                                        camera_matrices[:, 1, 2]])
+            fp_block = np_.column_stack([camera_matrices[:, 0, 0], camera_matrices[:, 1, 1], camera_matrices[:, 0, 2],
+                                         camera_matrices[:, 1, 2]])
         optim_parts.append(fp_block.mean(axis=0) if is_shared else fp_block.ravel())
     else:
         fixed_params['K'] = camera_matrices
 
     if 'distortion' in spec['blocks']:
         n_d = cfg['n_d']
-        dc = np.asarray(dist_coeffs)
-        if dc.shape[1] < n_d:  # pad if necessary
-            pad = np.zeros((cfg['nb_cams'], n_d - dc.shape[1]), dtype=dc.dtype)
-            dc = np.hstack([dc, pad])
+        dc = np_.asarray(dist_coeffs)
+        if dc.shape[1] < n_d:   # pad if necessary
+            pad = np_.zeros((cfg['nb_cams'], n_d - dc.shape[1]), dtype=dc.dtype)
+            dc = np_.hstack([dc, pad])
         d_block = dc[:, :n_d]
         optim_parts.append(d_block.mean(axis=0) if is_shared else d_block.ravel())
     else:
@@ -116,24 +148,32 @@ def _pack_params(
         fixed_params['board_r'] = board_rvecs
         fixed_params['board_t'] = board_tvecs
 
-    x0 = np.concatenate(optim_parts) if optim_parts else np.array([])
+    x0 = np_.concatenate(optim_parts) if optim_parts else np_.array([])
     return x0, fixed_params
 
 
 def _unpack_params(
-        x: np.ndarray,
-        fixed_params: Dict[str, np.ndarray],
+        x:              ArrayLike,
+        fixed_params:   Dict[str, np.ndarray],
         spec: Dict
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[Union[jax.Array, np.ndarray], Union[jax.Array, np.ndarray], Union[jax.Array, np.ndarray], Union[jax.Array, np.ndarray], Union[jax.Array, np.ndarray], Union[jax.Array, np.ndarray]]:
     """ Reconstructs all parameters from the optimization vector X and fixed_params """
+
+    # the input arrays can be np or jnp and we want to keep them on the device they belong to!
+    is_jax = isinstance(x, jax.Array)
+    np_ = jnp if is_jax else np
 
     cfg = spec['config']
     C, P = cfg['nb_cams'], cfg['nb_frames']
     is_shared = cfg['shared_intrinsics'] and C > 1
 
     # --- Intrinsics ---
-    K_out = fixed_params.get('K', np.zeros((C, 3, 3), dtype=x.dtype))
-    D_out = fixed_params.get('D', np.zeros((C, 8), dtype=x.dtype))
+    K_fixed = fixed_params.get('K')
+    if K_fixed is not None and is_jax:   # K in fixed_params might still be a numpy array!
+        K_fixed = jnp.asarray(K_fixed)
+    K_out = K_fixed if K_fixed is not None else np_.zeros((C, 3, 3), dtype=x.dtype)
+
+    D_out = fixed_params.get('D', np_.zeros((C, 8), dtype=x.dtype))
 
     if 'focal_principal' in spec['blocks']:
         info = spec['blocks']['focal_principal']
@@ -142,15 +182,30 @@ def _unpack_params(
         size_per_set = 3 if cfg['fix_aspect_ratio'] else 4
         fp_block = fp_flat.reshape(-1, size_per_set)
         if is_shared:
-            fp_block = np.tile(fp_block, (C, 1))
+            fp_block = np_.tile(fp_block, (C, 1))
 
-        if cfg['fix_aspect_ratio']:
-            K_out[:, 0, 0] = K_out[:, 1, 1] = fp_block[:, 0]
-            K_out[:, 0, 2], K_out[:, 1, 2] = fp_block[:, 1], fp_block[:, 2]
+        # here we need to branch on whether we're using jax or numpy arrays
+        if is_jax:
+            if cfg['fix_aspect_ratio']:
+                K_out = K_out.at[:, 0, 0].set(fp_block[:, 0])
+                K_out = K_out.at[:, 1, 1].set(fp_block[:, 0])
+                K_out = K_out.at[:, 0, 2].set(fp_block[:, 1])
+                K_out = K_out.at[:, 1, 2].set(fp_block[:, 2])
+            else:
+                K_out = K_out.at[:, 0, 0].set(fp_block[:, 0])
+                K_out = K_out.at[:, 1, 1].set(fp_block[:, 1])
+                K_out = K_out.at[:, 0, 2].set(fp_block[:, 2])
+                K_out = K_out.at[:, 1, 2].set(fp_block[:, 3])
+            K_out = K_out.at[:, 2, 2].set(1.0)
         else:
-            K_out[:, 0, 0], K_out[:, 1, 1] = fp_block[:, 0], fp_block[:, 1]
-            K_out[:, 0, 2], K_out[:, 1, 2] = fp_block[:, 2], fp_block[:, 3]
-        K_out[:, 2, 2] = 1.0
+            # in numpy we can do in-place assignment
+            if cfg['fix_aspect_ratio']:
+                K_out[:, 0, 0] = K_out[:, 1, 1] = fp_block[:, 0]
+                K_out[:, 0, 2], K_out[:, 1, 2] = fp_block[:, 1], fp_block[:, 2]
+            else:
+                K_out[:, 0, 0], K_out[:, 1, 1] = fp_block[:, 0], fp_block[:, 1]
+                K_out[:, 0, 2], K_out[:, 1, 2] = fp_block[:, 2], fp_block[:, 3]
+            K_out[:, 2, 2] = 1.0
 
     if 'distortion' in spec['blocks']:
         info = spec['blocks']['distortion']
@@ -158,10 +213,20 @@ def _unpack_params(
         d_flat = x[info['offset']: info['offset'] + info['size']]
         d_block = d_flat.reshape(-1, n_d)
         if is_shared:
-            d_block = np.tile(d_block, (C, 1))
+            d_block = np_.tile(d_block, (C, 1))
 
-        D_out = np.zeros((C, 8), dtype=x.dtype)
-        D_out[:, :n_d] = d_block
+        D_out = np_.zeros((C, 8), dtype=x.dtype)
+
+        # we need to branch for the assignment here too
+        if is_jax:
+            D_out = D_out.at[:, :n_d].set(d_block)
+        else:
+            D_out[:, :n_d] = d_block
+    else:
+        D_fixed = fixed_params.get('D')
+        if D_fixed is not None and is_jax:  # D in fixed_params might still be a numpy array!
+            D_fixed = jnp.asarray(D_fixed)
+        D_out = D_fixed if D_fixed is not None else np_.zeros((C, 8), dtype=x.dtype)
 
     # --- Extrinsics ---
     if 'extrinsics' in spec['blocks']:
@@ -170,8 +235,8 @@ def _unpack_params(
         cam_r_out = extr_flat[:3 * C].reshape(C, 3)
         cam_t_out = extr_flat[3 * C:].reshape(C, 3)
     else:
-        cam_r_out = fixed_params['cam_r']
-        cam_t_out = fixed_params['cam_t']
+        cam_r_out = np_.asarray(fixed_params['cam_r'])
+        cam_t_out = np_.asarray(fixed_params['cam_t'])
 
     # --- Board Poses ---
     if 'board_poses' in spec['blocks']:
@@ -180,8 +245,8 @@ def _unpack_params(
         board_r_out = board_flat[:3 * P].reshape(P, 3)
         board_t_out = board_flat[3 * P:].reshape(P, 3)
     else:
-        board_r_out = fixed_params['board_r']
-        board_t_out = fixed_params['board_t']
+        board_r_out = np_.asarray(fixed_params['board_r'])
+        board_t_out = np_.asarray(fixed_params['board_t'])
 
     return K_out, D_out, cam_r_out, cam_t_out, board_r_out, board_t_out
 
@@ -214,7 +279,7 @@ def _get_bounds(
                 size_per_set = info['size'] // num_intr_sets
                 offset = info['offset'] + i * size_per_set
 
-                f_lo, f_hi = 1e-3, max(w, h) * 10
+                f_lo, f_hi = 100.0, 100000.0
                 cx_lo, cx_hi = w / 2.0 - w * 0.2, w / 2.0 + w * 0.2
                 cy_lo, cy_hi = h / 2.0 - h * 0.2, h / 2.0 + h * 0.2
 
@@ -303,7 +368,10 @@ def residual_weights(
     return weights
 
 
-def make_jacobian_sparsity(spec: Dict, use_priors: bool) -> csr_matrix:
+def make_jacobian_sparsity(
+        spec: Dict,
+        use_priors: bool
+) -> csr_matrix:
     """
     Creates the Jacobian sparsity matrix based on the optimization parameter specification
     """
@@ -371,60 +439,51 @@ def make_jacobian_sparsity(spec: Dict, use_priors: bool) -> csr_matrix:
     return S.tocsr()
 
 
-def cost_func(
-        params: np.ndarray,
-        fixed_params: Dict[str, np.ndarray],
-        spec: Dict,
-        points2d: jnp.ndarray,
-        visibility_mask: jnp.ndarray,
-        points3d_th: jnp.ndarray,
-        points_weights: jnp.ndarray,
-        prior_weight: float = 0.0,
-        rvecs_cam_init: Optional[jnp.ndarray] = None,
-        tvecs_cam_init: Optional[jnp.ndarray] = None,
+def jax_cost_function(
+        params,  # this is the only variable that'll changes
+        fixed_params,
+        spec,
+        points2d_jnp,
+        visibility_mask_jnp,
+        points3d_th_jnp,
+        points_weights_jnp,
+        prior_weight,
+        rvecs_cam_init_jnp,
+        tvecs_cam_init_jnp,
 ):
 
     cam_mats, dist_coefs, cam_rvecs, cam_tvecs, board_rvecs, board_tvecs = _unpack_params(
         params, fixed_params, spec
     )
 
-    cam_mats = jnp.asarray(cam_mats)
-    dist_coefs = jnp.asarray(dist_coefs)
-    board_rvecs = jnp.asarray(board_rvecs)
-    board_tvecs = jnp.asarray(board_tvecs)
-    cam_rvecs = jnp.asarray(cam_rvecs)
-    cam_tvecs = jnp.asarray(cam_tvecs)
-
     E_board_w = extrinsics_matrix(board_rvecs, board_tvecs)
     E_cam_w = extrinsics_matrix(cam_rvecs, cam_tvecs)
     E_world_cam = invert_extrinsics_matrix(E_cam_w)
 
-    # Note: E_board_cam has shape (P, C, 4, 4)
     E_board_cam = jnp.matmul(E_world_cam[None, :, :, :], E_board_w[:, None, :, :])
     r_bc, t_bc = extmat_to_rtvecs(E_board_cam)
 
-    # vmap over P dim (frames / board poses)
-    project_frame = lambda rv, tv: project_multiple(points3d_th, rv, tv, cam_mats, dist_coefs)
+    project_frame = lambda rv, tv: project_multiple(points3d_th_jnp, rv, tv, cam_mats, dist_coefs)
     reproj = jax.vmap(project_frame, in_axes=(0, 0))(r_bc, t_bc)
 
-    resid = reproj - points2d
-    weighted_resid = jnp.where(visibility_mask[..., None], resid * points_weights[..., None], 0.0)
+    resid = reproj - points2d_jnp
+    weighted_resid = jnp.where(visibility_mask_jnp[..., None], resid * points_weights_jnp[..., None], 0.0)
 
-    visible_error_magnitudes = jnp.where(visibility_mask, jnp.linalg.norm(resid, axis=-1), jnp.nan)
+    # --- Print mean reprojection error ---
+    # This is a side-effect, so we use jax.debug.print
+    # It will only print when the function is actually executed (not during tracing)
+    visible_error_magnitudes = jnp.where(visibility_mask_jnp, jnp.linalg.norm(resid, axis=-1), jnp.nan)
     mean_reprojection_error_px = jnp.nanmean(visible_error_magnitudes)
-
-    # TODO: get rid of this print once debug times are behind
-    print(f"Mean Reprojection Error: {mean_reprojection_error_px:.2f}px")
+    jax.debug.print("Mean Reprojection Error: {x:.2f}px", x=mean_reprojection_error_px)
 
     all_residuals = [weighted_resid.ravel()]
     if prior_weight > 0.0 and 'extrinsics' in spec['blocks']:
-        rvec_resid = cam_rvecs - rvecs_cam_init
-        tvec_resid = cam_tvecs - tvecs_cam_init
+        rvec_resid = cam_rvecs - rvecs_cam_init_jnp
+        tvec_resid = cam_tvecs - tvecs_cam_init_jnp
         prior_resid = jnp.concatenate([rvec_resid.ravel(), tvec_resid.ravel()]) * prior_weight
         all_residuals.append(prior_resid)
 
-    final = jnp.concatenate(all_residuals)
-    return np.array(final)
+    return jnp.concatenate(all_residuals)
 
 
 def run_bundle_adjustment(
@@ -469,54 +528,89 @@ def run_bundle_adjustment(
 
     # --- Bounds ---
     lb, ub = _get_bounds(spec, images_sizes_wh)
-
-    # Clip initial guess to be within bounds (if any)
     np.clip(x0, lb, ub, out=x0)
 
-    # --- Prep for Solver ---
+    scaler = Scaler()
+    x0_scaled = scaler.fit_transform(x0)
+    lb_scaled, ub_scaled = scaler.transform_bounds(lb, ub)
+
+    # Jac sparsity matrix
+    jac_sparsity = make_jacobian_sparsity(spec, use_priors=priors_weight > 0.0)
+
+    # --- JAX setup ---
+
+    # Convert all constant data to JAX arrays ONCE
+    points2d_jnp = jnp.transpose(jnp.asarray(points2d), (1, 0, 2, 3))
+    visibility_mask_jnp = jnp.transpose(jnp.asarray(visibility_mask), (1, 0, 2))
+    points3d_th_jnp = jnp.asarray(points3d_th)
+
     points_weights = residual_weights(pts2d=points2d,
                                       visibility_mask=visibility_mask,
                                       camera_matrices=camera_matrices,
                                       distance_falloff_gamma=radial_penalty)
 
-    # TODO: Could be cool to evaluate the blur if a small window around each point instead of distance_falloff_gamma...
+    points_weights_jnp = jnp.transpose(jnp.asarray(points_weights), (1, 0, 2))
 
-    rvecs_cam_init = jnp.asarray(cam_rvecs.copy()) if priors_weight > 0.0 else None
-    tvecs_cam_init = jnp.asarray(cam_tvecs.copy()) if priors_weight > 0.0 else None
+    rvecs_cam_init_jnp = jnp.asarray(cam_rvecs.copy()) if priors_weight > 0.0 else None
+    tvecs_cam_init_jnp = jnp.asarray(cam_tvecs.copy()) if priors_weight > 0.0 else None
 
-    # transpose to P-major for vmapping
-    points2d = jnp.transpose(points2d, (1, 0, 2, 3))
-    visibility_mask = jnp.transpose(visibility_mask, (1, 0, 2))
-    points_weights = jnp.transpose(points_weights, (1, 0, 2))
+    # we define the "closure" for the cost function: wraps the JAX cost function with the data that is constant
+    def cost_closure(params_unscaled):
+        return jax_cost_function(
+            params_unscaled,
+            fixed_params, spec,
+            points2d_jnp, visibility_mask_jnp,
+            points3d_th_jnp,
+            points_weights_jnp,
+            priors_weight,
+            rvecs_cam_init_jnp, tvecs_cam_init_jnp
+        )
 
-    jac_sparsity = make_jacobian_sparsity(spec, use_priors=priors_weight > 0.0)
+    # wrapped functions for SciPy: scaling and conversion back to np
+    def scipy_cost_wrapper(params_scaled):
+        params_unscaled = scaler.inverse_transform(params_scaled)
+        residuals_jnp = cost_closure(params_unscaled)
+        return np.array(residuals_jnp, copy=True)
 
+    # we JIT-compile the Jacobian function
+    # Note: it differentiates the closure clost func, which works on UNSCALED parameters
+    jitted_jac_func = jax.jit(jax.jacfwd(cost_closure))
+
+    def scipy_jac_wrapper(params_scaled):
+        params_unscaled = scaler.inverse_transform(params_scaled)
+        # sooo the Jacobian of the scaled function is related to the unscaled one by the chain rule:
+        # J(f(g(x))) = J(f)(g(x)) * J(g)(x)
+
+        # with  g(x) for the inverse_transform
+        #       f(x) for cost_closure
+        #       J(g)(x) for just a diagonal matrix of scaler.scale
+        jac_unscaled = jitted_jac_func(params_unscaled)
+        jac_scaled = np.array(jac_unscaled * scaler.scale, copy=True)  # apply chain rule
+        return jac_scaled
+
+    # --- Call the solver ---
     result = least_squares(
-        cost_func,
-        x0,
+        scipy_cost_wrapper,              # Scipy expects numpy arrays so this wrapper just does that
+        x0_scaled,
         verbose=2,
-        bounds=(lb, ub),
+        bounds=(lb_scaled, ub_scaled),   # bounds are just scaled once that's it
+        jac_sparsity=jac_sparsity,       # sparsity matrix is also computed once and that's it
+
+        jac=scipy_jac_wrapper,           # this just applies the gradien to our scaled parameters with the chain rule
+
         ftol=1e-8, xtol=1e-8, gtol=1e-8,
-        max_nfev=200,
+        max_nfev=500,
+
         method='trf',
         loss='cauchy', f_scale=2.5,
-        x_scale='jac',
-        jac_sparsity=jac_sparsity,
-        args=(
-            fixed_params,
-            spec,
-            points2d,
-            visibility_mask,
-            jnp.asarray(points3d_th),
-            points_weights,
-            priors_weight,
-            rvecs_cam_init,
-            tvecs_cam_init,
-        )
+        args=()
     )
 
+    # --- And finally just unscale the result ---
+    x_final_unscaled = scaler.inverse_transform(result.x)
+
     K_opt, D_opt, cam_r_opt, cam_t_opt, board_r_opt, board_t_opt = _unpack_params(
-        result.x, fixed_params, spec
+        x_final_unscaled, fixed_params, spec
     )
 
     ret_vals = {

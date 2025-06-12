@@ -1,5 +1,5 @@
 from collections import deque
-from typing import Tuple
+from typing import Tuple, Dict, Optional
 import cv2
 import numpy as np
 from jax import numpy as jnp
@@ -24,7 +24,6 @@ class MultiviewCalibrationTool:
                  max_detections: int = 100,
                  angular_thresh: float = 10.0,         # in degrees
                  translational_thresh: float = 10.0,   # in object_points' units
-                 refine_intrinsics_online: bool = False,
                  debug_print = True):
 
         # TODO: Typing and optimising this class
@@ -37,8 +36,6 @@ class MultiviewCalibrationTool:
         images_sizes_wh = np.asarray(images_sizes_wh)
         assert images_sizes_wh.ndim == 2 and images_sizes_wh.shape[0] == self.nb_cameras
         self.images_sizes_wh = images_sizes_wh[:, :2]
-
-        self._refine_intrinsics_online = refine_intrinsics_online
 
         self._angular_thresh = angular_thresh
         self._translational_thresh = translational_thresh
@@ -72,8 +69,8 @@ class MultiviewCalibrationTool:
         self._refined_intrinsics = None
         self._refined_extrinsics = None
         self._refined_board_poses = None
-        self._ba_points2d = None
-        self._ba_pointsids = None
+        self._points2d = None
+        self._visibility_mask = None
 
     def register(self, cam_idx: int, detection: DetectionPayload):
 
@@ -154,29 +151,7 @@ class MultiviewCalibrationTool:
         if not any(self._has_ext):
             return
 
-        if self._refine_intrinsics_online:
-            # STEP 1- Refine intrinsics and check if a system-wide reset is needed
-            # ================================================================
-
-            intrinsics_were_updated = self._refine_intrinsics_per_camera()
-
-            if intrinsics_were_updated:
-                if self._debug_print:
-                    print("[STATE_RESET] Intrinsics updated. Invalidating all non-origin extrinsics.")
-                # We acknowledge that the world geometry is now different, so we force every non-origin camera
-                # to be re-seeded from scratch
-                for c in range(self.nb_cameras):
-                    if c != self.origin_idx:
-                        self._has_ext[c] = False
-
-                # Abort the rest of this frame's processing. The system will recover
-                # on subsequent frames by re-seeding the cameras one by one
-                return
-
-        # If we are here, the system state is stable, so we proceed with normal estimation
-        # ==============================================================================
-
-        # STEP 2- Recompute board-to-camera poses for this frame
+        # Recompute board-to-camera poses for this frame
         recomputed_entries = []
         for cam_idx, _, pts2D, ids in entries:
             K = self._cam_matrices[cam_idx]
@@ -198,7 +173,7 @@ class MultiviewCalibrationTool:
 
         known = [e for e in recomputed_entries if self._has_ext[e[0]]]
 
-        # STEP 3- Estimate board-to-world pose
+        # Estimate board-to-world pose
         E_b2w = None
         if known:
             E_votes = []
@@ -241,7 +216,7 @@ class MultiviewCalibrationTool:
                         self._tvecs_cam2world = self._tvecs_cam2world.at[cam_idx].set(t_c2w)
                     self._has_ext[cam_idx] = True
 
-        # STEP 4- Final buffering (using the stabilized state)
+        # Final buffering (using the stabilised state)
         if E_b2w is not None:
 
             board_pts_hom = np.hstack([self._object_points, np.ones((self._object_points.shape[0], 1))])
@@ -266,7 +241,7 @@ class MultiviewCalibrationTool:
             mean_frame_error = (total_err / total_pts) if total_pts > 0 else float('inf')
 
             # If the mean error for this multi-view frame is too high, skip it
-            FRAME_ERROR_THRESHOLD = 10.0
+            FRAME_ERROR_THRESHOLD = 5.0
             if mean_frame_error > FRAME_ERROR_THRESHOLD:
                 if self._debug_print:
                     print(f"[QUALITY_REJECT] Frame rejected due to high reproj error: {mean_frame_error:.2f}px")
@@ -286,10 +261,17 @@ class MultiviewCalibrationTool:
                         self._cam_matrices[cam_idx], self._dist_coeffs[cam_idx]
                     )
                 else:
+                    uv_obs = np.asarray(pts2D, dtype=np.float32)
+
+                    # Get the world->camera transform for this camera
                     current_r_c2w = self._rvecs_cam2world[cam_idx]
                     current_t_c2w = self._tvecs_cam2world[cam_idx]
                     r_w2c, t_w2c = invert_extrinsics(current_r_c2w, current_t_c2w)
+
+                    # Get the 3D points in the world frame
                     obj_pts_world = world_pts[ids]
+
+                    # Project them and calculate error
                     proj_pts, _ = cv2.projectPoints(
                         np.asarray(obj_pts_world).reshape(-1, 1, 3), np.asarray(r_w2c), np.asarray(t_w2c),
                         self._cam_matrices[cam_idx], self._dist_coeffs[cam_idx]
@@ -311,101 +293,7 @@ class MultiviewCalibrationTool:
 
         self.ba_samples.append(recomputed_entries)
 
-    def _refine_intrinsics_per_camera(self):
-        """
-        Refines intrinsics for any camera with a full buffer of views
-        """
-        update_happened = False
-
-        for ci in range(self.nb_cameras):
-            buf = self._intrinsics_buffer[ci]
-            if len(buf) < self._intrinsics_window:
-                continue
-
-            if self._debug_print:
-                print(f"[REFINE_INTR] Starting for cam={ci} with {len(buf)} views.")
-
-            object_points_views, image_points_views = zip(*buf)
-            initial_K = self._cam_matrices[ci].copy()
-            initial_D = self._dist_coeffs[ci].copy()
-
-            try:
-                ret, K_new, D_new, _, _, _, _, _ = cv2.calibrateCameraExtended(
-                    objectPoints=list(object_points_views),
-                    imagePoints=list(image_points_views),
-                    imageSize=self.images_sizes_wh[ci],
-                    cameraMatrix=initial_K,
-                    distCoeffs=initial_D,
-
-                    # flags=(cv2.CALIB_USE_INTRINSIC_GUESS |
-                    #        cv2.CALIB_FIX_PRINCIPAL_POINT |
-                    #        cv2.CALIB_FIX_K3)
-
-                    # flags=(cv2.CALIB_USE_INTRINSIC_GUESS)
-
-                    flags=(cv2.CALIB_USE_INTRINSIC_GUESS |
-                           cv2.CALIB_FIX_PRINCIPAL_POINT |
-                           cv2.CALIB_FIX_ASPECT_RATIO |  # Very important for stability
-                           cv2.CALIB_ZERO_TANGENT_DIST |  # Often improves stability
-                           cv2.CALIB_FIX_K3 |  # Solve for k1, k2 only
-                           cv2.CALIB_FIX_K4 |
-                           cv2.CALIB_FIX_K5 |
-                           cv2.CALIB_FIX_K6
-                           )
-                )
-
-                # Sanity checks to prevent numerical instability from bad optimizations
-                is_valid_K = np.all(np.isfinite(K_new))
-                is_valid_D = np.all(np.isfinite(D_new))
-                focal_lengths_ok = K_new[0, 0] > 0 and K_new[1, 1] > 0
-                w, h = self.images_sizes_wh[ci]
-                principal_point_ok = (0 < K_new[0, 2] < w) and (0 < K_new[1, 2] < h)
-                dist_coeffs_ok = np.all(np.abs(D_new.flatten()) < 100.0)
-
-                if is_valid_K and is_valid_D and focal_lengths_ok and principal_point_ok and dist_coeffs_ok:
-
-                    D_new_squeezed = D_new.squeeze()
-
-                    # Pad the shorter array with zeros to match the length of the longer one
-                    if len(initial_D) > len(D_new_squeezed):
-                        padded_D_new = np.zeros_like(initial_D)
-                        padded_D_new[:len(D_new_squeezed)] = D_new_squeezed
-                        D_to_compare = padded_D_new
-                    elif len(D_new_squeezed) > len(initial_D):
-                        padded_initial_D = np.zeros_like(D_new_squeezed)
-                        padded_initial_D[:len(initial_D)] = initial_D
-                        initial_D = padded_initial_D
-                        D_to_compare = D_new_squeezed
-                    else:
-                        D_to_compare = D_new_squeezed
-
-                    # Now we can safely compare them
-                    k_changed = not np.allclose(initial_K, K_new, atol=1e-2, rtol=1e-2)
-                    d_changed = not np.allclose(initial_D, D_to_compare, atol=1e-3, rtol=1e-3)
-
-                    if k_changed or d_changed:
-                        if self._debug_print:
-                            print(f"[REFINE_INTR] cam={ci} finished. RMS: {ret:.4f}px. Update ACCEPTED.")
-                        self._cam_matrices[ci] = K_new
-                        self._dist_coeffs[ci] = D_to_compare
-                        print(self._cam_matrices)
-                        update_happened = True
-                    else:
-                        if self._debug_print:
-                            print(f"[REFINE_INTR] cam={ci} finished. RMS: {ret:.4f}px. No significant change.")
-
-                self._intrinsics_buffer[ci].clear()
-
-            except cv2.error as e:
-                if self._debug_print:
-                    print(f"[REFINE_INTR] cam={ci} failed with OpenCV error: {e}")
-                self._intrinsics_buffer[ci].clear()
-
-        return update_happened
-
-    def refine_all(self,
-                   simple_focal: bool = False,
-                   ) -> bool:
+    def refine_all(self) -> bool:
         """
         Performs a global, three-stage bundle adjustment (BA) over all collected samples
         (Sort of graduated non-convexity process)
@@ -440,9 +328,6 @@ class MultiviewCalibrationTool:
                 pts2d_buf[cam_idx, p_idx, ids, :] = pts2D
                 vis_buf[cam_idx, p_idx, ids] = True
 
-        self._debug_points2d = pts2d_buf.copy()  # for visualization
-        self._debug_pointsids = vis_buf.copy()  # for visualization
-
         # Initial guess for board poses (from online estimation)
         r_board_w_list, t_board_w_list = [], []
         E_c2w_all = extrinsics_matrix(self._rvecs_cam2world, self._tvecs_cam2world)
@@ -463,12 +348,14 @@ class MultiviewCalibrationTool:
         board_r_online = np.asarray(jnp.stack(r_board_w_list))
         board_t_online = np.asarray(jnp.stack(t_board_w_list))
 
-        self._debug_cam_r = cam_r_online.copy()
-        self._debug_cam_t = cam_t_online.copy()
-        self._debug_K = K_online.copy()
-        self._debug_D = D_online.copy()
-        self._debug_board_r = board_r_online.copy()
-        self._debug_board_t = board_t_online.copy()
+        # self._debug_cam_r = cam_r_online.copy()
+        # self._debug_cam_t = cam_t_online.copy()
+        # self._debug_K = K_online.copy()
+        # self._debug_D = D_online.copy()
+        # self._debug_board_r = board_r_online.copy()
+        # self._debug_board_t = board_t_online.copy()
+        # self._debug_points2d = pts2d_buf.copy()
+        # self._debug_pointsids = vis_buf.copy()
 
         # STAGE 1: Ideal Pinhole World (Shared Intrinsics, simple distortion)
         # ----------------------------
@@ -481,7 +368,7 @@ class MultiviewCalibrationTool:
 
             self._object_points, self.images_sizes_wh,
 
-            # radial_penalty=2.0,              # how 'less reliable' are points near the periphery
+            radial_penalty=0.0,   # for fisrst stage we want to consider all points
 
             shared_intrinsics=True,
             fix_aspect_ratio=True,
@@ -516,7 +403,7 @@ class MultiviewCalibrationTool:
             K_s2_init, D_s2_init, cam_r_s2_init, cam_t_s2_init, board_r_s2_init, board_t_s2_init,
             pts2d_buf, vis_buf, self._object_points, self.images_sizes_wh,
 
-            # radial_penalty=2.0,
+            radial_penalty=2.0,   # for second stage we want to start penalising points too far from the working volume
 
             shared_intrinsics=False,  # Now we optimize per-camera
             fix_aspect_ratio=False,   # we allow fx and fy to differ
@@ -550,30 +437,52 @@ class MultiviewCalibrationTool:
             K_s3_init, D_s3_init, cam_r_s3_init, cam_t_s3_init, board_r_s3_init, board_t_s3_init,
             pts2d_buf, vis_buf, self._object_points, self.images_sizes_wh,
 
+            radial_penalty=4.0,     # now we kinda want to ignore the points far from the working volume
+
             shared_intrinsics=False,
             fix_aspect_ratio=False,
-            distortion_model='standard',  # Use the 5-parameter model
+            # distortion_model='standard',  # Use the 5-parameter model
+            distortion_model='full',  # Use the 8-parameter model
 
             fix_focal_principal=False,
             fix_distortion=False,
             fix_extrinsics=False,
             fix_board_poses=False,
 
-            priors_weight=0.1
+            # priors_weight=0.1
+            priors_weight=0.0
         )
 
         # Finish
         # -----------
         if success_s3:
             print("\nBundle adjustment complete. Storing refined parameters.")
-            # self.ba_samples.clear()
 
             # store the globally optimized results
             self._refined_intrinsics = (final_results['K_opt'], final_results['D_opt'])
             self._refined_extrinsics = (final_results['cam_r_opt'], final_results['cam_t_opt'])
             self._refined_board_poses = (final_results['board_r_opt'], final_results['board_t_opt'])
+            self._points2d, self._visibility_mask = pts2d_buf.copy(), vis_buf.copy()
 
             self._refined = True
+            self.ba_samples.clear()
+
+            volume_of_trust = compute_volume_of_trust(
+                *self._refined_intrinsics,
+                *self._refined_extrinsics,
+                *self._refined_board_poses,
+                self._points2d, self._visibility_mask,
+                self._object_points,
+                error_threshold_px=1.5,
+                percentile=1.0      # 99th percentile
+            )
+
+            if volume_of_trust:
+                print("--- Volume of Trust ---")
+                print(f"X range: {volume_of_trust['x'][0]:.2f} to {volume_of_trust['x'][1]:.2f} mm")
+                print(f"Y range: {volume_of_trust['y'][0]:.2f} to {volume_of_trust['y'][1]:.2f} mm")
+                print(f"Z range: {volume_of_trust['z'][0]:.2f} to {volume_of_trust['z'][1]:.2f} mm")
+
             return True
         else:
             print("[ERROR] Final BA Stage 3 failed. Aborting calibration.")
@@ -597,8 +506,96 @@ class MultiviewCalibrationTool:
 
     @property
     def image_points(self):
-        return self._ba_points2d, self._ba_pointsids
+        return self._points2d, self._visibility_mask
 
     @property
     def ba_sample_count(self):
         return len(self.ba_samples)
+
+
+
+# TODO: This should be using the new JAXed functions
+def compute_volume_of_trust(
+
+        K_opt: np.ndarray,
+        D_opt: np.ndarray,
+        cam_r_opt: np.ndarray,
+        cam_t_opt: np.ndarray,
+        board_r_opt: np.ndarray,
+        board_t_opt: np.ndarray,
+
+        pts2d_buffer: np.ndarray,
+        vis_mask_buffer: np.ndarray,
+        object_points_3d: np.ndarray,
+
+        error_threshold_px: float = 1.0,
+        percentile: float = 1.0
+) -> Optional[Dict[str, Tuple[float, float]]]:
+
+    C, P, N, _ = pts2d_buffer.shape
+
+    E_c2w_all = extrinsics_matrix(cam_r_opt, cam_t_opt)
+    E_b2w_all = extrinsics_matrix(board_r_opt, board_t_opt)
+
+    all_errors = np.full((C, P, N), np.nan)
+
+    for c_idx in range(C):
+
+        E_c2w = E_c2w_all[c_idx]
+        E_w2c = invert_extrinsics_matrix(E_c2w)
+
+        for p_idx in range(P):
+
+            visible_point_ids = np.where(vis_mask_buffer[c_idx, p_idx, :])[0]
+            if len(visible_point_ids) == 0:
+                continue
+
+            # Get the board pose for this frame
+            E_b2w = E_b2w_all[p_idx]
+            E_b2c = E_w2c @ E_b2w
+
+            rvec, tvec = extmat_to_rtvecs(E_b2c)
+            rvec, tvec = np.asarray(rvec.squeeze()), np.asarray(tvec.squeeze())
+
+            object_pts_to_project = object_points_3d[visible_point_ids]
+            observed_pts_2d = pts2d_buffer[c_idx, p_idx, visible_point_ids]
+
+            # Project the points for this single pose
+            reprojected_pts, _ = cv2.projectPoints(
+                object_pts_to_project,
+                rvec,
+                tvec,
+                K_opt[c_idx],
+                D_opt[c_idx]
+            )
+            reprojected_pts = reprojected_pts.squeeze(axis=1)
+            errors = np.linalg.norm(observed_pts_2d - reprojected_pts, axis=1)
+            all_errors[c_idx, p_idx, visible_point_ids] = errors
+
+
+    # For each instance (a point n in a frame p), calculate its mean error across all cameras that saw it
+    mean_error_per_instance = np.nanmean(all_errors, axis=0)
+    reliable_instance_mask = mean_error_per_instance < error_threshold_px
+
+    # 3D coordinates of all points in all frames
+    obj_pts_hom = np.hstack([object_points_3d, np.ones((N, 1))])
+    world_pts_all_frames = np.einsum('pij,nj->pni', E_b2w_all, obj_pts_hom)[:, :, :3]
+
+    # cloud of reliable 3D points only
+    reliable_world_pts_cloud = world_pts_all_frames[reliable_instance_mask]
+
+    if reliable_world_pts_cloud.shape[0] < 3:
+        print("Warning: Not enough reliable point instances found to define a volume of trust.")
+        return None
+
+    lower_p, upper_p = percentile, 100 - percentile
+
+    x_min, x_max = np.percentile(reliable_world_pts_cloud[:, 0], [lower_p, upper_p])
+    y_min, y_max = np.percentile(reliable_world_pts_cloud[:, 1], [lower_p, upper_p])
+    z_min, z_max = np.percentile(reliable_world_pts_cloud[:, 2], [lower_p, upper_p])
+
+    return {
+        'x': (x_min, x_max),
+        'y': (y_min, y_max),
+        'z': (z_min, z_max)
+    }
