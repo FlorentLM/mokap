@@ -107,7 +107,6 @@ class FLIRCamera(GenICamCamera):
                 if self._polarisation_sensor:
                     quad_0 = PySpin.ImageUtilityPolarization.ExtractPolarQuadrant(image_result, 0)
                     image_arr = quad_0.GetNDArray().copy()
-                    print(image_arr.shape)
                     meta['pixel_format_effective'] = 'BayerRG8'
 
                 else:
