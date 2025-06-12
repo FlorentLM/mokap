@@ -1,4 +1,5 @@
 from collections import deque
+from typing import Tuple
 import cv2
 import numpy as np
 from jax import numpy as jnp
@@ -64,6 +65,8 @@ class MultiviewCalibrationTool:
         # triangulation & BA buffers
         self.ba_samples = deque(maxlen=max_detections)
         self.min_detections = min_detections
+
+        self._refined = False
 
         # bs results
         self._refined_intrinsics = None
@@ -213,11 +216,14 @@ class MultiviewCalibrationTool:
             rt_stack = jnp.concatenate([q_stack, t_stack], axis=1)  # (num_known, 7)
 
             # robust filtering and averaging
-            q_med, t_med = filter_rt_samples(
+            q_med, t_med, success = filter_rt_samples(
                 rt_stack=rt_stack,
                 ang_thresh=np.deg2rad(self._angular_thresh),
                 trans_thresh=self._translational_thresh
             )
+
+            if not success:
+                return
 
             E_b2w = extrinsics_matrix(
                 quaternion_to_axisangle(q_med), t_med
@@ -237,8 +243,37 @@ class MultiviewCalibrationTool:
 
         # STEP 4- Final buffering (using the stabilized state)
         if E_b2w is not None:
+
             board_pts_hom = np.hstack([self._object_points, np.ones((self._object_points.shape[0], 1))])
             world_pts = (E_b2w @ board_pts_hom.T).T[:, :3]
+
+            # --- DEBUG / Quality control ---
+            total_err = 0
+            total_pts = 0
+            for cam_idx, _, pts2D, ids in recomputed_entries:
+                # Project board points into this camera's view
+                r_w2c, t_w2c = invert_extrinsics(self._rvecs_cam2world[cam_idx], self._tvecs_cam2world[cam_idx])
+                obj_pts_world = world_pts[ids]
+                proj_pts, _ = cv2.projectPoints(
+                    np.asarray(obj_pts_world).reshape(-1, 1, 3),
+                    np.asarray(r_w2c), np.asarray(t_w2c),
+                    self._cam_matrices[cam_idx], self._dist_coeffs[cam_idx]
+                )
+                err = np.linalg.norm(proj_pts.reshape(-1, 2) - np.asarray(pts2D), axis=1)
+                total_err += np.sum(err)
+                total_pts += len(err)
+
+            mean_frame_error = (total_err / total_pts) if total_pts > 0 else float('inf')
+
+            # If the mean error for this multi-view frame is too high, skip it
+            FRAME_ERROR_THRESHOLD = 10.0
+            if mean_frame_error > FRAME_ERROR_THRESHOLD:
+                if self._debug_print:
+                    print(f"[QUALITY_REJECT] Frame rejected due to high reproj error: {mean_frame_error:.2f}px")
+                return  # skip buffering this low-quality frame
+
+            # --- End of DEBUG / Quality control block ---
+
 
             for cam_idx, E_b2c, pts2D, ids in recomputed_entries:
                 uv_obs = np.asarray(pts2D, dtype=np.float32)
@@ -405,6 +440,9 @@ class MultiviewCalibrationTool:
                 pts2d_buf[cam_idx, p_idx, ids, :] = pts2D
                 vis_buf[cam_idx, p_idx, ids] = True
 
+        self._debug_points2d = pts2d_buf.copy()  # for visualization
+        self._debug_pointsids = vis_buf.copy()  # for visualization
+
         # Initial guess for board poses (from online estimation)
         r_board_w_list, t_board_w_list = [], []
         E_c2w_all = extrinsics_matrix(self._rvecs_cam2world, self._tvecs_cam2world)
@@ -417,26 +455,43 @@ class MultiviewCalibrationTool:
             r_board_w_list.append(quaternion_to_axisangle(quaternion_average(q_stack)))
             t_board_w_list.append(jnp.median(t_stack, axis=0))
 
-        board_r_init = np.asarray(jnp.stack(r_board_w_list))
-        board_t_init = np.asarray(jnp.stack(t_board_w_list))
+        # Start with the online estimates
+        cam_r_online = np.asarray(self._rvecs_cam2world)
+        cam_t_online = np.asarray(self._tvecs_cam2world)
+        K_online = np.stack(self._cam_matrices)
+        D_online = np.stack(self._dist_coeffs)
+        board_r_online = np.asarray(jnp.stack(r_board_w_list))
+        board_t_online = np.asarray(jnp.stack(t_board_w_list))
 
-        # Initial guess for camera parameters (from online estimation)
-        K_init = np.stack(self._cam_matrices)
-        D_init = np.stack(self._dist_coeffs)
-        cam_r_init = np.asarray(self._rvecs_cam2world)
-        cam_t_init = np.asarray(self._tvecs_cam2world)
+        self._debug_cam_r = cam_r_online.copy()
+        self._debug_cam_t = cam_t_online.copy()
+        self._debug_K = K_online.copy()
+        self._debug_D = D_online.copy()
+        self._debug_board_r = board_r_online.copy()
+        self._debug_board_t = board_t_online.copy()
 
-        # STAGE 1: Ideal Pinhole World (Shared Intrinsics, No Distortion)
+        # STAGE 1: Ideal Pinhole World (Shared Intrinsics, simple distortion)
         # ----------------------------
         print("\n" + "=" * 80)
-        print(">>> STAGE 1: BA on Ideal World (Shared Intrinsics, No Distortion)")
+        print(">>> STAGE 1: BA on Ideal World (Shared Intrinsics,  simple distortion)")
         print("=" * 80)
         success_s1, results_s1 = bundle_adjustment.run_bundle_adjustment(
-            K_init, D_init, cam_r_init, cam_t_init, board_r_init, board_t_init,
-            pts2d_buf, vis_buf, self._object_points, self.images_sizes_wh,
-            simple_focal=simple_focal,
-            shared=True,
-            fix_distortion=True  # Force zero distortion
+            K_online, D_online, cam_r_online, cam_t_online, board_r_online, board_t_online,
+            pts2d_buf, vis_buf,
+
+            self._object_points, self.images_sizes_wh,
+
+            # radial_penalty=2.0,              # how 'less reliable' are points near the periphery
+
+            shared_intrinsics=True,
+            fix_aspect_ratio=True,
+            distortion_model='none',    # Fixes distortion params to zero
+
+            # What to optimize:
+            fix_focal_principal=False,
+            fix_distortion=True,        # Redundant with model='none', but explicit
+            fix_extrinsics=False,
+            fix_board_poses=False
         )
 
         if not success_s1:
@@ -456,12 +511,21 @@ class MultiviewCalibrationTool:
         print("\n" + "=" * 80)
         print(">>> STAGE 2: BA on Pinhole World (Per-Camera Intrinsics, No Distortion)")
         print("=" * 80)
+
         success_s2, results_s2 = bundle_adjustment.run_bundle_adjustment(
             K_s2_init, D_s2_init, cam_r_s2_init, cam_t_s2_init, board_r_s2_init, board_t_s2_init,
             pts2d_buf, vis_buf, self._object_points, self.images_sizes_wh,
-            simple_focal=simple_focal,
-            shared=False,
-            fix_distortion=True  # Still no distortion
+
+            # radial_penalty=2.0,
+
+            shared_intrinsics=False,  # Now we optimize per-camera
+            fix_aspect_ratio=False,   # we allow fx and fy to differ
+            distortion_model='none',
+
+            fix_focal_principal=False,
+            fix_distortion=True,
+            fix_extrinsics=False,
+            fix_board_poses=False
         )
 
         if not success_s2:
@@ -481,27 +545,34 @@ class MultiviewCalibrationTool:
         print("\n" + "=" * 80)
         print(">>> STAGE 3: BA on Real World (Full Refinement with Distortion)")
         print("=" * 80)
+
         success_s3, final_results = bundle_adjustment.run_bundle_adjustment(
             K_s3_init, D_s3_init, cam_r_s3_init, cam_t_s3_init, board_r_s3_init, board_t_s3_init,
             pts2d_buf, vis_buf, self._object_points, self.images_sizes_wh,
-            simple_focal=simple_focal,
-            shared=False,
-            fix_distortion=False,   # Finally enable distortion
-            priors_weight=0.1       # Add a small regularization to prevent extrinsics from drifting too far
+
+            shared_intrinsics=False,
+            fix_aspect_ratio=False,
+            distortion_model='standard',  # Use the 5-parameter model
+
+            fix_focal_principal=False,
+            fix_distortion=False,
+            fix_extrinsics=False,
+            fix_board_poses=False,
+
+            priors_weight=0.1
         )
 
         # Finish
         # -----------
         if success_s3:
             print("\nBundle adjustment complete. Storing refined parameters.")
-            self.ba_samples.clear()
+            # self.ba_samples.clear()
 
             # store the globally optimized results
             self._refined_intrinsics = (final_results['K_opt'], final_results['D_opt'])
             self._refined_extrinsics = (final_results['cam_r_opt'], final_results['cam_t_opt'])
             self._refined_board_poses = (final_results['board_r_opt'], final_results['board_t_opt'])
-            self._ba_points2d = pts2d_buf  # for visualization
-            self._ba_pointsids = vis_buf   # for visualization
+
             self._refined = True
             return True
         else:
