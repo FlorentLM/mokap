@@ -224,6 +224,7 @@ def filter_rt_samples(
     # First, filter out any rows that contain non-finite values (NaN or Inf)
     finite_mask = jnp.all(jnp.isfinite(rt_stack), axis=1)
     rt_stack_clean = rt_stack[finite_mask]
+    length = rt_stack_clean.shape[0]
 
     def fail_case():
         return ID_QUAT, ZERO_T, False
@@ -236,31 +237,41 @@ def filter_rt_samples(
         q_curr = quaternion_average(quats)
         t_curr = jnp.median(trans, axis=0)
 
-        def body_fn(_, qt_curr):
+        def body_fn(i, qt_curr):
             q_c, t_c = qt_curr
             # Compute errors from current estimate
-            ang_errs = jax.vmap(quaternions_angular_distance, in_axes=(0, None))(quats, q_c)
+            ang_errs = jax.vmap(lambda q: quaternions_angular_distance(q, q_c))(quats)
             trans_errs = jnp.linalg.norm(trans - t_c, axis=1)
+
             weights = (ang_errs <= ang_thresh) & (trans_errs <= trans_thresh)
+            weights = weights.astype(jnp.float32)
+
+            has_inliers = jnp.sum(weights) > 0
 
             def update_estimate():
-                w_float = weights.astype(jnp.float32)
-                q_next = quaternion_average(quats, weights=w_float)
+                q_next = quaternion_average(quats, weights=weights)
+
                 # we use the same weights for the translation mean
-                t_next = jnp.sum(w_float[:, None] * trans, axis=0) / (jnp.sum(w_float) + 1e-12)
+                w_norm = weights / jnp.sum(weights)
+                t_next = jnp.sum(w_norm[:, None] * trans, axis=0)
                 return q_next, t_next
 
-            return jax.lax.cond(jnp.sum(weights) > 0, update_estimate, lambda: (q_c, t_c))
+            def keep_estimate():
+                return q_c, t_c
+
+            q_next, t_next = jax.lax.cond(has_inliers, update_estimate, keep_estimate)
+            return q_next, t_next
 
         q_final, t_final = jax.lax.fori_loop(0, num_iters, body_fn, (q_curr, t_curr))
 
-        ang_errs = jax.vmap(quaternions_angular_distance, in_axes=(0, None))(quats, q_final)
+        # Final check for inliers to determine success
+        ang_errs = jax.vmap(lambda q: quaternions_angular_distance(q, q_final))(quats)
         trans_errs = jnp.linalg.norm(trans - t_final, axis=1)
-
         final_inliers = jnp.sum((ang_errs <= ang_thresh) & (trans_errs <= trans_thresh))
+
         return q_final, t_final, final_inliers > 0
 
-    return jax.lax.cond(rt_stack_clean.shape[0] == 0, fail_case, success_case)
+    return jax.lax.cond(length == 0, fail_case, success_case)
 
 
 @jax.jit
