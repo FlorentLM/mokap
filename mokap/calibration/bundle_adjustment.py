@@ -401,7 +401,7 @@ def make_jacobian_sparsity(
 
 
 def cost_function(
-        params,     # the variable to optimize, passed by jaxopt
+        params,     # the variable to optimize
         fixed_params,
         spec,
         points2d:           jnp.ndarray,
@@ -500,11 +500,10 @@ def run_bundle_adjustment(
     x0_scaled, mean, scale = scale_params(x0)
     lb_scaled, ub_scaled = scale_bounds(lb, ub, mean, scale)
 
-    # --- Prepare for SciPy: Convert relevant arrays to NumPy ---
+    # --- Prepare for scipy: Convert to numpy ---
     x0_scaled_np = np.asarray(x0_scaled)
     lb_scaled_np, ub_scaled_np = np.asarray(lb_scaled), np.asarray(ub_scaled)
 
-    # Jac sparsity matrix
     jac_sparsity = make_jacobian_sparsity(spec, use_priors=priors_weight > 0.0)
 
     # --- Setup static arguments for the residual function ---

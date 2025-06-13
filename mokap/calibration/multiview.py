@@ -73,6 +73,7 @@ class MultiviewCalibrationTool:
         self._refined_board_poses = None
         self._points2d = None
         self._visibility_mask = None
+        self._volume_of_trust = None
 
     def register(self, cam_idx: int, detection: DetectionPayload):
 
@@ -443,31 +444,7 @@ class MultiviewCalibrationTool:
 
             self._refined = True
 
-            # calculate the 3D world coordinates of all point instances using the refined poses
-            E_b2w_all_opt = extrinsics_matrix(final_board_r, final_board_t)
-            world_pts_all_instances = jnp.einsum('pij,nj->pni', E_b2w_all_opt, self._board_pts_hom)[:, :, :3]
-
-            # reproject these world points and get errors
-            all_errors = reproject_and_compute_error(
-                world_pts_all_instances,
-                final_K, final_D,
-                final_cam_r, final_cam_t,
-                pts2d_buf, vis_buf
-            )
-
-            # And compute the reliable bounding box using the world points and their errors
-            volume_of_trust = compute_reliable_bounds_3d(
-                world_pts_all_instances,
-                all_errors,
-                error_threshold_px=1.5,
-                percentile=1.0
-            )
-
-            if volume_of_trust:
-                print("--- Volume of Trust ---")
-                print(f"X range: {volume_of_trust['x'][0]:.2f} to {volume_of_trust['x'][1]:.2f} mm")
-                print(f"Y range: {volume_of_trust['y'][0]:.2f} to {volume_of_trust['y'][1]:.2f} mm")
-                print(f"Z range: {volume_of_trust['z'][0]:.2f} to {volume_of_trust['z'][1]:.2f} mm")
+            self.volume_of_trust()
 
             self.ba_samples.clear()
 
@@ -495,6 +472,42 @@ class MultiviewCalibrationTool:
     @property
     def image_points(self):
         return self._points2d, self._visibility_mask
+
+    def volume_of_trust(self,
+            threshold:  float = 1.5,
+            percentile: float = 1.0
+    ) -> Optional[Dict[str, float]]:
+
+        if self._refined:
+            # calculate the 3D world coordinates of all point instances using the refined poses
+            E_b2w_all_opt = extrinsics_matrix(*self._refined_board_poses)
+            world_pts_all_instances = jnp.einsum('pij,nj->pni', E_b2w_all_opt, self._board_pts_hom)[:, :, :3]
+
+            # reproject these world points and get errors
+            all_errors = reproject_and_compute_error(
+                world_pts_all_instances,
+                *self._refined_intrinsics,
+                *self._refined_extrinsics,
+                *self.image_points
+            )
+
+            # And compute the reliable bounding box using the world points and their errors
+            volume_of_trust = compute_reliable_bounds_3d(
+                world_pts_all_instances,
+                all_errors,
+                error_threshold_px=threshold,
+                percentile=percentile
+            )
+
+            if volume_of_trust:
+                print("--- Volume of Trust ---")
+                print(f"X range: {volume_of_trust['x'][0]:.2f} to {volume_of_trust['x'][1]:.2f} mm")
+                print(f"Y range: {volume_of_trust['y'][0]:.2f} to {volume_of_trust['y'][1]:.2f} mm")
+                print(f"Z range: {volume_of_trust['z'][0]:.2f} to {volume_of_trust['z'][1]:.2f} mm")
+
+                self._volume_of_trust = volume_of_trust
+
+            return self._volume_of_trust
 
     @property
     def ba_sample_count(self):
