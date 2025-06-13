@@ -31,27 +31,41 @@ def rodrigues(rvec: jnp.ndarray) -> jnp.ndarray:
     # magnitude of each vector
     theta = jnp.linalg.norm(rvec, axis=-1, keepdims=True)  # (..., 1)
 
-    # unit axis
-    # if theta ~ 0 we just get small numbers
-    k = rvec / (theta + _eps)                          # (..., 3)
+    # When theta is small, we use the Taylor expansion of R = I + [r_x]
+    # to avoid division by theta and the eventual numerical instability
+    is_small_angle = theta < _eps
+
+    # Normal angle
+    k = rvec / jnp.where(is_small_angle, 1.0, theta)
     kx, ky, kz = k[..., 0], k[..., 1], k[..., 2]
 
-    # build skew‐symmetric K
     zeros = jnp.zeros_like(kx)
     K = jnp.stack([
         jnp.stack([zeros, -kz, ky], axis=-1),
         jnp.stack([kz, zeros, -kx], axis=-1),
         jnp.stack([-ky, kx, zeros], axis=-1),
-    ], axis=-2)     # (..., 3, 3)
+    ], axis=-2)
 
-    # now apply Rodrigues: R = I + sinθ . K + (1 − cosθ) . K @ K
-    # sinθ and cosθ need a singleton matrix dimension for broadcasting
-    sin_t = jnp.sin(theta)[..., None]  # (..., 1, 1)
-    cos_t = jnp.cos(theta)[..., None]  # (..., 1, 1)
+    sin_t = jnp.sin(theta)[..., None]
+    cos_t = jnp.cos(theta)[..., None]
     I = jnp.eye(3)
 
-    R = I + sin_t * K + (1 - cos_t) * (K @ K)  # (..., 3, 3)
-    return R
+    R_normal = I + sin_t * K + (1 - cos_t) * (K @ K)
+
+    # Small angle (Taylor expansion)
+    # R ~ I + [r_x]
+    rx, ry, rz = rvec[..., 0], rvec[..., 1], rvec[..., 2]
+    zeros_r = jnp.zeros_like(rx)
+    # Skew-symmetric matrix of the rvec itself
+    R_skew = jnp.stack([
+        jnp.stack([zeros_r, -rz, ry], axis=-1),
+        jnp.stack([rz, zeros_r, -rx], axis=-1),
+        jnp.stack([-ry, rx, zeros_r], axis=-1),
+    ], axis=-2)
+    R_small = I + R_skew
+
+    # Choose which result to use based on the angle
+    return jnp.where(is_small_angle[..., None], R_small, R_normal)
 
 
 @jax.jit
@@ -69,21 +83,31 @@ def inverse_rodrigues(Rmat: jnp.ndarray) -> jnp.ndarray:
 
     trace = jnp.trace(Rmat, axis1=-2, axis2=-1)
     costheta = (trace - 1) / 2
-    theta = jnp.arccos(jnp.clip(costheta, -1, 1))
-    sintheta = jnp.sin(theta)[..., None]
 
-    # skew part
-    rv = jnp.stack([
+    # Use acos safely
+    theta = jnp.arccos(jnp.clip(costheta, -1, 1))
+
+    # Skew part of the matrix
+    rv_unscaled = jnp.stack([
         Rmat[..., 2, 1] - Rmat[..., 1, 2],
         Rmat[..., 0, 2] - Rmat[..., 2, 0],
         Rmat[..., 1, 0] - Rmat[..., 0, 1]
-    ], axis=-1)                             # (..., 3)
+    ], axis=-1)
 
-    axis = rv / (2 * (sintheta + _eps))     # (..., 3)
-    # if theta ~ 0 we just use zero axis
-    axis = jnp.where(theta[..., None] > _eps, axis, 0.0)
+    # there's an issue when theta is close to 0 or pi
+    # sin(theta) is in the denominator
+    sintheta = jnp.sin(theta)
 
-    return axis * theta[..., None]          # (..., 3)
+    # Condition for using approximation (theta ~ 0 or theta ~ pi)
+    is_singular = (sintheta ** 2) < _eps
+
+    # Normal angle
+    scale = jnp.where(is_singular, 1.0, 0.5 * theta / sintheta)
+    rvec_normal = rv_unscaled * scale[..., None] # (..., 3)
+
+    # TODO: Singular angle (theta is near 0 or pi)
+
+    return rvec_normal
 
 
 @jax.jit

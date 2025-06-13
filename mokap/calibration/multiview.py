@@ -22,7 +22,6 @@ class MultiviewCalibrationTool:
                  init_cam_matrices:     ArrayLike,
                  init_dist_coeffs:      ArrayLike,
                  object_points:         ArrayLike,
-                 intrinsics_window:     int = 10,
                  min_detections:        int = 15,
                  max_detections:        int = 100,
                  angular_thresh:        float = 10.0,   # in degrees
@@ -97,6 +96,11 @@ class MultiviewCalibrationTool:
                 return
 
             rvec, tvec = rvec.squeeze(), tvec.squeeze()
+
+            if not np.all(np.isfinite(rvec)) or not np.all(np.isfinite(tvec)):
+                if self._debug_print:
+                    print(f"[WARN] Cam {cam_idx} solvePnP produced non-finite pose. Discarding.")
+                return
 
             # if PnP placed the board behind the camera, return
             if tvec[2] <= 0:
@@ -189,6 +193,9 @@ class MultiviewCalibrationTool:
         )
 
         if not success:
+            if self._debug_print:
+                print(f"[CONSENSUS_FAIL] Frame rejected. Could not find a consistent board pose among {rt_stack.shape[0]} views.")
+                # (this happens for instance if the initial camera extrinsics are very inaccurate)
             return
 
         E_b2w = extrinsics_matrix(quaternion_to_axisangle(q_avg), t_avg)
@@ -293,24 +300,15 @@ class MultiviewCalibrationTool:
             # Correctly compose poses for this frame's views
             E_b2w_votes = E_c2w_in_frame @ E_b2c_in_frame
 
-            # Remove potantial outliers
             r_stack, t_stack = extmat_to_rtvecs(E_b2w_votes)
             q_stack = axisangle_to_quaternion_batched(r_stack)
-            rt_stack = jnp.concatenate([q_stack, t_stack], axis=1)
 
-            q_avg, t_avg, success = filter_rt_samples(
-                rt_stack=rt_stack,
-                ang_thresh=self._angular_thresh_rad,
-                trans_thresh=self._translational_thresh
-            )
-            r_avg = quaternion_to_axisangle(q_avg)
-
-            # handle the rare case where filtering might fail (all votes are outliers)
-            if not success:
-                r_avg, t_avg = r_stack[0], t_stack[0]
-
-            r_board_w_list.append(r_avg)
-            t_board_w_list.append(t_avg)
+            # here we use the simple, lenient average for BA initialization
+            # (Because the spread of this cluster is a direct result of the accumulated errors
+            # during online camera pose estimates - which are unavoidable!!
+            # The hardcore filter used online would likely jusyt eliminate everyone here)
+            r_board_w_list.append(quaternion_to_axisangle(quaternion_average(q_stack)))
+            t_board_w_list.append(jnp.median(t_stack, axis=0))
 
         # Start with the online estimates
         cam_r_online = self._rvecs_c2w
@@ -355,12 +353,12 @@ class MultiviewCalibrationTool:
             return False
 
         # Use results of S1 as initial guess for S2
-        K_s2_init = jnp.asarray(results_s1['K_opt'])
-        D_s2_init = jnp.asarray(results_s1['D_opt'])
-        cam_r_s2_init = jnp.asarray(results_s1['cam_r_opt'])
-        cam_t_s2_init = jnp.asarray(results_s1['cam_t_opt'])
-        board_r_s2_init = jnp.asarray(results_s1['board_r_opt'])
-        board_t_s2_init = jnp.asarray(results_s1['board_t_opt'])
+        K_s2_init = results_s1['K_opt']
+        D_s2_init = results_s1['D_opt']
+        cam_r_s2_init = results_s1['cam_r_opt']
+        cam_t_s2_init = results_s1['cam_t_opt']
+        board_r_s2_init = results_s1['board_r_opt']
+        board_t_s2_init = results_s1['board_t_opt']
 
         # STAGE 2: Per-camera pinhole world (Per-camera intrinsics, no Distortion)
         # ---------------------------------
@@ -391,12 +389,12 @@ class MultiviewCalibrationTool:
             return False
 
         # Use results of stage 2 as initial guess for stage 3
-        K_s3_init = jnp.asarray(results_s2['K_opt'])
-        D_s3_init = jnp.asarray(results_s2['D_opt'])
-        cam_r_s3_init = jnp.asarray(results_s2['cam_r_opt'])
-        cam_t_s3_init = jnp.asarray(results_s2['cam_t_opt'])
-        board_r_s3_init = jnp.asarray(results_s2['board_r_opt'])
-        board_t_s3_init = jnp.asarray(results_s2['board_t_opt'])
+        K_s3_init = results_s2['K_opt']
+        D_s3_init = results_s2['D_opt']
+        cam_r_s3_init = results_s2['cam_r_opt']
+        cam_t_s3_init = results_s2['cam_t_opt']
+        board_r_s3_init = results_s2['board_r_opt']
+        board_t_s3_init = results_s2['board_t_opt']
 
         # STAGE 3: Real world (Full Refinement with Distortion)
         # -------------------
@@ -439,9 +437,9 @@ class MultiviewCalibrationTool:
             self._refined = True
 
             volume_of_trust = compute_volume_of_trust(
-                jnp.asarray(final_results['K_opt']), jnp.asarray(final_results['D_opt']),
-                jnp.asarray(final_results['cam_r_opt']), jnp.asarray(final_results['cam_t_opt']),
-                jnp.asarray(final_results['board_r_opt']), jnp.asarray(final_results['board_t_opt']),
+                final_results['K_opt'], final_results['D_opt'],
+                final_results['cam_r_opt'], final_results['cam_t_opt'],
+                final_results['board_r_opt'], final_results['board_t_opt'],
                 pts2d_buf, vis_buf,
                 self._object_points,
                 error_threshold_px=1.5,

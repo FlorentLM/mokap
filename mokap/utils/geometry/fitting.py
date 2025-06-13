@@ -228,7 +228,11 @@ def filter_rt_samples(
     """
     Robustly averages a stack of (quaternion, translation) poses using IRLS
     """
-    length = rt_stack.shape[0]
+
+    # First, filter out any rows that contain non-finite values (NaN or Inf)
+    finite_mask = jnp.all(jnp.isfinite(rt_stack), axis=1)
+    rt_stack_clean = rt_stack[finite_mask]
+    length = rt_stack_clean.shape[0]
 
     def fail_case():
         return ID_QUAT, ZERO_T, False
