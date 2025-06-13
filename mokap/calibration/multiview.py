@@ -8,8 +8,7 @@ from jax import numpy as jnp
 from jax.typing import ArrayLike
 from mokap.calibration import bundle_adjustment
 from mokap.utils.datatypes import DetectionPayload
-from mokap.utils.geometry.projective import compute_volume_of_trust, project_to_multiple_cameras, \
-    reproject_and_compute_error
+from mokap.utils.geometry.projective import project_to_multiple_cameras, reproject_and_compute_error
 from mokap.utils.geometry.fitting import quaternion_average, filter_rt_samples, compute_reliable_bounds_3d
 from mokap.utils.geometry.transforms import extrinsics_matrix, extmat_to_rtvecs, axisangle_to_quaternion_batched, \
     quaternion_to_axisangle, invert_extrinsics_matrix, invert_rtvecs
