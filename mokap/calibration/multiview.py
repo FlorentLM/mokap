@@ -474,9 +474,9 @@ class MultiviewCalibrationTool:
         return self._points2d, self._visibility_mask
 
     def volume_of_trust(self,
-            threshold:  float = 1.5,
+            threshold:  float = 1.0,
             percentile: float = 1.0
-    ) -> Optional[Dict[str, float]]:
+    ) -> Optional[Dict[str, Tuple[float, float]]]:
 
         if self._refined:
             # calculate the 3D world coordinates of all point instances using the refined poses
@@ -498,6 +498,9 @@ class MultiviewCalibrationTool:
                 error_threshold_px=threshold,
                 percentile=percentile
             )
+
+            # Convert back to floats to save
+            volume_of_trust = {k: (float(v[0]), float(v[1])) for k, v in volume_of_trust.items()}
 
             if volume_of_trust:
                 print("--- Volume of Trust ---")
