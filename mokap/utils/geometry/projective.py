@@ -92,11 +92,20 @@ def project_points(
     return jnp.stack([fx * x_d + cx, fy * y_d + cy], axis=-1)
 
 
-# batched version for projecting some points into multiple cameras
+# batched version for projecting a single set of points into multiple cameras
 project_to_multiple_cameras = jax.jit(
     jax.vmap(
         project_points,
         in_axes=(None, 0, 0, 0, 0) # same points to project to everyone, and map over camera params
+    )
+)
+
+# projects multiple sets of world points into multiple cameras
+project_multiple_to_multiple = jax.jit(
+    jax.vmap( # vmap over different sets of points (e.g., from different poses P)
+        project_to_multiple_cameras,
+        in_axes=(0, None, None, None, None), # map over points, keep camera params the same
+        out_axes=1 # put the new mapped axis (P) after the camera axis (C)
     )
 )
 
@@ -147,6 +156,52 @@ project_object_views_batched = jax.jit(
     # camera_matrix: (C, 3, 3)
     # dist_coeffs: (C, D)
 )
+
+
+@jax.jit
+def reproject_and_compute_error(
+    world_points:       jnp.ndarray,    # (P, N, 3) or (N, 3)
+    camera_matrices:    jnp.ndarray,    # (C, 3, 3)
+    dist_coeffs:        jnp.ndarray,    # (C, D)
+    cams_rc2w:          jnp.ndarray,    # (C, 3)
+    cams_tc2w:          jnp.ndarray,    # (C, 3)
+    observed_pts2d:     jnp.ndarray,    # (C, P, N, 2)
+    visibility_mask:    jnp.ndarray     # (C, P, N)
+) -> jnp.ndarray:
+    """
+    Reprojects 3D world points into multiple cameras and computes the pixel error
+
+    This is a general-purpose function that works with any set of 3D world points
+
+    Args:
+        world_points: 3D points in the world coordinate system.
+                      Can be a single set (N, 3) or multiple sets (P, N, 3)
+        camera_matrices: Camera intrinsic matrices for C cameras
+        dist_coeffs: Distortion coefficients for C cameras
+        cams_rc2w: Camera-to-world rotation vectors for C cameras
+        cams_tc2w: Camera-to-world translation vectors for C cameras
+        observed_pts2d: The observed 2D points in each camera's image plane
+        visibility_mask: A boolean mask indicating if a point was observed
+
+    Returns:
+        errors: An array of shape (C, P, N) with reprojection errors in pixels
+                Non-visible points are marked with NaN
+    """
+
+    # Ensure world_points has a "pose" dimension for broadcasting
+    if world_points.ndim == 2:
+        world_points = world_points[None, ...] # (1, N, 3)
+        observed_pts2d = observed_pts2d[:, None, ...] if observed_pts2d.ndim == 3 else observed_pts2d
+        visibility_mask = visibility_mask[:, None, ...] if visibility_mask.ndim == 2 else visibility_mask
+
+    # get world -> camera transforms
+    r_w2c, t_w2c = invert_rtvecs(cams_rc2w, cams_tc2w)
+
+    # massive projection: all world points, from all poses, into all cameras
+    reprojected_pts = project_multiple_to_multiple(world_points, r_w2c, t_w2c, camera_matrices, dist_coeffs) # (C, P, N, 2)
+
+    errors = jnp.linalg.norm(observed_pts2d - reprojected_pts, axis=-1)
+    return jnp.where(visibility_mask, errors, jnp.nan)
 
 
 @jax.jit
@@ -420,62 +475,53 @@ def find_rays_intersection_3d(
     intersection_point, *_ = jnp.linalg.lstsq(A_stack, b_stack, rcond=None)
     return intersection_point
 
-##
-
-
-# TODO: The volume of trust logic, the project_points functions can probably be refactored into more intuitive general purpose functions
 
 @partial(jax.jit, static_argnames=['error_threshold_px', 'percentile'])
-def compute_volume_of_trust(
-        K_opt: jnp.ndarray,           # (C, 3, 3)
-        D_opt: jnp.ndarray,           # (C, D)
-        cam_r_opt: jnp.ndarray,       # (C, 3)
-        cam_t_opt: jnp.ndarray,       # (C, 3)
-        board_r_opt: jnp.ndarray,     # (P, 3)
-        board_t_opt: jnp.ndarray,     # (P, 3)
-        pts2d_buffer: jnp.ndarray,    # (C, P, N, 2)
-        vis_mask_buffer: jnp.ndarray, # (C, P, N)
-        object_points_3d: jnp.ndarray,# (N, 3)
-        error_threshold_px: float = 1.0,
-        percentile: float = 1.0
-) -> Optional[Dict[str, Tuple[float, float]]]:
+def compute_reliable_bounds_3d(
+    world_points: jnp.ndarray,        # (..., 3)
+    all_errors: jnp.ndarray,          # (C, ..., 1)
+    error_threshold_px: float = 1.0,
+    percentile: float = 1.0
+) -> Dict[str, Tuple[float, float]]:
+    """
+    Computes a bounding box in world coordinates from a cloud of 3D points and their corresponding errors
 
-    C, P, N, _ = pts2d_buffer.shape
+    Reliability is determined by the mean error across all observations (cameras) for each point
 
-    # Get world->camera transforms
-    r_w2c_all, t_w2c_all = invert_rtvecs(cam_r_opt, cam_t_opt)
+    Args:
+        world_points: A cloud of 3D points (P, N, 3)
+        all_errors: Error values for each point from each observation (C, P, N)
+        error_threshold_px: The maximum mean error for a point to be considered reliable
+        percentile: The percentile used to clip outliers when computing the bounds
 
-    reprojected_pts_all = project_object_views_batched(
-        object_points_3d,
-        r_w2c_all, t_w2c_all,
-        board_r_opt, board_t_opt,
-        K_opt, D_opt
+    Returns:
+        A dictionary with 'x', 'y', 'z' keys, each containing a (min, max) tuple for the bounds
+        Returns NaN bounds if fewer than 3 reliable points are found
+    """
+
+    # Average errors across observations (axis 0, e.g., cameras) for each point instance
+    mean_error_per_point = jnp.nanmean(all_errors, axis=0)
+
+    reliable_mask = mean_error_per_point < error_threshold_px
+    num_reliable_points = jnp.sum(reliable_mask)
+
+    # JAX-compatible masking: Replace unreliable points with NaN
+    reliable_world_pts = jnp.where(
+        reliable_mask[..., None], # Broadcast mask to match point dimensions
+        world_points,
+        jnp.nan
     )
 
-    # Compute errors
-    errors = jnp.linalg.norm(pts2d_buffer - reprojected_pts_all, axis=-1)
-    all_errors = jnp.where(vis_mask_buffer, errors, jnp.nan)
-
-    # Filter reliable points
-    mean_error_per_instance = jnp.nanmean(all_errors, axis=0) # (P, N)
-    reliable_instance_mask = mean_error_per_instance < error_threshold_px
-
-    # Get world coordinates of all points
-    obj_pts_hom = jnp.hstack([object_points_3d, jnp.ones((N, 1))])
-    E_b2w_all = extrinsics_matrix(board_r_opt, board_t_opt) # (P, 4, 4)
-    world_pts_all_frames = jnp.einsum('pij,nj->pni', E_b2w_all, obj_pts_hom)[:, :, :3] # (P, N, 3)
-
-    # Select reliable points and compute bounds
-    reliable_world_pts_cloud = world_pts_all_frames[reliable_instance_mask]
-
     def get_bounds():
-        lower_p, upper_p = percentile, 100 - percentile
-        x_min, x_max = jnp.percentile(reliable_world_pts_cloud[:, 0], jnp.array([lower_p, upper_p]))
-        y_min, y_max = jnp.percentile(reliable_world_pts_cloud[:, 1], jnp.array([lower_p, upper_p]))
-        z_min, z_max = jnp.percentile(reliable_world_pts_cloud[:, 2], jnp.array([lower_p, upper_p]))
+        lower_p, upper_p = percentile, 100.0 - percentile
+        p = jnp.array([lower_p, upper_p])
+        # nanpercentile to ignore the masked-out NaN values
+        x_min, x_max = jnp.nanpercentile(reliable_world_pts[..., 0], p)
+        y_min, y_max = jnp.nanpercentile(reliable_world_pts[..., 1], p)
+        z_min, z_max = jnp.nanpercentile(reliable_world_pts[..., 2], p)
         return {'x': (x_min, x_max), 'y': (y_min, y_max), 'z': (z_min, z_max)}
 
     def empty_bounds():
         return {'x': (jnp.nan, jnp.nan), 'y': (jnp.nan, jnp.nan), 'z': (jnp.nan, jnp.nan)}
 
-    return jax.lax.cond(reliable_world_pts_cloud.shape[0] < 3, empty_bounds, get_bounds)
+    return jax.lax.cond(num_reliable_points < 3, empty_bounds, get_bounds)

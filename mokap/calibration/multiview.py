@@ -8,7 +8,8 @@ from jax import numpy as jnp
 from jax.typing import ArrayLike
 from mokap.calibration import bundle_adjustment
 from mokap.utils.datatypes import DetectionPayload
-from mokap.utils.geometry.projective import compute_volume_of_trust, project_to_multiple_cameras
+from mokap.utils.geometry.projective import compute_volume_of_trust, project_to_multiple_cameras, \
+    reproject_and_compute_error, compute_reliable_bounds_3d
 from mokap.utils.geometry.fitting import quaternion_average, filter_rt_samples
 from mokap.utils.geometry.transforms import extrinsics_matrix, extmat_to_rtvecs, axisangle_to_quaternion_batched, \
     quaternion_to_axisangle, invert_extrinsics_matrix, invert_rtvecs
@@ -429,21 +430,38 @@ class MultiviewCalibrationTool:
             print("\nBundle adjustment complete. Storing refined parameters.")
 
             # store the globally optimized results
-            self._refined_intrinsics = (final_results['K_opt'], final_results['D_opt'])
-            self._refined_extrinsics = (final_results['cam_r_opt'], final_results['cam_t_opt'])
-            self._refined_board_poses = (final_results['board_r_opt'], final_results['board_t_opt'])
+            final_K = final_results['K_opt']
+            final_D = final_results['D_opt']
+            final_cam_r = final_results['cam_r_opt']
+            final_cam_t = final_results['cam_t_opt']
+            final_board_r = final_results['board_r_opt']
+            final_board_t = final_results['board_t_opt']
+
+            self._refined_intrinsics = (final_K, final_D)
+            self._refined_extrinsics = (final_cam_r, final_cam_t)
+            self._refined_board_poses = (final_board_r, final_board_t)
             self._points2d, self._visibility_mask = np.asarray(pts2d_buf), np.asarray(vis_buf)
 
             self._refined = True
 
-            volume_of_trust = compute_volume_of_trust(
-                final_results['K_opt'], final_results['D_opt'],
-                final_results['cam_r_opt'], final_results['cam_t_opt'],
-                final_results['board_r_opt'], final_results['board_t_opt'],
-                pts2d_buf, vis_buf,
-                self._object_points,
+            # calculate the 3D world coordinates of all point instances using the refined poses
+            E_b2w_all_opt = extrinsics_matrix(final_board_r, final_board_t)
+            world_pts_all_instances = jnp.einsum('pij,nj->pni', E_b2w_all_opt, self._board_pts_hom)[:, :, :3]
+
+            # reproject these world points and get errors
+            all_errors = reproject_and_compute_error(
+                world_pts_all_instances,
+                final_K, final_D,
+                final_cam_r, final_cam_t,
+                pts2d_buf, vis_buf
+            )
+
+            # And compute the reliable bounding box using the world points and their errors
+            volume_of_trust = compute_reliable_bounds_3d(
+                world_pts_all_instances,
+                all_errors,
                 error_threshold_px=1.5,
-                percentile=1.0      # 99th percentile
+                percentile=1.0
             )
 
             if volume_of_trust:
