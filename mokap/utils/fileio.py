@@ -203,7 +203,11 @@ def load_skeleton_SLEAP(slp_path, indices=False):
     import sleap_io
 
     slp_path = Path(slp_path)
-    slp_content = sleap_io.load_file(slp_path.as_posix())
+
+    if slp_path.is_dir():
+        slp_content = sleap_io.load_file(next(slp_path.glob('*.slp')))
+    else:
+        slp_content = sleap_io.load_file(slp_path)
 
     if indices:
         return slp_content.skeleton.node_names, slp_content.skeleton.edge_inds
