@@ -267,7 +267,7 @@ def invert_rtvecs(
     Inverts extrinsics vectors (rvec, tvec) -> (rvec_inv, tvec_inv)
     """
     R_mat = rodrigues(rvec)
-    R_inv = R_mat.transpose(-1, -2)
+    R_inv = jnp.swapaxes(R_mat, -1, -2)
     tvec_inv = (-R_inv @ tvec[..., None])[..., 0]
     rvec_inv = inverse_rodrigues(R_inv)
     return rvec_inv, tvec_inv

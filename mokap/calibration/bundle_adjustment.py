@@ -7,9 +7,9 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 from mokap.utils import CallbackOutputStream
 from alive_progress import alive_bar
-from mokap.utils.geometry.projective import project_multiple
-from mokap.utils.geometry.transforms import extrinsics_matrix, invert_extrinsics_matrix, extmat_to_rtvecs
 
+from mokap.utils.geometry.projective import project_object_views_batched
+from mokap.utils.geometry.transforms import invert_rtvecs
 
 DistortionModel = Literal['none', 'simple', 'standard', 'full']
 DIST_MODEL_MAP = {'none': 0, 'simple': 4, 'standard': 5, 'full': 8}  # TODO: we might want to support rational model too
@@ -173,8 +173,6 @@ def _unpack_params(
         K_fixed = jnp.asarray(K_fixed)
     K_out = K_fixed if K_fixed is not None else np_.zeros((C, 3, 3), dtype=x.dtype)
 
-    D_out = fixed_params.get('D', np_.zeros((C, 8), dtype=x.dtype))
-
     if 'focal_principal' in spec['blocks']:
         info = spec['blocks']['focal_principal']
         fp_flat = x[info['offset']: info['offset'] + info['size']]
@@ -316,12 +314,12 @@ def _get_bounds(
 
 
 def residual_weights(
-        pts2d: np.ndarray,  # (C, P, N, 2)
-        visibility_mask: np.ndarray,  # (C, P, N)
-        camera_matrices: np.ndarray,  # (C, 3, 3)
-        reproj_error: Optional[np.ndarray] = None,  # (C, P, N) or None
-        distance_falloff_gamma: float = 2.0
-) -> np.ndarray:
+        pts2d:                      jnp.ndarray,  # (C, P, N, 2)
+        visibility_mask:            jnp.ndarray,  # (C, P, N)
+        camera_matrices:            jnp.ndarray,  # (C, 3, 3)
+        reproj_error:               Optional[jnp.ndarray] = None,  # (C, P, N) or None
+        distance_falloff_gamma:     float = 2.0
+) -> jnp.ndarray:
     """
     Compute per-observation weights for BA residuals based on
         - Visibility
@@ -335,25 +333,24 @@ def residual_weights(
     # Distance to center
     cx = camera_matrices[:, 0, 2][:, None, None]  # (C, 1, 1)
     cy = camera_matrices[:, 1, 2][:, None, None]
-    center = np.stack([cx, cy], axis=-1)  # (C, 1, 1, 2)
+    center = jnp.stack([cx, cy], axis=-1)  # (C, 1, 1, 2)
 
-    dists = np.linalg.norm(pts2d - center, axis=-1)  # (C, P, N)
-    max_dist = np.sqrt(cx[:, 0, 0] ** 2 + cy[:, 0, 0] ** 2)  # (C,)
-    max_dist = max_dist[:, None, None] + 1e-8
+    dists = jnp.linalg.norm(pts2d - center, axis=-1)  # (C, P, N)
+    max_dist = jnp.sqrt(cx[:, 0, 0] ** 2 + cy[:, 0, 0] ** 2)[:, None, None] + 1e-8  # (C,)
 
     dist_weight = 1.0 / (1.0 + (dists / max_dist) ** distance_falloff_gamma)  # (C, P, N)
 
     # Weighting with the number of cameras seeing each point
-    nb_views = visibility_mask.sum(axis=0)  # (P, N)
-    nb_views_weight = np.tile(nb_views[None, :, :], (C, 1, 1))  # (C, P, N)
+    nb_views = jnp.sum(visibility_mask, axis=0)  # (P, N)
+    nb_views_weight = jnp.tile(nb_views[None, :, :], (C, 1, 1))  # (C, P, N)
     nb_views_weight = nb_views_weight / (1.0 + nb_views_weight)
 
     # Optional reprojection weight
     if reproj_error is not None:
         reproj_weight = 1.0 / (1.0 + reproj_error)
-        reproj_weight = np.clip(reproj_weight, 0.1, 1.0)
+        reproj_weight = jnp.clip(reproj_weight, 0.1, 1.0)
     else:
-        reproj_weight = np.ones_like(visibility_mask, dtype=np.float32)
+        reproj_weight = jnp.ones_like(visibility_mask, dtype=jnp.float32)
 
     # combine
     weights = (
@@ -363,13 +360,13 @@ def residual_weights(
             reproj_weight
     )
     # norm
-    weights /= (np.max(weights) + 1e-8)
+    weights /= (jnp.max(weights) + 1e-8)
 
     return weights
 
 
 def make_jacobian_sparsity(
-        spec: Dict,
+        spec:       Dict,
         use_priors: bool
 ) -> csr_matrix:
     """
@@ -440,46 +437,47 @@ def make_jacobian_sparsity(
 
 
 def jax_cost_function(
-        params,  # this is the only variable that'll changes
+        params,     # this is the only variable that'll changes
         fixed_params,
         spec,
-        points2d_jnp,
-        visibility_mask_jnp,
-        points3d_th_jnp,
-        points_weights_jnp,
-        prior_weight,
-        rvecs_cam_init_jnp,
-        tvecs_cam_init_jnp,
+        points2d:           jnp.ndarray,
+        visibility_mask:    jnp.ndarray,
+        points3d_th_jnp:    jnp.ndarray,
+        points_weights:     jnp.ndarray,
+        prior_weight:       float,
+        rvecs_cam_init:     jnp.ndarray,
+        tvecs_cam_init:     jnp.ndarray,
 ):
-
-    cam_mats, dist_coefs, cam_rvecs, cam_tvecs, board_rvecs, board_tvecs = _unpack_params(
+    # unpack
+    Ks, Ds, cam_r, cam_t, board_r, board_t = _unpack_params(
         params, fixed_params, spec
     )
 
-    E_board_w = extrinsics_matrix(board_rvecs, board_tvecs)
-    E_cam_w = extrinsics_matrix(cam_rvecs, cam_tvecs)
-    E_world_cam = invert_extrinsics_matrix(E_cam_w)
+    # invert camera poses to get world-to-camera transforms
+    r_w2c, t_w2c = invert_rtvecs(cam_r, cam_t)
 
-    E_board_cam = jnp.matmul(E_world_cam[None, :, :, :], E_board_w[:, None, :, :])
-    r_bc, t_bc = extmat_to_rtvecs(E_board_cam)
+    # Project all points (i.e. it projects object points for many different poses into many different cameras)
+    reproj = project_object_views_batched(
+        points3d_th_jnp,
+        r_w2c, t_w2c,
+        board_r, board_t,
+        Ks, Ds
+    )
 
-    project_frame = lambda rv, tv: project_multiple(points3d_th_jnp, rv, tv, cam_mats, dist_coefs)
-    reproj = jax.vmap(project_frame, in_axes=(0, 0))(r_bc, t_bc)
+    # Compute residuals
+    resid = reproj - points2d  # Assumes points2d_jnp is (C, P, N, 2)
+    weighted_resid = jnp.where(visibility_mask[..., None], resid * points_weights[..., None], 0.0)
 
-    resid = reproj - points2d_jnp
-    weighted_resid = jnp.where(visibility_mask_jnp[..., None], resid * points_weights_jnp[..., None], 0.0)
-
-    # --- Print mean reprojection error ---
-    # This is a side-effect, so we use jax.debug.print
-    # It will only print when the function is actually executed (not during tracing)
-    visible_error_magnitudes = jnp.where(visibility_mask_jnp, jnp.linalg.norm(resid, axis=-1), jnp.nan)
+    # Printing is a side effect, so we use have to use jax.debug.print
+    # (it will only print when the function is executed, not during tracing)
+    visible_error_magnitudes = jnp.where(visibility_mask, jnp.linalg.norm(resid, axis=-1), jnp.nan)
     mean_reprojection_error_px = jnp.nanmean(visible_error_magnitudes)
     jax.debug.print("Mean Reprojection Error: {x:.2f}px", x=mean_reprojection_error_px)
 
     all_residuals = [weighted_resid.ravel()]
     if prior_weight > 0.0 and 'extrinsics' in spec['blocks']:
-        rvec_resid = cam_rvecs - rvecs_cam_init_jnp
-        tvec_resid = cam_tvecs - tvecs_cam_init_jnp
+        rvec_resid = cam_r - rvecs_cam_init
+        tvec_resid = cam_t - tvecs_cam_init
         prior_resid = jnp.concatenate([rvec_resid.ravel(), tvec_resid.ravel()]) * prior_weight
         all_residuals.append(prior_resid)
 
@@ -487,26 +485,27 @@ def jax_cost_function(
 
 
 def run_bundle_adjustment(
-        camera_matrices: np.ndarray,
-        distortion_coeffs: np.ndarray,
-        cam_rvecs: np.ndarray,
-        cam_tvecs: np.ndarray,
-        board_rvecs: np.ndarray,
-        board_tvecs: np.ndarray,
-        points2d: np.ndarray,
-        visibility_mask: np.ndarray,
-        points3d_th: np.ndarray,
-        images_sizes_wh: ArrayLike,
-        priors_weight: float = 0.0,
-        radial_penalty: float = 2.0,
-        fix_focal_principal: bool = False,
-        fix_distortion: bool = False,
-        fix_extrinsics: bool = False,
-        fix_board_poses: bool = False,
-        fix_aspect_ratio: bool = False,
-        shared_intrinsics: bool = False,
-        distortion_model: DistortionModel = 'standard',
-):
+        camera_matrices:        jnp.ndarray,
+        distortion_coeffs:      jnp.ndarray,
+        cam_rvecs:              jnp.ndarray,
+        cam_tvecs:              jnp.ndarray,
+        board_rvecs:            jnp.ndarray,
+        board_tvecs:            jnp.ndarray,
+        image_points2d:         jnp.ndarray,   # (C, P, N, 2)
+        visibility_mask:        jnp.ndarray,   # (C, P, N)
+        object_points3d:        jnp.ndarray,
+        images_sizes_wh:        ArrayLike,
+        priors_weight:          float = 0.0,
+        radial_penalty:         float = 2.0,
+        fix_focal_principal:    bool = False,
+        fix_distortion:         bool = False,
+        fix_extrinsics:         bool = False,
+        fix_board_poses:        bool = False,
+        fix_aspect_ratio:       bool = False,
+        shared_intrinsics:      bool = False,
+        distortion_model:       DistortionModel = 'standard',
+) -> Tuple[bool, Dict]:
+
     C, P, N = visibility_mask.shape
     images_sizes_wh = np.atleast_2d(images_sizes_wh)
 
@@ -517,18 +516,24 @@ def run_bundle_adjustment(
         fix_aspect_ratio=fix_aspect_ratio, shared_intrinsics=shared_intrinsics,
         distortion_model=distortion_model
     )
-
     # Add nb_points to spec for jacobian sparsity calculation
     spec['config']['nb_points'] = N
 
     x0, fixed_params = _pack_params(
-        camera_matrices, distortion_coeffs, np.asarray(cam_rvecs), np.asarray(cam_tvecs),
-        np.asarray(board_rvecs), np.asarray(board_tvecs), spec
+        camera_matrices, distortion_coeffs,
+        cam_rvecs,
+        cam_tvecs,
+        board_rvecs,
+        board_tvecs,
+        spec
     )
 
+    # We need it as a numpy array, to pass to scipy
+    x0 = np.asarray(x0)
+
     # --- Bounds ---
-    lb, ub = _get_bounds(spec, images_sizes_wh)
-    np.clip(x0, lb, ub, out=x0)
+    lb, ub = _get_bounds(spec, images_sizes_wh) # bounds are also computed as np
+    x0 = np.clip(x0, lb, ub)
 
     scaler = Scaler()
     x0_scaled = scaler.fit_transform(x0)
@@ -537,33 +542,28 @@ def run_bundle_adjustment(
     # Jac sparsity matrix
     jac_sparsity = make_jacobian_sparsity(spec, use_priors=priors_weight > 0.0)
 
-    # --- JAX setup ---
+    # Setup
+    points_weights = residual_weights(
+        pts2d=image_points2d,
+        visibility_mask=visibility_mask,
+        camera_matrices=camera_matrices,
+        distance_falloff_gamma=radial_penalty
+    )   # (C, P, N)
 
-    # Convert all constant data to JAX arrays ONCE
-    points2d_jnp = jnp.transpose(jnp.asarray(points2d), (1, 0, 2, 3))
-    visibility_mask_jnp = jnp.transpose(jnp.asarray(visibility_mask), (1, 0, 2))
-    points3d_th_jnp = jnp.asarray(points3d_th)
-
-    points_weights = residual_weights(pts2d=points2d,
-                                      visibility_mask=visibility_mask,
-                                      camera_matrices=camera_matrices,
-                                      distance_falloff_gamma=radial_penalty)
-
-    points_weights_jnp = jnp.transpose(jnp.asarray(points_weights), (1, 0, 2))
-
-    rvecs_cam_init_jnp = jnp.asarray(cam_rvecs.copy()) if priors_weight > 0.0 else None
-    tvecs_cam_init_jnp = jnp.asarray(cam_tvecs.copy()) if priors_weight > 0.0 else None
+    rvecs_cam_init = cam_rvecs.copy() if priors_weight > 0.0 else None
+    tvecs_cam_init = cam_tvecs.copy() if priors_weight > 0.0 else None
 
     # we define the "closure" for the cost function: wraps the JAX cost function with the data that is constant
     def cost_closure(params_unscaled):
         return jax_cost_function(
             params_unscaled,
             fixed_params, spec,
-            points2d_jnp, visibility_mask_jnp,
-            points3d_th_jnp,
-            points_weights_jnp,
+            image_points2d, visibility_mask,
+            object_points3d,
+            points_weights,
             priors_weight,
-            rvecs_cam_init_jnp, tvecs_cam_init_jnp
+            rvecs_cam_init,
+            tvecs_cam_init
         )
 
     # wrapped functions for SciPy: scaling and conversion back to np
@@ -591,7 +591,7 @@ def run_bundle_adjustment(
     # --- Call the solver ---
     result = least_squares(
         scipy_cost_wrapper,              # Scipy expects numpy arrays so this wrapper just does that
-        x0_scaled,
+        x0_scaled,                       # x0 is already numpy
         verbose=2,
         bounds=(lb_scaled, ub_scaled),   # bounds are just scaled once that's it
         jac_sparsity=jac_sparsity,       # sparsity matrix is also computed once and that's it

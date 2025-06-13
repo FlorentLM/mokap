@@ -75,7 +75,8 @@ class ChessboardDetector:
 
     def detect(self,
                frame: ArrayLike,
-               refine_points: bool = False
+                refine_points: bool = False,
+               **kwargs
                ) -> Union[Tuple[np.ndarray, np.ndarray], Tuple[None, None]]:
 
         if frame.ndim == 3:

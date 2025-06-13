@@ -9,6 +9,7 @@ from mokap.utils.fileio import generate_board_svg
 from mokap.utils import fileio
 
 
+
 class ChessBoard:
     def __init__(self,
                  rows: int,

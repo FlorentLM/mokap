@@ -1,8 +1,10 @@
-from typing import Tuple, Union, Optional
+from functools import partial
+from typing import Tuple, Union, Optional, Dict
 import jax
 from jax import numpy as jnp
-from mokap.utils.geometry.transforms import rodrigues, extrinsics_matrix, invert_extrinsics_matrix, projection_matrix
-from mokap.utils.jax_utils import pad_to_length
+from mokap.utils.geometry.transforms import rodrigues, extrinsics_matrix, invert_extrinsics_matrix, projection_matrix, \
+    extmat_to_rtvecs, invert_rtvecs
+
 
 _eps = 1e-8
 
@@ -26,7 +28,11 @@ def distortion(
         dy: tangential distortion in y
     """
 
-    k1, k2, p1, p2, k3, k4, k5, k6 = pad_to_length(dist_coeffs.ravel(), 8)
+    current_len = dist_coeffs.shape[0]
+    padding_needed = max(0, 8 - current_len)
+    dist_coeffs_padded = jnp.pad(dist_coeffs, (0, padding_needed))
+
+    k1, k2, p1, p2, k3, k4, k5, k6 = dist_coeffs_padded[:8]
     r2 = x * x + y * y
 
     # TODO: We prob want to support the rational model too
@@ -53,21 +59,29 @@ def project_points(
     """
     Replacement for cv2.projectPoints
 
+    Fundamental projection function. Projects points from some coordinate
+    system into the image plane of a camera.
+
+    Principal application is to project from world coordinates (using world-to-cam rtvecs)
+
     Args:
-        object_points: any leading batch dims but last dim 3 (..., 3)
-        rvec: rotation vector (3,)
-        tvec: translation vector (3,)
-        camera_matrix: camera matrix (3, 3)
-        dist_coeffs: distortion coefficients (≤8,)
+        object_points: Points in the source coordinate system (..., 3)
+        rvec: Rotation vector for transform from source system to camera system (3,)
+        tvec: Translation vector for transform from source system to camera system (3,)
+        camera_matrix: Camera intrinsics matrix (3, 3)
+        dist_coeffs: Camera distortion coefficients (≤8,)
 
     Returns:
-        image_points: same leading dims as object_points but last dim 2 (..., 2)
+        image_points: Projected 2D points in the image plane (..., 2)
     """
 
     R = rodrigues(rvec)
 
     Xc = jnp.einsum('ij,...j->...i', R, object_points) + tvec
-    x, y = Xc[..., 0] / Xc[..., 2], Xc[..., 1] / Xc[..., 2]
+
+    z = Xc[..., 2]
+    z_safe = jnp.maximum(z, _eps)
+    x, y = Xc[..., 0] / z_safe, Xc[..., 1] / z_safe
 
     radial, dx, dy = distortion(x, y, dist_coeffs)
     x_d = x * radial + dx
@@ -77,16 +91,61 @@ def project_points(
     cx, cy = camera_matrix[0, 2], camera_matrix[1, 2]
     return jnp.stack([fx * x_d + cx, fy * y_d + cy], axis=-1)
 
-# batched version for projecting a set of points into multiple cameras
-project_multiple = jax.jit(
-    jax.vmap(project_points,
-             in_axes=(None, # object_points is shared
-                      0,    # each camera has its own rvec
-                      0,    # its own tvec
-                      0,    # its own camera_matrix
-                      0),   # its own dist_coeffs
-             out_axes=0),
-    static_argnums=()
+
+# batched version for projecting some points into multiple cameras
+project_to_multiple_cameras = jax.jit(
+    jax.vmap(
+        project_points,
+        in_axes=(None, 0, 0, 0, 0) # same points to project to everyone, and map over camera params
+    )
+)
+
+
+@jax.jit
+def project_object_to_camera(
+    object_points:  jnp.ndarray,  # (N, 3) in local object frame
+    r_w2c:          jnp.ndarray,  # (3,) world-to-camera rotation
+    t_w2c:          jnp.ndarray,  # (3,) world-to-camera translation
+    r_o2w:          jnp.ndarray,  # (3,) object-to-world rotation
+    t_o2w:          jnp.ndarray,  # (3,) object-to-world translation
+    camera_matrix:  jnp.ndarray,  # (3, 3)
+    dist_coeffs:    jnp.ndarray   # (D,)
+) -> jnp.ndarray:
+    """
+    Projects 3D points from an object's local frame into a camera view by
+    composing object-to-world and world-to-camera poses
+    Used during calibration and bundle adjustment
+    """
+    # Compose poses: world -> camera and object -> world  ==>  object -> camera
+    E_w2c = extrinsics_matrix(r_w2c, t_w2c)
+    E_o2w = extrinsics_matrix(r_o2w, t_o2w)
+    E_o2c = E_w2c @ E_o2w
+
+    # Get the combined rvec/tvec for the final projection
+    r_o2c, t_o2c = extmat_to_rtvecs(E_o2c)                      # TODO all the projection functions should use ext mats
+
+    return project_points(object_points, r_o2c, t_o2c, camera_matrix, dist_coeffs)
+
+
+# double-vmap for projecting N points from P poses into C cameras
+project_object_views_batched = jax.jit(
+    jax.vmap(       # vmap over cameras (C)
+        jax.vmap(   # vmap over object poses (P)
+            project_object_to_camera,
+            # vmap over object-to-world poses (r_o2w, t_o2w)
+            in_axes=(None, None, None, 0, 0, None, None)
+        ),
+        # vmap over camera parameters (r_w2c, t_w2c, K, D)
+        in_axes=(None, 0, 0, None, None, 0, 0)
+    )
+    # Expected inputs for a (C, P, N, 2) output:
+    # object_points: (N, 3)
+    # r_w2c: (C, 3)
+    # t_w2c: (C, 3)
+    # r_o2w: (P, 3)
+    # t_o2w: (P, 3)
+    # camera_matrix: (C, 3, 3)
+    # dist_coeffs: (C, D)
 )
 
 
@@ -360,3 +419,63 @@ def find_rays_intersection_3d(
     b_stack = b.reshape(-1)
     intersection_point, *_ = jnp.linalg.lstsq(A_stack, b_stack, rcond=None)
     return intersection_point
+
+##
+
+
+# TODO: The volume of trust logic, the project_points functions can probably be refactored into more intuitive general purpose functions
+
+@partial(jax.jit, static_argnames=['error_threshold_px', 'percentile'])
+def compute_volume_of_trust(
+        K_opt: jnp.ndarray,           # (C, 3, 3)
+        D_opt: jnp.ndarray,           # (C, D)
+        cam_r_opt: jnp.ndarray,       # (C, 3)
+        cam_t_opt: jnp.ndarray,       # (C, 3)
+        board_r_opt: jnp.ndarray,     # (P, 3)
+        board_t_opt: jnp.ndarray,     # (P, 3)
+        pts2d_buffer: jnp.ndarray,    # (C, P, N, 2)
+        vis_mask_buffer: jnp.ndarray, # (C, P, N)
+        object_points_3d: jnp.ndarray,# (N, 3)
+        error_threshold_px: float = 1.0,
+        percentile: float = 1.0
+) -> Optional[Dict[str, Tuple[float, float]]]:
+
+    C, P, N, _ = pts2d_buffer.shape
+
+    # Get world->camera transforms
+    r_w2c_all, t_w2c_all = invert_rtvecs(cam_r_opt, cam_t_opt)
+
+    reprojected_pts_all = project_object_views_batched(
+        object_points_3d,
+        r_w2c_all, t_w2c_all,
+        board_r_opt, board_t_opt,
+        K_opt, D_opt
+    )
+
+    # Compute errors
+    errors = jnp.linalg.norm(pts2d_buffer - reprojected_pts_all, axis=-1)
+    all_errors = jnp.where(vis_mask_buffer, errors, jnp.nan)
+
+    # Filter reliable points
+    mean_error_per_instance = jnp.nanmean(all_errors, axis=0) # (P, N)
+    reliable_instance_mask = mean_error_per_instance < error_threshold_px
+
+    # Get world coordinates of all points
+    obj_pts_hom = jnp.hstack([object_points_3d, jnp.ones((N, 1))])
+    E_b2w_all = extrinsics_matrix(board_r_opt, board_t_opt) # (P, 4, 4)
+    world_pts_all_frames = jnp.einsum('pij,nj->pni', E_b2w_all, obj_pts_hom)[:, :, :3] # (P, N, 3)
+
+    # Select reliable points and compute bounds
+    reliable_world_pts_cloud = world_pts_all_frames[reliable_instance_mask]
+
+    def get_bounds():
+        lower_p, upper_p = percentile, 100 - percentile
+        x_min, x_max = jnp.percentile(reliable_world_pts_cloud[:, 0], jnp.array([lower_p, upper_p]))
+        y_min, y_max = jnp.percentile(reliable_world_pts_cloud[:, 1], jnp.array([lower_p, upper_p]))
+        z_min, z_max = jnp.percentile(reliable_world_pts_cloud[:, 2], jnp.array([lower_p, upper_p]))
+        return {'x': (x_min, x_max), 'y': (y_min, y_max), 'z': (z_min, z_max)}
+
+    def empty_bounds():
+        return {'x': (jnp.nan, jnp.nan), 'y': (jnp.nan, jnp.nan), 'z': (jnp.nan, jnp.nan)}
+
+    return jax.lax.cond(reliable_world_pts_cloud.shape[0] < 3, empty_bounds, get_bounds)

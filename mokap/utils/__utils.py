@@ -2,14 +2,7 @@ import sys
 import os
 import colorsys
 import numpy as np
-
-from typing import TYPE_CHECKING
-
-from numpy._typing import ArrayLike
-
-if TYPE_CHECKING:   # TODO: This check might be useless now after restructuring?
-    pass
-
+from numpy.typing import ArrayLike
 
 # TODO: Functions in this file need to be moved
 

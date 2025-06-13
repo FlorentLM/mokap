@@ -1,14 +1,16 @@
 import re
 from pathlib import Path
 from typing import Union
-
 import cv2
 import yaml
 import toml
 import numpy as np
 import pandas as pd
 
-from mokap.utils import ChessBoard, CharucoBoard
+
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from mokap.utils.datatypes import ChessBoard, CharucoBoard
 
 ##
 
