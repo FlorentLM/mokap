@@ -34,9 +34,9 @@ class MonocularCalibrationTool:
         self._verbose: bool = verbose
 
         # TODO: these 3 alternatives should be selectable from the config file
-        self._min_pts: int = 4      # SQPNP method needs at least 3 points but in practice 4 is safer
+        # self._min_pts: int = 4      # SQPNP method needs at least 3 points but in practice 4 is safer
         # self._min_pts: int = 4    # ITERATIVE method needs at least 4 points
-        # self._min_pts: int = 6    # DLT algorithm needs at least 6 points for pose estimation
+        self._min_pts: int = 6    # DLT algorithm needs at least 6 points for pose estimation
 
         # TODO: grid parameters should be configurable from the config file
         self._nb_grid_cells: int = 15
@@ -290,7 +290,7 @@ class MonocularCalibrationTool:
         return ret[np.argmax(scores)]
 
     def register_sample(self):
-        if self.has_detection:
+        if self.has_detection and self.nb_points >= self._min_pts:
             # cv2.calibrateCamera() will complain if the deques contain (N, 2) arrays, it expects (1, N, 2)
             # TODO: maybe we should not squeeze the arrays in the detector lol
             self.stack_points2d.append(self._points2d_np[np.newaxis, :, :])
@@ -432,7 +432,7 @@ class MonocularCalibrationTool:
     def compute_extrinsics(self, refine=True):
 
         # We need a detection and intrinsics to compute the extrinsics
-        if not self.has_detection or not self.has_intrinsics:
+        if not self.has_detection or not self.has_intrinsics or self.nb_points < 6:     # DLT needs 6 points
             self._rvec, self._tvec = None, None
             self._pose_error = np.inf
             return
@@ -446,12 +446,12 @@ class MonocularCalibrationTool:
                 self._pose_error = np.inf
                 return
 
-        # pnp_flags = cv2.SOLVEPNP_ITERATIVE
+        pnp_flags = cv2.SOLVEPNP_ITERATIVE
 
         # SQPNP:
         # - "A Consistently Fast and Globally Optimal Solution to the Perspective-n-Point Problem", 2020,
         #   George Terzakis and Manolis Lourakis, 10.1007/978-3-030-58452-8_28
-        pnp_flags = cv2.SOLVEPNP_SQPNP
+        # pnp_flags = cv2.SOLVEPNP_SQPNP
 
         cam_mat_np, dist_coeffs_np = self.intrinsics_np()
 
@@ -558,14 +558,11 @@ class MonocularCalibrationTool:
                 refine_points=True
             )
 
-    def auto_register_area_based(self,
-                                 area_threshold: float = 0.2,
-                                 nb_points_threshold: int = 4
-                                 ) -> bool:
+    def auto_register_area_based(self, area_threshold: float = 0.2) -> bool:
 
         novel_area = self._compute_new_area()
 
-        if novel_area >= area_threshold and self.nb_points >= nb_points_threshold:
+        if novel_area >= area_threshold and self.nb_points >= self._min_pts:
             self.register_sample()
             return True
         else:
