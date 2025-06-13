@@ -538,3 +538,12 @@ def rotate_vector_by_quat(q: jnp.ndarray, v: jnp.ndarray) -> jnp.ndarray:
 rotate_vectors_by_quat = jax.jit(jax.vmap(rotate_vector_by_quat, in_axes=(None, 0)))
 # vmap over both q and v (to rotate multiple vectors by multiple quaternions)
 rotate_vectors_by_quats = jax.jit(jax.vmap(rotate_vector_by_quat, in_axes=(0, 0)))
+
+
+def quaternions_angular_distance(q1: jnp.ndarray, q2: jnp.ndarray) -> jnp.ndarray:
+    """
+    Compute the angle between two unit quaternions q1, q2
+    """
+    d = jnp.abs(jnp.dot(q1, q2))
+    d = jnp.clip(d, -1.0, 1.0)
+    return 2.0 * jnp.arccos(d)

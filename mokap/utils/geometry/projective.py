@@ -1,5 +1,4 @@
-from functools import partial
-from typing import Tuple, Union, Optional, Dict
+from typing import Tuple, Union, Optional
 import jax
 from jax import numpy as jnp
 from mokap.utils.geometry.transforms import rodrigues, extrinsics_matrix, invert_extrinsics_matrix, projection_matrix, \
@@ -228,7 +227,7 @@ def undistort_points(
         undistorted_points: same leading dims as points2d but last dim 2 (..., 2)
     """
 
-    # fallback to default R and P (runs in host code)
+    # fallback to default R and P (runs in host code)   # TODO: ummmmm????
     if R is None:
         R = jnp.eye(3, dtype=camera_matrix.dtype)
     if P is None:
@@ -446,82 +445,3 @@ def triangulate(
     pts3d = triangulate_points_from_projections(pts2d_ud, P_all, weights=weights)
     return pts3d
 
-
-@jax.jit
-def find_rays_intersection_3d(
-    ray_origins:     jnp.ndarray, # (C, 3)
-    ray_directions:  jnp.ndarray  # (C, 3)
-) -> jnp.ndarray:
-    """
-    Finds the 3D point that minimizes the sum of squared distances to a set of rays
-    Each ray is defined by an origin point and a direction vector
-
-    Args:
-        ray_origins: C origin points for C rays (C, 3)
-        ray_directions: C unit direction vectors for C rays (C, 3)
-
-    Returns:
-        intersection_point: The point of closest intersection (3,)
-    """
-
-    D = ray_directions[..., :, None]
-    A = jnp.eye(3)[None, ...] - D @ D.transpose(0, 2, 1)
-
-    C = ray_origins[..., :, None]
-    b = (A @ C)[..., 0]
-
-    A_stack = A.reshape(-1, 3)
-    b_stack = b.reshape(-1)
-    intersection_point, *_ = jnp.linalg.lstsq(A_stack, b_stack, rcond=None)
-    return intersection_point
-
-
-@partial(jax.jit, static_argnames=['error_threshold_px', 'percentile'])
-def compute_reliable_bounds_3d(
-    world_points: jnp.ndarray,        # (..., 3)
-    all_errors: jnp.ndarray,          # (C, ..., 1)
-    error_threshold_px: float = 1.0,
-    percentile: float = 1.0
-) -> Dict[str, Tuple[float, float]]:
-    """
-    Computes a bounding box in world coordinates from a cloud of 3D points and their corresponding errors
-
-    Reliability is determined by the mean error across all observations (cameras) for each point
-
-    Args:
-        world_points: A cloud of 3D points (P, N, 3)
-        all_errors: Error values for each point from each observation (C, P, N)
-        error_threshold_px: The maximum mean error for a point to be considered reliable
-        percentile: The percentile used to clip outliers when computing the bounds
-
-    Returns:
-        A dictionary with 'x', 'y', 'z' keys, each containing a (min, max) tuple for the bounds
-        Returns NaN bounds if fewer than 3 reliable points are found
-    """
-
-    # Average errors across observations (axis 0, e.g., cameras) for each point instance
-    mean_error_per_point = jnp.nanmean(all_errors, axis=0)
-
-    reliable_mask = mean_error_per_point < error_threshold_px
-    num_reliable_points = jnp.sum(reliable_mask)
-
-    # JAX-compatible masking: Replace unreliable points with NaN
-    reliable_world_pts = jnp.where(
-        reliable_mask[..., None], # Broadcast mask to match point dimensions
-        world_points,
-        jnp.nan
-    )
-
-    def get_bounds():
-        lower_p, upper_p = percentile, 100.0 - percentile
-        p = jnp.array([lower_p, upper_p])
-        # nanpercentile to ignore the masked-out NaN values
-        x_min, x_max = jnp.nanpercentile(reliable_world_pts[..., 0], p)
-        y_min, y_max = jnp.nanpercentile(reliable_world_pts[..., 1], p)
-        z_min, z_max = jnp.nanpercentile(reliable_world_pts[..., 2], p)
-        return {'x': (x_min, x_max), 'y': (y_min, y_max), 'z': (z_min, z_max)}
-
-    def empty_bounds():
-        return {'x': (jnp.nan, jnp.nan), 'y': (jnp.nan, jnp.nan), 'z': (jnp.nan, jnp.nan)}
-
-    return jax.lax.cond(num_reliable_points < 3, empty_bounds, get_bounds)
