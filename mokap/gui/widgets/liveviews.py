@@ -440,6 +440,13 @@ class Monocular(PreviewBase):
         layout = QHBoxLayout(self.RIGHT_GROUP)
         layout.setContentsMargins(5, 5, 5, 5)
 
+        # Overlay text
+        self.computing_text = pg.TextItem(anchor=(0.5, 0.5), color=(255, 255, 255))
+        self.computing_text.setPos(self.source_shape[1] / 2, self.source_shape[0] / 2)
+        self.computing_text.setHtml('<span style="font-size: 16pt; font-weight: bold;">Computing...</span>')
+        self.view_box.addItem(self.computing_text)
+        self.computing_text.hide()
+
         # Detection and sampling
         sampling_group = QWidget()
         sampling_layout = QVBoxLayout(sampling_group)
@@ -519,22 +526,7 @@ class Monocular(PreviewBase):
     def _annotate_frame(self):
 
         if self._worker_blocking:
-            # Case 1: The worker is busy computing
-            computing_frame = self._latest_display_frame.copy()
-
-            h, w = computing_frame.shape[:2]
-            text = "Computing..."
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = 2.0
-            thickness = 6
-            text_size, _ = cv2.getTextSize(text, font, font_scale, thickness)
-            text_x = (w - text_size[0]) // 2
-            text_y = (h + text_size[1]) // 2
-            cv2.putText(computing_frame, text, (text_x, text_y), font, font_scale, (255, 255, 255), thickness,
-                        cv2.LINE_AA)
-
-            # copy this temporary annotated frame to the display buffer
-            np.copyto(self._latest_display_frame, computing_frame)
+            self.computing_text.setVisible(True)
             return
 
         if self.annotated_frame is not None:
@@ -546,10 +538,9 @@ class Monocular(PreviewBase):
             self.annotated_frame = None
             return
 
-        # Case 3: Default
-        # Worker is not blocking, and no new annotated frame is ready
-        # do nothing (the display buffer retains the last valid frame from case 1 or 2)
-        pass
+        # elif self._latest_frame is not None:
+        #     # No new annotated frame, but there's a fresh raw frame
+        #     np.copyto(self._latest_display_frame, self._latest_frame)
 
     @Slot(CalibrationData)
     def handle_payload(self, data: CalibrationData):
