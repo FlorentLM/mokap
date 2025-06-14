@@ -1,5 +1,6 @@
 import PySpin
 import numpy as np
+import re
 from typing import Any, Dict, Optional, Tuple
 from mokap.core.cameras.genicam import GenICamCamera
 
@@ -37,6 +38,7 @@ class FLIRCamera(GenICamCamera):
 
         if 'polarized' in settings.get('pixel_format', '').lower():
             self._polarisation_sensor = True
+            self._POL_PATTERN = re.compile(r'polari[sz]ed', re.IGNORECASE)
         else:
             self._polarisation_sensor = False
 
@@ -107,7 +109,7 @@ class FLIRCamera(GenICamCamera):
                 if self._polarisation_sensor:
                     quad_0 = PySpin.ImageUtilityPolarization.ExtractPolarQuadrant(image_result, 0)
                     image_arr = quad_0.GetNDArray().copy()
-                    meta['pixel_format_effective'] = 'BayerRG8'
+                    meta['pixel_format'] = self._POL_PATTERN.sub('', self._pixel_format)
 
                 else:
                     # IMPORTANT: GetNDArray returns a view. We must copy it!!

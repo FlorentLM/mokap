@@ -363,11 +363,13 @@ class PreviewBase(Base):
         pass
 
     def _consume_frames_loop(self):
-        """ This runs in a background thread and grabs frames from the camera manager, and handles color conversion """
-
+        """
+        This runs in a background thread. It grabs frames from the camera's
+        display queue and converts them to a displayable 8-bit BGR format
+        """
         display_queue = self._mainwindow.manager._display_queues[self._cam_idx]
 
-        # This buffer lives in the background thread, we initialise it once and then update its content
+        # Pre-allocate the destination buffer to avoid creating new arrays in the loop.
         bgr_frame = np.empty((self._source_shape[0], self._source_shape[1], 3), dtype=np.uint8)
 
         last_emit_time = 0  # this is a bit of a hack...
@@ -375,37 +377,69 @@ class PreviewBase(Base):
 
         while self._consumer_thread_active:
             try:
-                raw_frame, metadata = display_queue.get(timeout=1)
+                raw_frame, metadata = display_queue.get(timeout=1.0)
                 current_time = time.time()
-                should_emit = (current_time - last_emit_time) > DISPLAY_INTERVAL
 
-                if not should_emit:
-                    continue  # skip processing and emitting if it's too soon
-
+                # Throttle the display rate
+                if (current_time - last_emit_time) < DISPLAY_INTERVAL:
+                    continue
                 last_emit_time = current_time
 
                 if raw_frame is None:
                     self.frame_received.emit(None, metadata)
                     continue
 
-                pixel_format = metadata.get('pixel_format_effective') or self._fmt
+                pixel_format = metadata.get('pixel_format') or self._fmt
 
                 try:
                     match pixel_format:
-                        # ... (match case is the same)
-                        case 'BayerBG8':
-                            cv2.cvtColor(raw_frame, cv2.COLOR_BAYER_BG2BGR, dst=bgr_frame)
-                        case 'BayerRG8':
-                            cv2.cvtColor(raw_frame, cv2.COLOR_BAYER_RG2BGR, dst=bgr_frame)
+                        # High Bit-Depth Monochrome (convert to 8-bit gray, then to BGR)
+                        case 'Mono16':
+                            # shift 16-bit data down to 8-bit
+                            gray_8bit = (raw_frame >> 8).astype(np.uint8)
+                            cv2.cvtColor(gray_8bit, cv2.COLOR_GRAY2BGR, dst=bgr_frame)
+                        case 'Mono12':
+                            # shift 12-bit data down to 8-bit
+                            gray_8bit = (raw_frame >> 4).astype(np.uint8)
+                            cv2.cvtColor(gray_8bit, cv2.COLOR_GRAY2BGR, dst=bgr_frame)
+                        case 'Mono10':
+                            # shift 10-bit data down to 8-bit
+                            gray_8bit = (raw_frame >> 2).astype(np.uint8)
+                            cv2.cvtColor(gray_8bit, cv2.COLOR_GRAY2BGR, dst=bgr_frame)
+
+                        # Standard 8-bit Monochrome
                         case 'Mono8':
                             cv2.cvtColor(raw_frame, cv2.COLOR_GRAY2BGR, dst=bgr_frame)
+
+                        # 8-bit Bayer Patterns (Debayering)
+                        case 'BayerRG8':
+                            cv2.cvtColor(raw_frame, cv2.COLOR_BAYER_RG2BGR, dst=bgr_frame)
+                        case 'BayerGR8':
+                            cv2.cvtColor(raw_frame, cv2.COLOR_BAYER_GR2BGR, dst=bgr_frame)
+                        case 'BayerGB8':
+                            cv2.cvtColor(raw_frame, cv2.COLOR_BAYER_GB2BGR, dst=bgr_frame)
+                        case 'BayerBG8':
+                            cv2.cvtColor(raw_frame, cv2.COLOR_BAYER_BG2BGR, dst=bgr_frame)
+
+                        # 8-bit Color Formats
                         case 'RGB8':
                             cv2.cvtColor(raw_frame, cv2.COLOR_RGB2BGR, dst=bgr_frame)
+                        case 'RGBA8':
+                            cv2.cvtColor(raw_frame, cv2.COLOR_RGBA2BGR, dst=bgr_frame)
+
+                        # Default (assumes BGR ...or hope for the best)
                         case _:
-                            np.copyto(bgr_frame, raw_frame)
+                            if raw_frame.shape == bgr_frame.shape and raw_frame.dtype == bgr_frame.dtype:
+                                np.copyto(bgr_frame, raw_frame)
+                            else:
+                                # Fallback for unexpected formats: trippy magenta error
+                                print(f"[{self.name}] Unsupported pixel format for display: {pixel_format}")
+                                bgr_frame[:] = (255, 0, 255)
+
                 except cv2.error as e:
-                    print(f"[{self.name}] OpenCV Error in _consume_frames_loop: {e}")
-                    bgr_frame.fill(255)
+                    print(f"[{self.name}] OpenCV Error during color conversion: {e}")
+                    # Fill frame with red to indicate a conversion error
+                    bgr_frame[:] = (0, 0, 255)
 
                 self.frame_received.emit(bgr_frame, metadata)
 
