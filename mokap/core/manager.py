@@ -343,10 +343,10 @@ class MultiCam:
 
     def _display_updater_thread(self, cam_idx: int):
         """
-        This thread's job is to manage the flow of preview frames.
-        1. It gets a frame from the grabber's tee queue.
-        2. It updates a shared variable with this "latest" frame for snapshots.
-        3. It tries to push the frame to the GUI queue for live display.
+        This thread's job is to manage the flow of preview frames
+        1. It gets a frame from the grabber's tee queue
+        2. It updates a shared variable with this "latest" frame for snapshots
+        3. It tries to push the frame to the GUI queue for live display
         """
         tee_queue = self._display_tee_queues[cam_idx]
         display_queue = self._display_queues[cam_idx]
@@ -357,11 +357,11 @@ class MultiCam:
                 # Block and wait for a new frame from the grabber
                 frame, metadata = tee_queue.get(timeout=1.0)
 
-                # --- Update the shared state for snapshots ---
+                # Update the shared state for snapshots
                 with lock:
                     self._latest_frames[cam_idx] = (frame, metadata)
 
-                # --- Try to push to the actual GUI queue ---
+                #Try to push to the actual GUI queue
                 # If the GUI is lagging, we just drop the frame and continue
                 if not display_queue.full():
                     display_queue.put_nowait((frame, metadata))

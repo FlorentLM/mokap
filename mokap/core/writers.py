@@ -3,8 +3,9 @@ import shlex
 import platform
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
+import cv2
 import numpy as np
 from PIL import Image
 
@@ -15,11 +16,12 @@ class FrameWriter(ABC):
     interface for all writer types (e.g., video, image sequence)
     """
 
-    def __init__(self, filepath: Path, width: int, height: int, framerate: float):
+    def __init__(self, filepath: Path, width: int, height: int, framerate: float, pixel_format: str):
         self.filepath = filepath
         self.width = width
         self.height = height
         self.framerate = framerate
+        self.pixel_format = pixel_format
         self.frame_count = 0
 
     def write(self, frame: np.ndarray, metadata: Dict[str, Any]):
@@ -58,41 +60,98 @@ class ImageSequenceWriter(FrameWriter):
 
         self.ext = ext.lstrip('.').lower()
         self.quality = quality
+        self._imwrite_params = []
+
+        # Determine if the chosen format supports 16-bit depth
+        self._supports_16bit = self.ext in ('png', 'tif', 'tiff')
+
+        # Configure OpenCV save parameters based on extension and quality
+        if self.ext in ('jpg', 'jpeg'):
+            # For JPEG, the quality parameter is a direct 0-100 scale
+            self._imwrite_params = [cv2.IMWRITE_JPEG_QUALITY, int(self.quality)]
+
+        elif self.ext == 'png':
+            # For PNG the parameter is 'compression' (0-9)
+            #
+            # higher compression level means a smaller file but slower write time
+            #
+            # We want:
+            # High Quality (100) -> Low Compression (1) -> Faster write, larger file
+            # Low Quality (0) -> High Compression (9) -> Slower write, smaller file
+            #
+            compression_level = int(np.round(np.interp(self.quality, [0, 100], [9, 1])))
+            self._imwrite_params = [cv2.IMWRITE_PNG_COMPRESSION, compression_level]
+            print(f"[INFO] ImageSequenceWriter: PNG quality {self.quality} mapped to compression level {compression_level}.")
+
+        elif self.ext in ('tif', 'tiff'):
+            # For TIFF we can offer a simple choice
+            # - High quality (>= 95): No compression. Fast, huge files, raw data
+            # - Lower quality (< 95): Use lossy JPEG compression inside the TIFF container
+            if self.quality >= 95:
+                # Use value 1 for no compression (ZLIB would be 8)
+                self._imwrite_params = [cv2.IMWRITE_TIFF_COMPRESSION, 1]
+                print(f"[INFO] ImageSequenceWriter: TIFF quality {self.quality} >= 95. Using no compression.")
+
+            else:
+                # Use JPEG compression (value 7) and pass the quality setting
+                self._imwrite_params = [cv2.IMWRITE_TIFF_COMPRESSION, 7, cv2.IMWRITE_JPEG_QUALITY, int(self.quality)]
+                print(f"[INFO] ImageSequenceWriter: TIFF quality {self.quality} < 95. Using JPEG compression inside TIFF.")
 
         # Ensure the output directory exists
         self.filepath.mkdir(parents=True, exist_ok=True)
+
+    def _prepare_frame(self, frame: np.ndarray) -> np.ndarray:
+        """ Converts the input frame to a format savable by cv2.imwrite """
+
+        # High Bit-Depth monochrome
+        if self.pixel_format in ('Mono10', 'Mono12', 'Mono16'):
+            if self._supports_16bit:
+                # Preserve bit depth for PNG/TIFF
+                # Scale up to full 16-bit range for better visualization
+                if self.pixel_format == 'Mono10':
+                    return (frame.astype(np.uint16) << 6)
+
+                if self.pixel_format == 'Mono12':
+                    return (frame.astype(np.uint16) << 4)
+
+                return frame  # Mono16 is already uint16
+            else:
+                # Convert to 8-bit for JPG/BMP etc
+                # This is a lossy conversion
+                shift = {'Mono10': 2, 'Mono12': 4, 'Mono16': 8}[self.pixel_format]
+                return (frame >> shift).astype(np.uint8)
+
+        # Bayer pattern to BGR Conversion
+        bayer_map = {
+            'BayerRG8': cv2.COLOR_BAYER_RG2BGR, 'BayerGR8': cv2.COLOR_BAYER_GR2BGR,
+            'BayerGB8': cv2.COLOR_BAYER_GB2BGR, 'BayerBG8': cv2.COLOR_BAYER_BG2BGR,
+        }
+        if self.pixel_format in bayer_map:
+            return cv2.cvtColor(frame, bayer_map[self.pixel_format])
+
+        # Standard color format conversions
+        if self.pixel_format == 'RGB8':
+            return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+        if self.pixel_format == 'RGBA8':
+            return cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+
+        # 8-bit Mono or already BGR
+        # if it's Mono8, BGR8, or unknown, return as is
+        return frame
 
     def _write_frame(self, frame: np.ndarray, metadata: Dict[str, Any]):
 
         image_path = self.filepath / f"{str(self.frame_count).zfill(9)}.{self.ext}"
 
         try:
-            # Create a PIL Image from the raw buffer without copying data
-            # TODO: This assumes an 8-bit grayscale but it should also work for colour cameras!!!
-            # TODO: Maybe we want to use cv2.imwrite instead
-            img = Image.frombuffer("L", (self.width, self.height), frame, 'raw', "L", 0, 1)
+            # Prepare the frame (debayer, scale bit depth, etc)
+            img_to_write = self._prepare_frame(frame)
 
-            # Apply format-specific save options
-            if self.ext == 'png':
-                # PNG compress_level: 0=none, 1=fastest, 9=best
-                # We map a 0-100 quality scale to the 9-1 range
-                compress_level = int(np.interp(self.quality, [0, 100], [9, 1]))
-                img.save(image_path, compress_level=compress_level, optimize=False)
-
-            elif self.ext in ('jpg', 'jpeg'):
-                img.save(image_path, quality=self.quality, subsampling='4:2:0')
-
-            elif self.ext in ('tif', 'tiff'):
-                if self.quality >= 99:
-                    img.save(image_path, compression=None)
-
-                else:
-                    # TIFF with JPEG compression
-                    img.save(image_path, compression='jpeg', quality=self.quality)
-
-            else:
-                # For BMP and other simple formats
-                img.save(image_path)
+            # Save the image using OpenCV
+            success = cv2.imwrite(str(image_path.resolve()), img_to_write, self._imwrite_params)
+            if not success:
+                raise IOError("cv2.imwrite returned False, check file path and permissions.")
 
         except Exception as e:
             # Catch any potential PIL or OS error during the save operation
@@ -107,14 +166,12 @@ class ImageSequenceWriter(FrameWriter):
 
 
 class FFmpegWriter(FrameWriter):
-    """
-    Writes frames to a video file by piping them to an FFmpeg subprocess
-    """
+    """ Writes frames to a video file by piping them to an FFmpeg subprocess """
 
     def __init__(self, filepath: Path, ffmpeg_path: str, params: Dict, use_gpu: bool, pixel_format: str, **kwargs):
         super().__init__(filepath, **kwargs)
 
-        self.proc: subprocess.Popen = None
+        self.proc: Optional[subprocess.Popen] = None
 
         # Determine if we use CPU or GPU
         param_key = self._get_platform_param_key(use_gpu)
@@ -124,24 +181,31 @@ class FFmpegWriter(FrameWriter):
             raise ValueError(f"FFmpeg parameters for '{param_key}' not found in config.")
 
         format_map = {
-            'Mono8': 'gray8',
+            # 8-bit Monochrome and Bayer
+            'Mono8': 'gray',
+            'BayerRG8': 'bayer_rggr8',
+            'BayerGR8': 'bayer_grbg8',
+            'BayerGB8': 'bayer_gbrg8',
+            'BayerBG8': 'bayer_bggr8',
+            # 8-bit Color
+            'RGB8': 'rgb24',
+            'BGR8': 'bgr24',
+            # High Bit-Depth Monochrome
             'Mono10': 'gray10le',
             'Mono12': 'gray12le',
-            'BayerBG8': 'bayer_bggr8',
-            'BayerRG8': 'bayer_rggr8',
+            'Mono16': 'gray16le',
         }
-        # Use the provided format (fallback to gray8)
-        input_pixel_format = format_map.get(pixel_format, 'gray8')
+        input_pixel_format = format_map.get(self.pixel_format)
+        if not input_pixel_format:
+            raise ValueError(f"Unsupported pixel_format '{self.pixel_format}' for FFmpegWriter.")
 
         # Build the FFmpeg command
-        # TODO: color formats for video
+
         input_args = (
             f"-y -s {self.width}x{self.height} -f rawvideo "
             f"-framerate {self.framerate:.3f} -pix_fmt {input_pixel_format} -i pipe:0"
         )
-
         command = f"{ffmpeg_path} -hide_banner {input_args} {encoder_params} {shlex.quote(str(filepath))}"
-
         print(f"[DEBUG] FFmpeg command: {command}")
 
         # Start the subprocess, redirecting stdout/stderr to prevent console spam
@@ -156,6 +220,7 @@ class FFmpegWriter(FrameWriter):
 
     def _get_platform_param_key(self, use_gpu: bool) -> str:
         """ Determines the correct key for FFmpeg params based on OS and GPU flag """
+
         if not use_gpu:
             return 'cpu'
 

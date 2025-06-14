@@ -57,8 +57,10 @@ class BaslerCamera(GenICamCamera):
 
     def grab_frame(self, timeout_ms: int = 2000) -> Tuple[np.ndarray, Dict[str, Any]]:
         # This is specific to pylon's grabbing strategy
+
         if not self.is_grabbing:
             self._ptr.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
+
         try:
             grab_result = self._ptr.RetrieveResult(timeout_ms, pylon.TimeoutHandling_ThrowException)
             if grab_result:
