@@ -79,23 +79,23 @@ class MultiCam:
                 print("[ERROR] Failed to connect to trigger. Running without hardware trigger.")
                 self._trigger_instance = None
 
-        # --- Threading Resources ---
+        ## --- Threading Resources ---
         buffer_size = self.config.get('frame_buffer_size', 200)
-
         self._session_frame_counts: List[int] = [0] * self.nb_cameras
-
-        # Queues for the GUI's blocking consumer thread
         self._display_queues: List[Queue] = [Queue(maxsize=2) for _ in self.cameras]
-        # Parallel state for the synchronized snapshots
-        self._latest_display_frames: List[Optional[Tuple[np.ndarray, Dict]]] = [None] * self.nb_cameras
-        self._display_locks: List[Lock] = [Lock() for _ in self.cameras]
 
-        # Writer queues for saving
+        # The 'tee' queues that will be used to 'snoop' on frames for display
+        self._display_tee_queues: List[Queue] = [Queue(maxsize=2) for _ in self.cameras]
+
+        # shared state for the most recent frame protected by a lock
+        self._latest_frames: List[Optional[Tuple[np.ndarray, Dict]]] = [None] * self.nb_cameras
+        self._latest_frame_locks: List[Lock] = [Lock() for _ in self.cameras]
+
         self._writer_queues: List[Queue] = [Queue(maxsize=buffer_size) for _ in self.cameras]
-        self._finished_saving_events: List[Event] = [Event() for _ in self.cameras]
 
+        self._finished_saving_events: List[Event] = [Event() for _ in self.cameras]
         for event in self._finished_saving_events:
-            event.set()  # default to 'finished' state
+            event.set()
 
         # --- Metadata ---
         self._metadata = {'sessions': []}
@@ -206,12 +206,14 @@ class MultiCam:
             self._trigger_instance.start(self._trigger_framerate)
 
         for i, cam in enumerate(self.cameras):
-            # Start one grabber and one writer thread per camera
+            # Start one grabber, one writer, and one display thread per camera
             g = Thread(target=self._grabber_thread, args=(i,), daemon=True)
             w = Thread(target=self._writer_thread, args=(i,), daemon=True)
-            self._threads.extend([g, w])
+            d = Thread(target=self._display_updater_thread, args=(i,), daemon=True)
+            self._threads.extend([g, w, d])
             g.start()
             w.start()
+            d.start()
 
         if not self._silent:
             print(f"[INFO] Acquisition started with {self.nb_cameras} cameras.")
@@ -311,38 +313,26 @@ class MultiCam:
 
         cam = self.cameras[cam_idx]
         writer_queue = self._writer_queues[cam_idx]
-
-        display_queue = self._display_queues[cam_idx]
-        display_lock = self._display_locks[cam_idx]
+        display_tee_queue = self._display_tee_queues[cam_idx]
 
         cam.start_grabbing()
         while self._acquiring:
             try:
                 frame, metadata = cam.grab_frame(timeout_ms=2000)
-
                 if frame is not None:
-                    # --- For Display (GUI) ---
-                    if display_queue.full():
-                        try:
-                            display_queue.get_nowait()  # Discard old frame
-                        except queue.Empty:
-                            pass
-                    # The GUI thread will get this via its blocking .get() call
-                    display_queue.put_nowait((frame, metadata))
 
-                    # --- For snapshots ---
-                    # Also update the shared variable for non-destructive reads
-                    with display_lock:
-                        # we store the *same* frame here
-                        self._latest_display_frames[cam_idx] = (frame, metadata)
+                    # also put the same frame in the display "tee" queue, non-blocking
+                    if not display_tee_queue.full():
+                        display_tee_queue.put_nowait((frame, metadata))
 
-                    # --- For Recording ---
                     if self._recording:
                         try:
-                            writer_queue.put((frame, metadata), timeout=1.0)
+                            writer_queue.put_nowait((frame, metadata))
                         except queue.Full:
+                            # This is the expected behavior when the writer can't keep up
+                            # it's better to log it and continue grabbing than to block
                             if not self._silent:
-                                print(f"[WARN] Cam {cam.name}: Writer queue full. Frame dropped.")
+                                print(f"[WARN] Cam {cam.name}: Writer queue is full. Recording frame dropped.")
 
             except (IOError, RuntimeError) as e:
                 if self._acquiring:  # avoid spamming errors on shutdown
@@ -351,7 +341,35 @@ class MultiCam:
 
         cam.stop_grabbing()
 
-    # In class MultiCam:
+    def _display_updater_thread(self, cam_idx: int):
+        """
+        This thread's job is to manage the flow of preview frames.
+        1. It gets a frame from the grabber's tee queue.
+        2. It updates a shared variable with this "latest" frame for snapshots.
+        3. It tries to push the frame to the GUI queue for live display.
+        """
+        tee_queue = self._display_tee_queues[cam_idx]
+        display_queue = self._display_queues[cam_idx]
+        lock = self._latest_frame_locks[cam_idx]
+
+        while self._acquiring:
+            try:
+                # Block and wait for a new frame from the grabber
+                frame, metadata = tee_queue.get(timeout=1.0)
+
+                # --- Update the shared state for snapshots ---
+                with lock:
+                    self._latest_frames[cam_idx] = (frame, metadata)
+
+                # --- Try to push to the actual GUI queue ---
+                # If the GUI is lagging, we just drop the frame and continue
+                if not display_queue.full():
+                    display_queue.put_nowait((frame, metadata))
+
+            except queue.Empty:
+                # No frame came from the grabber in 1s, just continue
+                continue
+
     def _writer_thread(self, cam_idx: int):
         """
         Dedicated thread to write frames from a queue to a file
@@ -367,52 +385,45 @@ class MultiCam:
                 self._finished_saving_events[cam_idx].clear()
 
                 try:
-                    # **THE FIX**: Wait for the first frame BEFORE creating the writer.
-                    # This guarantees we have data the moment FFmpeg starts.
-                    # Use a longer timeout to be safe, especially at session start.
                     first_frame, first_metadata = queue.get(timeout=2.0)
 
-                    # Now that we have a frame, create the writer.
+                    # Now that we have a frame, create the writer
                     session_idx = len(self._metadata['sessions']) - 1
-                    writer = self._create_writer_for_camera(cam, session_idx)
+                    writer = self._create_writer(cam, session_idx)
 
                     if not self._silent:
                         print(f"[INFO] Writer for {cam.name} created: {type(writer).__name__}")
 
-                    # Immediately write the first frame we just retrieved.
-                    # This is the "no-dummy-frame" way to prime the pump.
                     writer.write(first_frame, first_metadata)
 
                 except Empty:
-                    # If we time out waiting for the first frame, it means the
-                    # grabber isn't feeding the writer queue. This is a real problem,
-                    # so we should log it and try again.
+                    # If we timeout waiting for the first frame, it means the
+                    # grabber isn't feeding the writer queue - so we should log it and try again
                     if not self._silent:
                         print(
                             f"[WARN] Cam {cam.name}: Timed out waiting for first frame to record. Writer not started.")
-                    continue  # Skip to the next loop iteration to try again.
+                    continue  # Skip to the next loop iteration to try again
+
                 except Exception as e:
-                    # Catch potential errors from _create_writer_for_camera
                     print(f"[ERROR] Failed to create writer for {cam.name}: {e}")
-                    # Ensure we don't get stuck in a loop if creation fails
-                    self._recording = False  # This is debatable, but prevents a fast error loop.
+                    self._recording = False  # this is debatable, but prevents getting stuck in an error loop
+                    # TODO: Maybe we want to keep a separate status for each camera?
                     self._finished_saving_events[cam_idx].set()
                     continue
 
-            #  State B - Actively writing frames
+            # State B - Actively writing frames
             if self._recording and writer:
                 try:
-                    # The main writing loop.
-                    frame, metadata = queue.get(timeout=0.2)  # Use a slightly longer timeout
+                    frame, metadata = queue.get(timeout=1.0)
                     writer.write(frame, metadata)
                 except Empty:
-                    # This is now less critical, just means a momentary lull in frames.
+                    # this is less critical, just means a momentary lull in frames
                     continue
 
             # State C - Recording has been paused/stopped
             if not self._recording and writer:
-                # The recording flag was turned off, so we need to finalize.
-                # First, drain any remaining frames from the queue.
+                # The recording flag was turned off, so we need to finalize
+                # First drain any remaining frames from the queue
                 while not queue.empty():
                     try:
                         frame, metadata = queue.get_nowait()
@@ -420,10 +431,10 @@ class MultiCam:
                     except Empty:
                         break
 
-                # Now close the writer.
+                # Now close the writer
                 self._session_frame_counts[cam_idx] = writer.frame_count
                 writer.close()
-                writer = None  # Set writer to None to signal it's closed.
+                writer = None  # set writer to None to signal it's closed
                 self._finished_saving_events[cam_idx].set()
 
             # State D - Idle, not recording
@@ -431,10 +442,10 @@ class MultiCam:
                 # To prevent this thread from busy-waiting, we can sleep
                 time.sleep(0.1)
 
-    def _create_writer_for_camera(self, cam: AbstractCamera, session_idx: int) -> FrameWriter:
+    def _create_writer(self, cam: AbstractCamera, session_idx: int) -> FrameWriter:
         """ Factory method to instantiate the correct writer based on config """
         save_format = self.config.get('save_format', 'mp4')
-        base_path = self.full_path / f"{self.session_name}_cam{cam.name}_session{session_idx}"
+        base_path = self.full_path / f"{self.session_name}_{cam.name}_session{session_idx}"
 
         # Common parameters for all writers
         writer_params = {
@@ -463,74 +474,58 @@ class MultiCam:
                 **writer_params
             )
 
-    def take_snapshot(self, folder: Path, base_name: str) -> bool:
-        """
-        Grabs the most recent frame from each camera in a synchronized manner
-        by reading from a shared state, without interfering with the GUI queues.
-        """
+    def take_snapshot(self) -> bool:
+        """ Takes a snapshot from all cameras (tries to sync) """
 
         if not self.acquiring:
             print("[WARN] Cannot take snapshot, acquisition is not running.")
             return False
 
-        folder.mkdir(parents=True, exist_ok=True)
+        self.full_path.mkdir(parents=True, exist_ok=True)
 
-        frames_to_save = []
-
-        # Acquire all locks first to get consistent set of frames across cameras
-        # This briefly pauses all grabber threads from updating the _latest_display_frames variables
-        for lock in self._display_locks:
-            lock.acquire()
-
+        # Atomically copy the latest frames from the shared state
+        current_frames = []
         for i in range(self.nb_cameras):
-            frame_data = self._latest_display_frames[i]
-            if frame_data:
-                # Important: copy of the numpy array
-                frames_to_save.append((frame_data[0].copy(), self.cameras[i].name))
-            else:
-                frames_to_save.append((None, self.cameras[i].name))
+            with self._latest_frame_locks[i]:
+                frame_data = self._latest_frames[i]
 
-        # of course release the locks
-        for lock in self._display_locks:
-            lock.release()
+            if frame_data is None:
+                print(f"[ERROR] Snapshot failed: No frame has been received from camera {self.cameras[i].name} yet.")
+                return False
+
+            current_frames.append(frame_data)
+
+        # Reconcile frames
+        frames, metadatas = zip(*current_frames)
+
+        # We only have one frame per camera, so we check if their IDs match
+        # This is a much simpler check than the previous buffer search
+        first_frame_id = metadatas[0].get('frame_id')
+        is_synchronized = False
+        if first_frame_id is not None:
+            if all(meta.get('frame_id') == first_frame_id for meta in metadatas[1:]):
+                is_synchronized = True
+
+        # Save
+        if is_synchronized:
+            print(f"[INFO] Saving synchronized frame set with ID: {first_frame_id}")
+        else:
+            print("[WARN] Frame set is not synchronized. Saving latest available frames.")
 
         success = True
-        for i, cam in enumerate(self.cameras):
-            frame_data = frames_to_save[i]
-            if frame_data:
-                try:
-                    # TODO: We prob want to use the Writer class here. Or define a new snapshot writer that never compresses? idk
-                    frame, _ = frame_data
-                    img = Image.fromarray(frame)
-                    filepath = folder / f"{base_name}_{cam.name}.png"
-                    img.save(filepath)
 
-                except Exception as e:
-                    print(f"[ERROR] Could not save snapshot for camera {cam.name}: {e}")
-                    success = False
-            else:
-                # This will only happen if a camera has not produced a single frame yet
-                print(f"[WARN] No frame has ever been received from camera {cam.name} to snapshot.")
+        now = datetime.now().strftime('%y%m%d-%H%M%S')
+        for i, cam in enumerate(self.cameras):
+            try:
+                Image.fromarray(frames[i]).save(self.full_path / f"snapshot_{now}_{cam.name}.png")
+            except Exception as e:
+                print(f"[ERROR] Could not save snapshot for camera {cam.name}: {e}")
                 success = False
 
         if success:
-            print(f"[INFO] Snapshot saved in {folder}")
+            print(f"[INFO] Snapshot saved in {self.full_path}")
+
         return success
-
-    def get_latest_frame_for_display(self, cam_idx: int) -> Optional[np.ndarray]:
-        """
-        Thread-safe method for the GUI to get the latest frame for display
-        This is a non-destructive read
-        """
-        if not (0 <= cam_idx < self.nb_cameras):
-            return None
-
-        with self._display_locks[cam_idx]:
-            frame_data = self._latest_display_frames[cam_idx]
-            if frame_data:
-                # Return a copy so the GUI's processing doesn't affect the stored frame
-                return frame_data[0].copy()
-        return None
 
     def set_all_cameras(self, parameter: str, value: Any):
         """ Broadcasts a setting to all cameras """
@@ -538,8 +533,8 @@ class MultiCam:
 
         print(f"[INFO] Broadcasting '{parameter} = {value}' to all cameras.")
 
-        # If setting framerate in hardware trigger mode, we also set the trigger speed
-        if parameter == 'framerate' and self.config.get('triggered', False):
+        # The trigger framerate must be set via its own property
+        if parameter == 'framerate' and self.hardware_triggered:
             self.trigger_framerate = value
 
         for cam in self.cameras:
@@ -595,7 +590,8 @@ class MultiCam:
         """ Sets the framerate for the external trigger """
 
         self._trigger_framerate = float(value)
-        # If acquisition is running, we can even update the trigger on the fly
+
+        # If acquisition is running, we can update the trigger on the fly
         if self._acquiring and self._trigger_instance and self._trigger_instance.connected:
             self._trigger_instance.start(self._trigger_framerate)
 

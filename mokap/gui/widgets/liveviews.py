@@ -1,18 +1,17 @@
 from collections import deque
 import numpy as np
-
 import cv2
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, QEvent, Slot, Signal
-from PySide6.QtWidgets import QHBoxLayout, QWidget, QVBoxLayout, QGroupBox, QLabel, QSlider, QCheckBox, QSizePolicy, \
-    QPushButton, QFileDialog
-
+from PySide6.QtCore import Qt, Slot, Signal, QEvent
+from PySide6.QtWidgets import (QHBoxLayout, QWidget, QVBoxLayout, QGroupBox, QLabel,
+                               QSlider, QCheckBox, QSizePolicy, QPushButton, QFileDialog,
+                               QGraphicsRectItem, QGraphicsItemGroup)
 from mokap.gui.style.commons import *
 from mokap.gui.widgets import MAX_PLOT_X
-from mokap.gui.widgets.base import PreviewBase
+from mokap.gui.widgets.base import PreviewBase, FastImageItem
 from mokap.gui.workers.monocular import MonocularWorker
 from mokap.gui.workers.movement import MovementWorker
-from mokap.utils.datatypes import ChessBoard, CharucoBoard, ErrorsPayload, CalibrationData, IntrinsicsPayload
+from mokap.utils.datatypes import ErrorsPayload, CalibrationData, IntrinsicsPayload
 
 
 class Recording(PreviewBase):
@@ -20,14 +19,9 @@ class Recording(PreviewBase):
     def __init__(self, camera, main_window_ref):
         super().__init__(camera, main_window_ref)
 
-        self._n_enabled = False
-        self._magnifier_enabled = False
-
         # Magnification parameters
         self.magn_window_w = 100
         self.magn_window_h = 100
-        self.magn_window_x = 10
-        self.magn_window_y = 10
         self.magn_target_cx = 0.5   # Target initialised at the centre
         self.magn_target_cy = 0.5
 
@@ -57,12 +51,61 @@ class Recording(PreviewBase):
         self._start_timers()
 
     def _init_specific_ui(self):
-        """
-        This constructor creates the UI elements specific to Recording mode
-        """
+        """ This constructor creates the UI elements specific to Recording mode """
 
-        # Add mouse click detection to video feed (for the magnifier)
-        self.VIDEO_FEED.installEventFilter(self)
+        # --- PyQtGraph overlays ----
+
+        crosshair_pen = pg.mkPen(color='w', style=Qt.DotLine)
+        self.v_line = pg.InfiniteLine(angle=90, movable=False, pen=crosshair_pen)
+        self.h_line = pg.InfiniteLine(angle=0, movable=False, pen=crosshair_pen)
+        self.v_line.setPos(self.source_shape[1] / 2)
+        self.h_line.setPos(self.source_shape[0] / 2)
+
+        # we add them to the viewbox not the imageitem (they live on top of the image)
+        self.view_box.addItem(self.v_line)
+        self.view_box.addItem(self.h_line)
+
+        # Add the text labels
+        self.recording_text = pg.TextItem(anchor=(0.5, 0), color=(255, 0, 0))
+        self.recording_text.setPos(self.source_shape[1] / 2, self.source_shape[0] / 2)
+        self.recording_text.setHtml('<span style="font-size: 16pt; font-weight: bold;">[ ⬤ RECORDING ]</span>')
+        self.view_box.addItem(self.recording_text)
+        self.recording_text.hide()  # initially hidden
+
+        self.warning_text = pg.TextItem(anchor=(0.5, 0), color=(255, 165, 0))
+        self.warning_text.setPos(self.source_shape[1] / 2, 10)
+        self.warning_text.setHtml('<span style="font-size: 16pt; font-weight: bold;">[ WARNING ]</span>')
+        self.view_box.addItem(self.warning_text)
+        self.warning_text.hide()  # also initially hidden
+
+        # Magnifier setup
+        self.magnifier_group = QGraphicsItemGroup()
+        self.magnifier_item = FastImageItem()
+
+        self.magnifier_border = QGraphicsRectItem()
+        self.magnifier_border.setPen(pg.mkPen('y', width=2))
+
+        self.magnifier_group.addToGroup(self.magnifier_item)
+        self.magnifier_group.addToGroup(self.magnifier_border)
+
+        self.view_box.addItem(self.magnifier_group)
+
+        self.magnifier_group.hide()
+
+        # Magnifier target
+        self.magnifier_source_rect = QGraphicsRectItem()
+        # self.magnifier_source_rect.setPen(pg.mkPen('y', width=1, style=Qt.DashLine))
+        self.magnifier_source_rect.setPen(pg.mkPen('y', width=1))
+        # this one lives in the main view box, not the group
+        self.view_box.addItem(self.magnifier_source_rect)
+        self.image_item.setZValue(0)
+        self.magnifier_source_rect.setZValue(1)
+        self.magnifier_group.setZValue(2)
+        self.magnifier_source_rect.hide()
+
+        # Capture mouse event in the graphics widget
+        # TODO: Maybe this will need to be moved to the PreviewBase once we add interactive calibration tools
+        self.graphics_widget.scene().installEventFilter(self)
 
         # RIGHT GROUP
         right_group_layout = QHBoxLayout(self.RIGHT_GROUP)
@@ -172,13 +215,13 @@ class Recording(PreviewBase):
         # line_layout.addStretch(1)
 
         self.n_button = QPushButton('Nothing')
-        # self.n_button.setCheckable(True)
+        self.n_button.setCheckable(True)
         self.n_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.n_button.clicked.connect(self._toggle_n_display)
         line_layout.addWidget(self.n_button)
 
         self.magn_button = QPushButton('Magnification')
-        # self.magn_button.setCheckable(True)
+        self.magn_button.setCheckable(True)
         self.magn_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.magn_button.clicked.connect(self._toggle_mag_display)
         line_layout.addWidget(self.magn_button)
@@ -193,160 +236,94 @@ class Recording(PreviewBase):
         right_group_additional_layout.addWidget(line)
         right_group_layout.addWidget(right_group_additional)
 
-    #  ============= Qt method overrides =============
-    def eventFilter(self, obj, event):
+    def _annotate_frame(self):
+        """ This is called every frame by _update_fast """
 
-        if event.type() in (QEvent.MouseButtonPress, QEvent.MouseMove):
+        if not self.magnifier_group.isVisible():
+            return
 
-            # Get mouse position relative to displayed image
-            mouse_x = int(event.pos().x() - (self.VIDEO_FEED.width() - self._display_buffer.shape[1]) / 2)
-            mouse_y = int(event.pos().y() - (self.VIDEO_FEED.height() - self._display_buffer.shape[0]) / 2)
+        # Get the source slice from the main display frame.
+        # The target coordinates (self.magn_target_cx/cy) are updated by the mouse event filter.
+        target_cx_fb = self.magn_target_cx * self._latest_display_frame.shape[1]
+        target_cy_fb = self.magn_target_cy * self._latest_display_frame.shape[0]
 
-            if event.button() == Qt.LeftButton:
-                self.left_mouse_btn = True
-            if event.button() == Qt.RightButton:
-                self.right_mouse_btn = True
+        slice_x1 = max(0, int(target_cx_fb - self.magn_window_w / 2))
+        slice_y1 = max(0, int(target_cy_fb - self.magn_window_h / 2))
+        slice_x2 = slice_x1 + self.magn_window_w
+        slice_y2 = slice_y1 + self.magn_window_h
+
+        if slice_x2 > self._source_shape[1]:
+            slice_x1 = self._source_shape[1] - self.magn_window_w
+            slice_x2 = self._source_shape[1]
+
+        if slice_y2 > self._source_shape[0]:
+            slice_y1 = self._source_shape[0] - self.magn_window_h
+            slice_y2 = self._source_shape[0]
+
+        magnifier_source_data = self._latest_display_frame[slice_y1:slice_y2, slice_x1:slice_x2]
+
+        # Update the source rectangle to show where the slice is from
+        self.magnifier_source_rect.setRect(slice_x1, slice_y1, self.magn_window_w, self.magn_window_h)
+
+        # Set the data on the magnifier's FastImageItem
+        self.magnifier_item.setImageData(magnifier_source_data)
+
+        # Apply scaling to the image item inside the group
+        scale = self.magn_slider.value()
+        self.magnifier_item.setScale(scale)
+
+        # Update the border to match the scaled item
+        scaled_rect = self.magnifier_item.mapRectToParent(self.magnifier_item.boundingRect())
+        self.magnifier_border.setRect(scaled_rect)
+
+    def eventFilter(self, watched_obj, event):
+
+        if event.type() in [QEvent.GraphicsSceneMousePress,
+                            QEvent.GraphicsSceneMouseMove,
+                            QEvent.GraphicsSceneMouseRelease]:
+
+            scene_pos = event.scenePos()
+            image_pos = self.view_box.mapSceneToView(scene_pos)
+            mouse_x = image_pos.x()
+            mouse_y = image_pos.y()
+            img_h, img_w = self.source_shape
+            mouse_x = max(0, min(img_w, mouse_x))
+            mouse_y = max(0, min(img_h, mouse_y))
+            buttons = event.buttons()
+
+            if event.type() == QEvent.GraphicsSceneMousePress:
+                if buttons & Qt.LeftButton: self.left_mouse_btn = True
+                if buttons & Qt.RightButton: self.right_mouse_btn = True
+
+            if event.type() == QEvent.GraphicsSceneMouseRelease:
+                if event.button() == Qt.LeftButton: self.left_mouse_btn = False
+                if event.button() == Qt.RightButton: self.right_mouse_btn = False
 
             if self.left_mouse_btn:
-                self.magn_target_cx = mouse_x / self._display_buffer.shape[0]
-                self.magn_target_cy = mouse_y / self._display_buffer.shape[1]
+                self.magn_target_cx = mouse_x / img_w
+                self.magn_target_cy = mouse_y / img_h
 
             if self.right_mouse_btn:
-                self.magn_window_x = mouse_y
-                self.magn_window_y = mouse_x
+                self.magnifier_group.setPos(mouse_x, mouse_y)
 
-        elif event.type() == QEvent.MouseButtonRelease:
-            if event.button() == Qt.LeftButton:
-                self.left_mouse_btn = False
-            if event.button() == Qt.RightButton:
-                self.right_mouse_btn = False
+            return True
 
-        return super().eventFilter(obj, event)
+        # for all other events, pass them on to the base class
+        return super().eventFilter(watched_obj, event)
 
-    def _annotate(self):
+    def set_recording_indicator(self, is_recording):
+        """ Shows or hides the recording text """
+        self.recording_text.setVisible(is_recording)
 
-        # Get new coordinates
-        h, w = self._display_buffer.shape[:2]
-
-        x_centre, y_centre = w // 2, h // 2
-        x_north, y_north = w // 2, 0
-        x_south, y_south = w // 2, h
-        x_east, y_east = w, h // 2
-        x_west, y_west = 0, h // 2
-
-        # Draw crosshair
-        cv2.line(self._display_buffer, (x_west, y_west), (x_east, y_east), col_white_rgb, 1)
-        cv2.line(self._display_buffer, (x_north, y_north), (x_south, y_south), col_white_rgb, 1)
-
-        if self._magnifier_enabled:
-
-            target_cx_fb = self.magn_target_cx * self._frame_buffer.shape[0]
-            target_cy_fb = self.magn_target_cy * self._frame_buffer.shape[1]
-
-            # Position of the slice (in frame_buffer coordinates)
-            slice_x1 = max(0, int(target_cx_fb - self.magn_window_w // 2))
-            slice_y1 = max(0, int(target_cy_fb - self.magn_window_h // 2))
-            slice_x2 = slice_x1 + self.magn_window_w
-            slice_y2 = slice_y1 + self.magn_window_h
-
-            if slice_x2 > self._source_shape[1]:
-                slice_x1 = self._source_shape[1] - self.magn_window_w
-                slice_x2 = self._source_shape[1]
-
-            if slice_y2 > self._source_shape[0]:
-                slice_y1 = self._source_shape[0] - self.magn_window_h
-                slice_y2 = self._source_shape[0]
-
-            # Slice directly from the frame_buffer and make the small, zoomed window image
-            ratio_w = w / self._frame_buffer.shape[1]
-            ratio_h = h / self._frame_buffer.shape[0]
-            magn_img = cv2.resize(self._frame_buffer[slice_y1:slice_y2, slice_x1:slice_x2], (0, 0),
-                                  fx=float(self.magn_slider.value() * ratio_w),
-                                  fy=float(self.magn_slider.value() * ratio_h))
-
-            # Add frame around the magnified area
-            target_x1 = int((target_cx_fb - self.magn_window_w / 2) * ratio_w)
-            target_x2 = int((target_cx_fb + self.magn_window_w / 2) * ratio_w)
-            target_y1 = int((target_cy_fb - self.magn_window_h / 2) * ratio_h)
-            target_y2 = int((target_cy_fb + self.magn_window_h / 2) * ratio_h)
-            self._display_buffer = cv2.rectangle(self._display_buffer,
-                                                 (target_x1, target_y1), (target_x2, target_y2),
-                                                 col_yellow_rgb, 1)
-
-            # Paste the zoom window into the display buffer
-            magn_x1 = min(self._display_buffer.shape[0], max(0, self.magn_window_x))
-            magn_y1 = min(self._display_buffer.shape[1], max(0, self.magn_window_y))
-            magn_x2 = min(self._display_buffer.shape[0], magn_x1 + magn_img.shape[0])
-            magn_y2 = min(self._display_buffer.shape[1], magn_y1 + magn_img.shape[1])
-            self._display_buffer[magn_x1:magn_x2, magn_y1:magn_y2, :] = magn_img[:magn_x2 - magn_x1, :magn_y2 - magn_y1, :]
-
-            # Add frame around the magnification
-            self._display_buffer = cv2.rectangle(self._display_buffer,
-                                                 (magn_y1, magn_x1), (magn_y2, magn_x2),
-                                                 col_yellow_rgb, 1)
-
-        # Position the 'Recording' indicator
-        font, txtsiz, txtth = cv2.FONT_HERSHEY_DUPLEX, 1.0, 2
-        textsize = cv2.getTextSize(self._mainwindow._recording_text, font, txtsiz, txtth)[0]
-        self._display_buffer = cv2.putText(self._display_buffer, self._mainwindow._recording_text,
-                                           (int(x_centre - textsize[0] / 2), int(1.5 * y_centre - textsize[1])),
-                                           font, txtsiz, col_red_rgb, txtth, cv2.LINE_AA)
-
-        # Position the 'Warning' indicator
-        if self._warning:
-            textsize = cv2.getTextSize(self._warning_text, font, txtsiz, txtth)[0]
-            self._display_buffer = cv2.putText(self._display_buffer, self._warning_text,
-                                               (int(x_north - textsize[0] / 2), int(y_centre / 2 - textsize[1])),
-                                               font, txtsiz, col_orange_rgb, txtth, cv2.LINE_AA)
-
-    def _update_fast(self):
-
-        # Grab camera frame
-        frame = self._frame_buffer
-
-        # if worker is free, send frame
-        if not self._worker_busy:
-            self._send_frame_to_worker(frame)
-        else:
-            self._latest_frame = frame  # We overwrite the latest_frame purposefully, no need to queue them
-
-        # Resize viewport to fit current window size
-        self._resize_to_display()
-
-        # Resize the image to the new viewport size
-        disp_h, disp_w = self._display_buffer.shape[:2]
-        scale = min(disp_w / frame.shape[1], disp_h / frame.shape[0])
-        display_img = cv2.resize(frame, (0,0), fx=scale, fy=scale)
-
-        # Paste new image into the viewport
-        h, w = display_img.shape[:2]
-        self._display_buffer[:h, :w] = display_img
-
-        # And fill any remaining viewport space with black
-        if h < disp_h:
-            self._display_buffer[h:, :] = 0
-        if w < disp_w:
-            self._display_buffer[:, w:] = 0
-
-        # Fake bounding box
-        # for (x, y, bw, bh) in self._bboxes:
-        #     sx, sy = int(x*scale), int(y*scale)
-        #     sw, sh = int(bw*scale), int(bh*scale)
-        #     cv2.rectangle(self._display_buffer, (sx, sy), (sx+sw, sy+sh),
-        #                   (0,255,255), 2)
-
-        # Add annotations
-        self._annotate()
-
-        # And blit
-        self._blit_image()
+    def set_warning_indicator(self, show_warning):
+        """ Shows or hides the warning text """
+        self.warning_text.setVisible(show_warning)
 
     @Slot(str, object)
     def update_slider_ui(self, label, value):
         """
-        This runs on the main GUI thread
-        Called by the polling loop in PreviewBase._update_slow when a parameter change is detected on the
-        camera object
+        This runs on the main GUI thread and is called by the polling loop in PreviewBase._update_slow
+        (when a parameter change is detected on the camera object)
         """
         if label not in self.camera_controls_sliders:
             return
@@ -372,29 +349,29 @@ class Recording(PreviewBase):
 
     #  ============= Recording mode-specific functions =============
     def _toggle_n_display(self):
-        if self._n_enabled:
-            self.n_button.setStyleSheet('')
-            self._n_enabled = False
-        else:
+
+        enabled = self.n_button.isChecked()
+
+        if enabled:
             self.n_button.setStyleSheet(f'background-color: #80{col_green.lstrip("#")};')
-            self._n_enabled = True
+        else:
+            self.magn_button.setStyleSheet('')
 
     def _toggle_mag_display(self):
-        if self._magnifier_enabled:
-            self.magn_button.setStyleSheet('')
-            # self.magn_slider.setDisabled(True)
-            self._magnifier_enabled = False
-        else:
+
+        enabled = self.magn_button.isChecked()
+
+        self.magnifier_group.setVisible(enabled)
+        self.magnifier_source_rect.setVisible(enabled)
+
+        if enabled:
             self.magn_button.setStyleSheet(f'background-color: #80{col_yellow.lstrip("#")};')
-            # self.magn_slider.setDisabled(False)
-            self._magnifier_enabled = True
+        else:
+            self.magn_button.setStyleSheet('')
 
     def _slider_changed(self, label, int_value):
-        """
-        Updates the text label next to a slider as it's being moved.
-        This provides real-time feedback to the user before the value is set.
-        """
-        # This function should NOT set the hardware. It only updates the text.
+        """ Updates the text label next to a slider as it's being moved """
+
         scale = self.camera_controls_sliders_scales.get(label, 1)
         value_float = int_value / scale
 
@@ -405,25 +382,22 @@ class Recording(PreviewBase):
             self.camera_controls_sliders_labels[label].setText(f'{value_float:.2f}')
 
     def _slider_released(self, label):
-        """
-        Called when the user releases a slider
-        either sets the parameter on one camera or broadcasts it via the manager
-        """
+        """ Called when a slider is used: either sets the parameter on one camera or broadcasts it via the manager """
+
         slider = self.camera_controls_sliders[label]
         scale = self.camera_controls_sliders_scales.get(label, 1)
         value = slider.value() / scale
 
         if self._val_in_sync[label].isChecked():
-            # SYNCED: Tell the manager to broadcast the setting to everyone.
-            # The manager will command all cameras. The polling loop in each
-            # GUI window will later detect the change and update the UI.
+            # tell the manager to broadcast the setting to everyone
+            # The polling loop in each GUI window will later detect the change and update the UI
             self._mainwindow.manager.set_all_cameras(label, value)
         else:
-            # NOT SYNCED: Set the parameter only on this specific camera.
-            # The camera's smart setter will handle constraints. The polling
-            # loop in this window will later update the UI if the value was
-            # clamped or caused a side-effect.
+            # Set the parameter only on this specific camera
+            # The polling loop in this window will later update the UI if the value was
+            # clamped or caused a side-effect
             setattr(self._camera, label, value)
+
 
 class Monocular(PreviewBase):
     request_load = Signal(str)
@@ -451,14 +425,14 @@ class Monocular(PreviewBase):
 
     def _setup_worker(self, worker_object):
         super()._setup_worker(worker_object)
+
         # Connect signals for loading/saving which are specific to this worker
         self.request_load.connect(worker_object.load_intrinsics)
         self.request_save.connect(worker_object.save_intrinsics)
 
     def _init_specific_ui(self):
-        """
-        This constructor creates the UI elements specific to Calib mode
-        """
+        """ This constructor creates the UI elements specific to Calib mode """
+
         layout = QHBoxLayout(self.RIGHT_GROUP)
         layout.setContentsMargins(5, 5, 5, 5)
 
@@ -538,23 +512,11 @@ class Monocular(PreviewBase):
 
         layout.addWidget(calib_io_group)
 
-    def _update_fast(self):
+    def _annotate_frame(self):
 
-        frame = self._frame_buffer
-
-        if not self._worker_busy:
-            self._send_frame_to_worker(frame)
-        else:
-            self._latest_frame = frame      # We overwrite the latest_frame purposefully, no need to queue them
-
-        self._resize_to_display()
-
-        # Now scale + display the last annotated frame we got from the worker
-        disp_h, disp_w = self._display_buffer.shape[:2]
-
-        if self._worker_blocking:
+        if self._worker_blocking and self.annotated_frame is None:
             # Worker is blocking during computation so it can't annotate
-            h, w = frame.shape[:2]
+            h, w = self._display_buffer.shape[:2]
             text = "Computing..."
             font = cv2.FONT_HERSHEY_SIMPLEX
             font_scale = 2.0
@@ -562,27 +524,12 @@ class Monocular(PreviewBase):
             text_size, baseline = cv2.getTextSize(text, font, font_scale, thickness)
             text_x = (w - text_size[0]) // 2
             text_y = (h + text_size[1]) // 2
-            cv2.putText(frame, text, (text_x, text_y), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
-            self.annotated_frame = frame
+            cv2.putText(self._display_buffer, text, (text_x, text_y), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+            return
 
-        if self.annotated_frame is not None and self.annotated_frame.size > 0:
-
-            # Resize image to current viewport dimensions
-            scale = min(disp_w / self.annotated_frame.shape[1], disp_h / self.annotated_frame.shape[0])
-            out = cv2.resize(self.annotated_frame, (0, 0), fx=scale, fy=scale)
-
-            # Paste resized image into display buffer
-            h, w = out.shape[:2]
-            self._display_buffer[:h, :w] = out
-            # Fill any remaining buffer space with black
-            if h < disp_h:
-                self._display_buffer[h:, :] = 0
-            if w < disp_w:
-                self._display_buffer[:, w:] = 0
-        else:
-            self._display_buffer.fill(0)
-
-        self._blit_image()
+        # If we have a valid annotated frame from the worker, paste it onto the image that will be displayed
+        if self.annotated_frame is not None and self.annotated_frame.shape == self._display_buffer.shape:
+            np.copyto(self._display_buffer, self.annotated_frame)
 
     @Slot(CalibrationData)
     def handle_payload(self, data: CalibrationData):
@@ -610,6 +557,7 @@ class Monocular(PreviewBase):
 
     @Slot(np.ndarray)
     def on_worker_result(self, annotated_frame):
+        # This is where the worker sends back the fully annotated frame
         self.annotated_frame = annotated_frame
 
     def on_clear_intrinsics(self):

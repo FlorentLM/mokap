@@ -86,10 +86,8 @@ class MainControls(QMainWindow, SnapMixin):
 
         # States
         self.is_editing = False
-        self.calibration_stage = 0
         self.is_calibrating = False
-
-        self._recording_text = ''
+        self.is_recording = False
 
         # Refs for the secondary windows
         self.opengl_window = None
@@ -520,22 +518,19 @@ class MainControls(QMainWindow, SnapMixin):
 
             if self.manager.recording and override is False:
                 self.manager.pause()
-                self._recording_text = ''
                 self.button_recpause.setText("Not recording (Space to toggle)")
                 self.button_recpause.setIcon(icon_rec_bw)
+                self._is_recording = False
             elif not self.manager.recording and override is True:
                 self.manager.record()
-                self._recording_text = '[Recording]'
                 self.button_recpause.setText("Recording... (Space to toggle)")
                 self.button_recpause.setIcon(icon_rec_on)
+                self._is_recording = True
 
     def _take_snapshot(self):
-        """
-        Takes an instantaneous snapshot from all cameras
-        """
-        now = datetime.now().strftime('%y%m%d-%H%M%S')
+        """ Takes an instantaneous snapshot from all cameras """
         if self.manager.acquiring:
-            self.manager.take_snapshot(folder=self.manager.full_path, base_name=f"snapshot_{now}")
+            self.manager.take_snapshot()
 
     def open_session_folder(self):
         path = self.manager.full_path.resolve()

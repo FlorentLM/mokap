@@ -1,17 +1,24 @@
 import queue
+import time
 from collections import deque
 from datetime import datetime
 from threading import Thread
 from typing import Optional, Tuple
 import numpy as np
 import cv2
-from PySide6.QtCore import Qt, QTimer, QThread, Signal, QSize, Slot, QPoint
-from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGroupBox, QStatusBar, QToolButton
+from PySide6.QtCore import Qt, QTimer, QThread, Signal, QSize, Slot, QPoint, QRectF
+from PySide6.QtGui import QImage
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGroupBox, QStatusBar, QToolButton, QGraphicsObject
+import pyqtgraph as pg
+from numpy.typing import ArrayLike
 
 from mokap.gui.style.commons import *
 from mokap.gui.widgets import FAST_UPDATE, SLOW_UPDATE
 from mokap.gui.widgets.dialogs import SnapPopup
+
+
+DISPLAY_FRAMERATE = 60.0
+DISPLAY_INTERVAL = 1.0 / DISPLAY_FRAMERATE
 
 
 class SnapMixin:
@@ -81,6 +88,46 @@ class SnapMixin:
             case _:
                 return
 
+class FastImageItem(QGraphicsObject):
+    """ A minimal, fast QGraphicsObject for displaying a QImage
+    This bypasses all of the complex machinery of pyqtgraph.ImageItem
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._image = QImage()
+        self.height = 0
+        self.width = 0
+        self.channels = 0
+        self.bytes_per_line = 0
+
+    def setImageData(self, data: ArrayLike):
+        """ Set the image using raw data """
+
+        # on first call, cache the image properties
+        if self.height == 0:
+            self.height, self.width, self.channels = data.shape
+            self.bytes_per_line = self.channels * self.width
+
+        # This is important. It tells the scene that the item's
+        # content is about to change and needs a repaint
+        self.prepareGeometryChange()
+
+        # this here is why it's fast: we create a zero-copy QImage view of the numpy data
+        # (note that QImage needs a C-contiguous array - the full display buffer is already contiguous,
+        # but the magnifier data is a slice so it is not)
+        contiguous_data = np.ascontiguousarray(data)    # this is a no-op for an already contiguous array so it's free
+        self._image = QImage(contiguous_data.data, self.width, self.height, self.bytes_per_line, QImage.Format.Format_BGR888)
+
+        # this needs to be called after changing the geometry or content
+        self.update()
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(0, 0, self.width, self.height)
+
+    def paint(self, painter, option, widget=None):
+        if not self._image.isNull():
+            painter.drawImage(0, 0, self._image)
+
 
 class Base(QWidget, SnapMixin):
     """
@@ -139,11 +186,11 @@ class PreviewBase(Base):
     def __init__(self, camera, main_window_ref):
         super().__init__(main_window_ref)
 
-        # Refs to anything preview window -related
         self._camera = camera
         self._cam_name = self._camera.name
-
         self._cam_idx = self._mainwindow.get_camera_index(self._camera.unique_id)
+
+        self.setWindowTitle(f'{self._camera.name.title()} camera')
 
         # All these properties come directly from the camera object
         self._source_framerate = self._camera.framerate
@@ -151,32 +198,31 @@ class PreviewBase(Base):
         self._secondary_colour = self._mainwindow.secondary_colours[self._cam_name]
         self._fmt = self._camera.pixel_format
 
-        img_x, img_y, img_width, img_height = self._camera.roi
-        self._source_shape = np.array([img_width, img_height])
+        img_x, img_y, img_w, img_h = self._camera.roi
+        self._source_shape = (img_h, img_w)
 
-        # Qt things
-        self.setWindowTitle(f'{self._camera.name.title()} camera')
+        # This holds the *latest frame received* from the consumer thread
+        # Access to this should be quick, also it will be None if no new frame has arrived
+        self._latest_frame: Optional[np.ndarray] = None
 
-        # Init where the frame data will be stored
-        self._frame_buffer = np.zeros((*self._source_shape[:2], 3), dtype=np.uint8)
-        self._display_buffer = np.zeros((*self._source_shape[:2], 3), dtype=np.uint8)
+        # This is the 'safe' buffer for display: we copy the _latest_frame into this
+        # at the start of the update cycle, so we can annotate it without worrying about the consumer thread overwriting it
+        self._latest_display_frame = np.zeros((self._source_shape[0], self._source_shape[1], 3), dtype=np.uint8)
+
+        self._video_initialised = False
 
         self._current_frame_metadata = {}
 
-        # Init states
+        # states
         self._worker_busy = False
         self._worker_blocking = False
         self._warning = False
 
-        self._warning_text = '[WARNING]'
-
-        self._latest_frame = None
-
         self._last_polled_values = {}
 
-        # Init clock and counter
+        # clock and counter
         self._clock = datetime.now()
-        self._capture_fps = deque(maxlen=10)
+        self._capture_fps = deque(maxlen=30)
         self._frame_count_for_fps = 0
 
         # Connect the new frame signal to a slot that updates the UI
@@ -189,11 +235,12 @@ class PreviewBase(Base):
         self._frame_consumer.start()
 
     def _setup_worker(self, worker_object):
+        """ Setup preview-windows-specific signals (direct Main thread - Worker connections) """
         super()._setup_worker(worker_object)
 
-        # Setup preview-windows-specific signals (direct Main thread - Worker connections)
-        # Emit frames to worker
+        # emit frames to worker
         self.send_frame.connect(self.worker.handle_frame, type=Qt.QueuedConnection)
+
         # Receive results and state from worker
         self.worker.annotations.connect(self.on_worker_result)
         self.worker.finished.connect(self.on_worker_finished)
@@ -212,14 +259,20 @@ class PreviewBase(Base):
         self.video_container_layout = QHBoxLayout(self.video_container)
         self.video_container_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.VIDEO_FEED = QLabel()
-        self.VIDEO_FEED.setStyleSheet('background-color: black;')
-        self.VIDEO_FEED.setMinimumSize(1, 1)  # Important! Otherwise it crashes when reducing the size of the window
-        self.VIDEO_FEED.setAlignment(Qt.AlignCenter)
-        self.video_container_layout.addWidget(self.VIDEO_FEED, 1)
-        main_layout.addWidget(self.video_container, 1)
+        self.graphics_widget = pg.GraphicsLayoutWidget()
+        self.video_container_layout.addWidget(self.graphics_widget, 1)
 
-        self._blit_image()     # Call this once to initialise it
+        # Add a ViewBox to hold the image and disable its native mouse interaction/menus
+        self.view_box = self.graphics_widget.addViewBox(row=0, col=0)
+        self.view_box.setAspectLocked(True)              # for correct aspect ratio
+        self.view_box.setMouseEnabled(x=False, y=False)  # no pan/zoom
+        self.view_box.setMenuEnabled(False)
+        self.view_box.disableAutoRange()
+
+        self.image_item = FastImageItem()
+        self.view_box.addItem(self.image_item)
+
+        main_layout.addWidget(self.video_container)
 
         self.BOTTOM_PANEL = QWidget()
         bottom_panel_v_layout = QVBoxLayout(self.BOTTOM_PANEL)
@@ -295,7 +348,6 @@ class PreviewBase(Base):
         statusbar = QStatusBar()
 
         self.snap_button = QToolButton()
-        # self.snap_button.setText("Snap to:")
         self.snap_button.setIcon(icon_move_bw)
         self.snap_button.setIconSize(QSize(16, 16))
         self.snap_button.setToolTip("Move current window to a position")
@@ -307,59 +359,190 @@ class PreviewBase(Base):
         main_layout.addWidget(statusbar)
 
     def _init_specific_ui(self):
-        """
-        This does nothing in the base class, each VideoWindow implements its own specific UI elements
-        """
+        """  This does nothing in the base class, each VideoWindow implements its own specific UI elements """
         pass
 
     def _consume_frames_loop(self):
-        """ This runs in a background thread """
+        """ This runs in a background thread and grabs frames from the camera manager, and handles color conversion """
 
         display_queue = self._mainwindow.manager._display_queues[self._cam_idx]
 
+        # This buffer lives in the background thread, we initialise it once and then update its content
+        bgr_frame = np.empty((self._source_shape[0], self._source_shape[1], 3), dtype=np.uint8)
+
+        last_emit_time = 0  # this is a bit of a hack...
+        # ...but otherwise this function emits waaaay too many Signals and cripples everything
+
         while self._consumer_thread_active:
             try:
-                # This call will block until a new frame is available
-                frame, metadata = display_queue.get(timeout=1)
+                raw_frame, metadata = display_queue.get(timeout=1)
+                current_time = time.time()
+                should_emit = (current_time - last_emit_time) > DISPLAY_INTERVAL
 
-                # Emit and metadata on the signal
-                self.frame_received.emit(frame, metadata)
+                if not should_emit:
+                    continue  # skip processing and emitting if it's too soon
+
+                last_emit_time = current_time
+
+                if raw_frame is None:
+                    self.frame_received.emit(None, metadata)
+                    continue
+
+                pixel_format = metadata.get('pixel_format_effective') or self._fmt
+
+                try:
+                    match pixel_format:
+                        # ... (match case is the same)
+                        case 'BayerBG8':
+                            cv2.cvtColor(raw_frame, cv2.COLOR_BAYER_BG2BGR, dst=bgr_frame)
+                        case 'BayerRG8':
+                            cv2.cvtColor(raw_frame, cv2.COLOR_BAYER_RG2BGR, dst=bgr_frame)
+                        case 'Mono8':
+                            cv2.cvtColor(raw_frame, cv2.COLOR_GRAY2BGR, dst=bgr_frame)
+                        case 'RGB8':
+                            cv2.cvtColor(raw_frame, cv2.COLOR_RGB2BGR, dst=bgr_frame)
+                        case _:
+                            np.copyto(bgr_frame, raw_frame)
+                except cv2.error as e:
+                    print(f"[{self.name}] OpenCV Error in _consume_frames_loop: {e}")
+                    bgr_frame.fill(255)
+
+                self.frame_received.emit(bgr_frame, metadata)
 
             except queue.Empty:
-                continue  # Timeout, just loop again
-
-    @Slot(str, object)
-    def update_slider_ui(self, label, value):
-        # Implemented in the concrete class
-        pass
+                continue
 
     @Slot(np.ndarray, dict)
     def on_frame_received(self, frame, metadata):
-        """ This runs in the main GUI thread """
-
+        """ this runs in the main GUI thread. We just update the references and counter """
         self._current_frame_metadata = metadata
         self._frame_count_for_fps += 1
+        self._latest_frame = frame
 
-        # If the image comes with an effective pixel format (for instance polarised image)
-        pixel_format = metadata.get('pixel_format_effective') or self._fmt
+    #  ============= Common update method for texts and stuff =============
+    def _update_slow(self):
+        if self.isVisible():
+            now = datetime.now()
 
-        match pixel_format:
-            case 'BayerBG8':
-                self._frame_buffer = cv2.cvtColor(frame, cv2.COLOR_BAYER_BG2BGR, dst=self._frame_buffer)
-            case 'BayerRG8':
-                self._frame_buffer = cv2.cvtColor(frame, cv2.COLOR_BAYER_RG2BGR, dst=self._frame_buffer)
-            case 'Mono8':
-                self._frame_buffer = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR, dst=self._frame_buffer)
-            case 'RGB8':
-                self._frame_buffer = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR, dst=self._frame_buffer)
-            case _:
-                # just pass it and hope for the best haha
-                self._frame_buffer = frame
+            dt = (now - self._clock).total_seconds()
+            if dt > 0:
+                # Calculate FPS based on frames received by the GUI thread
+                gui_fps = self._frame_count_for_fps / dt
+                self._capture_fps.append(gui_fps)
+
+            # Reset counters for the next interval
+            self._clock = now
+            self._frame_count_for_fps = 0
+
+            params_to_poll = ['exposure', 'framerate', 'gain', 'blacks', 'gamma']
+
+            for param in params_to_poll:
+                current_value = getattr(self._camera, param)
+                last_value = self._last_polled_values.get(param)
+
+                if current_value != last_value:
+                    self.update_slider_ui(param, current_value)
+                    self._last_polled_values[param] = current_value
+
+            if self._mainwindow.manager.acquiring:
+                # Calculate the smoothed captured FPS from the deque
+                cap_fps = sum(list(self._capture_fps)) / len(self._capture_fps) if self._capture_fps else 0
+
+                # Get the current target framerate from the camera object itself
+                target_framerate = self._camera.framerate
+
+                # Check if the calculated FPS is within a reasonable range to display
+                if 0 < cap_fps < 1000:
+                    # Check for significant deviation from the target framerate to set a warning
+                    if abs(cap_fps - target_framerate) > 10:
+                        self._warning = True
+                    else:
+                        self._warning = False
+
+                    # Update the UI label with the measured framerate
+                    self.capturefps_value.setText(f"{cap_fps:.2f} fps")
+                else:
+                    # If FPS is 0 or an absurd value, don't display it and don't warn
+                    self.capturefps_value.setText("-")
+                    self._warning = False
+
+                # Also update the brightness value
+                brightness = np.round(self._latest_display_frame.mean() / 255 * 100, decimals=2)
+                self.brightness_value.setText(f"{brightness:.2f}%")
+            else:
+                # Reset UI elements when not acquiring
+                self.capturefps_value.setText("Off")
+                self.brightness_value.setText("-")
+                self._warning = False
+
+            # temp = self._camera.temperature
+            # temp_state = self._camera.temperature_state
+            #
+            # # Update the temperature label colour
+            # if temp is not None:
+            #     self.temperature_value.setText(f'{temp:.1f}°C')
+            # if temp_state == 'Ok':
+            #     self.temperature_value.setStyleSheet(f"color: {col_green}; font: bold;")
+            # elif temp_state == 'Critical':
+            #     self.temperature_value.setStyleSheet(f"color: {col_orange}; font: bold;")
+            # elif temp_state == 'Error':
+            #     self.temperature_value.setStyleSheet(f"color: {col_red}; font: bold;")
+            # else:
+            #     self.temperature_value.setStyleSheet(f"color: {col_yellow}; font: bold;")
+
+            # # Update display fps
+            # dt = (now - self._clock).total_seconds()
+            # ind = int(self._mainwindow.manager.indices[self.idx])
+            # if dt > 0:
+            #     self._capture_fps.append((ind - self._last_capture_count) / dt)
+            #
+            # self._clock = now
+            # self._last_capture_count = ind
+
+    #  ============= Fast update methods for image refresh =============
+
+    def _annotate_frame(self):
+        """ Subclasses must implement this method to draw their specific annotations """
+        pass
+
+    def _update_fast(self):
+        """ This is now the main display updater. It runs at a controlled rate via its QTimer """
+
+        # Check if there's a new frame from the consumer thread
+        if self._latest_frame is None:
+            return # No new frame, do nothing.
+
+        # Copy the new frame into the safe display buffer
+        # This is the *only* full-frame copy, and it happens at the display rate
+        np.copyto(self._latest_display_frame, self._latest_frame)
+        self._latest_frame = None   # mark as consumed
+
+        # Let the worker process the frame if it's free. We send it the safe display buffer.
+        if not self._worker_busy:
+            self._send_frame_to_worker(self._latest_display_frame)
+
+        # subclasses do their own thing
+        self._annotate_frame()
+
+        # Update the image on the screen
+        self.image_item.setImageData(self._latest_display_frame)
+
+        # One-time setup to fit the image to the viewbox
+        if not self._video_initialised:
+            self.view_box.autoRange()
+            self._video_initialised = True
+
+    def _send_frame_to_worker(self, frame):
+        # Retrieve the synchronized frame number from our stored metadata
+        frame_number = self._current_frame_metadata.get('frame_number', -1)  # Use -1 as a default/error value
+
+        # Emit the frame and its correct, safe frame number
+        self.send_frame.emit(frame, frame_number)
+        self._worker_busy = True
 
     #  ============= Qt method overrides =============
     def closeEvent(self, event):
         if self._force_destroy:
-
             # Make sure to stop the consumer thread
             self._consumer_thread_active = False
             self._frame_consumer.join(timeout=1.0)
@@ -374,6 +557,13 @@ class PreviewBase(Base):
             self._pause_worker()
             self._mainwindow.secondary_windows_visibility_buttons[self._cam_idx].setChecked(False)
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+
+        if self.view_box:
+            # After the normal window resize we just tell our ViewBox to fit the item
+            self.view_box.autoRange()
+
     #  ============= Thread control =============
     def _pause_worker(self):
         self.worker.set_paused(True)
@@ -385,14 +575,12 @@ class PreviewBase(Base):
         self.worker_thread.quit()
         self.worker_thread.wait()
 
-    #  ============= Some common signals =============
-    def _send_frame_to_worker(self, frame):
-        # Retrieve the synchronized frame number from our stored metadata
-        frame_number = self._current_frame_metadata.get('frame_number', -1)  # Use -1 as a default/error value
+    #  ============= Some signals =============
 
-        # Emit the frame and its correct, safe frame number
-        self.send_frame.emit(frame, frame_number)
-        self._worker_busy = True
+    @Slot(str, object)
+    def update_slider_ui(self, label, value):
+        # Implemented in the concrete class
+        pass
 
     @Slot()
     def on_worker_result(self, bboxes):
@@ -439,7 +627,7 @@ class PreviewBase(Base):
 
     @property
     def aspect_ratio(self) -> float:
-        return self._source_shape[1] / self._source_shape[0]
+        return float(self._source_shape[1] / self._source_shape[0])
 
     #  ============= Some common video window-related methods =============
 
@@ -482,103 +670,3 @@ class PreviewBase(Base):
             self._mainwindow.secondary_windows_visibility_buttons[self.idx].setChecked(True)
             self.show()
             self._resume_worker()
-
-    # #  ============= Display-related common methods =============
-    # def _refresh_framebuffer(self):
-    #     """
-    #     Grabs a new frame from the cameras and stores it in the frame buffer
-    #     """
-    #     if self._mainwindow.manager.acquiring:
-    #         arr = self._mainwindow.manager.get_current_framebuffer(self.idx)
-    #         if arr is not None:
-    #             if self._fmt == "BayerBG8":
-    #                 self._frame_buffer = cv2.cvtColor(arr, cv2.COLOR_BayerBG2BGR, dst=self._frame_buffer)
-    #             elif self._fmt == "Mono8":
-    #                 self._frame_buffer = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR, dst=self._frame_buffer)
-    #             else:
-    #                 self._frame_buffer = arr
-    #     else:
-    #         self._frame_buffer.fill(0)
-
-    def _resize_to_display(self):
-        """
-        Fills and resizes the display buffer to the current window size
-        """
-        scale = min(self.VIDEO_FEED.width() / self._frame_buffer.shape[1], self.VIDEO_FEED.height() / self._frame_buffer.shape[0])
-        self._display_buffer = cv2.resize(self._frame_buffer, (0, 0), dst=self._display_buffer, fx=scale, fy=scale)
-
-    def _blit_image(self):
-        """
-        Applies the content of display buffers to the GUI
-        """
-        h, w = self._display_buffer.shape[:2]
-        q_img = QImage(self._display_buffer.data, w, h, 3 * w, QImage.Format.Format_RGB888)
-        pixmap = QPixmap.fromImage(q_img)
-        self.VIDEO_FEED.setPixmap(pixmap)
-
-    #  ============= Common update method for texts and stuff =============
-    def _update_slow(self):
-        if self.isVisible():
-            now = datetime.now()
-
-            dt = (now - self._clock).total_seconds()
-            if dt > 0:
-                # Calculate FPS based on frames received by the GUI thread
-                gui_fps = self._frame_count_for_fps / dt
-                self._capture_fps.append(gui_fps)
-
-            # Reset counters for the next interval
-            self._clock = now
-            self._frame_count_for_fps = 0
-
-            params_to_poll = ['exposure', 'framerate', 'gain', 'blacks', 'gamma']
-
-            for param in params_to_poll:
-                current_value = getattr(self._camera, param)
-                last_value = self._last_polled_values.get(param)
-
-                if current_value != last_value:
-                    self.update_slider_ui(param, current_value)
-                    self._last_polled_values[param] = current_value
-
-            if self._mainwindow.manager.acquiring:
-            #     cap_fps = sum(list(self._capture_fps)) / len(self._capture_fps) if self._capture_fps else 0
-            #     if 0 < cap_fps < 1000:
-            #         if abs(cap_fps - self._source_framerate) > 10:
-            #             self._warning_text = '[WARNING] Framerate'
-            #             self._warning = True
-            #         else:
-            #             self._warning = False
-            #         self.capturefps_value.setText(f"{cap_fps:.2f} fps")
-            #     else:
-            #         self.capturefps_value.setText("-")
-
-                brightness = np.round(self._frame_buffer.mean() / 255 * 100, decimals=2)
-                self.brightness_value.setText(f"{brightness:.2f}%")
-            else:
-                self.capturefps_value.setText("Off")
-                self.brightness_value.setText("-")
-
-            # temp = self._camera.temperature
-            # temp_state = self._camera.temperature_state
-            #
-            # # Update the temperature label colour
-            # if temp is not None:
-            #     self.temperature_value.setText(f'{temp:.1f}°C')
-            # if temp_state == 'Ok':
-            #     self.temperature_value.setStyleSheet(f"color: {col_green}; font: bold;")
-            # elif temp_state == 'Critical':
-            #     self.temperature_value.setStyleSheet(f"color: {col_orange}; font: bold;")
-            # elif temp_state == 'Error':
-            #     self.temperature_value.setStyleSheet(f"color: {col_red}; font: bold;")
-            # else:
-            #     self.temperature_value.setStyleSheet(f"color: {col_yellow}; font: bold;")
-
-            # # Update display fps
-            # dt = (now - self._clock).total_seconds()
-            # ind = int(self._mainwindow.manager.indices[self.idx])
-            # if dt > 0:
-            #     self._capture_fps.append((ind - self._last_capture_count) / dt)
-            #
-            # self._clock = now
-            # self._last_capture_count = ind

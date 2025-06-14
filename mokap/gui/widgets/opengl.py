@@ -227,9 +227,16 @@ class Multiview3D(Base):
         self.board_preview_label.setPixmap(bounded_pixmap)
 
     def _create_gl_items(self):
-        """
-        Creates all GL items for all cameras ONCE and adds them to the scene.
-        """
+
+        # Create global items once
+        self.global_gl_items['board_3d'] = GLScatterPlotItem(
+            pos=np.zeros((self.max_board_points, 3)),
+            color=(1, 0, 1, 0.9), size=8, pxMode=True
+        )
+        self.global_gl_items['board_3d'].setVisible(False)
+        self.view.addItem(self.global_gl_items['board_3d'])
+        # TODO: Add volume of trust here
+
         for i, cam_name in enumerate(self._cameras_names):
             color = self._cam_colours_rgba_norm[cam_name]
             color_translucent_80 = (*color[:3], color[3] * 0.8)
@@ -237,7 +244,7 @@ class Multiview3D(Base):
 
             detections_scatter = GLScatterPlotItem(pos=np.zeros((self.max_board_points, 3)),
                                                    color=color, size=7, pxMode=True)
-            detections_scatter.setVisible(False)    # Initially hidden
+            detections_scatter.setVisible(False)    # initially hidden
 
             # Create items with placeholder data
             center_scatter = GLScatterPlotItem(pos=np.zeros((1, 3)), color=color, size=10)
@@ -250,9 +257,9 @@ class Multiview3D(Base):
                                       smooth=self._antialiasing, shader='shaded', glOptions='translucent',
                                       drawEdges=True, edgeColor=color_translucent_80, color=color_translucent_50)
 
-            # Dashed line for optical axis requires multiple line items, which is inefficient to update.
-            # We'll replace it with a single, solid line for now for performance.
-            # If dashes are required, a custom shader is the performant way.
+            # Dashed lines for optical axis requires are slow
+            # so we replace them with a solid line for now
+            # TODO: custom shader for that
             optical_axis_line = GLLinePlotItem(pos=np.zeros((2, 3)), color=color, width=2, antialias=self._antialiasing)
 
             # Store references to the items
@@ -264,21 +271,12 @@ class Multiview3D(Base):
                 'detections': detections_scatter
             }
 
-            # --- Create Global Items ---
-            # Create scatter plot for 3D board points
-            self.global_gl_items['board_3d'] = GLScatterPlotItem(pos=np.zeros((self.max_board_points, 3)),
-                                                                 color=(1, 0, 1, 0.9), size=8, pxMode=True)
-            self.global_gl_items['board_3d'].setVisible(False)  # Initially hidden
-
-            # TODO: Add volume
-
             # Add items to the view
-            self.view.addItem(center_scatter)
-            self.view.addItem(frustum_lines)
-            self.view.addItem(frustum_mesh)
-            self.view.addItem(optical_axis_line)
-            self.view.addItem(detections_scatter)
-            self.view.addItem(self.global_gl_items['board_3d'])
+            self.view.addItem(self.camera_gl_items[cam_name]['center'])
+            self.view.addItem(self.camera_gl_items[cam_name]['frustum_lines'])
+            self.view.addItem(self.camera_gl_items[cam_name]['frustum_mesh'])
+            self.view.addItem(self.camera_gl_items[cam_name]['optical_axis'])
+            self.view.addItem(self.camera_gl_items[cam_name]['detections'])
 
     def update_scene(self):
 
@@ -383,8 +381,8 @@ class Multiview3D(Base):
 
             # Use the single, non-vmapped back projection here too
             points3d_detections = back_projection(points2d_subset, self._frustum_depth * 0.95,
-                                                          self._multi_cameras_matrices[cam_idx], E,
-                                                          self._multi_dist_coeffs[cam_idx])
+                                                          self._cameras_matrices[cam_idx], E,
+                                                          self._dist_coeffs[cam_idx])
             points3d_rot = rotate_points3d(points3d_detections, 180, axis='y')
 
             gl_items['detections'].setData(pos=points3d_rot)
@@ -411,6 +409,7 @@ class Multiview3D(Base):
     def add_cube(self, center: np.ndarray, size: float | np.ndarray, color=(1, 1, 1, 0.5)):
         """
         Add a cube centered at "center" with the given "size"
+        TODO: we prob want a rectangular cuboid or an ellipsoid instead
         """
 
         color_translucent_50 = np.copy(color)
@@ -469,18 +468,3 @@ class Multiview3D(Base):
                                          antialias=antialias)
             self._refreshable_items.append(line_seg)
 
-    @Slot(CalibrationData)
-    def handle_payload(self, data: CalibrationData):
-        print(f'[Main Thread] Received {data.camera_name} {data.payload}')
-
-        cam_idx = self._cameras_names.index(data.camera_name)
-
-        if isinstance(data.payload, ExtrinsicsPayload):
-            self._rvecs[cam_idx, :] = data.payload.rvec
-            self._tvecs[cam_idx, :] = data.payload.tvec
-
-        elif isinstance(data.payload, IntrinsicsPayload):
-            self._cameras_matrices[cam_idx, :, :] = data.payload.camera_matrix
-            self._dist_coeffs[cam_idx, :len(data.payload.dist_coeffs)] = data.payload.dist_coeffs
-
-        self.update_scene()
