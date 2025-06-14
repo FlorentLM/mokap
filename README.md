@@ -51,10 +51,11 @@ Mokap is an easy to use multi-camera acquisition software developed for animal b
 
 ### Features
 * Cross platform (Linux, Windows, macOS)
-* Supports Basler and FLIR cameras, but virtually any other vendor supporting the GenICam standard (just ask me 🙂 ).
+* Supports Basler and FLIR cameras (they can be used at the same time, yes 🙂)
 * Supports hardware-synchronisation of cameras (using a Raspberry Pi, or an Aduino, or a USB-to-TTL adapter)
 * Supports encoding to individual frames or straight to video (with or without GPU acceleration)
 * Live multi-camera calibration and pose estimation
+* Supports classic USB (and internal) Webcams, but their features are limited (no hardware sync, etc.)
 
 <p>(<a href="#readme-top">back to top</a>)</p>
 
@@ -136,7 +137,7 @@ Refer to FLIR's guide for detailed instructions. But in short:
 
 1. Customise `config_example.yaml` and rename it to `config.yaml` (or whatever you want)
 
-Starting example for 3 cameras (replace the xxxxx by your cameras' serial numbers):
+Configuration example:
 ```yaml
 # ----------------------------------
 #  Mokap Example Configuration File
@@ -197,7 +198,7 @@ ffmpeg:
 sources:
   my-first-camera: # This is your defined, friendly name for this camera :)
     vendor: basler
-    serial: xxxxxxxx
+    serial: xxxxxxxx  # You can specify the serial number to make sure it gets the right name, colour etc
     color: da141d
 #    # Camera-specific settings can override globals
 #    exposure: 9000
@@ -206,32 +207,30 @@ sources:
 #    pixel_format: 'Mono8'
 #    blacks: 1.0
 #    binning: 1
-
+  
   some-other-camera:
     vendor: flir
-    serial: xxxxxxxx
     color: 7a9c21
-
-  awesomecamera:
-    vendor: basler
-    serial: xxxxxxxx
+  
+  # You can also use your laptop's internal camera (or any USB webcam) 
+  # Features are limited of course, but it is useful for debugging
+  laptop-camera:    
+    vendor: webcam
     color: f3d586
 ```
 
-### Start GUI
+### Start the GUI
 
-Note: This is temporary, an actual commandline interface will come soon
+**Note**: This is temporary, an actual launcher will come soon (along with a full CLI interface)
 
 1. Activate the uv environment within mokap.\
 Linux:`source .venv/bin/activate`\
 Windows: `.venv/Scripts/activate`
 2. Run `./mokap.py`
 
-*Note: There are some default values hardcoded in `mokap.py`, but they can be changed with the GUI*
-
 ### Hardware Trigger
 
-Mokap supports both Raspberry Pi and Arduino boards to act as hardware triggers.
+Mokap supports Raspberry Pi, Arduino boards, and USB-to-TTL adapters to act as hardware triggers.
 
 #### Raspberry Pi
 For the Raspberry Pi option, the commands are sent from the host PC to the Pi via the network, so you **_MUST_** have three environment variables defined.
@@ -259,7 +258,7 @@ Test by pinging between devices.
 
 #### Arduino
 
-Any Arduino board should be compatible. You just have to flash your Arduino board with one of the two provided firmwares, located in `mokap/triggers/arduino_firmware`.
+Any Arduino board should be compatible. You just have to flash it with one of the two provided firmwares (located in `mokap/triggers/arduino_firmware`).
 
 - `trigger_millis_v1.ino`: Good precision, jitter is in the microsecond order. Supports any frequency and any duty cycle.
 - `trigger_tone_v1.ino`: Highest precision, jitter is negligible (nanosecond). Only supports 50% duty rate, and frequencies >= 31 Hz on 16 MHz boards (Arduino Uno for instance).
@@ -269,7 +268,7 @@ If you're recording at less than 31 fps you will **have** to use the `trigger_mi
 
 #### USB-to-TTL (FTDI)
 
-This is a very cheap and easy solution. But the timing is under the control of your host computer, so it is less accurate than the other alternatives.
+This is a very cheap and quick solution. But the timing is under the control of your host computer, so it is less accurate than the other two alternatives
 (jitter is in the order of 1-15+ milliseconds). Not recommended for recording above 30 fps.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
@@ -277,19 +276,17 @@ This is a very cheap and easy solution. But the timing is under the control of y
 
 ### Remarks
 
-* If you plan on recording high framerate from many cameras, you probably want to use the GPU, as the software encoders and the image encoding are both slower
-
+* If you plan on recording high framerate from many cameras, you probably want to use a GPU, as the software encoders are slower.
 
 <!-- ROADMAP -->
 ## Roadmap
 
-- [x] Allow GPU video encoding
-- [x] Replace Tk with Qt as the GUI framework
-- [x] Finish calibration mode
 - [x] Add support for Arduino triggers
 - [x] Add support for FLIR cameras
 - [ ] Add support for daisy-chained cameras as trigger
 - [ ] Add support for other camera brands
+- [x] ~~Finish calibration mode~~  erm... needs some fixes 
+
 
 <p>(<a href="#readme-top">back to top</a>)</p>
 

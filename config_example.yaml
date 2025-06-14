@@ -57,7 +57,7 @@ ffmpeg:
 sources:
   my-first-camera: # This is your defined, friendly name for this camera :)
     vendor: basler
-    serial: xxxxxxxx
+    serial: xxxxxxxx  # You can specify the serial number to make sure it gets the right name, colour etc
     color: da141d
 #    # Camera-specific settings can override globals
 #    exposure: 9000
@@ -69,10 +69,10 @@ sources:
 
   some-other-camera:
     vendor: flir
-    serial: xxxxxxxx
     color: 7a9c21
 
-  awesomecamera:
-    vendor: basler
-    serial: xxxxxxxx
+  # You can also use your laptop's internal camera (or any USB webcam)
+  # Features are limited of course, but it is useful for debugging
+  laptop-camera:
+    vendor: webcam
     color: f3d586
