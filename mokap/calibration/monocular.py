@@ -34,9 +34,9 @@ class MonocularCalibrationTool:
         self._verbose: bool = verbose
 
         # TODO: these 3 alternatives should be selectable from the config file
-        self._min_pts: int = 4      # SQPNP method needs at least 3 points but in practice 4 is safer
+        # self._min_pts: int = 4      # SQPNP method needs at least 3 points but in practice 4 is safer
         # self._min_pts: int = 4    # ITERATIVE method needs at least 4 points
-        # self._min_pts: int = 6    # DLT algorithm needs at least 6 points for pose estimation
+        self._min_pts: int = 6    # DLT algorithm needs at least 6 points for pose estimation
 
         # TODO: grid parameters should be configurable from the config file
         self._nb_grid_cells: int = 15
@@ -157,7 +157,8 @@ class MonocularCalibrationTool:
     def intrinsics_np(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         if self._camera_matrix is None or self._dist_coeffs is None:
             return None, None
-        return np.asarray(self._camera_matrix), np.asarray(self._dist_coeffs)
+        # have to copy (the jax versions are read only)
+        return np.asarray(self._camera_matrix).copy(), np.asarray(self._dist_coeffs).copy()
 
     @property
     def extrinsics(self) -> Tuple[ArrayLike, ArrayLike]:
@@ -166,7 +167,8 @@ class MonocularCalibrationTool:
     def extrinsics_np(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         if self._rvec is None or self._tvec is None:
             return None, None
-        return np.asarray(self._rvec), np.asarray(self._tvec)
+        # have to copy (the jax versions are read only)
+        return np.asarray(self._rvec).copy(), np.asarray(self._tvec).copy()
 
     @property
     def has_detection(self) -> bool:
@@ -288,7 +290,7 @@ class MonocularCalibrationTool:
         return ret[np.argmax(scores)]
 
     def register_sample(self):
-        if self.has_detection:
+        if self.has_detection and self.nb_points >= self._min_pts:
             # cv2.calibrateCamera() will complain if the deques contain (N, 2) arrays, it expects (1, N, 2)
             # TODO: maybe we should not squeeze the arrays in the detector lol
             self.stack_points2d.append(self._points2d_np[np.newaxis, :, :])
@@ -360,68 +362,69 @@ class MonocularCalibrationTool:
                     charucoIds=self.stack_points_ids,
                     board=self.dt.board,
                     imageSize=(self.w, self.h),
-                    cameraMatrix=current_camera_matrix,  # Input/Output /!\
-                    distCoeffs=current_dist_coeffs,  # Input/Output /!\
+                    cameraMatrix=current_camera_matrix, # Input/Output /!\
+                    distCoeffs=current_dist_coeffs,     # Input/Output /!\
                     flags=calib_flags
                 )
 
-            # std_cam_mat, std_dist_coeffs = np.split(std_intrinsics.squeeze(), [4])
-            # std_rvecs, std_tvecs =  std_extrinsics.reshape(2, -1, 3)
-            # TODO: Use these std values in the plot - or to decide if the new round of calibrateCamera is good or not?
-
-            new_dist_coeffs = new_dist_coeffs.squeeze()
-            # stack_rvecs = np.stack(stack_rvecs).squeeze()       # Unused for now
-            # stack_tvecs = np.stack(stack_tvecs).squeeze()       # Unused for now
-            stack_intr_errors = stack_intr_errors.squeeze() / self._err_norm  # TODO: Normalise errors on image diagonal
-
-            # Note:
-            # ------
-            #
-            # The per-view reprojection error as returned by calibrateCamera() is:
-            #   the square root of the sum of the 2 means in x and y of the squared diff
-            #       np.sqrt(np.sum(np.mean(sq_diff, axis=0)))
-            #
-            # This is NOT the same as the per-view reprojection error as returned by solvePnP():
-            #   this one is the square root of the mean of the squared diff over both x and y
-            #        np.sqrt(np.mean(sq_diff, axis=(0, 1)))
-            #
-            # ...in other words, the first one is larger by a factor sqrt(2)
-            #
-            # ----------------------------------------------
-            #
-            # The global calibration error in calibrateCamera() is:
-            #       np.sqrt(np.sum([sq_diff for view in stack])) / np.sum([len(view) for view in stack]))
-
-            # The following should never happen; if any happens, then we trash the stack and abort
-            if (new_camera_matrix < 0).any() or (new_camera_matrix[:2, 2] >= np.array([self.w, self.h])).any():
-                self.clear_stacks()
-                return
-
-            # store intrinsics if it is the very first estimation
-            if not self.has_intrinsics or np.inf in self._intrinsics_errors:
-                # TODO: if we loaded intrinsics without errors values, then they default to np.inf so are always overwritten here...
-
-                self._camera_matrix = jnp.asarray(new_camera_matrix)
-                self._dist_coeffs = jnp.asarray(new_dist_coeffs)
-
-                self._intrinsics_errors = stack_intr_errors
-
-                if self._verbose:
-                    print(f"[INFO] [MonocularCalibrationTool] Computed intrinsics")
-
-            # or update them if this stack's errors are better
-            elif self._check_new_errors(stack_intr_errors, self._intrinsics_errors):
-
-                self._camera_matrix = jnp.asarray(new_camera_matrix)
-                self._dist_coeffs = jnp.asarray(new_dist_coeffs)
-
-                self._intrinsics_errors = stack_intr_errors
-
-                if self._verbose:
-                    print(f"[INFO] [MonocularCalibrationTool] Updated intrinsics")
-
         except cv2.error as e:
             print(f"[WARN] [MonocularCalibrationTool] OpenCV Error in calibrateCamera:\n\n{e}")
+            return
+
+        # std_cam_mat, std_dist_coeffs = np.split(std_intrinsics.squeeze(), [4])
+        # std_rvecs, std_tvecs =  std_extrinsics.reshape(2, -1, 3)
+        # TODO: Use these std values in the plot - or to decide if the new round of calibrateCamera is good or not?
+
+        new_dist_coeffs = new_dist_coeffs.squeeze()
+        # stack_rvecs = np.stack(stack_rvecs).squeeze()       # Unused for now
+        # stack_tvecs = np.stack(stack_tvecs).squeeze()       # Unused for now
+        stack_intr_errors = stack_intr_errors.squeeze() / self._err_norm  # TODO: Normalise errors on image diagonal
+
+        # Note:
+        # ------
+        #
+        # The per-view reprojection error as returned by calibrateCamera() is:
+        #   the square root of the sum of the 2 means in x and y of the squared diff
+        #       np.sqrt(np.sum(np.mean(sq_diff, axis=0)))
+        #
+        # This is NOT the same as the per-view reprojection error as returned by solvePnP():
+        #   this one is the square root of the mean of the squared diff over both x and y
+        #        np.sqrt(np.mean(sq_diff, axis=(0, 1)))
+        #
+        # ...in other words, the first one is larger by a factor sqrt(2)
+        #
+        # ----------------------------------------------
+        #
+        # The global calibration error in calibrateCamera() is:
+        #       np.sqrt(np.sum([sq_diff for view in stack])) / np.sum([len(view) for view in stack]))
+
+        # The following should never happen; if any happens, then we trash the stack and abort
+        if (new_camera_matrix < 0).any() or (new_camera_matrix[:2, 2] >= np.array([self.w, self.h])).any():
+            self.clear_stacks()
+            return
+
+        # store intrinsics if it is the very first estimation
+        if not self.has_intrinsics or np.inf in self._intrinsics_errors:
+            # TODO: if we loaded intrinsics without errors values, then they default to np.inf so are always overwritten here...
+
+            self._camera_matrix = jnp.asarray(new_camera_matrix)
+            self._dist_coeffs = jnp.asarray(new_dist_coeffs)
+
+            self._intrinsics_errors = stack_intr_errors
+
+            if self._verbose:
+                print(f"[INFO] [MonocularCalibrationTool] Computed intrinsics")
+
+        # or update them if this stack's errors are better
+        elif self._check_new_errors(stack_intr_errors, self._intrinsics_errors):
+
+            self._camera_matrix = jnp.asarray(new_camera_matrix)
+            self._dist_coeffs = jnp.asarray(new_dist_coeffs)
+
+            self._intrinsics_errors = stack_intr_errors
+
+            if self._verbose:
+                print(f"[INFO] [MonocularCalibrationTool] Updated intrinsics")
 
         if clear_stack:
             self.clear_stacks()
@@ -429,7 +432,7 @@ class MonocularCalibrationTool:
     def compute_extrinsics(self, refine=True):
 
         # We need a detection and intrinsics to compute the extrinsics
-        if not self.has_detection or not self.has_intrinsics:
+        if not self.has_detection or not self.has_intrinsics or self.nb_points < 6:     # DLT needs 6 points
             self._rvec, self._tvec = None, None
             self._pose_error = np.inf
             return
@@ -443,12 +446,12 @@ class MonocularCalibrationTool:
                 self._pose_error = np.inf
                 return
 
-        # pnp_flags = cv2.SOLVEPNP_ITERATIVE
+        pnp_flags = cv2.SOLVEPNP_ITERATIVE
 
         # SQPNP:
         # - "A Consistently Fast and Globally Optimal Solution to the Perspective-n-Point Problem", 2020,
         #   George Terzakis and Manolis Lourakis, 10.1007/978-3-030-58452-8_28
-        pnp_flags = cv2.SOLVEPNP_SQPNP
+        # pnp_flags = cv2.SOLVEPNP_SQPNP
 
         cam_mat_np, dist_coeffs_np = self.intrinsics_np()
 
@@ -555,14 +558,11 @@ class MonocularCalibrationTool:
                 refine_points=True
             )
 
-    def auto_register_area_based(self,
-                                 area_threshold: float = 0.2,
-                                 nb_points_threshold: int = 4
-                                 ) -> bool:
+    def auto_register_area_based(self, area_threshold: float = 0.2) -> bool:
 
         novel_area = self._compute_new_area()
 
-        if novel_area >= area_threshold and self.nb_points >= nb_points_threshold:
+        if novel_area >= area_threshold and self.nb_points >= self._min_pts:
             self.register_sample()
             return True
         else:
