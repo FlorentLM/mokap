@@ -203,70 +203,58 @@ def projection_matrix(
 
 @jax.jit
 def fundamental_matrix(
-    K_pair:     Tuple[jnp.ndarray, jnp.ndarray],
-    r_pair:     Tuple[jnp.ndarray, jnp.ndarray],
-    t_pair:     Tuple[jnp.ndarray, jnp.ndarray],
-    rank2_tol:  float = 1e-8
+        K_pair: Tuple[jnp.ndarray, jnp.ndarray],
+        r_pair: Tuple[jnp.ndarray, jnp.ndarray],  # these are world -> camera rvecs
+        t_pair: Tuple[jnp.ndarray, jnp.ndarray],  # these are world -> camera tvecs
 ) -> jnp.ndarray:
     """
-    Computes the fundamental matrix between two cameras given their intrinsics and extrinsics
-
-    Args:
-        K_pair: the two K matrices, each (3, 3)
-        r_pair: the two rvecs, each (3,)
-        t_pair: the two tvecs, each (3,)
-        rank2_tol: tolerance for enforcing rank‐2 consistency
-
-    Returns:
-        F: The fundamental matrix (3, 3)
+    Computes the fundamental matrix between two cameras given their intrinsics
+    and world-to-camera extrinsics
     """
+    K1, K2 = K_pair
+    r1, r2 = r_pair
+    t1, t2 = t_pair
 
-    K1 = K_pair[0]
-    K2 = K_pair[1]
+    R1 = rodrigues(r1)  # world -> camera 1 rotation
+    R2 = rodrigues(r2)  # world -> camera 2 rotation
 
-    r1 = r_pair[0]
-    r2 = r_pair[1]
+    # The relative transformation from camera 1's coordinate system to camera 2's is
+    # T_c1_c2 = T_w_c2 * inv(T_w_c1)
 
-    t1 = t_pair[0]
-    t2 = t_pair[1]
+    # Relative rotation (from C1 frame to C2 frame)
+    R_c1_c2 = R2 @ R1.T
 
-    R1 = rodrigues(r1)
-    R2 = rodrigues(r2)
+    # Relative translation (vector from C1's origin to C2's origin, expressed in C2's frame)
+    # C1_world = -R1.T @ t1
+    # C2_world = -R2.T @ t2
+    # t_c1_c2 = R2 @ (C1_world - C2_world)
 
-    # we want column vectors
-    t1 = t1.reshape(3, 1)
-    t2 = t2.reshape(3, 1)
+    # This simplifies to
+    t_c1_c2 = t2 - R_c1_c2 @ t1
 
-    # relative motion (rotation and translation)
-    R_rel = R2.T @ R1
-    t_rel = R2.T @ (t1 - t2)
-
-    # Skew-symmetric matrix for t_rel
-    t_rel_skew = jnp.array([
-        [0, -t_rel[2, 0], t_rel[1, 0]],
-        [t_rel[2, 0], 0, -t_rel[0, 0]],
-        [-t_rel[1, 0], t_rel[0, 0], 0]
+    # The essential matrix E relates a point x1 in C1 to a point x2 in C2
+    # via the equation x2^T * E * x1 = 0
+    # The formula is E = [t]_x R, where t is the translation vector from C1's
+    # origin to C2's origin, and R is the rotation from C1 to C2
+    t_skew = jnp.array([
+        [0, -t_c1_c2[2], t_c1_c2[1]],
+        [t_c1_c2[2], 0, -t_c1_c2[0]],
+        [-t_c1_c2[1], t_c1_c2[0], 0]
     ])
-    E = t_rel_skew @ R_rel  # essential matrix
+    E = t_skew @ R_c1_c2
+    # TODO: Maybe would be good to take the Essential matrix computation out in a dedicated function?
 
-    # fundamental matrix
+    # Fundamental matrix F = K2^-T * E * K1^-1
     F = jnp.linalg.inv(K2).T @ E @ jnp.linalg.inv(K1)
-    F /= F[2, 2]
 
-    # enforce rank-2
+    # Enforce rank-2 constraint (Longuet-Higgins constraint)
     U, S, Vt = jnp.linalg.svd(F)
-    det_F = jnp.linalg.det(F)
+    S_corrected = S.at[2].set(0.0)
+    F_corrected = U @ jnp.diag(S_corrected) @ Vt
 
-    def enforce_rank2(F_in):
-        S2 = S.at[2].set(0.0)
-        return U @ jnp.diag(S2) @ Vt
+    F_normalized = F_corrected / (F_corrected[2, 2] + 1e-8)
 
-    F = jax.lax.cond(
-        jnp.logical_and(~(S[2] < rank2_tol), jnp.abs(det_F) < rank2_tol),
-        enforce_rank2,
-        lambda F_in: F_in,  # return the input if rank-2 is OK
-        F)
-    return F
+    return F_normalized
 
 batched_fundamental_matrices = jax.jit(
     jax.vmap(
@@ -274,11 +262,9 @@ batched_fundamental_matrices = jax.jit(
         in_axes=(
             0,    # K_pair: shape (P, 2, 3, 3) where P is the number of camera pairs (NOT the number of cameras!)
             0,    # r_pair: shape (P, 2, 3)
-            0,    # t_pair: shape (P, 2, 3)
-            None  # rank2_tol: shared scalar
+            0    # t_pair: shape (P, 2, 3)
         )
-    ),
-    static_argnums=(3,)      # rank2_tol should be static, it won't change at runtime
+    )
 )
 
 
