@@ -168,7 +168,7 @@ class ImageSequenceWriter(FrameWriter):
 class FFmpegWriter(FrameWriter):
     """ Writes frames to a video file by piping them to an FFmpeg subprocess """
 
-    def __init__(self, filepath: Path, ffmpeg_path: str, params: Dict, use_gpu: bool, pixel_format: str, **kwargs):
+    def __init__(self, filepath: Path, ffmpeg_path: str, params: Dict, use_gpu: bool, **kwargs):
         super().__init__(filepath, **kwargs)
 
         self.proc: Optional[subprocess.Popen] = None

@@ -263,7 +263,15 @@ class GenICamCamera(AbstractCamera, abc.ABC):
     @property
     def temperature(self) -> Optional[float]:
         try:
-            return self._get_feature_value('DeviceTemperature')
+            temp = self._get_feature_value('DeviceTemperature')
+            return temp if 0 < temp < 420 else None
+        except (AttributeError, Exception):
+            return None
+
+    @property
+    def temperature_state(self) -> Optional[float]:
+        try:
+            return self._get_feature_value('TemperatureState')
         except (AttributeError, Exception):
             return None
 

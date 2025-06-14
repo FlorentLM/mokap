@@ -34,7 +34,7 @@ class MonocularWorker(CalibrationProcessingWorker):
         Create and configure a new MonocularCalibrationTool. Used in init or after calibration board change
         """
         if DEBUG_SIGNALS_FLOW:
-            print(f"[{self.name.title()}] Received new board parameters. Recreating tool.")
+            print(f"[{self.name.title()}] Received new board parameters.")
 
         # Update the worker's own reference to the board points for the coordinator
         self.board_object_points = board_params.object_points()
@@ -86,12 +86,14 @@ class MonocularWorker(CalibrationProcessingWorker):
         if self._paused:
             return
 
-        self.monocular_tool.detect(frame)
+        self.monocular_tool.process_frame(frame)
+
+        self.monocular_tool.detect()    # TODO: Detection can be moved out of this class it's much cleaner
 
         # Stage 0: Compute initial intrinsics
         if self._current_stage == 0:
             if self._auto_sample:
-                self.monocular_tool.auto_register_area_based(area_threshold=0.2, nb_points_threshold=4)
+                self.monocular_tool.auto_register_area_based(area_threshold=0.2)
             if self._auto_compute:
                 coverage_threshold, stack_length_threshold = 80, 20
                 if self.monocular_tool.coverage >= coverage_threshold and self.monocular_tool.nb_samples > stack_length_threshold:
@@ -121,6 +123,7 @@ class MonocularWorker(CalibrationProcessingWorker):
                 )
 
         annotated = self.monocular_tool.visualise(errors_mm=True)
+
         self.annotations.emit(annotated)
         self.finished.emit()
 

@@ -108,8 +108,7 @@ class FastImageItem(QGraphicsObject):
             self.height, self.width, self.channels = data.shape
             self.bytes_per_line = self.channels * self.width
 
-        # This is important. It tells the scene that the item's
-        # content is about to change and needs a repaint
+        # This is important (tells the scene that the item's content needs a repaint)
         self.prepareGeometryChange()
 
         # this here is why it's fast: we create a zero-copy QImage view of the numpy data
@@ -126,6 +125,8 @@ class FastImageItem(QGraphicsObject):
 
     def paint(self, painter, option, widget=None):
         if not self._image.isNull():
+            painter.scale(1, -1)
+            painter.translate(0, -self.height)
             painter.drawImage(0, 0, self._image)
 
 
@@ -221,9 +222,9 @@ class PreviewBase(Base):
         self._last_polled_values = {}
 
         # clock and counter
-        self._clock = datetime.now()
-        self._capture_fps = deque(maxlen=30)
-        self._frame_count_for_fps = 0
+        self._fps_clock = time.monotonic()
+        self._last_frame_number_for_fps = 0
+        self._capture_fps_deque = deque(maxlen=10)
 
         # Connect the new frame signal to a slot that updates the UI
         self.frame_received.connect(self.on_frame_received)
@@ -448,115 +449,102 @@ class PreviewBase(Base):
 
     @Slot(np.ndarray, dict)
     def on_frame_received(self, frame, metadata):
-        """ this runs in the main GUI thread. We just update the references and counter """
+        """ this runs in the main GUI thread. We just update the references """
         self._current_frame_metadata = metadata
-        self._frame_count_for_fps += 1
         self._latest_frame = frame
 
     #  ============= Common update method for texts and stuff =============
     def _update_slow(self):
-        if self.isVisible():
-            now = datetime.now()
 
-            dt = (now - self._clock).total_seconds()
-            if dt > 0:
-                # Calculate FPS based on frames received by the GUI thread
-                gui_fps = self._frame_count_for_fps / dt
-                self._capture_fps.append(gui_fps)
+        if not self.isVisible():
+            return
 
-            # Reset counters for the next interval
-            self._clock = now
-            self._frame_count_for_fps = 0
+        now = time.monotonic()
+        dt = now - self._fps_clock
 
-            params_to_poll = ['exposure', 'framerate', 'gain', 'blacks', 'gamma']
+        if dt > 0 and self._mainwindow.manager.acquiring:
+            current_frame_number = self._current_frame_metadata.get('frame_number', 0)
 
-            for param in params_to_poll:
-                current_value = getattr(self._camera, param)
-                last_value = self._last_polled_values.get(param)
+            frames_acquired = current_frame_number - self._last_frame_number_for_fps
 
-                if current_value != last_value:
-                    self.update_slider_ui(param, current_value)
-                    self._last_polled_values[param] = current_value
+            if frames_acquired > 0:
+                current_acquisition_fps = frames_acquired / dt
+                self._capture_fps_deque.append(current_acquisition_fps)
+                avg_fps = sum(self._capture_fps_deque) / len(self._capture_fps_deque)
 
-            if self._mainwindow.manager.acquiring:
-                # Calculate the smoothed captured FPS from the deque
-                cap_fps = sum(list(self._capture_fps)) / len(self._capture_fps) if self._capture_fps else 0
-
-                # Get the current target framerate from the camera object itself
                 target_framerate = self._camera.framerate
 
-                # Check if the calculated FPS is within a reasonable range to display
-                if 0 < cap_fps < 1000:
-                    # Check for significant deviation from the target framerate to set a warning
-                    if abs(cap_fps - target_framerate) > 10:
-                        self._warning = True
-                    else:
-                        self._warning = False
-
-                    # Update the UI label with the measured framerate
-                    self.capturefps_value.setText(f"{cap_fps:.2f} fps")
+                if abs(avg_fps - target_framerate) > (target_framerate * 0.1):  # 10% tolerance
+                    self._warning = True
                 else:
-                    # If FPS is 0 or an absurd value, don't display it and don't warn
-                    self.capturefps_value.setText("-")
                     self._warning = False
 
-                # Also update the brightness value
-                brightness = np.round(self._latest_display_frame.mean() / 255 * 100, decimals=2)
-                self.brightness_value.setText(f"{brightness:.2f}%")
-            else:
-                # Reset UI elements when not acquiring
-                self.capturefps_value.setText("Off")
-                self.brightness_value.setText("-")
-                self._warning = False
+                self.capturefps_value.setText(f"{avg_fps:.2f} fps")
 
-            # temp = self._camera.temperature
-            # temp_state = self._camera.temperature_state
-            #
-            # # Update the temperature label colour
-            # if temp is not None:
-            #     self.temperature_value.setText(f'{temp:.1f}°C')
-            # if temp_state == 'Ok':
-            #     self.temperature_value.setStyleSheet(f"color: {col_green}; font: bold;")
-            # elif temp_state == 'Critical':
-            #     self.temperature_value.setStyleSheet(f"color: {col_orange}; font: bold;")
-            # elif temp_state == 'Error':
-            #     self.temperature_value.setStyleSheet(f"color: {col_red}; font: bold;")
-            # else:
-            #     self.temperature_value.setStyleSheet(f"color: {col_yellow}; font: bold;")
+            self._fps_clock = now
+            self._last_frame_number_for_fps = current_frame_number
 
-            # # Update display fps
-            # dt = (now - self._clock).total_seconds()
-            # ind = int(self._mainwindow.manager.indices[self.idx])
-            # if dt > 0:
-            #     self._capture_fps.append((ind - self._last_capture_count) / dt)
-            #
-            # self._clock = now
-            # self._last_capture_count = ind
+        params_to_poll = ['exposure', 'framerate', 'gain', 'blacks', 'gamma']
+
+        for param in params_to_poll:
+            current_value = getattr(self._camera, param)
+            last_value = self._last_polled_values.get(param)
+
+            if current_value != last_value:
+                self.update_slider_ui(param, current_value)
+                self._last_polled_values[param] = current_value
+
+        if self._mainwindow.manager.acquiring:
+            brightness = np.round(self._latest_display_frame.mean() / 255 * 100, decimals=2)
+            self.brightness_value.setText(f"{brightness:.2f}%")
+        else:
+            self.capturefps_value.setText("Off")
+            self.brightness_value.setText("-")
+            self._warning = False
+            self._capture_fps_deque.clear()
+
+        temp = self._camera.temperature
+        temp_state = self._camera.temperature_state
+
+        # Update the temperature label colour
+        if temp is not None:
+            self.temperature_value.setText(f'{temp:.1f}°C')
+        if temp_state == 'Ok':
+            self.temperature_value.setStyleSheet(f"color: {col_green}; font: bold;")
+        elif temp_state == 'Critical':
+            self.temperature_value.setStyleSheet(f"color: {col_orange}; font: bold;")
+        elif temp_state == 'Error':
+            self.temperature_value.setStyleSheet(f"color: {col_red}; font: bold;")
+        else:
+            self.temperature_value.setStyleSheet(f"color: {col_yellow}; font: bold;")
 
     #  ============= Fast update methods for image refresh =============
 
     def _annotate_frame(self):
         """ Subclasses must implement this method to draw their specific annotations """
-        pass
-
-    def _update_fast(self):
-        """ This is now the main display updater. It runs at a controlled rate via its QTimer """
-
-        # Check if there's a new frame from the consumer thread
-        if self._latest_frame is None:
-            return # No new frame, do nothing.
 
         # Copy the new frame into the safe display buffer
         # This is the *only* full-frame copy, and it happens at the display rate
         np.copyto(self._latest_display_frame, self._latest_frame)
         self._latest_frame = None   # mark as consumed
 
+        pass
+
+    def _update_fast(self):
+        """ This is the main display updater. It runs at a controlled rate via its QTimer """
+
+        if self._latest_frame is None:
+            return # no new frame do nothing
+
         # Let the worker process the frame if it's free. We send it the safe display buffer.
         if not self._worker_busy:
-            self._send_frame_to_worker(self._latest_display_frame)
+            self._send_frame_to_worker(self._latest_frame)
 
         # subclasses do their own thing
         self._annotate_frame()
+
+        # Mark the latest frame as consumed
+        self._latest_frame = None
 
         # Update the image on the screen
         self.image_item.setImageData(self._latest_display_frame)

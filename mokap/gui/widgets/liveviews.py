@@ -1,3 +1,4 @@
+import time
 from collections import deque
 import numpy as np
 import cv2
@@ -238,6 +239,9 @@ class Recording(PreviewBase):
 
     def _annotate_frame(self):
         """ This is called every frame by _update_fast """
+
+        # copy here before adding annotations
+        np.copyto(self._latest_display_frame, self._latest_frame)
 
         if not self.magnifier_group.isVisible():
             return
@@ -514,22 +518,38 @@ class Monocular(PreviewBase):
 
     def _annotate_frame(self):
 
-        if self._worker_blocking and self.annotated_frame is None:
-            # Worker is blocking during computation so it can't annotate
-            h, w = self._display_buffer.shape[:2]
+        if self._worker_blocking:
+            # Case 1: The worker is busy computing
+            computing_frame = self._latest_display_frame.copy()
+
+            h, w = computing_frame.shape[:2]
             text = "Computing..."
             font = cv2.FONT_HERSHEY_SIMPLEX
             font_scale = 2.0
             thickness = 6
-            text_size, baseline = cv2.getTextSize(text, font, font_scale, thickness)
+            text_size, _ = cv2.getTextSize(text, font, font_scale, thickness)
             text_x = (w - text_size[0]) // 2
             text_y = (h + text_size[1]) // 2
-            cv2.putText(self._display_buffer, text, (text_x, text_y), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+            cv2.putText(computing_frame, text, (text_x, text_y), font, font_scale, (255, 255, 255), thickness,
+                        cv2.LINE_AA)
+
+            # copy this temporary annotated frame to the display buffer
+            np.copyto(self._latest_display_frame, computing_frame)
             return
 
-        # If we have a valid annotated frame from the worker, paste it onto the image that will be displayed
-        if self.annotated_frame is not None and self.annotated_frame.shape == self._display_buffer.shape:
-            np.copyto(self._display_buffer, self.annotated_frame)
+        if self.annotated_frame is not None:
+            # Case 2: The worker has delivered a new annotated frame
+            # display it immediately
+            np.copyto(self._latest_display_frame, self.annotated_frame)
+
+            # Consume the frame so we only use it once
+            self.annotated_frame = None
+            return
+
+        # Case 3: Default
+        # Worker is not blocking, and no new annotated frame is ready
+        # do nothing (the display buffer retains the last valid frame from case 1 or 2)
+        pass
 
     @Slot(CalibrationData)
     def handle_payload(self, data: CalibrationData):

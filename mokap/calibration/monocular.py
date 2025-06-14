@@ -215,9 +215,10 @@ class MonocularCalibrationTool:
     def focal_mm(self) -> float:
         if any(x is None for x in (self._sensor_size, self.h, self.w)):
             return 0.0
-
-        f_mm = self.focal * float(self._sensor_size / np.array([self.w, self.h]))
-        return f_mm
+        return 0.0
+        #TODO: fix
+        # f_mm = self.focal * float(self._sensor_size / np.array([self.w, self.h]))
+        # return f_mm
 
     def set_intrinsics(self, camera_matrix: ArrayLike, dist_coeffs: ArrayLike, errors: Optional[ArrayLike] = None):
 
@@ -523,16 +524,12 @@ class MonocularCalibrationTool:
 
         return float(novel_weight / total_weight) * 100
 
-    def detect(self, frame):
-
-        # TODO: This method won't be needed once the visualisation is re-implemented with pyqtgraph
-        # TODO: Detector can be taken out completely from the monocular tool maybe?
-
-
+    def process_frame(self, frame: np.ndarray):
         # initialise or update the internal arrays to match frame size if needed
-        if None in (self.h, self.w) or np.any([self.h, self.w] != np.asarray(frame.shape)[:2]):
+        if self.h == 0 or self.w == 0 or self.h != frame.shape[0] or self.w != frame.shape[1]:
             self._update_imsize(frame.shape)
 
+        # Ensure the internal buffer gets a clean copy of the frame
         if frame.ndim == 2:
             np.copyto(self._frame_buf[:, :, 0], frame)
             np.copyto(self._frame_buf[:, :, 1], frame)
@@ -540,10 +537,16 @@ class MonocularCalibrationTool:
         else:
             np.copyto(self._frame_buf, frame)
 
+    def detect(self):
+
+        # TODO: Detector can be taken out completely from the monocular tool
+
+        frame_for_detection = self._frame_buf
+
         # Detect
         if type(self.dt) is ChessboardDetector:
             self._points2d_np, self._points_ids_np = self.dt.detect(
-                frame,
+                frame_for_detection,
                 refine_points=True
             )
 
@@ -551,7 +554,7 @@ class MonocularCalibrationTool:
             camera_matrix_np, dist_coeffs_np = self.intrinsics_np()
 
             self._points2d_np, self._points_ids_np = self.dt.detect(
-                frame,
+                frame_for_detection,
                 camera_matrix=camera_matrix_np,
                 dist_coeffs=dist_coeffs_np,
                 refine_markers=True,
@@ -589,16 +592,14 @@ class MonocularCalibrationTool:
 
     def visualise(self, errors_mm=False):
 
-        # visualisation does not run at the same speed as detection, so we need to copy the buffer to avoid flickers
-        frame_out = self._frame_buf.copy()
+        frame_out = self._frame_buf
 
         if self.has_detection:
             # if corners have been found show them as red dots
             detected_points_int = (self._points2d_np * self._shift_factor).astype(np.int32)
 
             for xy in detected_points_int:
-                frame_out = cv2.circle(frame_out, xy, 4 * self._vis_scale, (0, 0, 255), 4 * self._vis_scale,
-                                       **self._draw_params)
+                cv2.circle(frame_out, xy, 4 * self._vis_scale, (0, 0, 255), 4 * self._vis_scale, **self._draw_params)
 
         if self.has_intrinsics and self.has_extrinsics:
             # Display reprojected points: currently detected corners as yellow dots, the others as white dots
@@ -614,11 +615,9 @@ class MonocularCalibrationTool:
 
             for i, xy in enumerate(reproj_points_int):
                 if i in self._points_ids_np:
-                    frame_out = cv2.circle(frame_out, xy, 2 * self._vis_scale, (0, 255, 255), 4 * self._vis_scale,
-                                           **self._draw_params)
+                    cv2.circle(frame_out, xy, 2 * self._vis_scale, (0, 255, 255), 4 * self._vis_scale, **self._draw_params)
                 else:
-                    frame_out = cv2.circle(frame_out, xy, 4 * self._vis_scale, (255, 255, 255), 4 * self._vis_scale,
-                                           **self._draw_params)
+                    cv2.circle(frame_out, xy, 4 * self._vis_scale, (255, 255, 255), 4 * self._vis_scale, **self._draw_params)
 
             # Compute errors in mm for each point
             if errors_mm:
@@ -638,7 +637,7 @@ class MonocularCalibrationTool:
                     error_mm = np.asarray(error_mm_j)
 
                     for i, err in enumerate(error_mm):
-                        frame_out = cv2.putText(frame_out, f"{err:.3f}",
+                        cv2.putText(frame_out, f"{err:.3f}",
                                                 self._points2d_np[i].astype(int) + 6,
                                                 fontFace=cv2.FONT_HERSHEY_DUPLEX,
                                                 fontScale=0.3 * self._vis_scale,
@@ -647,13 +646,13 @@ class MonocularCalibrationTool:
                                                 lineType=cv2.LINE_AA)
 
         # Draw grid-based coverage overlay
-        # get mask of covered cells at image resolution
-        mask = cv2.resize(self._cumul_grid.astype(np.uint8),
-                          (self.w, self.h), interpolation=cv2.INTER_NEAREST).astype(bool)
-        # refresh and apply the new green overlay
-        self._green_overlay.fill(0)
-        self._green_overlay[mask] = (0, 255, 0)
-        frame_out = cv2.addWeighted(self._green_overlay, 0.3, frame_out, 0.7, 0)
+        if self.coverage > 0:
+            # Create the green overlay on a black background
+            grid_mask = cv2.resize(self._cumul_grid.astype(np.uint8),
+                                   (self.w, self.h), interpolation=cv2.INTER_NEAREST).astype(bool)
+            self._green_overlay.fill(0)
+            self._green_overlay[grid_mask] = (0, 100, 0)
+            cv2.addWeighted(self._green_overlay, 0.5, frame_out, 1.0, 0, dst=frame_out)
 
         # Undistort image
         if self.has_intrinsics:

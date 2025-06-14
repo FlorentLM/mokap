@@ -452,7 +452,6 @@ class MultiCam:
             'width': cam.roi[2],
             'height': cam.roi[3],
             'framerate': cam.framerate,
-            'pixel_format': cam.pixel_format
         }
 
         if save_format == 'mp4':
@@ -463,6 +462,7 @@ class MultiCam:
                 ffmpeg_path=ffmpeg_config.get('path', 'ffmpeg'),
                 params=ffmpeg_config.get('params', {}),
                 use_gpu=ffmpeg_config.get('gpu', False),
+                pixel_format=cam.pixel_format,
                 **writer_params
             )
         else:
@@ -471,6 +471,7 @@ class MultiCam:
                 folder=base_path,
                 ext=save_format,
                 quality=self.config.get('save_quality', 90),
+                pixel_format=cam.pixel_format,
                 **writer_params
             )
 
