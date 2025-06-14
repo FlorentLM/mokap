@@ -246,37 +246,30 @@ class Recording(PreviewBase):
         if not self.magnifier_group.isVisible():
             return
 
-        # Get the source slice from the main display frame.
-        # The target coordinates (self.magn_target_cx/cy) are updated by the mouse event filter.
-        target_cx_fb = self.magn_target_cx * self._latest_display_frame.shape[1]
-        target_cy_fb = self.magn_target_cy * self._latest_display_frame.shape[0]
+        view_target_cx = self.magn_target_cx * self._source_shape[1]
+        view_target_cy = self.magn_target_cy * self._source_shape[0]
 
-        slice_x1 = max(0, int(target_cx_fb - self.magn_window_w / 2))
-        slice_y1 = max(0, int(target_cy_fb - self.magn_window_h / 2))
+        source_rect_x = view_target_cx - self.magn_window_w / 2
+        source_rect_y = view_target_cy - self.magn_window_h / 2
+        source_rect_x = max(0, min(self._source_shape[1] - self.magn_window_w, source_rect_x))
+        source_rect_y = max(0, min(self._source_shape[0] - self.magn_window_h, source_rect_y))
+
+        self.magnifier_source_rect.setRect(source_rect_x, source_rect_y, self.magn_window_w, self.magn_window_h)
+
+        slice_x1 = int(source_rect_x)
         slice_x2 = slice_x1 + self.magn_window_w
+
+        slice_y1 = int(self._source_shape[0] - source_rect_y - self.magn_window_h)
+        slice_y1 = max(0, min(self._source_shape[0] - self.magn_window_h, slice_y1))
         slice_y2 = slice_y1 + self.magn_window_h
-
-        if slice_x2 > self._source_shape[1]:
-            slice_x1 = self._source_shape[1] - self.magn_window_w
-            slice_x2 = self._source_shape[1]
-
-        if slice_y2 > self._source_shape[0]:
-            slice_y1 = self._source_shape[0] - self.magn_window_h
-            slice_y2 = self._source_shape[0]
 
         magnifier_source_data = self._latest_display_frame[slice_y1:slice_y2, slice_x1:slice_x2]
 
-        # Update the source rectangle to show where the slice is from
-        self.magnifier_source_rect.setRect(slice_x1, slice_y1, self.magn_window_w, self.magn_window_h)
-
-        # Set the data on the magnifier's FastImageItem
         self.magnifier_item.setImageData(magnifier_source_data)
 
-        # Apply scaling to the image item inside the group
         scale = self.magn_slider.value()
         self.magnifier_item.setScale(scale)
 
-        # Update the border to match the scaled item
         scaled_rect = self.magnifier_item.mapRectToParent(self.magnifier_item.boundingRect())
         self.magnifier_border.setRect(scaled_rect)
 

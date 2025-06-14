@@ -95,39 +95,34 @@ class FastImageItem(QGraphicsObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._image = QImage()
-        self.height = 0
-        self.width = 0
-        self.channels = 0
-        self.bytes_per_line = 0
+        self._height = 0
+        self._width = 0
+        self._channels = 0
+        self._bytes_per_line = 0
 
     def setImageData(self, data: ArrayLike):
         """ Set the image using raw data """
 
-        # on first call, cache the image properties
-        if self.height == 0:
-            self.height, self.width, self.channels = data.shape
-            self.bytes_per_line = self.channels * self.width
+        if self._height == 0:
+            self._height, self._width, self._channels = data.shape
+            self._bytes_per_line = self._channels * self._width
 
-        # This is important (tells the scene that the item's content needs a repaint)
         self.prepareGeometryChange()
-
-        # this here is why it's fast: we create a zero-copy QImage view of the numpy data
-        # (note that QImage needs a C-contiguous array - the full display buffer is already contiguous,
-        # but the magnifier data is a slice so it is not)
-        contiguous_data = np.ascontiguousarray(data)    # this is a no-op for an already contiguous array so it's free
-        self._image = QImage(contiguous_data.data, self.width, self.height, self.bytes_per_line, QImage.Format.Format_BGR888)
-
-        # this needs to be called after changing the geometry or content
+        contiguous_data = np.ascontiguousarray(data)
+        self._image = QImage(contiguous_data.data, self._width, self._height, self._bytes_per_line, QImage.Format.Format_BGR888)
         self.update()
 
     def boundingRect(self) -> QRectF:
-        return QRectF(0, 0, self.width, self.height)
+        # The bounding rectangle is defined in the item's *local* coordinates,
+        # before any transforms are applied
+        return QRectF(0, 0, self._width, self._height)
 
     def paint(self, painter, option, widget=None):
         if not self._image.isNull():
             painter.scale(1, -1)
-            painter.translate(0, -self.height)
+            painter.translate(0, -self._height)
             painter.drawImage(0, 0, self._image)
+
 
 
 class Base(QWidget, SnapMixin):
@@ -232,7 +227,7 @@ class PreviewBase(Base):
         # Start a dedicated thread to consume frames from the manager's queue
         # a Thread (and not a QThread) is better for such a simple op
         self._consumer_thread_active = True
-        self._frame_consumer = Thread(target=self._consume_frames_loop, daemon=True)
+        self._frame_consumer = Thread(target=self._consume_frames_loop)
         self._frame_consumer.start()
 
     def _setup_worker(self, worker_object):
@@ -564,27 +559,47 @@ class PreviewBase(Base):
 
     #  ============= Qt method overrides =============
     def closeEvent(self, event):
+        """
+        This is a critical part of the graceful shutdown.
+        """
         if self._force_destroy:
-            # Make sure to stop the consumer thread
-            self._consumer_thread_active = False
-            self._frame_consumer.join(timeout=1.0)
+            # Stop the consumer thread first
+            # (otherwise it crashes on quitting on macOS)
+            if hasattr(self, '_frame_consumer') and self._frame_consumer.is_alive():
+                self._consumer_thread_active = False
+                self._frame_consumer.join(timeout=2.0)
+                if self._frame_consumer.is_alive():
+                    print(f"[WARN] {self.name} consumer thread did not shut down cleanly.")
 
-            # stop the worker and allow Qt event to actually destroy the window
-            self._stop_worker()
-            super().closeEvent(event)
+            # stop the QThread worker
+            if self.worker_thread:
+                self.worker_thread.quit()
+                self.worker_thread.wait(2000)
+
+            # stop local timers
+            self.timer_fast.stop()
+            self.timer_slow.stop()
+
+            # Accept the close event to allow Qt to destroy the window
+            event.accept()
         else:
-            # pause worker and only hide window
+            # This is for hiding the window only
             event.ignore()
             self.hide()
             self._pause_worker()
-            self._mainwindow.secondary_windows_visibility_buttons[self._cam_idx].setChecked(False)
+
+        self._mainwindow.secondary_windows_visibility_buttons[self._cam_idx].setChecked(False)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
 
-        if self.view_box:
-            # After the normal window resize we just tell our ViewBox to fit the item
-            self.view_box.autoRange()
+        # This forces the image to always fill the view correctly.
+        if self.view_box and self._video_initialised:
+            self.view_box.setRange(rect=self.image_item.boundingRect(), padding=0)
+
+        # if self.view_box:
+        #     # After the normal window resize we just tell our ViewBox to fit the item
+        #     self.view_box.autoRange()
 
     #  ============= Thread control =============
     def _pause_worker(self):

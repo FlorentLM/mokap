@@ -6,6 +6,7 @@ from mokap.utils import fileio
 
 def main():
     """ Main entry point for the Mokap GUI """
+
     try:
         config = fileio.read_config('./config.yaml')
     except FileNotFoundError:

@@ -20,8 +20,6 @@ INFO_PANEL_MINSIZE_H = 200
 VIDEO_PANEL_MINSIZE_H = 50
 WINDOW_MIN_W = 630
 
-print(Path().cwd())
-
 # Icons
 resources_path = Path('./gui/style/icons')
 

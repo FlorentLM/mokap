@@ -11,7 +11,7 @@ import numpy as np
 from PIL import Image
 
 from mokap.core.cameras.interface import AbstractCamera, CAMERAS_COLOURS
-from mokap.core.cameras import CameraFactory
+from mokap.core.cameras.camerafactory import CameraFactory
 from mokap.core.triggers.interface import AbstractTrigger
 from mokap.core.triggers.raspberry import RaspberryTrigger
 from mokap.core.triggers.arduino import ArduinoTrigger
@@ -120,6 +120,8 @@ class MultiCam:
         # Create a lookup from serial number to the device info object
         device_lookup = {dev['serial']: dev for dev in all_discovered_devices}
 
+        claimed_serials = set()
+
         # Get the camera configurations from the config file
         configured_sources = self.config.get('sources', {})
         if not configured_sources:
@@ -138,23 +140,42 @@ class MultiCam:
         }
 
         for friendly_name, cam_config in configured_sources.items():
-            serial = str(cam_config.get('serial'))  # ensure serial is a string
+            serial = str(cam_config.get('serial', ''))  # ensure serial is a string
+            vendor = cam_config.get('vendor')           # for serial-less lookup
 
-            if not serial:
-                print(f"[WARN] Skipping '{friendly_name}': no serial number provided in config.")
-                continue
+            device_info = None
 
-            # Find the corresponding physical device using our lookup map
-            device_info = device_lookup.get(serial)
+            if serial:
+                # Case 1: Serial is provided, find it directly
+                device_info = device_lookup.get(serial)
+                if not device_info:
+                    print(f"[WARN] Skipping '{friendly_name}': camera with serial {serial} not found.")
+                    continue
+            else:
+                # Case 2: No serial provided, find an unclaimed camera of the specified vendor
+                if not vendor:
+                    print(f"[WARN] Skipping '{friendly_name}': must provide a 'vendor' if 'serial' is omitted.")
+                    continue
 
-            if not device_info:
-                print(f"[WARN] Skipping '{friendly_name}': camera with serial {serial} not found.")
-                continue
+                # Find the first available camera of the right vendor that hasn't been claimed
+                for dev in all_discovered_devices:
+                    if dev['vendor'].lower() == vendor.lower() and dev['serial'] not in claimed_serials:
+                        device_info = dev
+                        serial = dev['serial']  # Get the serial for future reference
+                        print(f"[INFO] Assigning unclaimed {vendor} camera (S/N: {serial}) to '{friendly_name}'.")
+                        break  # stop after finding one
 
+                if not device_info:
+                    print(f"[WARN] Skipping '{friendly_name}': No unclaimed '{vendor}' cameras available.")
+                    continue
+
+            # Once a device is chosen (either by serial or by vendor), get the camera instance
             cam = CameraFactory.get_camera(device_info)
 
             if cam:
                 try:
+                    claimed_serials.add(serial)
+
                     cam.name = friendly_name
 
                     # Start with a copy of the global settings
@@ -189,6 +210,16 @@ class MultiCam:
                 except Exception as e:
                     print(f"[ERROR] Failed to connect or configure camera '{friendly_name}' (S/N: {serial}): {e}")
 
+    def disconnect_cameras(self):
+        """ Cleanly disconnect all cameras """
+
+        for cam in self.cameras:
+            if cam.is_connected:
+                cam.disconnect()
+
+        if not self._silent:
+            print("[INFO] All cameras disconnected.")
+
     def start_acquisition(self):
         """ Starts all background threads for grabbing and displaying frames """
         if self._acquiring:
@@ -207,9 +238,9 @@ class MultiCam:
 
         for i, cam in enumerate(self.cameras):
             # Start one grabber, one writer, and one display thread per camera
-            g = Thread(target=self._grabber_thread, args=(i,), daemon=True)
-            w = Thread(target=self._writer_thread, args=(i,), daemon=True)
-            d = Thread(target=self._display_updater_thread, args=(i,), daemon=True)
+            g = Thread(target=self._grabber_thread, args=(i,))
+            w = Thread(target=self._writer_thread, args=(i,))
+            d = Thread(target=self._display_updater_thread, args=(i,))
             self._threads.extend([g, w, d])
             g.start()
             w.start()
@@ -219,7 +250,8 @@ class MultiCam:
             print(f"[INFO] Acquisition started with {self.nb_cameras} cameras.")
 
     def stop_acquisition(self):
-        """ Stops all background threads and disconnects cameras """
+        """ Stops all background threads """
+
         if not self._acquiring:
             return
 
@@ -236,11 +268,6 @@ class MultiCam:
         # Stop trigger if enabled
         if self._trigger_instance and self._trigger_instance.connected:
             self._trigger_instance.stop()
-
-        # Cleanly disconnect all cameras
-        for cam in self.cameras:
-            if cam.is_connected:
-                cam.disconnect()
 
         # Clean up session folder if it's empty
         fileio.rm_if_empty(self.full_path)
@@ -275,6 +302,7 @@ class MultiCam:
 
         # Reset the frame counters for the new session
         self._session_frame_counts = [0] * self.nb_cameras
+
         # signal that writers can start
         self._recording = True
 
@@ -581,6 +609,7 @@ class MultiCam:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """ Context manager exit: ensures threads and cameras are cleaned up """
         self.stop_acquisition()
+        self.disconnect_cameras()
 
     @property
     def trigger_framerate(self) -> float:

@@ -1,19 +1,16 @@
 import os
-import platform
 import subprocess
 import sys
-from datetime import datetime
 from functools import partial
-from pathlib import Path
 from typing import Tuple
 import psutil
 import screeninfo
 from PySide6.QtCore import QTimer, Qt, Slot, QRect, QThread
-from PySide6.QtGui import QIcon, QFont, QGuiApplication, QCursor, QBrush, QColor, QPen
-from PySide6.QtWidgets import QMainWindow, QVBoxLayout, QWidget, QFrame, QHBoxLayout, QLabel, QComboBox, QPushButton, \
-    QSizePolicy, QGroupBox, QLineEdit, QScrollArea, QCheckBox, QGraphicsView, QGraphicsScene, QTextEdit, QStatusBar, \
-    QProgressBar, QFileDialog, QApplication, QDialog, QGraphicsRectItem, QGraphicsTextItem
-
+from PySide6.QtGui import QFont, QGuiApplication, QCursor, QBrush, QColor, QPen
+from PySide6.QtWidgets import (QMainWindow, QVBoxLayout, QWidget, QFrame, QHBoxLayout, QLabel,
+                               QComboBox, QPushButton, QSizePolicy, QGroupBox, QLineEdit, QScrollArea,
+                               QCheckBox, QGraphicsView, QGraphicsScene, QTextEdit, QStatusBar,
+                               QProgressBar, QFileDialog, QApplication, QDialog, QGraphicsRectItem, QGraphicsTextItem)
 from mokap.gui.style.commons import *
 from mokap.gui.widgets import DEFAULT_BOARD, SLOW_UPDATE, GUI_LOGGER
 from mokap.gui.widgets.base import SnapMixin
@@ -416,20 +413,25 @@ class MainControls(QMainWindow, SnapMixin):
 
     #  ============= Qt method overrides =============
     def closeEvent(self, event):
-        event.ignore()
+        event.ignore()  # we handle shutdown ourselves
         self.quit()
 
     def quit(self):
-        # Close the secondary windows and stop their threads
+
+        # stop and destroy all secondary windows and their associated threads
+        # so no GUI elements try to access camera objects anymore
         self._stop_secondary_windows()
 
-        # Stop camera acquisition
-        self.manager.off()
+        # Now that all GUI threads are stopped, it's safe to turn off the manager
+        if self.manager.acquiring:
+            self.manager.stop_acquisition()
 
-        # Close the main window
-        QWidget.close(self)
+        self.manager.disconnect_cameras()
+
+        # close the main window and exit the application
+        self.timer_slow.stop()
+        self.close()
         QApplication.instance().quit()
-        sys.exit()
 
     #  ============= General toggles =============
     def _toggle_calib_record(self):
@@ -774,30 +776,50 @@ class MainControls(QMainWindow, SnapMixin):
 
         self.cascade_windows()
 
+    # def _stop_secondary_windows(self):
+    #     for w in self.video_windows:
+    #         w.worker_thread.quit()
+    #         w.worker_thread.wait()
+    #         w._force_destroy = True
+    #         w.close()
+    #
+    #     if self.opengl_window:
+    #         if self.opengl_window.worker_thread:
+    #             self.opengl_window.worker_thread.quit()
+    #             self.opengl_window.worker_thread.wait()
+    #         self.opengl_window.close()
+    #         self.opengl_window.timer_slow.stop()
+    #         self.opengl_window._force_destroy = True
+    #         self.opengl_window.deleteLater()
+    #         self.opengl_window = None
+    #
+    #     if self.multiview_thread:
+    #         self.multiview_thread.quit()
+    #         self.multiview_thread.wait()
+    #         self.multiview_thread = None
+    #         self.multiview_worker = None
+    #
+    #     self.video_windows.clear()
+
     def _stop_secondary_windows(self):
+
         for w in self.video_windows:
-            w.worker_thread.quit()
-            w.worker_thread.wait()
-            w._force_destroy = True
-            w.close()
+            w._force_destroy = True  # signal the window it should really close
+            w.close()   # and trigger the closeEvent
 
         if self.opengl_window:
-            if self.opengl_window.worker_thread:
-                self.opengl_window.worker_thread.quit()
-                self.opengl_window.worker_thread.wait()
-            self.opengl_window.close()
-            self.opengl_window.timer_slow.stop()
             self.opengl_window._force_destroy = True
-            self.opengl_window.deleteLater()
-            self.opengl_window = None
+            self.opengl_window.close()
+
+        # clear the lists
+        self.video_windows.clear()
+        self.opengl_window = None
 
         if self.multiview_thread:
             self.multiview_thread.quit()
             self.multiview_thread.wait()
             self.multiview_thread = None
             self.multiview_worker = None
-
-        self.video_windows.clear()
 
     def _update_main(self):
 
