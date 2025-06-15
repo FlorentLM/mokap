@@ -1,3 +1,4 @@
+import os
 import subprocess
 import shlex
 import platform
@@ -47,7 +48,7 @@ class FrameWriter(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def close(self):
+    def close(self, *args, **kwargs):
         """ Finalizes the writing process and closes any open resources """
         pass
 
@@ -183,7 +184,7 @@ class ImageSequenceWriter(FrameWriter):
             # re-raising an error to prevent the frame_count from being incremented in the parent write() method
             raise IOError(f"Disk write failed for frame {self.frame_count}") from e
 
-    def close(self):
+    def close(self, *args, **kwargs):
         # For image sequences, there's nothing to finalize
         pass
 
@@ -195,6 +196,7 @@ class FFmpegWriter(FrameWriter):
         super().__init__(filepath, **kwargs)
 
         self.proc: Optional[subprocess.Popen] = None
+        self.ffmpeg_path = ffmpeg_path
 
         # Determine if we use CPU or GPU
         param_key = self._get_platform_param_key(use_gpu)
@@ -237,7 +239,7 @@ class FFmpegWriter(FrameWriter):
             f"-y -s {self.width}x{self.height} -f rawvideo "
             f"-framerate {self.framerate:.3f} -pix_fmt {input_pixel_format} -i pipe:0"
         )
-        command = f"{ffmpeg_path} -hide_banner {input_args} {encoder_params} {shlex.quote(str(filepath))}"
+        command = f"{self.ffmpeg_path} -hide_banner {input_args} {encoder_params} {shlex.quote(str(filepath))}"
         print(f"[DEBUG] FFmpeg command: {command}")
 
         # Start the subprocess, redirecting stdout/stderr to prevent console spam
@@ -286,13 +288,59 @@ class FFmpegWriter(FrameWriter):
                 self.close()  # Attempt to clean up
                 raise IOError("FFmpeg process terminated unexpectedly.") from e
 
-    def close(self):
-        if self.proc:
-            if self.proc.stdin:
-                # Gracefully close the input pipe and wait for FFmpeg to finish encoding
-                self.proc.stdin.flush()
-                self.proc.stdin.close()
+    def _correct_framerate(self, actual_fps: float):
+        """ Corrects the framerate metadata in the video file without re-encoding """
 
-            # Wait for the process to terminate - SUPER IMPORTANT
-            self.proc.wait(timeout=10)
+        if not self.filepath.exists():
+            return
+
+        print(f"[INFO] Correcting framerate for {self.filepath.name} from {self.framerate:.3f} to {actual_fps:.3f} fps.")
+
+        encoder_options = self._encoding_params.get('encoder_options', '')
+
+        # determine the filter name by inspecting the encoder options
+        if 'hevc' in encoder_options or 'h265' in encoder_options:
+            filter_name = 'hevc_metadata'
+        elif 'h264' in encoder_options:
+            filter_name = 'h264_metadata'
+        else:
+            print(f"[INFO] Skipping framerate correction for {self.filepath.name}. Could not determine H.264/H.265 codec from encoder options: '{encoder_options}'.")
+            return
+
+        temp_filepath = self.filepath.with_suffix('.temp.mp4')
+
+        command = [
+            self.ffmpeg_path,
+            '-i', str(self.filepath.resolve()),
+            '-c', 'copy',
+            '-r', f'{actual_fps:.3f}',
+            str(temp_filepath)
+        ]
+
+        try:
+            subprocess.run(command, check=True, capture_output=True, text=True)
+            os.replace(temp_filepath, self.filepath)
+
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            print(f"[ERROR] FFmpeg failed to correct framerate for {self.filepath.name}: {e}")
+
+            if isinstance(e, subprocess.CalledProcessError):
+                print(f"FFmpeg stderr:\n{e.stderr}")
+
+            if temp_filepath.exists():
+                os.remove(temp_filepath)
+
+    def close(self, actual_fps: Optional[float] = None):
+        if not self.proc:
+            return
+
+        # Gracefully close the input pipe and wait for FFmpeg to finish encoding
+        if self.proc.stdin:
+            self.proc.stdin.flush()
+            self.proc.stdin.close()
+        self.proc.wait(timeout=10)
         self.proc = None
+
+        # Perform framerate correction if an actual_fps is provided
+        if actual_fps and abs(actual_fps - self.framerate) > 0.01:
+            self._correct_framerate(actual_fps)

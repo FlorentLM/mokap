@@ -54,7 +54,7 @@ class MultiCam:
         setup_ulimit(silent=self._silent)   # Linux only, does nothing on other platforms
 
         # internal value for the framerate used to broadcast to all cameras
-        self._trigger_framerate = self.config.get('framerate', 60)
+        self._framerate = self.config.get('framerate', 60)
 
         # --- Hardware and Cameras ---
         self.cameras: List[AbstractCamera] = []
@@ -103,6 +103,7 @@ class MultiCam:
 
         self._session_frame_counts: List[int] = [0] * self.nb_cameras
         self._session_encoding_params: List[Dict] = [{} for _ in self.cameras]
+        self._session_actual_fps: List[float] = [0.0] * self.nb_cameras
 
         self._finished_saving_events: List[Event] = [Event() for _ in self.cameras]
         for event in self._finished_saving_events:
@@ -246,7 +247,7 @@ class MultiCam:
         self._threads = []
 
         if self._trigger_instance and self._trigger_instance.connected:
-            self._trigger_instance.start(self._trigger_framerate)
+            self._trigger_instance.start(self._framerate)
 
         for i, cam in enumerate(self.cameras):
             # Start one grabber, one writer, and one display thread per camera
@@ -309,8 +310,6 @@ class MultiCam:
             'start_time': datetime.now().timestamp(),
             'end_time': None,
             'duration': 0.0,
-            'requested_framerate': self._trigger_framerate,
-            'total_frames_recorded': 0,
             'session_config': session_config,
             'cameras': {}  # This will be populated in pause_recording
         }
@@ -318,6 +317,7 @@ class MultiCam:
 
         # Reset the frame counters for the new session
         self._session_frame_counts = [0] * self.nb_cameras
+        self._session_actual_fps = [0.0] * self.nb_cameras
 
         # signal that writers can start
         self._recording.set()
@@ -336,14 +336,8 @@ class MultiCam:
         if not self._silent:
             print("[INFO] Finishing writing for current session...")
 
-        # timestamps and duration
+        # we calculate and store session duration BEFORE asking the threads to stop
         end_ts = datetime.now().timestamp()
-
-        # Wait for all writer threads to confirm they have finished
-        for event in self._finished_saving_events:
-            event.wait(timeout=5.0)
-
-        # Update metadata with final counts, timestamps, and calculated values
         current_session = self._metadata['sessions'][-1]
 
         start_ts = current_session['start_time']
@@ -352,12 +346,20 @@ class MultiCam:
         current_session['end_time'] = end_ts
         current_session['duration'] = duration
 
+        # Wait for all writer threads to confirm they have finished
+        for event in self._finished_saving_events:
+            event.wait(timeout=5.0)
+
+        # Update metadata with all the info
+        if self.hardware_triggered:
+            current_session['trigger_framerate'] = self.framerate
+
         cameras_data = {}
         global_config = current_session.get('session_config', {})
 
         for i, cam in enumerate(self.cameras):
             frames = self._session_frame_counts[i]
-            actual_fps = (frames / duration) if duration > 0 else 0.0
+            actual_fps = self._session_actual_fps[i]
 
             # Find the actual settings that differ from the global config
             overrides = {}
@@ -375,6 +377,7 @@ class MultiCam:
                 'serial': cam.unique_id,
                 'model': CameraFactory.get_camera_info(cam.unique_id)['model'],
                 'frames_recorded': frames,
+                'theoretical_framerate': cam.framerate,
                 'actual_framerate': round(actual_fps, 3),
                 'encoding': self._session_encoding_params[i]
             }
@@ -462,6 +465,8 @@ class MultiCam:
         w_queue = self._writer_queues[cam_idx]
         self._writers[cam_idx] = None
 
+        session_idx: Optional[int] = None
+
         while self._acquiring.is_set():
             # State A - Waiting to start a new recording session
             if self._recording.is_set() and self._writers[cam_idx] is None:
@@ -469,6 +474,9 @@ class MultiCam:
 
                 try:
                     first_frame, first_metadata = w_queue.get(timeout=2.0)
+
+                    # store the session idnex
+                    session_idx = len(self._metadata['sessions']) - 1
 
                     # Now that we have a frame, create the writer
                     session_idx = len(self._metadata['sessions']) - 1
@@ -520,9 +528,17 @@ class MultiCam:
                 self._session_frame_counts[cam_idx] = writer.frame_count
                 self._session_encoding_params[cam_idx] = writer.encoding_params
 
-                writer.close()
-                self._writers[cam_idx] = None  # set writer to None to signal it's closed
+                if session_idx is not None:
+                    duration = self._metadata['sessions'][session_idx]['duration']
+                    frame_count = writer.frame_count
+                    actual_fps = (frame_count / duration) if duration > 0 else 0.0
+                    self._session_actual_fps[cam_idx] = actual_fps
+                    writer.close(actual_fps=actual_fps)
+                else:
+                    # should not happen, but safe as fallback
+                    writer.close()
 
+                self._writers[cam_idx] = None  # set writer to None to signal it's closed
                 self._finished_saving_events[cam_idx].set()
 
             # State D - Idle, not recording
@@ -625,13 +641,13 @@ class MultiCam:
 
     def set_all_cameras(self, parameter: str, value: Any):
         """ Broadcasts a setting to all cameras """
-        # TODO: we probably want to have framerate, exposure, etc setters that will call this
+        # TODO: we probably want to have setters that will call this, like the framerate one for other properties
 
         print(f"[INFO] Broadcasting '{parameter} = {value}' to all cameras.")
 
         # The trigger framerate must be set via its own property
         if parameter == 'framerate' and self.hardware_triggered:
-            self.trigger_framerate = value
+            self.framerate = value
 
         for cam in self.cameras:
             try:
@@ -679,18 +695,41 @@ class MultiCam:
         self.disconnect_cameras()
 
     @property
-    def trigger_framerate(self) -> float:
-        return self._trigger_framerate
+    def framerate(self) -> Optional[float]:
+        return self._framerate
 
-    @trigger_framerate.setter
-    def trigger_framerate(self, value: float):
-        """ Sets the framerate for the external trigger """
+    @framerate.setter
+    def framerate(self, value: float):
+        """ Sets the framerate for the whole system (incl external trigger) """
 
-        self._trigger_framerate = float(value)
+        # TODO: Similar setters for other properties
 
-        # If acquisition is running, we can update the trigger on the fly
-        if self._acquiring.is_set() and self._trigger_instance and self._trigger_instance.connected:
-            self._trigger_instance.start(self._trigger_framerate)
+        new_framerate = float(value)
+
+        # for hardware trigger, update internal value and the trigger itself
+        self._framerate = new_framerate
+        if self._acquiring.is_set() and self._trigger_instance:
+            # only update if already running (if not, trigger will pick up new value when it starts)
+            self._trigger_instance.start(self._framerate)
+
+        else:
+            # for software trigger, broadcast to all cameras and then verify
+            self.set_all_cameras('framerate', new_framerate)
+
+            all_cams_synced = True
+            for cam in self.cameras:
+                if cam.framerate != new_framerate:
+                    print(f"[WARN] Camera {cam.name} could not be set to {new_framerate} fps. Actual: {cam.framerate} fps.")
+                    all_cams_synced = False
+                    break
+
+            if all_cams_synced:
+                self._framerate = new_framerate
+                if not self._silent:
+                    print(f"[INFO] All cameras successfully set to {new_framerate} fps.")
+            else:
+                self._framerate = None
+                print("[ERROR] Not all cameras could be set to the requested framerate. System framerate is now undefined.")
 
     @property
     def acquiring(self) -> bool:
