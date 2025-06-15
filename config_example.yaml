@@ -66,6 +66,8 @@ sources:
 #    pixel_format: 'Mono8'
 #    blacks: 1.0
 #    binning: 1
+#    save_format: jpg   # you can set per-camera writer settings
+#    save_quality: 90
 
   some-other-camera:
     vendor: flir
