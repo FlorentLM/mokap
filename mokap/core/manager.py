@@ -42,8 +42,8 @@ class MultiCam:
         self._base_folder.mkdir(parents=True, exist_ok=True)
 
         # --- State Management ---
-        self._acquiring = False
-        self._recording = False
+        self._acquiring = Event()
+        self._recording = Event()
         self._threads: List[Thread] = []
 
         self._session_name = ""
@@ -86,7 +86,7 @@ class MultiCam:
 
         ## --- Threading Resources ---
         buffer_size = self.config.get('frame_buffer_size', 200)
-        self._session_frame_counts: List[int] = [0] * self.nb_cameras
+
         self._display_queues: List[Queue] = [Queue(maxsize=2) for _ in self.cameras]
 
         # The 'tee' queues that will be used to 'snoop' on frames for display
@@ -100,6 +100,8 @@ class MultiCam:
 
         # Keep track of writer instances and their parameters to build final metadata
         self._writers: List[Optional[FrameWriter]] = [None] * self.nb_cameras
+
+        self._session_frame_counts: List[int] = [0] * self.nb_cameras
         self._session_encoding_params: List[Dict] = [{} for _ in self.cameras]
 
         self._finished_saving_events: List[Event] = [Event() for _ in self.cameras]
@@ -231,7 +233,8 @@ class MultiCam:
 
     def start_acquisition(self):
         """ Starts all background threads for grabbing and displaying frames """
-        if self._acquiring:
+
+        if self._acquiring.is_set():
             print("[WARN] Acquisition is already running.")
             return
 
@@ -239,7 +242,7 @@ class MultiCam:
             print("[ERROR] No cameras connected. Cannot start acquisition.")
             return
 
-        self._acquiring = True
+        self._acquiring.set()
         self._threads = []
 
         if self._trigger_instance and self._trigger_instance.connected:
@@ -261,13 +264,14 @@ class MultiCam:
     def stop_acquisition(self):
         """ Stops all background threads """
 
-        if not self._acquiring:
+        if not self._acquiring.is_set():
             return
 
-        if self._recording:
+        if self._recording.is_set():
             self.pause_recording()  # Gracefully finish recording
 
-        self._acquiring = False
+        self._acquiring.clear()
+
         if not self._silent:
             print("[INFO] Stopping acquisition threads...")
 
@@ -286,37 +290,37 @@ class MultiCam:
 
     def start_recording(self):
         """ Begins a recording session, signaling the writer threads to save frames """
-        if not self._acquiring:
+
+        if not self._acquiring.is_set():
             print("[ERROR] Cannot record, acquisition is not running.")
             return
 
-        if self._recording:
+        if self._recording.is_set():
             print("[WARN] Already recording.")
             return
 
-        # Prepare a lean configuration snapshot for this session
+        # Prepare metadata snapshot for this session
         session_config = {
             key: self.config[key] for key in METADATA_KEYS if key in self.config
         }
 
         # Prepare metadata for this new session
         session_metadata = {
-            'start_timestamp': datetime.now().timestamp(),
-            'end_timestamp': None,
-            'duration_seconds': 0.0,
+            'start_time': datetime.now().timestamp(),
+            'end_time': None,
+            'duration': 0.0,
             'requested_framerate': self._trigger_framerate,
             'total_frames_recorded': 0,
             'session_config': session_config,
             'cameras': {}  # This will be populated in pause_recording
         }
-
         self._metadata['sessions'].append(session_metadata)
 
         # Reset the frame counters for the new session
         self._session_frame_counts = [0] * self.nb_cameras
 
         # signal that writers can start
-        self._recording = True
+        self._recording.set()
 
         if not self._silent:
             print(f"[INFO] Recording started. Saving to: {self.full_path}")
@@ -324,29 +328,29 @@ class MultiCam:
     def pause_recording(self):
         """ Pauses the current recording session, finalizing files """
 
-        if not self._recording:
+        if not self._recording.is_set():
             return
 
-        self._recording = False
+        self._recording.clear()
+
         if not self._silent:
             print("[INFO] Finishing writing for current session...")
+
+        # timestamps and duration
+        end_ts = datetime.now().timestamp()
 
         # Wait for all writer threads to confirm they have finished
         for event in self._finished_saving_events:
             event.wait(timeout=5.0)
 
         # Update metadata with final counts, timestamps, and calculated values
-        session_idx = len(self._metadata['sessions']) - 1
-        current_session = self._metadata['sessions'][session_idx]
+        current_session = self._metadata['sessions'][-1]
 
-        # timestamps and duration
-        start_ts = current_session['start_timestamp']
-        end_ts = datetime.now().timestamp()
+        start_ts = current_session['start_time']
         duration = end_ts - start_ts if end_ts > start_ts else 0.0
 
-        current_session['end_timestamp'] = end_ts
-        current_session['duration_seconds'] = round(duration, 4)
-        current_session['total_frames_recorded'] = sum(self._session_frame_counts)
+        current_session['end_time'] = end_ts
+        current_session['duration'] = duration
 
         cameras_data = {}
         global_config = current_session.get('session_config', {})
@@ -371,7 +375,7 @@ class MultiCam:
                 'serial': cam.unique_id,
                 'model': CameraFactory.get_camera_info(cam.unique_id)['model'],
                 'frames_recorded': frames,
-                'actual_framerate': round(actual_fps, 2),
+                'actual_framerate': round(actual_fps, 3),
                 'encoding': self._session_encoding_params[i]
             }
 
@@ -395,7 +399,7 @@ class MultiCam:
         display_tee_queue = self._display_tee_queues[cam_idx]
 
         cam.start_grabbing()
-        while self._acquiring:
+        while self._acquiring.is_set():
             try:
                 frame, metadata = cam.grab_frame(timeout_ms=2000)
                 if frame is not None:
@@ -404,7 +408,7 @@ class MultiCam:
                     if not display_tee_queue.full():
                         display_tee_queue.put_nowait((frame, metadata))
 
-                    if self._recording:
+                    if self._recording.is_set():
                         try:
                             writer_queue.put_nowait((frame, metadata))
                         except queue.Full:
@@ -414,7 +418,7 @@ class MultiCam:
                                 print(f"[WARN] Cam {cam.name}: Writer queue is full. Recording frame dropped.")
 
             except (IOError, RuntimeError) as e:
-                if self._acquiring:  # avoid spamming errors on shutdown
+                if self._acquiring.is_set():  # avoid spamming errors on shutdown
                     print(f"[ERROR] Grabber thread for {cam.name} failed: {e}")
                     time.sleep(1)  # prevent flooding error loops
 
@@ -431,7 +435,7 @@ class MultiCam:
         display_queue = self._display_queues[cam_idx]
         lock = self._latest_frame_locks[cam_idx]
 
-        while self._acquiring:
+        while self._acquiring.is_set():
             try:
                 # Block and wait for a new frame from the grabber
                 frame, metadata = tee_queue.get(timeout=1.0)
@@ -455,16 +459,16 @@ class MultiCam:
         This thread manages the lifecycle of a FrameWriter object
         """
         cam = self.cameras[cam_idx]
-        queue = self._writer_queues[cam_idx]
+        w_queue = self._writer_queues[cam_idx]
         self._writers[cam_idx] = None
 
-        while self._acquiring:
+        while self._acquiring.is_set():
             # State A - Waiting to start a new recording session
-            if self._recording and self._writers[cam_idx] is None:
+            if self._recording.is_set() and self._writers[cam_idx] is None:
                 self._finished_saving_events[cam_idx].clear()
 
                 try:
-                    first_frame, first_metadata = queue.get(timeout=2.0)
+                    first_frame, first_metadata = w_queue.get(timeout=2.0)
 
                     # Now that we have a frame, create the writer
                     session_idx = len(self._metadata['sessions']) - 1
@@ -486,28 +490,28 @@ class MultiCam:
 
                 except Exception as e:
                     print(f"[ERROR] Failed to create writer for {cam.name}: {e}")
-                    self._recording = False  # this is debatable, but prevents getting stuck in an error loop
+                    self._recording.clear()  # this is debatable, but prevents getting stuck in an error loop
                     # TODO: Maybe we want to keep a separate status for each camera?
                     self._finished_saving_events[cam_idx].set()
                     continue
 
             # State B - Actively writing frames
             writer = self._writers[cam_idx]
-            if self._recording and writer:
+            if self._recording.is_set() and writer:
                 try:
-                    frame, metadata = queue.get(timeout=1.0)
+                    frame, metadata = w_queue.get(timeout=1.0)
                     writer.write(frame, metadata)
                 except Empty:
                     # this is less critical, just means a momentary lull in frames
                     continue
 
             # State C - Recording has been paused/stopped
-            if not self._recording and writer:
+            if not self._recording.is_set() and writer:
                 # The recording flag was turned off, so we need to finalize
                 # First drain any remaining frames from the queue
-                while not queue.empty():
+                while not w_queue.empty():
                     try:
-                        frame, metadata = queue.get_nowait()
+                        frame, metadata = w_queue.get_nowait()
                         writer.write(frame, metadata)
                     except Empty:
                         break
@@ -515,12 +519,14 @@ class MultiCam:
                 # Now close the writer and report back its info
                 self._session_frame_counts[cam_idx] = writer.frame_count
                 self._session_encoding_params[cam_idx] = writer.encoding_params
+
                 writer.close()
                 self._writers[cam_idx] = None  # set writer to None to signal it's closed
+
                 self._finished_saving_events[cam_idx].set()
 
             # State D - Idle, not recording
-            if not self._recording and self._writers[cam_idx] is None:
+            if not self._recording.is_set() and self._writers[cam_idx] is None:
                 # To prevent this thread from busy-waiting, we can sleep
                 time.sleep(0.1)
 
@@ -642,7 +648,7 @@ class MultiCam:
 
     @session_name.setter
     def session_name(self, name: Optional[str]):
-        if self._acquiring:
+        if self._acquiring.is_set():
             raise RuntimeError("Cannot change session name while acquisition is running.")
 
         if not name:
@@ -683,18 +689,18 @@ class MultiCam:
         self._trigger_framerate = float(value)
 
         # If acquisition is running, we can update the trigger on the fly
-        if self._acquiring and self._trigger_instance and self._trigger_instance.connected:
+        if self._acquiring.is_set() and self._trigger_instance and self._trigger_instance.connected:
             self._trigger_instance.start(self._trigger_framerate)
 
     @property
     def acquiring(self) -> bool:
         """ Provides backward compatibility for the old '.acquiring' property """
-        return self._acquiring
+        return self._acquiring.is_set()
 
     @property
     def recording(self) -> bool:
         """ Provides backward compatibility for the old '.recording' property """
-        return self._recording
+        return self._recording.is_set()
 
     @property
     def hardware_triggered(self) -> bool:

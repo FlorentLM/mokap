@@ -47,7 +47,7 @@ class BaslerCamera(GenICamCamera):
 
     def start_grabbing(self) -> None:
         if self.is_connected and not self.is_grabbing:
-            self._ptr.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
+            self._ptr.StartGrabbing(pylon.GrabStrategy_OneByOne)
             self._is_grabbing = True
 
     def stop_grabbing(self) -> None:
