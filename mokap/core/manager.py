@@ -1,5 +1,7 @@
 import json
+import os
 import queue
+import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
@@ -20,11 +22,6 @@ from mokap.core.writers import FrameWriter, ImageSequenceWriter, FFmpegWriter
 from mokap.utils import fileio
 from mokap.utils.system import setup_ulimit
 
-METADATA_KEYS = {
-# which keys from the main config are relevant to a recording session
-    'framerate', 'gain', 'blacks', 'exposure', 'roi', 'pixel_format',
-    'binning', 'save_format', 'save_quality', 'hardware_trigger'
-}
 
 class MultiCam:
     """
@@ -59,6 +56,7 @@ class MultiCam:
         # --- Hardware and Cameras ---
         self.cameras: List[AbstractCamera] = []
         self.camera_colours: Dict[str, str] = {}
+        self._camera_setting_overrides: Dict[str, Dict] = {}
         self.connect_cameras()
 
         # setup hardware trigger
@@ -190,23 +188,26 @@ class MultiCam:
 
                     cam.name = friendly_name
 
-                    # Start with a copy of the global settings
+                    # start with a copy of the global settings
                     final_settings = base_cam_config.copy()
 
-                    # Get camera-specific overrides and merge them in
+                    # identify all camera-specific settings from the config
                     camera_specific_settings = {
                         k: v for k, v in cam_config.items()
                         if k in valid_global_settings
                     }
-                    final_settings.update(camera_specific_settings)
-
-                    # We used to have a 'settings' block in the cameras, let's keep this for now but we'll trash it
                     nested_settings = cam_config.get('settings', {})
                     if nested_settings:
-                        print('[DEPRECATION WARNING] Nested "settings" block inside cameras configs will be deprecated.')
-                        final_settings.update(nested_settings)
+                        print(
+                            '[DEPRECATION WARNING] Nested "settings" block inside cameras configs will be deprecated.')
+                        # Merge nested settings into the specific settings
+                        camera_specific_settings.update(nested_settings)
 
-                    # Connect and apply the settings
+                    # Store this dictionary of overrides for later use in metadata
+                    self._camera_setting_overrides[friendly_name] = camera_specific_settings
+
+                    # Apply the final, merged configuration to the camera
+                    final_settings.update(camera_specific_settings)
                     cam.connect(config=final_settings)
 
                     # Add the successfully connected camera to our list
@@ -301,18 +302,25 @@ class MultiCam:
             return
 
         # Prepare metadata snapshot for this session
-        session_config = {
-            key: self.config[key] for key in METADATA_KEYS if key in self.config
-        }
+        keys_order = ['exposure', 'gain', 'gamma', 'blacks', 'pixel_format',
+                      'binning', 'binning_mode', 'roi', 'save_format']
+        session_config = {k: self.config[k] for k in keys_order if k in self.config}
+
+        if session_config.get('save_format') !=  'mp4' and self.config.get('save_quality'):
+            session_config['save_quality'] = self.config.get('save_quality')
 
         # Prepare metadata for this new session
         session_metadata = {
             'start_time': datetime.now().timestamp(),
             'end_time': None,
             'duration': 0.0,
-            'session_config': session_config,
-            'cameras': {}  # This will be populated in pause_recording
+            'hardware_triggered': self.hardware_triggered
         }
+        if self.hardware_triggered:
+            session_metadata['trigger_frequency'] = self.framerate
+        session_metadata.update(session_config)
+        session_metadata['cameras'] = {}    # this will be populated ad the end of a recording
+
         self._metadata['sessions'].append(session_metadata)
 
         # Reset the frame counters for the new session
@@ -337,8 +345,10 @@ class MultiCam:
             print("[INFO] Finishing writing for current session...")
 
         # we calculate and store session duration BEFORE asking the threads to stop
+        session_idx = len(self._metadata['sessions']) - 1
+
         end_ts = datetime.now().timestamp()
-        current_session = self._metadata['sessions'][-1]
+        current_session = self._metadata['sessions'][session_idx]
 
         start_ts = current_session['start_time']
         duration = end_ts - start_ts if end_ts > start_ts else 0.0
@@ -350,27 +360,19 @@ class MultiCam:
         for event in self._finished_saving_events:
             event.wait(timeout=5.0)
 
-        # Update metadata with all the info
-        if self.hardware_triggered:
-            current_session['trigger_framerate'] = self.framerate
-
         cameras_data = {}
-        global_config = current_session.get('session_config', {})
-
         for i, cam in enumerate(self.cameras):
             frames = self._session_frame_counts[i]
-            actual_fps = self._session_actual_fps[i]
+            actual_fps = (frames / duration) if duration > 0 else 0.0
 
-            # Find the actual settings that differ from the global config
-            overrides = {}
-            for param in METADATA_KEYS:
-                if hasattr(cam, param):
-                    actual_value = getattr(cam, param)
-                    global_value = global_config.get(param)
+            # Correct the video files framerates if needed
+            save_format = (self.config.get('sources', {})
+                           .get(cam.name, {})
+                           .get('save_format', self.config.get('save_format', 'mp4')))
 
-                    # Store the parameter if it differs from the global setting
-                    if actual_value is not None and actual_value != 'N/A' and actual_value != global_value:
-                        overrides[param] = actual_value
+            if save_format == 'mp4' and frames > 0:
+                video_path = self.full_path / f"{self.session_name}_{cam.name}_session{session_idx}.mp4"
+                self._correct_video_framerate(video_path, actual_fps)
 
             # Build the final data block for this camera
             cam_data_block = {
@@ -382,13 +384,13 @@ class MultiCam:
                 'encoding': self._session_encoding_params[i]
             }
 
-            # Only add the overrides key if there were any actual differences
+            overrides = self._camera_setting_overrides.get(cam.name, {})
             if overrides:
                 cam_data_block['settings_overrides'] = overrides
 
             cameras_data[cam.name] = cam_data_block
-        current_session['cameras'] = cameras_data
 
+        current_session['cameras'] = cameras_data
         self.save_metadata()
 
         if not self._silent:
@@ -464,7 +466,6 @@ class MultiCam:
         cam = self.cameras[cam_idx]
         w_queue = self._writer_queues[cam_idx]
         self._writers[cam_idx] = None
-
         session_idx: Optional[int] = None
 
         while self._acquiring.is_set():
@@ -478,8 +479,6 @@ class MultiCam:
                     # store the session idnex
                     session_idx = len(self._metadata['sessions']) - 1
 
-                    # Now that we have a frame, create the writer
-                    session_idx = len(self._metadata['sessions']) - 1
                     self._writers[cam_idx] = self._create_writer(cam, session_idx)
                     writer = self._writers[cam_idx]
 
@@ -492,8 +491,7 @@ class MultiCam:
                     # If we timeout waiting for the first frame, it means the
                     # grabber isn't feeding the writer queue - so we should log it and try again
                     if not self._silent:
-                        print(
-                            f"[WARN] Cam {cam.name}: Timed out waiting for first frame to record. Writer not started.")
+                        print(f"[WARN] Cam {cam.name}: Timed out waiting for first frame to record. Writer not started.")
                     continue  # Skip to the next loop iteration to try again
 
                 except Exception as e:
@@ -528,17 +526,10 @@ class MultiCam:
                 self._session_frame_counts[cam_idx] = writer.frame_count
                 self._session_encoding_params[cam_idx] = writer.encoding_params
 
-                if session_idx is not None:
-                    duration = self._metadata['sessions'][session_idx]['duration']
-                    frame_count = writer.frame_count
-                    actual_fps = (frame_count / duration) if duration > 0 else 0.0
-                    self._session_actual_fps[cam_idx] = actual_fps
-                    writer.close(actual_fps=actual_fps)
-                else:
-                    # should not happen, but safe as fallback
-                    writer.close()
+                writer.close()
 
                 self._writers[cam_idx] = None  # set writer to None to signal it's closed
+                session_idx = None  # reset for the next run
                 self._finished_saving_events[cam_idx].set()
 
             # State D - Idle, not recording
@@ -585,6 +576,37 @@ class MultiCam:
                 pixel_format=cam.pixel_format,
                 **writer_params
             )
+
+    def _correct_video_framerate(self, filepath: Path, actual_fps: float):
+        """ Corrects the framerate metadata in a video file without re-encoding """
+
+        if not filepath.exists() or actual_fps <= 0:
+            return
+
+        print(f"[INFO] Correcting framerate for {filepath.name} to {actual_fps:.3f} fps.")
+        temp_filepath = filepath.with_suffix('.temp.mp4')
+        ffmpeg_path = self.config.get('ffmpeg', {}).get('path', 'ffmpeg')
+
+        command = [
+            ffmpeg_path,
+            '-i', str(filepath.resolve()),
+            '-c', 'copy',
+            '-r', f'{actual_fps:.3f}',
+            str(temp_filepath)
+        ]
+
+        try:
+            subprocess.run(command, check=True, capture_output=True, text=True)
+            os.replace(temp_filepath, filepath)
+
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            print(f"[ERROR] FFmpeg failed to correct framerate for {filepath.name}: {e}")
+
+            if isinstance(e, subprocess.CalledProcessError):
+                print(f"FFmpeg stderr:\n{e.stderr}")
+
+            if temp_filepath.exists():
+                os.remove(temp_filepath)
 
     def take_snapshot(self) -> bool:
         """ Takes a snapshot from all cameras (tries to sync) """

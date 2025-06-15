@@ -48,7 +48,7 @@ class FrameWriter(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def close(self, *args, **kwargs):
+    def close(self):
         """ Finalizes the writing process and closes any open resources """
         pass
 
@@ -184,7 +184,7 @@ class ImageSequenceWriter(FrameWriter):
             # re-raising an error to prevent the frame_count from being incremented in the parent write() method
             raise IOError(f"Disk write failed for frame {self.frame_count}") from e
 
-    def close(self, *args, **kwargs):
+    def close(self):
         # For image sequences, there's nothing to finalize
         pass
 
@@ -202,14 +202,12 @@ class FFmpegWriter(FrameWriter):
         param_key = self._get_platform_param_key(use_gpu)
         encoder_params = params.get(param_key)
 
-        # --- ADDED ---
         # Store the specific parameters for metadata logging
         self._encoding_params = {
             'format': 'ffmpeg_video',
             'encoder_profile': param_key,
             'encoder_options': encoder_params
         }
-        # --- END ADDED ---
 
         if not encoder_params:
             raise ValueError(f"FFmpeg parameters for '{param_key}' not found in config.")
@@ -234,7 +232,6 @@ class FFmpegWriter(FrameWriter):
             raise ValueError(f"Unsupported pixel_format '{self.pixel_format}' for FFmpegWriter.")
 
         # Build the FFmpeg command
-
         input_args = (
             f"-y -s {self.width}x{self.height} -f rawvideo "
             f"-framerate {self.framerate:.3f} -pix_fmt {input_pixel_format} -i pipe:0"
@@ -274,7 +271,6 @@ class FFmpegWriter(FrameWriter):
     def _write_frame(self, frame: np.ndarray, metadata: Dict[str, Any]):
 
         if self.proc and self.proc.stdin:
-
             try:
                 # Write the raw bytes of the frame to the stdin of the FFmpeg process
                 self.proc.stdin.write(frame.tobytes())
@@ -288,49 +284,7 @@ class FFmpegWriter(FrameWriter):
                 self.close()  # Attempt to clean up
                 raise IOError("FFmpeg process terminated unexpectedly.") from e
 
-    def _correct_framerate(self, actual_fps: float):
-        """ Corrects the framerate metadata in the video file without re-encoding """
-
-        if not self.filepath.exists():
-            return
-
-        print(f"[INFO] Correcting framerate for {self.filepath.name} from {self.framerate:.3f} to {actual_fps:.3f} fps.")
-
-        encoder_options = self._encoding_params.get('encoder_options', '')
-
-        # determine the filter name by inspecting the encoder options
-        if 'hevc' in encoder_options or 'h265' in encoder_options:
-            filter_name = 'hevc_metadata'
-        elif 'h264' in encoder_options:
-            filter_name = 'h264_metadata'
-        else:
-            print(f"[INFO] Skipping framerate correction for {self.filepath.name}. Could not determine H.264/H.265 codec from encoder options: '{encoder_options}'.")
-            return
-
-        temp_filepath = self.filepath.with_suffix('.temp.mp4')
-
-        command = [
-            self.ffmpeg_path,
-            '-i', str(self.filepath.resolve()),
-            '-c', 'copy',
-            '-r', f'{actual_fps:.3f}',
-            str(temp_filepath)
-        ]
-
-        try:
-            subprocess.run(command, check=True, capture_output=True, text=True)
-            os.replace(temp_filepath, self.filepath)
-
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            print(f"[ERROR] FFmpeg failed to correct framerate for {self.filepath.name}: {e}")
-
-            if isinstance(e, subprocess.CalledProcessError):
-                print(f"FFmpeg stderr:\n{e.stderr}")
-
-            if temp_filepath.exists():
-                os.remove(temp_filepath)
-
-    def close(self, actual_fps: Optional[float] = None):
+    def close(self):
         if not self.proc:
             return
 
@@ -340,7 +294,3 @@ class FFmpegWriter(FrameWriter):
             self.proc.stdin.close()
         self.proc.wait(timeout=10)
         self.proc = None
-
-        # Perform framerate correction if an actual_fps is provided
-        if actual_fps and abs(actual_fps - self.framerate) > 0.01:
-            self._correct_framerate(actual_fps)
