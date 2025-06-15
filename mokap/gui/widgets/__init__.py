@@ -1,7 +1,5 @@
 from mokap.utils.datatypes import ChessBoard, CharucoBoard
 
-FAST_UPDATE = 16
-SLOW_UPDATE = 200
 GUI_LOGGER = False
 MAX_PLOT_X = 50
 VERBOSE = True
@@ -13,3 +11,12 @@ DEFAULT_BOARD = CharucoBoard(rows=6, cols=5, square_length=1.5, markers_size=4)
 
 def do_nothing():
     print('Nothing')
+
+SLOW_UPDATE = 5.0   # update texts and other things only 5 times per second
+SLOW_UPDATE_INTERVAL = 1.0 / SLOW_UPDATE
+
+DISPLAY_FRAMERATE = 60.0    # video previews should update at 60 fps
+DISPLAY_INTERVAL = 1.0 / DISPLAY_FRAMERATE
+
+PROCESSING_FRAMERATE = 15.0 # let's process at... 15 Hz ?
+PROCESSING_INTERVAL = 1.0 / PROCESSING_FRAMERATE

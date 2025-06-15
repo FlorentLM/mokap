@@ -1,2 +1,2 @@
 from PySide6.QtWidgets import QMessageBox
-from mokap.gui.widgets.maincontrols import QApplication, MainControls
+from mokap.gui.widgets.window_maincontrols import QApplication, MainControls

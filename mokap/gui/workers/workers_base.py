@@ -6,7 +6,9 @@ from mokap.utils.datatypes import CalibrationData
 
 
 class CalibrationWorker(QObject):
-    """ Base class for all the Calibration workers. Sends/Receives CalibrationData objects. """
+    """ Base class for all the Calibration workers
+     Sends/Receives CalibrationData objects """
+
     error = Signal(Exception)
     send_payload = Signal(CalibrationData)
     receive_payload = Signal(CalibrationData)
@@ -14,10 +16,11 @@ class CalibrationWorker(QObject):
     def __init__(self, name: str, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.name: str = name
-        self.receive_payload.connect(self._handle_payload)
+        self.receive_payload.connect(self.on_payload_received)
 
     @Slot(CalibrationData)
-    def _handle_payload(self, data: CalibrationData):
+    def on_payload_received(self, data: CalibrationData):
+        """ Handles incoming payloads routed from the Coordinator """
         if DEBUG_SIGNALS_FLOW:
             print(f'[{self.name.title()}] Received (from Coordinator): ({data.camera_name}) {data.payload}')
 
@@ -42,9 +45,20 @@ class ProcessingWorker(QObject):
 
 class CalibrationProcessingWorker(CalibrationWorker, ProcessingWorker):
     """ Base class for calibration processing workers (i.e. MonocularWorker and MultiviewWorker) """
+
     def __init__(self, name: str, *args, **kwargs):
         super().__init__(name=name, *args, **kwargs)
         self._current_stage = 0
+
+    @Slot()
+    def reset(self):
+        """ Resets the worker's internal state (typically when changing calibration stages or board params)
+        Implemented by subclasses """
+
+        if DEBUG_SIGNALS_FLOW:
+            print(f"[{self.name.title()}] Received reset signal.")
+
+        self.set_stage(0) # default reset behavior is to go back to stage 0
 
     @Slot(int)
     def set_stage(self, stage: int):

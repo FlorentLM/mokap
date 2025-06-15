@@ -293,8 +293,8 @@ def back_projection(
             points2d_flat,
             camera_matrix=camera_matrix,
             dist_coeffs=dist_coeffs,
-            R=jnp.eye(3),  # no rectification
-            P=camera_matrix,  # reproject into same camera
+            R=jnp.eye(3),       # no rectification
+            P=camera_matrix,    # reproject into same camera
         )
 
     # make homogeneous image coords [u, v, 1]
@@ -307,8 +307,8 @@ def back_projection(
 
     # apply depth (broadcast if scalar)
     # The depth should broadcast to the flattened shape
-    depth_arr = jnp.asarray(depth)  # Let JAX handle broadcasting
-    cam_pts = cam_dirs * depth_arr.reshape(-1, 1)  # Ensure depth is (N, 1) or (1, 1) for broadcasting
+    depth_arr = jnp.asarray(depth)
+    cam_pts = cam_dirs * depth_arr[..., None]
 
     # camera -> world
     E_inv = invert_extrinsics_matrix(extrinsics_matrix)  # (..., 4, 4)
@@ -321,9 +321,7 @@ def back_projection(
     world_h = (E_inv @ hom_cam.T).T  # (N, 4)
     world_pts = world_h[:, :3]  # (N, 3)
 
-    # The final dimension is 3 (for x, y, z), the leading dimensions are from the original input
-    out_shape = original_shape[:-1] + (3,)
-    return world_pts.reshape(out_shape)
+    return world_pts
 
 # back-project a set of points into multiple cameras
 back_projection_batched = jax.jit(

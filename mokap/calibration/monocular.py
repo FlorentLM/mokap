@@ -94,7 +94,7 @@ class MonocularCalibrationTool:
 
         # Error metrics
         self._intrinsics_errors: ArrayLike = np.array([np.inf])
-        self._pose_error: float = np.inf
+        self._pose_error: float = np.nan
 
         # TODO: visualisation scale should be inferred from image size?
         self.set_visualisation_scale(scale=1)
@@ -435,7 +435,7 @@ class MonocularCalibrationTool:
         # We need a detection and intrinsics to compute the extrinsics
         if not self.has_detection or not self.has_intrinsics or self.nb_points < 6:     # DLT needs 6 points
             self._rvec, self._tvec = None, None
-            self._pose_error = np.inf
+            self._pose_error = np.nan
             return
 
         if type(self.dt) is CharucoDetector:
@@ -444,7 +444,7 @@ class MonocularCalibrationTool:
             # If the points are collinear, extrinsics estimation is garbage, so abort
             if cv2.aruco.testCharucoCornersCollinear(self.dt.board, self._points_ids_np):
                 self._rvec, self._tvec = None, None
-                self._pose_error = np.inf
+                self._pose_error = np.nan
                 return
 
         pnp_flags = cv2.SOLVEPNP_ITERATIVE
@@ -468,7 +468,7 @@ class MonocularCalibrationTool:
         except cv2.error as e:
             print(f"[WARN] [MonocularCalibrationTool] OpenCV Error in PnP:\n\n{e}")
             self._rvec, self._tvec = None, None
-            self._pose_error = np.inf
+            self._pose_error = np.nan
             return
 
         # If no solution, or if multiple solutions were found, abort
@@ -702,14 +702,14 @@ class MonocularCalibrationTool:
                                 (30, 60 * self._vis_scale),
                                 **self._text_params)
 
-        txt = f"{self._pose_error:.3f} px" if np.all(self._pose_error != np.inf) else '-'
+        txt = f"{self._pose_error:.3f} px" if np.isfinite(self._pose_error) else '-'
         frame_out = cv2.putText(frame_out,
                                 f"Current reprojection error: {txt}",
                                 (30, 90 * self._vis_scale),
                                 **self._text_params)
 
         avg_intr_err = np.nanmean(self._intrinsics_errors)
-        txt = f"{avg_intr_err:.3f} px" if np.all(avg_intr_err != np.inf) else '-'
+        txt = f"{avg_intr_err:.3f} px" if np.all(np.isfinite(avg_intr_err)) else '-'
         frame_out = cv2.putText(frame_out,
                                 f"Best average reprojection error: {txt}",
                                 (30, 120 * self._vis_scale),

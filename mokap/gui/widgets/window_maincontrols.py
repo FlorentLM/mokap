@@ -13,12 +13,12 @@ from PySide6.QtWidgets import (QMainWindow, QVBoxLayout, QWidget, QFrame, QHBoxL
                                QProgressBar, QFileDialog, QApplication, QDialog, QGraphicsRectItem, QGraphicsTextItem)
 from mokap.gui.style.commons import *
 from mokap.gui.widgets import DEFAULT_BOARD, SLOW_UPDATE, GUI_LOGGER
-from mokap.gui.widgets.base import SnapMixin
+from mokap.gui.widgets.widgets_base import SnapMixin
 from mokap.gui.widgets.dialogs import BoardParamsDialog
-from mokap.gui.widgets.liveviews import Monocular, Recording
-from mokap.gui.widgets.opengl import Multiview3D
+from mokap.gui.widgets.windows_live_views import Monocular, Recording
+from mokap.gui.widgets.window_3d_view import Multiview3D
 from mokap.gui.workers.coordinator import CalibrationCoordinator
-from mokap.gui.workers.multiview import MultiviewWorker
+from mokap.gui.workers.worker_multiview import MultiviewWorker
 from mokap.utils import hex_to_hls, pretty_size
 from mokap.utils.datatypes import CalibrationData, IntrinsicsPayload, ExtrinsicsPayload
 
@@ -752,7 +752,7 @@ class MainControls(QMainWindow, SnapMixin):
             self.coordinator.register_worker(self.multiview_worker)
 
             # Connect the 3D window's BA button to the worker's slot
-            self.opengl_window.run_ba_button.clicked.connect(self.multiview_worker.run_bundle_adjustment)
+            self.opengl_window.run_ba_button.clicked.connect(self.multiview_worker.trigger_refinement)
             self.opengl_window.show()
 
         # Create Monocular/Recording windows and their workers

@@ -1,6 +1,6 @@
 import numpy as np
 from PySide6.QtCore import Signal, Slot
-from mokap.gui.workers.base import ProcessingWorker
+from mokap.gui.workers.workers_base import ProcessingWorker
 
 
 class MovementWorker(ProcessingWorker):

@@ -1,7 +1,6 @@
 import queue
 import time
 from collections import deque
-from datetime import datetime
 from threading import Thread
 from typing import Optional, Tuple
 import numpy as np
@@ -13,12 +12,8 @@ import pyqtgraph as pg
 from numpy.typing import ArrayLike
 
 from mokap.gui.style.commons import *
-from mokap.gui.widgets import FAST_UPDATE, SLOW_UPDATE
 from mokap.gui.widgets.dialogs import SnapPopup
-
-
-DISPLAY_FRAMERATE = 60.0
-DISPLAY_INTERVAL = 1.0 / DISPLAY_FRAMERATE
+from mokap.gui.widgets import SLOW_UPDATE_INTERVAL, DISPLAY_INTERVAL, PROCESSING_INTERVAL
 
 
 class SnapMixin:
@@ -88,6 +83,7 @@ class SnapMixin:
             case _:
                 return
 
+
 class FastImageItem(QGraphicsObject):
     """ A minimal, fast QGraphicsObject for displaying a QImage
     This bypasses all of the complex machinery of pyqtgraph.ImageItem
@@ -124,7 +120,6 @@ class FastImageItem(QGraphicsObject):
             painter.drawImage(0, 0, self._image)
 
 
-
 class Base(QWidget, SnapMixin):
     """
     Base for any camera‐preview or 3D window
@@ -148,10 +143,6 @@ class Base(QWidget, SnapMixin):
         self.timer_slow = QTimer(self)
         self.timer_slow.timeout.connect(self._update_slow)
 
-        # This updater function should only run at 60 fps
-        self.timer_fast = QTimer(self)
-        self.timer_fast.timeout.connect(self._update_fast)
-
     @property
     def selected_monitor(self):
       return self._mainwindow.selected_monitor
@@ -165,13 +156,9 @@ class Base(QWidget, SnapMixin):
         """ Subclasses override if they need a slow update """
         pass
 
-    def _update_fast(self):
-        """ Subclasses override if they need a fast (60fps) update """
-        pass
-
-    def _start_timers(self, fast=FAST_UPDATE, slow=SLOW_UPDATE):
-        self.timer_fast.start(fast)
-        self.timer_slow.start(slow)
+    def  _start_timers(self, slow_interval=SLOW_UPDATE_INTERVAL, **kwargs):
+        """ Subclasses can override if they need more timers """
+        self.timer_slow.start(int(SLOW_UPDATE_INTERVAL * 1000))
 
 
 class PreviewBase(Base):
@@ -195,7 +182,8 @@ class PreviewBase(Base):
         self._fmt = self._camera.pixel_format
 
         img_x, img_y, img_w, img_h = self._camera.roi
-        self._source_shape = (img_h, img_w)
+        self._source_height = img_h
+        self._source_width = img_w
 
         # This holds the *latest frame received* from the consumer thread
         # Access to this should be quick, also it will be None if no new frame has arrived
@@ -203,7 +191,7 @@ class PreviewBase(Base):
 
         # This is the 'safe' buffer for display: we copy the _latest_frame into this
         # at the start of the update cycle, so we can annotate it without worrying about the consumer thread overwriting it
-        self._latest_display_frame = np.zeros((self._source_shape[0], self._source_shape[1], 3), dtype=np.uint8)
+        self._latest_display_frame = np.zeros((self._source_height, self._source_width, 3), dtype=np.uint8)
 
         self._video_initialised = False
 
@@ -224,11 +212,34 @@ class PreviewBase(Base):
         # Connect the new frame signal to a slot that updates the UI
         self.frame_received.connect(self.on_frame_received)
 
+        # This timer is for DISPLAY only (updating the QImage)
+        # It was previously named timer_fast
+        self.timer_display = QTimer(self)
+        self.timer_display.timeout.connect(self._update_display)
+
+        # This timer is for PROCESSING only
+        self.timer_processing = QTimer(self)
+        self.timer_processing.timeout.connect(self._send_frame_for_processing)
+
         # Start a dedicated thread to consume frames from the manager's queue
         # a Thread (and not a QThread) is better for such a simple op
         self._consumer_thread_active = True
         self._frame_consumer = Thread(target=self._consume_frames_loop)
         self._frame_consumer.start()
+
+    def _start_timers(self,
+                      display_interval=DISPLAY_INTERVAL,
+                      processing_interval=PROCESSING_INTERVAL,
+                      slow_interval=SLOW_UPDATE_INTERVAL):
+        super()._start_timers(slow_interval=slow_interval)
+
+        self.timer_display.start(int(display_interval * 1000))
+        self.timer_processing.start(int(processing_interval * 1000))
+
+    def _stop_timers(self):
+        self.timer_display.stop()
+        self.timer_processing.stop()
+        self.timer_slow.stop()
 
     def _setup_worker(self, worker_object):
         """ Setup preview-windows-specific signals (direct Main thread - Worker connections) """
@@ -305,7 +316,7 @@ class PreviewBase(Base):
         self.temperature_value = QLabel()
 
         self.triggered_value.setText("Yes" if self._camera.hardware_triggered else "No")
-        self.resolution_value.setText(f"{self.source_shape[1]}×{self.source_shape[0]} px")
+        self.resolution_value.setText(f"{self.source_shape_hw[1]}×{self.source_shape_hw[0]} px")
         self.capturefps_value.setText(f"Off")
         self.exposure_value.setText(f"{self._camera.exposure} µs")
         self.brightness_value.setText(f"-")
@@ -365,8 +376,8 @@ class PreviewBase(Base):
         """
         display_queue = self._mainwindow.manager._display_queues[self._cam_idx]
 
-        # Pre-allocate the destination buffer to avoid creating new arrays in the loop.
-        bgr_frame = np.empty((self._source_shape[0], self._source_shape[1], 3), dtype=np.uint8)
+        # Pre-allocate the destination buffer to avoid creating new arrays in the loop
+        bgr_frame = np.empty((self._source_height, self._source_width, 3), dtype=np.uint8)
 
         last_emit_time = 0  # this is a bit of a hack...
         # ...but otherwise this function emits waaaay too many Signals and cripples everything
@@ -442,6 +453,26 @@ class PreviewBase(Base):
             except queue.Empty:
                 continue
 
+    @Slot()
+    def _send_frame_for_processing(self):
+        """
+        Sends the latest available frame to the worker for processing
+        This runs at a slow, controlled rate
+        """
+
+        # If the worker is busy with a long task we don't send another frame
+        if self._worker_busy or self._worker_blocking:
+            return
+
+        # If a new frame has arrived since the last processing tick, send it.
+        if self._latest_frame is not None:
+            # We send the RAW latest frame for processing
+            frame_to_process = self._latest_frame.copy()
+            frame_number = self._current_frame_metadata.get('frame_number', -1)
+
+            self.send_frame.emit(frame_to_process, frame_number)
+            self._worker_busy = True
+
     @Slot(np.ndarray, dict)
     def on_frame_received(self, frame, metadata):
         """ this runs in the main GUI thread. We just update the references """
@@ -516,30 +547,24 @@ class PreviewBase(Base):
     #  ============= Fast update methods for image refresh =============
 
     def _annotate_frame(self):
-        """ Subclasses must implement this method to draw their specific annotations """
+        """
+        Subclasses implement this. It's called at the high display rate
+        """
 
-        # Copy the new frame into the safe display buffer
-        # This is the *only* full-frame copy, and it happens at the display rate
-        np.copyto(self._latest_display_frame, self._latest_frame)
-        self._latest_frame = None   # mark as consumed
+        # Default behavior: just copy the latest raw frame to the display buffer
+        # Subclasses will override this to add their annotations
+        if self._latest_frame is not None:
+            np.copyto(self._latest_display_frame, self._latest_frame)
+            self._latest_frame = None  # mark as consumed for display
 
-        pass
-
-    def _update_fast(self):
-        """ This is the main display updater. It runs at a controlled rate via its QTimer """
+    def _update_display(self):
+        """ This is the main display updater. It runs at a controlled rate for smooth video """
 
         if self._latest_frame is None:
             return # no new frame do nothing
 
-        # Let the worker process the frame if it's free. We send it the safe display buffer.
-        if not self._worker_busy:
-            self._send_frame_to_worker(self._latest_frame)
-
         # subclasses do their own thing
         self._annotate_frame()
-
-        # Mark the latest frame as consumed
-        self._latest_frame = None
 
         # Update the image on the screen
         self.image_item.setImageData(self._latest_display_frame)
@@ -548,14 +573,6 @@ class PreviewBase(Base):
         if not self._video_initialised:
             self.view_box.autoRange()
             self._video_initialised = True
-
-    def _send_frame_to_worker(self, frame):
-        # Retrieve the synchronized frame number from our stored metadata
-        frame_number = self._current_frame_metadata.get('frame_number', -1)  # Use -1 as a default/error value
-
-        # Emit the frame and its correct, safe frame number
-        self.send_frame.emit(frame, frame_number)
-        self._worker_busy = True
 
     #  ============= Qt method overrides =============
     def closeEvent(self, event):
@@ -577,8 +594,7 @@ class PreviewBase(Base):
                 self.worker_thread.wait(2000)
 
             # stop local timers
-            self.timer_fast.stop()
-            self.timer_slow.stop()
+            self._stop_timers()
 
             # Accept the close event to allow Qt to destroy the window
             event.accept()
@@ -628,10 +644,6 @@ class PreviewBase(Base):
     @Slot()
     def on_worker_finished(self):
         self._worker_busy = False
-        if self._latest_frame is not None:
-            f = self._latest_frame
-            self._latest_frame = None
-            self._send_frame_to_worker(f)
 
     @Slot(bool)
     def blocking_toggle(self, state):
@@ -659,12 +671,12 @@ class PreviewBase(Base):
     secondary_color = secondary_colour
 
     @property
-    def source_shape(self) -> Tuple[int, int]:
-        return self._source_shape
+    def source_shape_hw(self) -> Tuple[int, int]:
+        return (self._source_height, self._source_width)
 
     @property
     def aspect_ratio(self) -> float:
-        return float(self._source_shape[1] / self._source_shape[0])
+        return float(self._source_width / self._source_height)
 
     #  ============= Some common video window-related methods =============
 

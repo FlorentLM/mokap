@@ -1,11 +1,11 @@
-from typing import Union
+from typing import Union, Optional
 import numpy as np
 from PySide6.QtCore import Signal, Slot
 from numpy.typing import ArrayLike
 
 from mokap.calibration.monocular import MonocularCalibrationTool
 from mokap.gui.workers import DEBUG_SIGNALS_FLOW
-from mokap.gui.workers.base import CalibrationProcessingWorker
+from mokap.gui.workers.workers_base import CalibrationProcessingWorker
 from mokap.utils.datatypes import (ChessBoard, CharucoBoard, CalibrationData, ErrorsPayload,
                                    IntrinsicsPayload, ExtrinsicsPayload, DetectionPayload)
 
@@ -14,25 +14,40 @@ class MonocularWorker(CalibrationProcessingWorker):
 
     annotations = Signal(np.ndarray)       # Annotations are already burned into the image, so emit the whole thing
 
-    def __init__(self, board_params: Union[ChessBoard, CharucoBoard], cam_idx: int, cam_name: str, cam_shape: ArrayLike):
+    def __init__(self,
+            board_params: Union[ChessBoard, CharucoBoard],
+            cam_idx: int,
+            cam_name: str,
+            img_width: int,
+            img_height: int):
         super().__init__(name=cam_name)
+
         self.camera_idx = cam_idx
         self.cam_name = cam_name
-        self.cam_shape = cam_shape
+        self.img_w = img_width
+        self.img_h = img_height
 
-        # The tool and board points are initialized by the _create_tool method
-        self.monocular_tool: MonocularCalibrationTool = None
-        self.board_object_points: np.ndarray = None
+        # TODO: These need to be configurable from the GUI
+        self._cam_th_focal: Optional[float] = 60
+        self._sensor_size: Optional[Union[float, str]] = '1/2.9"'
+
+        # the tool and board points are initialized by the _create_tool method
+        self.monocular_tool: Optional[MonocularCalibrationTool] = None
+        self.board_object_points: Optional[np.ndarray] = None
         self._create_tool(board_params)
 
-        # Flags for worker function
+        # TODO: These need to be configurable from the GUI
         self._auto_sample = True
         self._auto_compute = True
+        self._simple_focal = False
+        self._simple_distortion = False
+        self._complex_distortion = False    # TODO: Replace the 3 flags with the Literal like in MultiviewCalibTool
+        self._coverage_threshold = 75
+        self._stack_length_threshold = 20
 
     def _create_tool(self, board_params: Union[ChessBoard, CharucoBoard]):
-        """
-        Create and configure a new MonocularCalibrationTool. Used in init or after calibration board change
-        """
+        """ Create and configure a new MonocularCalibrationTool. Used in init or after calibration board change """
+
         if DEBUG_SIGNALS_FLOW:
             print(f"[{self.name.title()}] Received new board parameters.")
 
@@ -42,27 +57,31 @@ class MonocularWorker(CalibrationProcessingWorker):
         # Create a brand new MonocularCalibrationTool instance
         self.monocular_tool = MonocularCalibrationTool(
             board_params=board_params,
-            imsize_hw=self.cam_shape[:2],
-            focal_mm=60,
-            sensor_size='1/2.9"'
+            imsize_hw=(self.img_h, self.img_w),
+            focal_mm=self._cam_th_focal,
+            sensor_size=self._sensor_size
         )
-        self.monocular_tool.set_visualisation_scale(2)
+        self.monocular_tool.set_visualisation_scale(2)  # TODO: This will be removed once visualisation is taken out
 
     @Slot(object)
-    def update_board(self, board_params: Union[ChessBoard, CharucoBoard]):
-        """
-        Slot to handle a full reset when board parameters change
-        """
+    def configure_new_board(self, board_params: Union[ChessBoard, CharucoBoard]):
+        """ Slot to handle a full reset when board parameters change """
         if DEBUG_SIGNALS_FLOW:
             print(f"[{self.name.title()}] Received new board parameters. Recreating tool.")
 
         # Re-create the tool with the new parameters
         self._create_tool(board_params)
 
-        # Clear any old data and notify the UI
-        self.monocular_tool.clear_stacks()
-        self.monocular_tool.clear_intrinsics()
-        self.send_payload.emit(CalibrationData(self.cam_name, ErrorsPayload(np.array([np.inf]))))
+    @Slot()
+    def reset(self):
+        """ Resets the state of the monocular worker and its tool """
+        super().reset()
+
+        if self.monocular_tool:
+            self.monocular_tool.clear_stacks()
+            self.monocular_tool.clear_intrinsics()
+            # Notify the UI that errors are now reset/invalid
+            self.send_payload.emit(CalibrationData(self.cam_name, ErrorsPayload(np.array([np.inf]))))
 
     @Slot(int)
     def set_stage(self, stage: int):
@@ -70,16 +89,14 @@ class MonocularWorker(CalibrationProcessingWorker):
         self.monocular_tool.clear_stacks()
 
     @Slot(CalibrationData)
-    def _handle_payload(self, data: CalibrationData):
-        super()._handle_payload(data)
+    def on_payload_received(self, data: CalibrationData):
+        """ This slot receives data intended for this worker (i.e. only intrinsics payloads), regardless of origin """
+        super().on_payload_received(data)
         payload = data.payload
 
         if isinstance(payload, IntrinsicsPayload):
+            # This is the single entry point for updating intrinsics
             self.monocular_tool.set_intrinsics(payload.camera_matrix, payload.dist_coeffs, payload.errors)
-
-        # extrinsics setting is typically for visualisation only
-        elif isinstance(payload, ExtrinsicsPayload):
-            self.monocular_tool.set_extrinsics(payload.rvec, payload.tvec)
 
     @Slot(np.ndarray, int)
     def handle_frame(self, frame: ArrayLike, frame_idx: int):
@@ -87,36 +104,50 @@ class MonocularWorker(CalibrationProcessingWorker):
             return
 
         self.monocular_tool.process_frame(frame)
-
         self.monocular_tool.detect()    # TODO: Detection can be moved out of this class it's much cleaner
 
         # Stage 0: Compute initial intrinsics
         if self._current_stage == 0:
             if self._auto_sample:
                 self.monocular_tool.auto_register_area_based(area_threshold=0.2)
+
             if self._auto_compute:
-                coverage_threshold, stack_length_threshold = 80, 20
-                if self.monocular_tool.coverage >= coverage_threshold and self.monocular_tool.nb_samples > stack_length_threshold:
+                if self.monocular_tool.coverage >= self._coverage_threshold and self.monocular_tool.nb_samples > self._stack_length_threshold:
                     self.blocking.emit(True)
-                r = self.monocular_tool.auto_compute_intrinsics(
-                    coverage_threshold=coverage_threshold,
-                    stack_length_threshold=stack_length_threshold,
-                    simple_focal=False, simple_distortion=False, complex_distortion=False
+
+                r = self.monocular_tool.auto_compute_intrinsics(    # TODO: the auto_compute is a bit useless if we check the thresholds here
+                    coverage_threshold=self._coverage_threshold,
+                    stack_length_threshold=self._stack_length_threshold,
+                    simple_focal=self._simple_focal,
+                    simple_distortion=self._simple_distortion,
+                    complex_distortion=self._complex_distortion
                 )
                 self.blocking.emit(False)
+
                 if r:
                     self.send_payload.emit(
-                        CalibrationData(self.cam_name, ErrorsPayload(self.monocular_tool.intrinsics_errors)))
+                        CalibrationData(self.cam_name, ErrorsPayload(self.monocular_tool.intrinsics_errors))
+                    )
+
                     if self.monocular_tool.has_intrinsics:
                         self.send_payload.emit(
-                            CalibrationData(self.cam_name, IntrinsicsPayload(*self.monocular_tool.intrinsics)))
+                            CalibrationData(self.cam_name, IntrinsicsPayload(*self.monocular_tool.intrinsics))
+                        )
 
-        # This is only used to provide visualisation of the board pose (perimeter)
+        # This extrinsics computation is only used to provide visualisation of the board pose (perimeter) and plotting
         if self.monocular_tool.has_intrinsics:
             self.monocular_tool.compute_extrinsics()
 
+            # always send extrinsics payload so the GUI knows the current state
+            rvec, tvec = self.monocular_tool.extrinsics_np()
+            pose_error = self.monocular_tool.pose_error     # this will be nan if no pose
+
+            self.send_payload.emit(
+                CalibrationData(self.cam_name, ExtrinsicsPayload(rvec=rvec, tvec=tvec, error=pose_error))
+            )
+
         # Stage 1 and 2: In these stages, the worker's ONLY job is to send detections to the Multiview system
-        if self._current_stage >= 1:
+        if self._current_stage >= 1:    # TODO: we only have two stages now so this check is useless
             if self.monocular_tool.has_detection:
                 self.send_payload.emit(
                     CalibrationData(self.cam_name, DetectionPayload(frame_idx, *self.monocular_tool.detection))

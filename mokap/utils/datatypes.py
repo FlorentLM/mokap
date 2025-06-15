@@ -95,19 +95,6 @@ class ErrorsPayload:
     errors: Optional[ArrayLike] = None
 
 @dataclass
-class OriginCameraPayload:
-    camera_name: str
-
-@dataclass
-class PosePayload:
-    """
-    Monocular estimation of the extrinsics (camera pose)
-    """
-    frame: int
-    rvec: np.ndarray
-    tvec: np.ndarray
-
-@dataclass
 class DetectionPayload:
     """
     Monocular detection of points 2D
@@ -117,21 +104,8 @@ class DetectionPayload:
     pointsIDs: np.ndarray
 
 @dataclass
-class DetectionWithPosePayload:
-    """
-    Monocular detection of points 2D and pose estimation of the camera
-    """
-    frame: int
-    points2D: np.ndarray
-    pointsIDs: np.ndarray
-    rvec: np.ndarray
-    tvec: np.ndarray
-
-@dataclass
 class IntrinsicsPayload:
-    """
-    Monocular intrinsics parameters
-    """
+
     camera_matrix: np.ndarray
     dist_coeffs: np.ndarray
     errors: Optional[ArrayLike] = None
@@ -143,11 +117,10 @@ class IntrinsicsPayload:
 
 @dataclass
 class ExtrinsicsPayload:
-    """
-    Multiview extrinsics parameters (global arrangement)
-    """
+
     rvec: np.ndarray
     tvec: np.ndarray
+    error: Optional[float] = None
 
     @classmethod
     def from_file(cls, filepath, camera_name: Optional[str] = None):
@@ -160,7 +133,7 @@ class CalibrationData:
     Encapsulation of a payload with the camera name
     """
     camera_name: str
-    payload: IntrinsicsPayload | ExtrinsicsPayload | DetectionPayload | DetectionWithPosePayload | PosePayload | ErrorsPayload | OriginCameraPayload
+    payload: IntrinsicsPayload | ExtrinsicsPayload | DetectionPayload | ErrorsPayload
 
     def to_file(self, filepath):
         if isinstance(self.payload, IntrinsicsPayload):

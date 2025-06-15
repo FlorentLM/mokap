@@ -1,12 +1,13 @@
-from PySide6.QtCore import Signal, Qt, Slot
+from PySide6.QtCore import Signal, Qt, Slot, QTimer
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QHBoxLayout, QFrame, QVBoxLayout, QGroupBox, QGridLayout, QLabel, QComboBox, QPushButton
 from pyqtgraph.opengl import GLGridItem, GLViewWidget, GLScatterPlotItem, GLLinePlotItem, GLMeshItem, MeshData
 import numpy as np
-
+import jax.numpy as jnp
 from mokap.gui.style.commons import *
 from mokap.gui.widgets import VERBOSE
-from mokap.gui.widgets.base import Base
+from mokap.gui.widgets import SLOW_UPDATE_INTERVAL, DISPLAY_INTERVAL, PROCESSING_INTERVAL
+from mokap.gui.widgets.widgets_base import Base
 from mokap.utils import hex_to_rgb
 from mokap.utils.datatypes import CalibrationData, ExtrinsicsPayload, IntrinsicsPayload, DetectionPayload
 from mokap.utils.geometry.projective import back_projection_batched, back_projection
@@ -34,7 +35,7 @@ class Multiview3D(Base):
                                        for cam, col in self._cam_colours_rgba.items()}
         self._sources_shapes = self._mainwindow.sources_shapes
 
-        # Data stores for visualization remain the same
+        # Data stores for visualization
         self._cameras_matrices = np.zeros((self.nb_cams, 3, 3), dtype=np.float32)
         self._dist_coeffs = np.zeros((self.nb_cams, 14), dtype=np.float32)
         self._rvecs = np.zeros((self.nb_cams, 3), dtype=np.float32)
@@ -49,7 +50,7 @@ class Multiview3D(Base):
         self.points_2d = {cam_name: np.zeros((self.max_board_points, 2)) for cam_name in self._cameras_names}
         self.points_2d_ids = {cam_name: np.array([], dtype=int) for cam_name in self._cameras_names}
 
-        # These will be aliases to the (rotated for display) rvec and tvec (filled using the fixed camera order)
+        # These are aliases to the (rotated for display) rvec and tvec (filled using the fixed camera order)
         self.optical_axes = np.zeros((self.nb_cams, 3), dtype=np.float32)
         self.cam_positions = np.zeros((self.nb_cams, 3), dtype=np.int32)
         # And a reference to the shared focal point
@@ -109,6 +110,12 @@ class Multiview3D(Base):
         self.view.addItem(self.grid)
         self.view.opts['distance'] = self._gridsize
 
+        # A timer to control the 3D scene update rate
+        self.update_timer = QTimer(self)
+        self.update_timer.setInterval(int(DISPLAY_INTERVAL * 2 * 1000))  # update at 30 Hz
+        self.update_timer.timeout.connect(self.update_scene)
+        self.update_timer.start()
+
     def _init_ui(self):
         self.view = GLViewWidget()
         self.view.setWindowTitle('3D viewer')
@@ -142,7 +149,7 @@ class Multiview3D(Base):
         self.origin_camera_combo.currentTextChanged.connect(self._mainwindow.coordinator.set_origin_camera)
         controls_layout.addWidget(self.origin_camera_combo, 1, 1)
 
-        self.run_ba_button = QPushButton("Run Bundle Adjustment")
+        self.run_ba_button = QPushButton("Refine")
         self.run_ba_button.setStyleSheet(
             f"background-color: {col_darkgreen}; color: {col_white};")
         controls_layout.addWidget(self.run_ba_button, 2, 0, 1, 2)
@@ -184,46 +191,41 @@ class Multiview3D(Base):
 
     @Slot(CalibrationData)
     def handle_payload(self, data: CalibrationData):
+        """ This is the single entry point for all data
+        updates the internal data stores and then triggers one full scene update
+        """
 
         if VERBOSE:
             print(f'[3D Widget] Received {data.camera_name} {data.payload}')
 
         cam_idx = self._cameras_names.index(data.camera_name)
-        needs_redraw = False
 
-        if isinstance(data.payload, ExtrinsicsPayload):
-            self._rvecs[cam_idx] = data.payload.rvec
-            self._tvecs[cam_idx] = data.payload.tvec
-            needs_redraw = True
-
-        elif isinstance(data.payload, IntrinsicsPayload):
-            self._cameras_matrices[cam_idx] = data.payload.camera_matrix
-            dist_len = len(data.payload.dist_coeffs)
-            self._dist_coeffs[cam_idx, :dist_len] = data.payload.dist_coeffs
-            needs_redraw = True
-
-        elif isinstance(data.payload, DetectionPayload):
-            self.points_2d[data.camera_name] = data.payload.points2D
-            self.points_2d_ids[data.camera_name] = data.payload.pointsIDs
-            self._update_camera_gl(cam_idx, data.camera_name)
+        # Update internal data stores
+        payload = data.payload
+        if isinstance(payload, ExtrinsicsPayload) and payload.rvec is not None:
+            self._rvecs[cam_idx] = payload.rvec
+            self._tvecs[cam_idx] = payload.tvec
+        elif isinstance(payload, IntrinsicsPayload):
+            self._cameras_matrices[cam_idx] = payload.camera_matrix
+            dist_len = len(payload.dist_coeffs)
+            self._dist_coeffs[cam_idx, :dist_len] = payload.dist_coeffs
+        elif isinstance(payload, DetectionPayload):
+            # Just update the 2D point data for the specific camera
+            self.points_2d[data.camera_name] = payload.points2D
+            self.points_2d_ids[data.camera_name] = payload.pointsIDs
 
         # TODO: Triangulated board points
-        # Placeholder global 3D points update
         # elif isinstance(data.payload, TriangulatedPointsPayload):
-        #     self.board_points_3d = data.payload.points3D
-        #     self.board_points_3d_vis = data.payload.visibility_mask
-        #     self.update_3d_points()
-
-        if needs_redraw:
-            self.update_scene()
 
     def update_board_preview(self, board_params):
         max_w, max_h = 100, 100
+
         board_img = board_params.to_image((max_w * 2, max_w * 2))
         h, w = board_img.shape
         q_img = QImage(board_img.data, w, h, w, QImage.Format.Format_Grayscale8)
         pixmap = QPixmap.fromImage(q_img)
         bounded_pixmap = pixmap.scaled(max_w, max_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
         self.board_preview_label.setPixmap(bounded_pixmap)
 
     def _create_gl_items(self):
@@ -278,117 +280,88 @@ class Multiview3D(Base):
             self.view.addItem(self.camera_gl_items[cam_name]['optical_axis'])
             self.view.addItem(self.camera_gl_items[cam_name]['detections'])
 
+    @Slot()
     def update_scene(self):
+        """ Performs all calculations for the 3D scene and updates all GL items """
 
-        # # --- PROFILING CODE START ---
-        # profiler = cProfile.Profile()
-        # profiler.enable()
-        # # --- PROFILING CODE END ---
+        # Prepare data
+        all_E = extrinsics_matrix(self._rvecs, self._tvecs)
+        all_K = self._cameras_matrices
+        all_D = self._dist_coeffs
 
-        origin_name = self._mainwindow.coordinator._origin_camera_name
-
-        # --- Prepare Batched Data ---
-        # Note: self._rvecs and self._tvecs are already batched (5, 3)
-        all_E = extrinsics_matrix(self._rvecs, self._tvecs)  # (5, 4, 4)
-        all_K = self._cameras_matrices  # (5, 3, 3)
-        all_D = self._dist_coeffs  # (5, 14)
-
-        # --- Perform Batched Calculations ---
+        # Frustum corner points
         all_frustums_3d = back_projection_batched(
-            self._frustums_points2d,  # (5, 4, 2)
-            self._frustum_depth,  # scalar, will be broadcast
-            all_K,  # (5, 3, 3)
-            all_E,  # (5, 4, 4)
-            all_D  # (5, 14)
-        ) # (5, 4, 3)
+            self._frustums_points2d, self._frustum_depth, all_K, all_E, all_D
+        )
 
-        # same for the centers
-        # all_centers_3d = back_projection_batched(
-        #     self._centres_points2d,  # (5, 2) -> will be treated as (5, 1, 2)
-        #     self._frustum_depth,
-        #     all_K, all_E, all_D
-        # )
-        # # Result will be (5, 1, 3), so we squeeze it
-        # all_centers_3d = all_centers_3d.squeeze(axis=1)
+        # Frustum center points (for optical axes)
+        all_centers_3d = back_projection_batched(
+            self._centres_points2d, self._frustum_depth, all_K, all_E, all_D
+        ).squeeze(axis=1)
 
-        # TODO: Compute volume
-
-        # Loop through the results and update each camera's visualization
-        # This Python loop is fine because all the heavy math is already done
+        # Back-projected 2D detections
+        all_detections_3d = []
         for i, cam_name in enumerate(self._cameras_names):
-            # We pass the pre-computed 3D points for this specific camera to the update helper.
-            self._update_camera_gl(i, cam_name, frustum_points3d=all_frustums_3d[i])
+            ids = self.points_2d_ids.get(cam_name)
+            if ids is not None and len(ids) > 0:
+                # Use non-batched back-projection for variable-sized detections per camera
+                points3d = back_projection(
+                    self.points_2d[cam_name], self._frustum_depth * 0.95,
+                    all_K[i], all_E[i], all_D[i]
+                )
+                all_detections_3d.append(points3d)
+            else:
+                all_detections_3d.append(np.zeros((0, 3))) # empty array if no detections
 
-        # # --- PROFILING CODE START ---
-        # profiler.disable()
-        # stats = pstats.Stats(profiler).sort_stats('cumtime')  # Sort by cumulative time spent
-        # stats.print_stats(20)  # Print the top 20 time-consuming functions
-        # # --- PROFILING CODE END ---
+        # Update GL items
+        for i, cam_name in enumerate(self._cameras_names):
+            self._update_camera_gl(
+                cam_idx=i,
+                cam_name=cam_name,
+                extrinsics_mat=all_E[i],
+                frustum_points3d=all_frustums_3d[i],
+                center_point3d=all_centers_3d[i],
+                detection_points3d=all_detections_3d[i]
+            )
 
-    def _update_camera_gl(self, cam_idx: int, cam_name: str, frustum_points3d: np.ndarray):
-        """
-        Updates the data of existing GL items for a specific camera.
-        """
-        # Retrieve the persistent GL items for this camera
+    def _update_camera_gl(self,
+            cam_idx: int,
+            cam_name: str,
+            extrinsics_mat: jnp.ndarray,
+            frustum_points3d: jnp.ndarray,
+            center_point3d: jnp.ndarray,
+            detection_points3d: jnp.ndarray):
+
+        """ Dumb helper function. Only updates GL item data with pre-calculated 3D points
+        All points are rotated 180 degrees on Y for correct visualization """
+
+        if not np.all(np.isfinite(frustum_points3d)):
+            return
+
         gl_items = self.camera_gl_items[cam_name]
 
-        # --- We already have the frustum points, just rotate them for visualization ---
-        # The JAX rotation function is fast enough to be called in a loop.
+        # Rotate all incoming points for visualization
+        E_rot = rotate_extrinsics_matrix(extrinsics_mat, 180, axis='y')
+        cam_center_pos_rot = E_rot[:3, 3].reshape(1, -1)
         frustum_points3d_rot = rotate_points3d(frustum_points3d, 180, axis='y')
+        center_point3d_rot = rotate_points3d(center_point3d, 180, axis='y')
+        detection_points3d_rot = rotate_points3d(detection_points3d, 180, axis='y')
 
-        # --- We still need to calculate the camera's rotated center and axis ---
-        E = extrinsics_matrix(self._rvecs[cam_idx], self._tvecs[cam_idx])
-        E_rot = rotate_extrinsics_matrix(E, 180, axis='y')
-        center_pos = E_rot[:3, 3].reshape(1, -1)
+        # Update GL Items with new data
+        gl_items['center'].setData(pos=cam_center_pos_rot)
+        gl_items['frustum_mesh'].setMeshData(vertexes=frustum_points3d_rot)
+        gl_items['optical_axis'].setData(pos=np.vstack([cam_center_pos_rot, center_point3d_rot]))
+        gl_items['detections'].setData(pos=detection_points3d_rot)
+        gl_items['detections'].setVisible(detection_points3d_rot.shape[0] > 0)
 
-        # Calculate the optical axis endpoint
-        # Using the non-vmapped function for a single point
-        centre3d = back_projection(self._centres_points2d[cam_idx], self._frustum_depth,
-                                           self._cameras_matrices[cam_idx], E, self._dist_coeffs[cam_idx])
-        centre3d_rot = rotate_points3d(centre3d, 180, axis='y')
-
-        # --- Update GL Items with new data ---
-
-        # Update camera center scatter plot
-        gl_items['center'].setData(pos=center_pos)
-
-        # Update the frustum mesh, with a safety check
-        if frustum_points3d_rot.shape == (4, 3):
-            gl_items['frustum_mesh'].setMeshData(vertexes=frustum_points3d_rot)
-            gl_items['frustum_mesh'].setVisible(True)
-        else:
-            gl_items['frustum_mesh'].setVisible(False)
-
-        # Update the optical axis line
-        gl_items['optical_axis'].setData(pos=np.vstack([center_pos, centre3d_rot]))
-
-        # Update the lines from the camera center to the frustum corners
+        # Update frustum lines connecting center to corners
         line_verts = np.empty((8, 3))
-        if frustum_points3d_rot.shape == (4, 3):
-            line_verts[0:2] = np.vstack([center_pos, frustum_points3d_rot[0]])
-            line_verts[2:4] = np.vstack([center_pos, frustum_points3d_rot[1]])
-            line_verts[4:6] = np.vstack([center_pos, frustum_points3d_rot[2]])
-            line_verts[6:8] = np.vstack([center_pos, frustum_points3d_rot[3]])
-            gl_items['frustum_lines'].setData(pos=line_verts)
-            gl_items['frustum_lines'].setVisible(True)
-        else:
-            gl_items['frustum_lines'].setVisible(False)
+        line_verts[0:2] = np.vstack([cam_center_pos_rot, frustum_points3d_rot[0]])
+        line_verts[2:4] = np.vstack([cam_center_pos_rot, frustum_points3d_rot[1]])
+        line_verts[4:6] = np.vstack([cam_center_pos_rot, frustum_points3d_rot[2]])
+        line_verts[6:8] = np.vstack([cam_center_pos_rot, frustum_points3d_rot[3]])
 
-        # Update the 2D detections scatter plot (this logic remains the same)
-        ids = self.points_2d_ids.get(cam_name)  # Use .get for safety
-        if ids is not None and len(ids) > 0:
-            points2d_subset = self.points_2d[cam_name][:len(ids)]
-
-            # Use the single, non-vmapped back projection here too
-            points3d_detections = back_projection(points2d_subset, self._frustum_depth * 0.95,
-                                                          self._cameras_matrices[cam_idx], E,
-                                                          self._dist_coeffs[cam_idx])
-            points3d_rot = rotate_points3d(points3d_detections, 180, axis='y')
-
-            gl_items['detections'].setData(pos=points3d_rot)
-            gl_items['detections'].setVisible(True)
-        else:
-            gl_items['detections'].setVisible(False)
+        gl_items['frustum_lines'].setData(pos=line_verts)
 
     def update_3d_points(self):
         """

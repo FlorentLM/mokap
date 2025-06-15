@@ -1,7 +1,5 @@
-import time
 from collections import deque
 import numpy as np
-import cv2
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, Slot, Signal, QEvent
 from PySide6.QtWidgets import (QHBoxLayout, QWidget, QVBoxLayout, QGroupBox, QLabel,
@@ -9,10 +7,10 @@ from PySide6.QtWidgets import (QHBoxLayout, QWidget, QVBoxLayout, QGroupBox, QLa
                                QGraphicsRectItem, QGraphicsItemGroup)
 from mokap.gui.style.commons import *
 from mokap.gui.widgets import MAX_PLOT_X
-from mokap.gui.widgets.base import PreviewBase, FastImageItem
-from mokap.gui.workers.monocular import MonocularWorker
-from mokap.gui.workers.movement import MovementWorker
-from mokap.utils.datatypes import ErrorsPayload, CalibrationData, IntrinsicsPayload
+from mokap.gui.widgets.widgets_base import PreviewBase, FastImageItem
+from mokap.gui.workers.worker_monocular import MonocularWorker
+from mokap.gui.workers.worker_movement import MovementWorker
+from mokap.utils.datatypes import ErrorsPayload, CalibrationData, IntrinsicsPayload, ExtrinsicsPayload
 
 
 class Recording(PreviewBase):
@@ -59,8 +57,8 @@ class Recording(PreviewBase):
         crosshair_pen = pg.mkPen(color='w', style=Qt.DotLine)
         self.v_line = pg.InfiniteLine(angle=90, movable=False, pen=crosshair_pen)
         self.h_line = pg.InfiniteLine(angle=0, movable=False, pen=crosshair_pen)
-        self.v_line.setPos(self.source_shape[1] / 2)
-        self.h_line.setPos(self.source_shape[0] / 2)
+        self.v_line.setPos(self.source_shape_hw[1] / 2)
+        self.h_line.setPos(self.source_shape_hw[0] / 2)
 
         # we add them to the viewbox not the imageitem (they live on top of the image)
         self.view_box.addItem(self.v_line)
@@ -68,13 +66,13 @@ class Recording(PreviewBase):
 
         # Add the text labels
         self.recording_text = pg.TextItem(anchor=(0.5, 0), color=(255, 0, 0))
-        self.recording_text.setPos(self.source_shape[1] / 2, self.source_shape[0] / 2)
+        self.recording_text.setPos(self.source_shape_hw[1] / 2, self.source_shape_hw[0] / 2)
         self.recording_text.setHtml('<span style="font-size: 16pt; font-weight: bold;">[ ⬤ RECORDING ]</span>')
         self.view_box.addItem(self.recording_text)
         self.recording_text.hide()  # initially hidden
 
         self.warning_text = pg.TextItem(anchor=(0.5, 0), color=(255, 165, 0))
-        self.warning_text.setPos(self.source_shape[1] / 2, 10)
+        self.warning_text.setPos(self.source_shape_hw[1] / 2, 10)
         self.warning_text.setHtml('<span style="font-size: 16pt; font-weight: bold;">[ WARNING ]</span>')
         self.view_box.addItem(self.warning_text)
         self.warning_text.hide()  # also initially hidden
@@ -283,7 +281,7 @@ class Recording(PreviewBase):
             image_pos = self.view_box.mapSceneToView(scene_pos)
             mouse_x = image_pos.x()
             mouse_y = image_pos.y()
-            img_h, img_w = self.source_shape
+            img_h, img_w = self.source_shape_hw
             mouse_x = max(0, min(img_w, mouse_x))
             mouse_y = max(0, min(img_h, mouse_y))
             buttons = event.buttons()
@@ -397,20 +395,28 @@ class Recording(PreviewBase):
 
 
 class Monocular(PreviewBase):
+
     request_load = Signal(str)
     request_save = Signal(str)
 
     def __init__(self, camera, main_window_ref, board_params):
         super().__init__(camera, main_window_ref)
 
-        # Initialize reprojection error data for plotting
-        self.reprojection_errors = deque(maxlen=MAX_PLOT_X)
+        # Data stores for plotting
+        self.live_error_deque = deque(maxlen=MAX_PLOT_X)
+        self.historical_errors_data = []  # tuples of (index, mean, std)
 
         # The worker annotates the frame by itself so we keep a reference to the latest annotated frame
         self.annotated_frame = None
 
         # Registration is handled by MainControls
-        self._setup_worker(MonocularWorker(board_params, self.idx, self.name, self.source_shape))
+        self._setup_worker(MonocularWorker(
+            board_params=board_params,
+            cam_idx=self.idx,
+            cam_name=self.name,
+            img_width=self._source_width,
+            img_height=self._source_height
+        ))
 
         # Finish building the UI by calling the other constructors
         self._init_common_ui()
@@ -435,7 +441,7 @@ class Monocular(PreviewBase):
 
         # Overlay text
         self.computing_text = pg.TextItem(anchor=(0.5, 0.5), color=(255, 255, 255))
-        self.computing_text.setPos(self.source_shape[1] / 2, self.source_shape[0] / 2)
+        self.computing_text.setPos(self.source_shape_hw[1] / 2, self.source_shape_hw[0] / 2)
         self.computing_text.setHtml('<span style="font-size: 16pt; font-weight: bold;">Computing...</span>')
         self.view_box.addItem(self.computing_text)
         self.computing_text.hide()
@@ -487,12 +493,28 @@ class Monocular(PreviewBase):
         # Reprojection Error Plot
         self.error_plot = pg.PlotWidget(title="Reprojection Error")
         self.error_plot.setStyleSheet("background-color: black;")
-
         self.error_plot.setLabel('left', 'Error (pixels)')
-        self.error_plot.setLabel('bottom', 'Sample')
+        self.error_plot.setLabel('bottom', 'Frame / Sample Index')
         self.error_plot.showGrid(x=True, y=True)
-        self.error_plot_curve = self.error_plot.plot(pen=pg.mkPen(color='y', width=2))
         self.error_plot.setYRange(0.0, 5.0)
+        self.error_plot.addLegend()
+
+        # Curve for live, per-frame error
+        self.live_error_curve = self.error_plot.plot(
+            pen=pg.mkPen(color=col_yellow, width=1),
+            name="Live Error"
+        )
+
+        # Error bars for historical, accepted calibration results
+        self.historical_error_bars = pg.ErrorBarItem(
+            pen=pg.mkPen(color=col_green, width=2),
+            symbol='o',
+            symbolPen='w',
+            symbolBrush=col_green,
+            symbolSize=8,
+            name="Accepted Calibrations"
+        )
+        self.error_plot.addItem(self.historical_error_bars)
 
         self.video_container_layout.addWidget(self.error_plot, 1)
 
@@ -517,37 +539,71 @@ class Monocular(PreviewBase):
         layout.addWidget(calib_io_group)
 
     def _annotate_frame(self):
+        """
+        This is called at the high display rate. It overlays the latest
+        available annotation onto the latest available video frame
+        """
 
+        # first, ensure the display buffer has the latest video frame
+        if self._latest_frame is not None:
+            np.copyto(self._latest_display_frame, self._latest_frame)
+            self._latest_frame = None
+
+        # If the worker delivered a new annotated frame, we store it
+        # (the annotation frame is persistent)
         if self._worker_blocking:
             self.computing_text.setVisible(True)
             return
+        else:
+            self.computing_text.setVisible(False)
 
+        # if we have a valid annotation, copy it ON TOP of the display buffer
+        # Since the worker is throttled, this will be the same frame for several calls of _annotate_frame
+        # so it will look like it's lagging. It's fine for now
+        # TODO: trash the annotation function from the monocular tool, it should send raw data and we annotate here in an overlay
         if self.annotated_frame is not None:
-            # Case 2: The worker has delivered a new annotated frame
-            # display it immediately
             np.copyto(self._latest_display_frame, self.annotated_frame)
-
-            # Consume the frame so we only use it once
-            self.annotated_frame = None
-            return
-
-        # elif self._latest_frame is not None:
-        #     # No new annotated frame, but there's a fresh raw frame
-        #     np.copyto(self._latest_display_frame, self._latest_frame)
+            # we DON'T consume the annotated frame here (we reuse it until a new one arrives)
 
     @Slot(CalibrationData)
     def handle_payload(self, data: CalibrationData):
         """ Receives data from the main window's router """
 
-        if isinstance(data.payload, ErrorsPayload):
-            mean_error = np.mean(data.payload.errors)
-            self.reprojection_errors.append(mean_error)
-            self.error_plot_curve.setData(list(self.reprojection_errors))
-            self.load_save_message.setText(f"Intrinsics updated. Mean err: {mean_error:.3f} px")
+        payload = data.payload
 
-        elif isinstance(data.payload, IntrinsicsPayload):
+        if isinstance(payload, ErrorsPayload):
+            # This is a historical calibration result
+            errors = np.asarray(payload.errors)
+            if not np.all(np.isfinite(errors)):
+                return
+
+            mean_error = np.nanmean(errors)
+            std_error = np.nanstd(errors)
+
+            # Add new data point
+            calib_index = len(self.historical_errors_data)
+            self.historical_errors_data.append((calib_index, mean_error, std_error))
+
+            # Update the error bar plot
+            x_vals = [d[0] for d in self.historical_errors_data]
+            y_vals = [d[1] for d in self.historical_errors_data]
+            std_vals = [d[2] for d in self.historical_errors_data]
+            self.historical_error_bars.setData(x=np.array(x_vals), y=np.array(y_vals), top=np.array(std_vals),
+                                               bottom=np.array(std_vals))
+
+            self.load_save_message.setText(f"Intrinsics updated. Mean err: {mean_error:.3f} px (std: {std_error:.3f})")
+
+        elif isinstance(payload, ExtrinsicsPayload):
+            # This is a live, per-frame error update
+            # pyqtgraph handles nans (with gaps) just fine when pose estimation fails
+            error_value = payload.error if payload.error is not None else np.nan
+            self.live_error_deque.append(error_value)
+            self.live_error_curve.setData(list(self.live_error_deque))
+
+        elif isinstance(payload, IntrinsicsPayload):
+            # this comes from loading a file
+            # TODO: It can also come from refined intrinsics from the multiview tool
             self.load_save_message.setText(f"Intrinsics updated from {data.camera_name}.")
-        # Extrinsics are handled by the worker for visualization, no UI update needed here
 
     def on_save_parameters(self):
         file_path, _ = QFileDialog.getSaveFileName(
@@ -561,13 +617,18 @@ class Monocular(PreviewBase):
 
     @Slot(np.ndarray)
     def on_worker_result(self, annotated_frame):
-        # This is where the worker sends back the fully annotated frame
+        # This is where the worker sends back the fully annotated frame at the slow processing rate
         self.annotated_frame = annotated_frame
 
     def on_clear_intrinsics(self):
-        # Clear plot
-        self.reprojection_errors.clear()
-        self.error_plot_curve.setData(self.reprojection_errors)
+        # Clear plot data stores
+        self.live_error_deque.clear()
+        self.historical_errors_data.clear()
+
+        # Update plots with empty data
+        self.live_error_curve.clear()
+        self.historical_error_bars.setData(x=np.array([]), y=np.array([]))
+
         # Clear text
         self.load_save_message.setText('')
 
