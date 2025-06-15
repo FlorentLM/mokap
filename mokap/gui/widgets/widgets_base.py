@@ -6,7 +6,8 @@ import numpy as np
 import cv2
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, QSize, Slot, QPoint, QRectF
 from PySide6.QtGui import QImage
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGroupBox, QStatusBar, QToolButton, QGraphicsObject
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGroupBox, QStatusBar, QToolButton, \
+    QGraphicsObject, QSizePolicy
 import pyqtgraph as pg
 from numpy.typing import ArrayLike
 
@@ -164,7 +165,7 @@ class Base(QWidget, SnapMixin):
         self.timer_slow.stop()
 
 
-class PreviewBase(Base):
+class LiveViewBase(Base):
 
     # frame_received = Signal(np.ndarray, dict)   # frame and metadata
     send_frame = Signal(np.ndarray, int)
@@ -283,6 +284,7 @@ class PreviewBase(Base):
         main_layout.addWidget(self.video_container)
 
         self.BOTTOM_PANEL = QWidget()
+        self.BOTTOM_PANEL.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         bottom_panel_v_layout = QVBoxLayout(self.BOTTOM_PANEL)
         bottom_panel_v_layout.setContentsMargins(0, 0, 0, 0)
         bottom_panel_v_layout.setSpacing(0)
@@ -526,6 +528,9 @@ class PreviewBase(Base):
             self._warning = False
             self._capture_fps_deque.clear()
 
+            if self._video_initialised:
+                self._clear_display()
+
         # temp = self._camera.temperature
         # temp_state = self._camera.temperature_state
         #
@@ -570,6 +575,14 @@ class PreviewBase(Base):
         if not self._video_initialised:
             self.view_box.autoRange()
             self._video_initialised = True
+
+    def _clear_display(self):
+        """ Clears the video display to black and resets the initialization flag """
+
+        self._latest_display_frame.fill(0)
+        self.image_item.setImageData(self._latest_display_frame)
+
+        self._video_initialised = False
 
     #  ============= Qt method overrides =============
     def closeEvent(self, event):

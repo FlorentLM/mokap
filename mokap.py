@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 import sys
-from mokap.core.manager import MultiCam
 from mokap.gui import QApplication, MainControls, QMessageBox
+from mokap.core.manager import MultiCam
 from mokap.utils import fileio
 
 def main():

@@ -1,6 +1,6 @@
 import os
-import subprocess
 import sys
+import subprocess
 from functools import partial
 from typing import Tuple
 import psutil
@@ -11,38 +11,17 @@ from PySide6.QtWidgets import (QMainWindow, QVBoxLayout, QWidget, QFrame, QHBoxL
                                QComboBox, QPushButton, QSizePolicy, QGroupBox, QLineEdit, QScrollArea,
                                QCheckBox, QGraphicsView, QGraphicsScene, QTextEdit, QStatusBar,
                                QProgressBar, QFileDialog, QApplication, QDialog, QGraphicsRectItem, QGraphicsTextItem)
+from mokap.gui import GUI_LOGGER
 from mokap.gui.style.commons import *
-from mokap.gui.widgets import DEFAULT_BOARD, GUI_LOGGER, SLOW_UPDATE_INTERVAL
+from mokap.gui.widgets import DEFAULT_BOARD, SLOW_UPDATE_INTERVAL
 from mokap.gui.widgets.widgets_base import SnapMixin
 from mokap.gui.widgets.dialogs import BoardParamsDialog
-from mokap.gui.widgets.windows_live_views import Monocular, Recording
-from mokap.gui.widgets.window_3d_view import Multiview3D
+from mokap.gui.widgets.windows_live_views import CalibrationLiveView, RecordingLiveView
+from mokap.gui.widgets.window_central_calib import CentralCalibrationWindow
 from mokap.gui.workers.coordinator import CalibrationCoordinator
 from mokap.gui.workers.worker_multiview import MultiviewWorker
 from mokap.utils import hex_to_hls, pretty_size
 from mokap.utils.datatypes import CalibrationData, IntrinsicsPayload, ExtrinsicsPayload
-
-
-class GUILogger:
-    def __init__(self):
-        self.text_area = None
-        self._temp_output = ''
-        sys.stdout = self
-        sys.stderr = self
-
-    def register_text_area(self, text_area):
-        self.text_area = text_area
-        self.text_area.insertPlainText(self._temp_output)
-
-    def write(self, text):
-        if self.text_area is None:
-            # Temporarily capture console output to display later in the log widget
-            self._temp_output += f'{text}'
-        else:
-            self.text_area.insertPlainText(text)
-
-    def flush(self):
-        pass
 
 
 class MainControls(QMainWindow, SnapMixin):
@@ -51,10 +30,12 @@ class MainControls(QMainWindow, SnapMixin):
         super().__init__()
 
         self.setWindowTitle('Controls')
-        if GUI_LOGGER:
-            self.gui_logger = GUILogger()
-        else:
-            self.gui_logger = False
+
+        # Heights for the collapsible log panel
+        self._compact_height = 0
+        self._expanded_height = 0
+
+        self.gui_logger = GUI_LOGGER
 
         self.manager = manager
 
@@ -127,56 +108,63 @@ class MainControls(QMainWindow, SnapMixin):
         raise ValueError(f"Could not find camera with unique_id '{unique_id}' in the manager's list.")
 
     def init_gui(self):
-        self.MAIN_LAYOUT = QVBoxLayout()
-        self.MAIN_LAYOUT.setContentsMargins(5, 5, 5, 5)
-        self.MAIN_LAYOUT.setSpacing(5)
+
+        # Main Layout and central widget setup
+        # ------------------------------------
+        self.main_layout = QVBoxLayout()
+        self.main_layout.setContentsMargins(5, 5, 5, 5)
+        self.main_layout.setSpacing(5)
 
         central_widget = QWidget()
-        central_widget.setLayout(self.MAIN_LAYOUT)
+        central_widget.setLayout(self.main_layout)
         self.setCentralWidget(central_widget)
 
+        # Create the top (fixed) and bottom (collapsible) containers
+        # -----------------------------------------------------------
+
+        top_container = QWidget()
+        top_layout = QVBoxLayout(top_container)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(5)
+
+        bottom_container = QWidget()
+        bottom_layout = QVBoxLayout(bottom_container)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.setSpacing(5)
+        bottom_container.setVisible(False)  # the entire bottom section starts hidden
+
+        # Populate top container
+        # (Toolbar, Acquisition group, Display group)
+        # -------------------------------------------
+
+        # Toolbar
         toolbar = QFrame()
         toolbar.setFixedHeight(38)
         toolbar_layout = QHBoxLayout(toolbar)
         toolbar_layout.setContentsMargins(3, 0, 3, 0)
-
-        # Mode switch
         mode_label = QLabel('Mode: ')
         toolbar_layout.addWidget(mode_label)
-
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(['Recording', 'Calibration'])
         self.mode_combo.currentIndexChanged.connect(self._toggle_calib_record)
-        toolbar_layout.addWidget(self.mode_combo, 1)    # 1 unit
-        toolbar_layout.addStretch(2)    # spacing of 2 units
-
-        # Exit button
+        toolbar_layout.addWidget(self.mode_combo, 1)
+        toolbar_layout.addStretch(2)
         self.button_exit = QPushButton("Exit (Esc)")
         self.button_exit.clicked.connect(self.quit)
         self.button_exit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.button_exit.setStyleSheet(f"background-color: {col_red}; color: {col_white};")
         toolbar_layout.addWidget(self.button_exit)
+        top_layout.addWidget(toolbar)
 
-        self.MAIN_LAYOUT.addWidget(toolbar)
-        # End toolbar
-
-        # Main content
+        # Main content widget (Acquisition and Display panes)
         maincontent = QWidget()
         maincontent_layout = QHBoxLayout(maincontent)
 
+        # Left pane (Acquisition)
         left_pane = QGroupBox("Acquisition")
         left_pane.setMinimumWidth(400)
         left_pane_layout = QVBoxLayout(left_pane)
-        maincontent_layout.addWidget(left_pane, 4)
 
-        right_pane = QGroupBox("Display")
-        right_pane.setMinimumWidth(300)
-        right_pane_layout = QVBoxLayout(right_pane)
-        maincontent_layout.addWidget(right_pane, 3)
-
-        self.MAIN_LAYOUT.addWidget(maincontent)
-
-        # LEFT HALF
         f_name_and_path = QWidget()
         f_name_and_path_layout = QVBoxLayout(f_name_and_path)
         f_name_and_path_layout.setContentsMargins(0, 0, 0, 0)
@@ -184,18 +172,19 @@ class MainControls(QMainWindow, SnapMixin):
 
         line_1 = QWidget()
         line_1_layout = QHBoxLayout(line_1)
-
         acquisition_label = QLabel('Name: ')
         line_1_layout.addWidget(acquisition_label)
 
         self.acq_name_textbox = QLineEdit()
         self.acq_name_textbox.setDisabled(True)
         self.acq_name_textbox.setPlaceholderText("yymmdd-hhmm")
+
         line_1_layout.addWidget(self.acq_name_textbox, 1)
 
         self.acq_name_edit_btn = QPushButton("Edit")
         self.acq_name_edit_btn.setCheckable(True)
         self.acq_name_edit_btn.clicked.connect(self._toggle_text_editing)
+
         line_1_layout.addWidget(self.acq_name_edit_btn)
 
         f_name_and_path_layout.addWidget(line_1)
@@ -206,13 +195,14 @@ class MainControls(QMainWindow, SnapMixin):
         self.save_dir_current = QLabel()
         self.save_dir_current.setStyleSheet(f"color: {col_darkgray};")
         self.save_dir_current.setWordWrap(True)
+
         folderpath_label_font = QFont()
         folderpath_label_font.setPointSize(10)
         self.save_dir_current.setFont(folderpath_label_font)
+
         line_2_layout.addWidget(self.save_dir_current, 1)
 
         self.save_dir_current.setText(f'{self.manager.full_path.resolve()}')
-
         f_name_and_path_layout.addWidget(line_2)
 
         line_3 = QWidget()
@@ -220,14 +210,12 @@ class MainControls(QMainWindow, SnapMixin):
 
         self.button_open_folder = QPushButton("Open folder")
         self.button_open_folder.clicked.connect(self.open_session_folder)
+
         line_3_layout.addStretch(2)
         line_3_layout.addWidget(self.button_open_folder)
 
         f_name_and_path_layout.addWidget(line_3)
-
         left_pane_layout.addWidget(f_name_and_path, 1)
-
-        # Buttons
         f_buttons = QWidget()
         f_buttons_layout = QVBoxLayout(f_buttons)
         f_buttons_layout.setContentsMargins(3, 0, 3, 0)
@@ -236,6 +224,7 @@ class MainControls(QMainWindow, SnapMixin):
         self.button_acquisition.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.button_acquisition.setCheckable(True)
         self.button_acquisition.clicked.connect(self._toggle_acquisition)
+
         f_buttons_layout.addWidget(self.button_acquisition, 1)
 
         self.button_snapshot = QPushButton("Snapshot")
@@ -243,6 +232,7 @@ class MainControls(QMainWindow, SnapMixin):
         self.button_snapshot.clicked.connect(self._take_snapshot)
         self.button_snapshot.setIcon(icon_snapshot_bw)
         self.button_snapshot.setDisabled(True)
+
         f_buttons_layout.addWidget(self.button_snapshot, 1)
 
         self.button_recpause = QPushButton("Not recording (Space to toggle)")
@@ -251,11 +241,17 @@ class MainControls(QMainWindow, SnapMixin):
         self.button_recpause.clicked.connect(self._toggle_recording)
         self.button_recpause.setIcon(icon_rec_bw)
         self.button_recpause.setDisabled(True)
+
         f_buttons_layout.addWidget(self.button_recpause, 1)
 
         left_pane_layout.addWidget(f_buttons, 2)
+        maincontent_layout.addWidget(left_pane, 4)
 
-        # RIGHT HALF
+        # Right pane (Display)
+        right_pane = QGroupBox("Display")
+        right_pane.setMinimumWidth(300)
+        right_pane_layout = QVBoxLayout(right_pane)
+
         live_previews = QGroupBox('Live previews')
         live_previews_layout = QVBoxLayout(live_previews)
 
@@ -268,12 +264,12 @@ class MainControls(QMainWindow, SnapMixin):
         windows_list_frame.setStyleSheet('border: none; background-color: #00000000;')
         windows_list_frame.setWidget(windows_list_widget)
         windows_list_frame.setWidgetResizable(True)
+
         live_previews_layout.addWidget(windows_list_frame)
 
         right_pane_layout.addWidget(live_previews)
 
         self.secondary_windows_visibility_buttons = []
-
         for i in range(self.nb_cams):
             vis_checkbox = QCheckBox(f"Camera {i}")
             vis_checkbox.setChecked(True)
@@ -286,61 +282,73 @@ class MainControls(QMainWindow, SnapMixin):
         monitors_frame_layout = QVBoxLayout(monitors_frame)
 
         right_pane_layout.addWidget(monitors_frame)
-
         self.monitors_buttons = QGraphicsView()
         self.monitors_buttons_scene = QGraphicsScene()
+
         monitors_frame_layout.setContentsMargins(3, 3, 3, 3)
         monitors_frame_layout.setSpacing(5)
 
         self.monitors_buttons.setStyleSheet("border: none; background-color: #00000000")
         self.monitors_buttons.setScene(self.monitors_buttons_scene)
-        if 'Darwin' in platform.system():
+
+        if 'Darwin' in sys.platform:
             self.monitors_buttons.viewport().setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents, False)
 
         monitors_frame_layout.addWidget(self.monitors_buttons)
 
         self.autotile_button = QPushButton("Auto-tile windows")
         self.autotile_button.clicked.connect(self.autotile_windows)
+
         monitors_frame_layout.addWidget(self.autotile_button)
+        maincontent_layout.addWidget(right_pane, 3)
 
-        # LOG PANEL
-        if self.gui_logger:
-            log_button = QPushButton('Show log')
-            log_button.setCheckable(True)
-            log_button.setChecked(False)
-            log_button.setMaximumWidth(80)
-            self.MAIN_LAYOUT.addWidget(log_button)
+        top_layout.addWidget(maincontent)
 
-            log_text_area = QTextEdit()
-            log_text_area.setFont(QFont('consolas', 9))
-            log_text_area.setDisabled(True)
-            log_text_area.setVisible(False)
-            self.MAIN_LAYOUT.addWidget(log_text_area)
+        # Populate the bottom container (Log)
+        # ------------------------------------
+        self.log_text_area = QTextEdit()
+        self.log_text_area.setFont(QFont('consolas', 9))
+        self.log_text_area.setReadOnly(True)
+        self.log_text_area.setMinimumHeight(150)
+        bottom_layout.addWidget(self.log_text_area)
+        self.gui_logger.register_text_area(self.log_text_area)
 
-            log_button.clicked.connect(log_text_area.setVisible)
+        # Add containers and controls to the main layout
+        # ----------------------------------------------
+        self.main_layout.addWidget(top_container)
 
-            self.gui_logger.register_text_area(log_text_area)
+        # Log Button acts as the separator/controller
+        self.log_button = QPushButton('Show log ▼')
+        self.log_button.setMaximumWidth(100)
+        self.log_button.clicked.connect(lambda: bottom_container.setVisible(not bottom_container.isVisible()))
+        self.log_button.clicked.connect(self.adjustSize)
+        self.main_layout.addWidget(self.log_button)
 
-        # Status bar
+        self.main_layout.addWidget(bottom_container)
+
+        # Status Bar
         statusbar = QStatusBar()
         self.setStatusBar(statusbar)
 
         mem_pressure_label = QLabel('Memory pressure: ')
-        mem_pressure_label.setStyleSheet(f"background-color: {'#00000000'}")
+        mem_pressure_label.setStyleSheet("background-color: transparent;")
+
         statusbar.addWidget(mem_pressure_label)
 
         self._mem_pressure_bar = QProgressBar()
         self._mem_pressure_bar.setMaximum(100)
-        statusbar.addWidget(self._mem_pressure_bar)
 
+        statusbar.addWidget(self._mem_pressure_bar)
         self.frames_saved_label = QLabel()
-        # self.frames_saved_label.setText(f'Saved frames: {self.manager.saved} (0 bytes)')
-        self.frames_saved_label.setText(f'Saved: (0 bytes)')
-        self.frames_saved_label.setStyleSheet(f"background-color: {'#00000000'}")
+        self.frames_saved_label.setText('Saved: (0 bytes)')
+        self.frames_saved_label.setStyleSheet("background-color: transparent;")
         statusbar.addPermanentWidget(self.frames_saved_label)
 
-        # Now that the UI is ready, refresh the monitors buttons
-        self._update_monitors_buttons()
+        # Finalize layout and initial size
+        # --------------------------------
+        self.main_layout.addStretch(1)  # add stretch to the very end to push statusbar down
+        self.adjustSize()  # set initial compact size
+        self.setFixedSize(self.size())  # lock the initial size
 
     @Slot(CalibrationData)
     def route_payload_to_widgets(self, data: CalibrationData):
@@ -348,7 +356,7 @@ class MainControls(QMainWindow, SnapMixin):
 
         # Route to the specific monocular window
         for w in self.video_windows:
-            if isinstance(w, Monocular) and w.name == target_name:
+            if isinstance(w, CalibrationLiveView) and w.name == target_name:
                 w.handle_payload(data)
                 break
 
@@ -406,10 +414,26 @@ class MainControls(QMainWindow, SnapMixin):
 
         self.manager.disconnect_cameras()
 
+        self.gui_logger.restore()
+
         # close the main window and exit the application
-        # self.timer_slow.stop()
+        self.timer_slow.stop()
         self.close()
         QApplication.instance().quit()
+
+    @Slot()
+    def toggle_log_panel(self):
+
+        if self.log_text_area.isVisible():
+            self.log_text_area.setVisible(False)
+            self.setMinimumHeight(0)  # unlock height constraint temporarily
+            self.setFixedHeight(self._compact_height)
+            self.log_button.setText('Show log ▼')
+        else:
+            self.setMinimumHeight(0)  # Unlock height constraint
+            self.setFixedHeight(self._expanded_height)
+            self.log_text_area.setVisible(True)
+            self.log_button.setText('Hide log ▲')
 
     #  ============= General toggles =============
     def _toggle_calib_record(self):
@@ -437,31 +461,40 @@ class MainControls(QMainWindow, SnapMixin):
         else:
             pass
 
-    def _toggle_text_editing(self, override=None):
+    def _toggle_text_editing(self, checked: bool):
 
-        if override is None:
-            override = self.is_editing
-
-        if not self.is_editing and override is True:
+        if checked:
             self.acq_name_textbox.setDisabled(False)
             self.acq_name_edit_btn.setText('Set')
-            self.is_editing = False
-
-        elif self.is_editing and override is False:
+            self.acq_name_textbox.setFocus()
+            self.is_editing = True
+        else:
             self.acq_name_textbox.setDisabled(True)
             self.acq_name_edit_btn.setText('Edit')
             self.manager.session_name = self.acq_name_textbox.text()
             self.save_dir_current.setText(f'{self.manager.full_path.resolve()}')
-            self.is_editing = True
+            self.is_editing = False
 
-    def _toggle_acquisition(self, override=None):
+    def _toggle_acquisition(self, checked: bool):
 
-        if override is None:
-            override = not self.manager.acquiring
+        if checked:
+            self.manager.on()
 
-        # If we're currently acquiring, then we should stop
-        if self.manager.acquiring and override is False:
+            self.save_dir_current.setText(f'{self.manager.full_path.resolve()}')
+
+            self.button_acquisition.setText("Acquiring")
+            self.button_acquisition.setIcon(icon_capture)
+            self.button_snapshot.setDisabled(False)
+            self.acq_name_edit_btn.setDisabled(True)  # disable name editing
+
+            if not self.is_calibrating:
+                self.button_recpause.setDisabled(False)
+
+        else:
+            # Ensure recording is stopped first
             self._toggle_recording(False)
+            self.button_recpause.setChecked(False)  # also update the button's visual state
+
             self.manager.off()
 
             # Reset Acquisition folder name
@@ -472,44 +505,31 @@ class MainControls(QMainWindow, SnapMixin):
             self.button_acquisition.setIcon(icon_capture_bw)
             self.button_snapshot.setDisabled(True)
             self.button_recpause.setDisabled(True)
+            self.acq_name_edit_btn.setDisabled(False)  # re-enable name editing
 
             # Re-enable the framerate sliders when acquisition stops
             if self.manager.hardware_triggered and not self.is_calibrating:
                 for w in self.video_windows:
-                    if isinstance(w, Recording):  # Make sure it's the right window type
+                    if isinstance(w, RecordingLiveView):
                         w.camera_controls_sliders['framerate'].setDisabled(False)
 
-        elif not self.manager.acquiring and override is True:
+    def _toggle_recording(self, checked: bool):
 
-            self.manager.on()
+        if not self.manager.acquiring:
+            return
 
-            self.save_dir_current.setText(f'{self.manager.full_path.resolve()}')
-
-            self.button_acquisition.setText("Acquiring")
-            self.button_acquisition.setIcon(icon_capture)
-            self.button_snapshot.setDisabled(False)
-
-            if not self.is_calibrating:
-                self.button_recpause.setDisabled(False)
-
-    def _toggle_recording(self, override=None):
-
-        if override is None:
-            override = not self.manager.recording
-
-        # If we're currently recording, then we should stop
-        if self.manager.acquiring:
-
-            if self.manager.recording and override is False:
+        if checked:
+            self.manager.record()
+            self.button_recpause.setText("Recording... (Space to toggle)")
+            self.button_recpause.setIcon(icon_rec_on)
+            self.is_recording = True
+        else:
+            if self.manager.recording:  # only pause if we are actually recording
                 self.manager.pause()
-                self.button_recpause.setText("Not recording (Space to toggle)")
-                self.button_recpause.setIcon(icon_rec_bw)
-                self._is_recording = False
-            elif not self.manager.recording and override is True:
-                self.manager.record()
-                self.button_recpause.setText("Recording... (Space to toggle)")
-                self.button_recpause.setIcon(icon_rec_on)
-                self._is_recording = True
+
+            self.button_recpause.setText("Not recording (Space to toggle)")
+            self.button_recpause.setIcon(icon_rec_bw)
+            self.is_recording = False
 
     def _take_snapshot(self):
         """ Takes an instantaneous snapshot from all cameras """
@@ -710,7 +730,7 @@ class MainControls(QMainWindow, SnapMixin):
         if self.is_calibrating:
 
             # Create the 3D visualization window first
-            self.opengl_window = Multiview3D(self)
+            self.opengl_window = CentralCalibrationWindow(self)
             self.opengl_window.show()
 
             # now that the window exists, set the board params and get the origin camera name
@@ -743,11 +763,11 @@ class MainControls(QMainWindow, SnapMixin):
         for i, cam in enumerate(self.manager.cameras):
             if self.is_calibrating:
                 # Pass the global board_params
-                w = Monocular(cam, self, self.board_params)
+                w = CalibrationLiveView(cam, self, self.board_params)
                 # Register the monocular worker with the coordinator
                 self.coordinator.register_worker(w.worker)
             else:
-                w = Recording(cam, self)
+                w = RecordingLiveView(cam, self)
 
             self.video_windows.append(w)
             self.secondary_windows_visibility_buttons[i].setText(f" {w.name.title()} camera")

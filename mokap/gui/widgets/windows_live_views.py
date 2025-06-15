@@ -8,13 +8,13 @@ from PySide6.QtWidgets import (QHBoxLayout, QWidget, QVBoxLayout, QGroupBox, QLa
                                QGraphicsRectItem, QGraphicsItemGroup)
 from mokap.gui.style.commons import *
 from mokap.gui.widgets import MAX_PLOT_X, DISPLAY_INTERVAL
-from mokap.gui.widgets.widgets_base import PreviewBase, FastImageItem
+from mokap.gui.widgets.widgets_base import LiveViewBase, FastImageItem
 from mokap.gui.workers.worker_monocular import MonocularWorker
 from mokap.gui.workers.worker_movement import MovementWorker
 from mokap.utils.datatypes import ErrorsPayload, CalibrationData, IntrinsicsPayload, ExtrinsicsPayload, DetectionPayload
 
 
-class Recording(PreviewBase):
+class RecordingLiveView(LiveViewBase):
 
     def __init__(self, camera, main_window_ref):
         super().__init__(camera, main_window_ref)
@@ -396,7 +396,7 @@ class Recording(PreviewBase):
             setattr(self._camera, label, value)
 
 
-class Monocular(PreviewBase):
+class CalibrationLiveView(LiveViewBase):
 
     request_load = Signal(str)
     request_save = Signal(str)

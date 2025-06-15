@@ -1,16 +1,20 @@
+import cv2
 from PySide6.QtCore import Signal, Qt, Slot
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import QHBoxLayout, QFrame, QVBoxLayout, QGroupBox, QGridLayout, QLabel, QComboBox, QPushButton
+from PySide6.QtWidgets import QHBoxLayout, QFrame, QVBoxLayout, QGroupBox, QGridLayout, QLabel, QComboBox, QPushButton, \
+    QSpinBox, QDoubleSpinBox, QFileDialog, QWidget
 from pyqtgraph.opengl import GLGridItem, GLViewWidget, GLScatterPlotItem, GLLinePlotItem, GLMeshItem, MeshData
 import numpy as np
 import jax.numpy as jnp
 from mokap.gui.style.commons import *
+from mokap.gui.widgets import BOARD_TYPES
 from mokap.gui.widgets.widgets_base import Base
 from mokap.utils import hex_to_rgb
+from mokap.utils.datatypes import CharucoBoard, ChessBoard
 from mokap.utils.geometry.transforms import rotate_points3d, rotate_extrinsics_matrix
 
 
-class Multiview3D(Base):
+class CentralCalibrationWindow(Base):
 
     request_board_settings = Signal()
     request_load_calibration = Signal()
@@ -30,6 +34,8 @@ class Multiview3D(Base):
         self._cam_colours_rgba_norm = {cam: col / 255
                                        for cam, col in self._cam_colours_rgba.items()}
         self._sources_shapes = self._mainwindow.sources_shapes
+
+        self.is_editing_board = False
 
         # Data stores for dynamic points
         self.max_board_points = self._mainwindow.board_params.object_points().shape[0]
@@ -114,65 +120,142 @@ class Multiview3D(Base):
         # Create a vertical control panel on the right
         control_panel = QFrame()
         control_panel.setFrameShape(QFrame.StyledPanel)
-        control_panel.setMaximumWidth(250)
+        control_panel.setMaximumWidth(320)
         panel_layout = QVBoxLayout(control_panel)
         main_layout.addWidget(control_panel)
 
-        # Group for calibration controls
+        # Group 1: Main controls
         controls_group = QGroupBox("Controls")
-        controls_layout = QGridLayout()
-        controls_group.setLayout(controls_layout)
-
+        controls_layout = QGridLayout(controls_group)
         controls_layout.addWidget(QLabel("Stage:"), 0, 0)
+
         self.calibration_stage_combo = QComboBox()
         self.calibration_stage_combo.addItems(['Intrinsics', 'Extrinsics'])
         self.calibration_stage_combo.currentIndexChanged.connect(self._mainwindow.coordinator.set_stage)
-        controls_layout.addWidget(self.calibration_stage_combo, 0, 1)
 
+        controls_layout.addWidget(self.calibration_stage_combo, 0, 1)
         controls_layout.addWidget(QLabel("Origin Cam:"), 1, 0)
+
         self.origin_camera_combo = QComboBox()
         self.origin_camera_combo.addItems(self._cameras_names)
         self.origin_camera_combo.currentTextChanged.connect(self._mainwindow.coordinator.set_origin_camera)
+
         controls_layout.addWidget(self.origin_camera_combo, 1, 1)
 
-        self.run_ba_button = QPushButton("Refine")
-        self.run_ba_button.setStyleSheet(
-            f"background-color: {col_darkgreen}; color: {col_white};")
+        self.run_ba_button = QPushButton("Refine All")
+        self.run_ba_button.setStyleSheet(f"background-color: {col_darkgreen}; color: {col_white};")
+
         controls_layout.addWidget(self.run_ba_button, 2, 0, 1, 2)
         panel_layout.addWidget(controls_group)
 
-        # Group for Board and I/O controls
-        io_group = QGroupBox("Global Settings")
-        io_layout = QVBoxLayout(io_group)
+        # Group 2: Board settings
+        board_group = QGroupBox("Board Settings")
+        board_layout = QGridLayout(board_group)
+        board_layout.setColumnStretch(1, 1)  # Give controls column priority
 
-        # board preview
+        # Board preview
         self.board_preview_label = QLabel()
         self.board_preview_label.setAlignment(Qt.AlignCenter)
-        io_layout.addWidget(self.board_preview_label)
+        self.board_preview_label.setFixedSize(100, 100)
+        self.board_preview_label.setStyleSheet("background-color: transparent; border: none;")
+        board_layout.addWidget(self.board_preview_label, 0, 2, 6, 1)
 
-        self.board_settings_button = QPushButton("Edit board")
-        self.board_settings_button.clicked.connect(self.request_board_settings)
-        io_layout.addWidget(self.board_settings_button)
+        # Board Type
+        board_layout.addWidget(QLabel("Type:"), 0, 0, 1, 2)
+        self.board_type_combo = QComboBox()
+        self.board_type_combo.addItems(BOARD_TYPES.keys())
+        self.board_type_combo.setDisabled(True)
+        board_layout.addWidget(self.board_type_combo, 0, 1, 1, 1)
 
-        self.load_calib_button = QPushButton("Load calibration")
+        # Rows and Cols in a single horizontal layout
+        board_layout.addWidget(QLabel("Grid (RxC):"), 1, 0)
+        grid_widget = QWidget()
+        grid_widget_layout = QHBoxLayout(grid_widget)
+        grid_widget_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.rows_spin = QSpinBox()
+        self.rows_spin.setRange(2, 30)
+        self.rows_spin.setDisabled(True)
+
+        grid_widget_layout.addWidget(self.rows_spin)
+        grid_widget_layout.addWidget(QLabel("x"))
+
+        self.cols_spin = QSpinBox()
+        self.cols_spin.setRange(2, 30)
+        self.cols_spin.setDisabled(True)
+
+        grid_widget_layout.addWidget(self.cols_spin)
+        board_layout.addWidget(grid_widget, 1, 1)
+
+        # Square Length
+        board_layout.addWidget(QLabel("Square (cm):"), 2, 0)
+        self.sq_len_spin = QDoubleSpinBox()
+        self.sq_len_spin.setRange(0.01, 1000.0)
+        self.sq_len_spin.setDecimals(2)
+        self.sq_len_spin.setSingleStep(0.1)
+        self.sq_len_spin.setDisabled(True)
+        board_layout.addWidget(self.sq_len_spin, 2, 1)
+
+        # Markers size
+        self.marker_size_label = QLabel("Marker Size:")
+        self.marker_size_spin = QComboBox()
+        self.marker_size_spin.addItems(["4", "5", "6", "7"])
+        self.marker_size_spin.setDisabled(True)
+        board_layout.addWidget(self.marker_size_label, 3, 0)
+        board_layout.addWidget(self.marker_size_spin, 3, 1)
+
+        # Margin
+        self.margin_label = QLabel("Margin (bits):")
+        self.margin_spin = QSpinBox()
+        self.margin_spin.setRange(1, 10)
+        self.margin_spin.setDisabled(True)
+        board_layout.addWidget(self.margin_label, 4, 0)
+        board_layout.addWidget(self.margin_spin, 4, 1)
+
+        # Padding
+        self.padding_label = QLabel("Padding (bits):")
+        self.padding_spin = QSpinBox()
+        self.padding_spin.setRange(0, 10)
+        self.padding_spin.setDisabled(True)
+        board_layout.addWidget(self.padding_label, 5, 0)
+        board_layout.addWidget(self.padding_spin, 5, 1)
+
+        # Edit/Apply and Print buttons
+        self.edit_board_button = QPushButton("Edit Board")
+        self.edit_board_button.setCheckable(True)
+        self.edit_board_button.clicked.connect(self._toggle_board_editing)
+        board_layout.addWidget(self.edit_board_button, 6, 0, 1, 3)
+
+        self.print_board_button = QPushButton("Print Board...")
+        self.print_board_button.clicked.connect(self._on_print_board)
+        board_layout.addWidget(self.print_board_button, 7, 0, 1, 3)
+        panel_layout.addWidget(board_group)
+
+        # Group 3: Calibration files I/O
+        io_group = QGroupBox("Calibration I/O")
+        io_layout = QVBoxLayout(io_group)
+
+        self.load_calib_button = QPushButton("Load from File...")
         self.load_calib_button.clicked.connect(self.request_load_calibration)
         io_layout.addWidget(self.load_calib_button)
 
-        self.save_calib_button = QPushButton("Save calibration")
+        self.save_calib_button = QPushButton("Save to File...")
         self.save_calib_button.clicked.connect(self.request_save_calibration)
         io_layout.addWidget(self.save_calib_button)
-
         panel_layout.addWidget(io_group)
 
-        panel_layout.addStretch()        # Pushes everything to the top
+        # Final UI setup
+        panel_layout.addStretch()
 
-        # If landscape screen
+        self.board_type_combo.currentTextChanged.connect(self._update_board_ui_visibility)
+        self._update_board_ui_from_params()
+
+        # Set initial window size
         if self._mainwindow.selected_monitor.height < self._mainwindow.selected_monitor.width:
             h = w = self._mainwindow.selected_monitor.height // 2
         else:
             h = w = self._mainwindow.selected_monitor.width // 2
-
-        self.resize(h, w)
+        self.resize(w, h)
         self.show()
 
     def update_scene_single_camera(self, cam_idx: int):
@@ -184,15 +267,140 @@ class Multiview3D(Base):
         self.update_scene()
 
     def update_board_preview(self, board_params):
-        max_w, max_h = 100, 100
 
-        board_img = board_params.to_image((max_w * 2, max_w * 2))
+        max_w, max_h = 98, 98 # a bit smaller than the label to account for border
+
+        board_img = board_params.to_image((max_w, max_h))
+
+        if len(board_img.shape) == 3:
+            board_img = cv2.cvtColor(board_img, cv2.COLOR_BGR2GRAY)
+
         h, w = board_img.shape
         q_img = QImage(board_img.data, w, h, w, QImage.Format.Format_Grayscale8)
         pixmap = QPixmap.fromImage(q_img)
-        bounded_pixmap = pixmap.scaled(max_w, max_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.board_preview_label.setPixmap(pixmap)
 
-        self.board_preview_label.setPixmap(bounded_pixmap)
+    def _update_board_ui_from_params(self):
+        """ Populates the UI spinboxes with values from the current board object """
+
+        board = self._mainwindow.board_params
+
+        # Block all signals
+        for widget in [self.board_type_combo, self.rows_spin, self.cols_spin, self.sq_len_spin, self.marker_size_spin,
+                       self.margin_spin, self.padding_spin]:
+            widget.blockSignals(True)
+
+        self.board_type_combo.setCurrentText(board.kind.title())
+        self.rows_spin.setValue(board.rows)
+        self.cols_spin.setValue(board.cols)
+        self.sq_len_spin.setValue(board.square_length)
+
+        if isinstance(board, CharucoBoard):
+            self.marker_size_spin.setCurrentText(str(board.markers_size))
+            self.margin_spin.setValue(board.margin)
+            self.padding_spin.setValue(board.padding)
+
+        # Unblock all signals
+        for widget in [self.board_type_combo, self.rows_spin, self.cols_spin, self.sq_len_spin, self.marker_size_spin,
+                       self.margin_spin, self.padding_spin]:
+            widget.blockSignals(False)
+
+        self.update_board_preview(board)  # update the preview image
+        self._update_board_ui_visibility()
+
+    def _toggle_board_editing(self, checked: bool):
+
+        self.is_editing_board = checked
+
+        widgets_to_toggle = [
+            self.board_type_combo, self.rows_spin, self.cols_spin,
+            self.sq_len_spin, self.marker_size_spin, self.margin_spin,
+            self.padding_spin
+        ]
+        for widget in widgets_to_toggle:
+            widget.setEnabled(checked)
+
+        if checked:
+            self.edit_board_button.setText("Apply Changes")
+            self.edit_board_button.setStyleSheet(f"background-color: {col_orange};")
+        else:
+            self.edit_board_button.setText("Edit Board")
+            self.edit_board_button.setStyleSheet("")
+            self._on_board_params_changed()
+
+    def _update_board_ui_visibility(self):
+        """ Shows or hides the ChArUco-specific parameter widgets """
+
+        # TODO: This will need to be a bit smarter for different board types
+
+        is_charuco = self.board_type_combo.currentText() == "ChArUco"
+
+        self.marker_size_label.setVisible(is_charuco)
+        self.marker_size_spin.setVisible(is_charuco)
+        self.margin_label.setVisible(is_charuco)
+        self.margin_spin.setVisible(is_charuco)
+        self.padding_label.setVisible(is_charuco)
+        self.padding_spin.setVisible(is_charuco)
+
+    @Slot()
+    def _on_board_params_changed(self):
+        """ Creates a new board object from the UI and updates the system """
+
+        board_class = BOARD_TYPES[self.board_type_combo.currentText()]
+
+        try:
+            if board_class == CharucoBoard:
+                new_board = CharucoBoard(
+                    rows=self.rows_spin.value(),
+                    cols=self.cols_spin.value(),
+                    square_length=self.sq_len_spin.value(),
+                    markers_size=int(self.marker_size_spin.currentText()),
+                    margin=self.margin_spin.value(),
+                    padding=self.padding_spin.value()
+                )
+            else:
+                new_board = ChessBoard(
+                    rows=self.rows_spin.value(),
+                    cols=self.cols_spin.value(),
+                    square_length=self.sq_len_spin.value()
+                )
+
+            self._mainwindow.board_params = new_board
+            self._mainwindow.coordinator.handle_board_change(new_board)
+            self.update_board_preview(new_board)  # update preview on successful change
+            print("[INFO] Board parameters applied successfully.")
+
+        except Exception as e:
+            print(f"[ERROR] Could not create board with new parameters: {e}")
+            self._update_board_ui_from_params()
+
+    @Slot()
+    def _on_print_board(self):
+        """ Opens a dialog to save the current board as a printable SVG file """
+        board = self._mainwindow.board_params
+
+        # Suggest a filename based on board parameters
+        if isinstance(board, CharucoBoard):
+            suggested_name = f'Charuco_{board.rows}x{board.cols}_sq{board.square_length}cm_mk{board.marker_length}cm.svg'
+        else:
+            suggested_name = f'Chessboard_{board.rows}x{board.cols}_sq{board.square_length}cm.svg'
+
+        # Open file dialog
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Printable Board",
+            str(Path.home() / suggested_name),  # start in user's home directory
+            "SVG Files (*.svg)"
+        )
+
+        if file_path:
+            try:
+                save_dir = Path(file_path).parent
+                board.to_file(save_dir)
+                print(f"Successfully saved printable board to {save_dir}")
+
+            except Exception as e:
+                print(f"[ERROR] Could not save board to file: {e}")
 
     def _create_gl_items(self):
 
