@@ -1,3 +1,5 @@
+from typing import Union
+
 import cv2
 from PySide6.QtCore import Signal, Qt, Slot
 from PySide6.QtGui import QImage, QPixmap
@@ -220,14 +222,25 @@ class CentralCalibrationWindow(Base):
         board_layout.addWidget(self.padding_label, 5, 0)
         board_layout.addWidget(self.padding_spin, 5, 1)
 
-        # Edit/Apply and Print buttons
+        # Edit/Apply button
         self.edit_board_button = QPushButton("Edit Board")
         self.edit_board_button.setCheckable(True)
-        self.edit_board_button.clicked.connect(self._toggle_board_editing)
+        self.edit_board_button.clicked.connect(self._apply_board)
         board_layout.addWidget(self.edit_board_button, 6, 0, 1, 3)
 
+        # Print button
         self.print_board_button = QPushButton("Print Board...")
         self.print_board_button.clicked.connect(self._on_print_board)
+
+        # connection for live preview updates
+        self.board_type_combo.currentTextChanged.connect(self._slot_refresh_board_ui)
+        self.rows_spin.valueChanged.connect(self._slot_refresh_board_ui)
+        self.cols_spin.valueChanged.connect(self._slot_refresh_board_ui)
+        self.sq_len_spin.valueChanged.connect(self._slot_refresh_board_ui)
+        self.marker_size_spin.currentTextChanged.connect(self._slot_refresh_board_ui)
+        self.margin_spin.valueChanged.connect(self._slot_refresh_board_ui)
+        self.padding_spin.valueChanged.connect(self._slot_refresh_board_ui)
+
         board_layout.addWidget(self.print_board_button, 7, 0, 1, 3)
         panel_layout.addWidget(board_group)
 
@@ -247,8 +260,7 @@ class CentralCalibrationWindow(Base):
         # Final UI setup
         panel_layout.addStretch()
 
-        self.board_type_combo.currentTextChanged.connect(self._update_board_ui_visibility)
-        self._update_board_ui_from_params()
+        self._refresh_board_ui(self._mainwindow.board_params)
 
         # Set initial window size
         if self._mainwindow.selected_monitor.height < self._mainwindow.selected_monitor.width:
@@ -266,59 +278,87 @@ class CentralCalibrationWindow(Base):
         # just call the full update for now
         self.update_scene()
 
-    def update_board_preview(self, board_params):
+    def _create_board(self) -> Union[CharucoBoard, ChessBoard, None]:
+        """ Reads UI widgets and returns a new board object, or None on failure """
 
-        max_w, max_h = 98, 98 # a bit smaller than the label to account for border
+        board_class = BOARD_TYPES[self.board_type_combo.currentText()]
+        try:
+            if board_class == CharucoBoard:
+                return CharucoBoard(
+                    rows=self.rows_spin.value(), cols=self.cols_spin.value(),
+                    square_length=self.sq_len_spin.value(),
+                    markers_size=int(self.marker_size_spin.currentText()),
+                    margin=self.margin_spin.value(), padding=self.padding_spin.value()
+                )
+            else:
+                return ChessBoard(
+                    rows=self.rows_spin.value(), cols=self.cols_spin.value(),
+                    square_length=self.sq_len_spin.value()
+                )
+        except Exception as e:
+            print(f"[DEBUG] Failed to create board from UI: {e}")
+            return None
 
-        board_img = board_params.to_image((max_w, max_h))
+    @Slot()
+    def _slot_refresh_board_ui(self):
+        """ A small wrapper slot for calling _refresh_board_ui """
+        if self.is_editing_board:
+            board = self._create_board()
+            if board:
+                self._refresh_board_ui(board)
 
-        if len(board_img.shape) == 3:
-            board_img = cv2.cvtColor(board_img, cv2.COLOR_BGR2GRAY)
+    def _refresh_board_ui(self, board: Union[CharucoBoard, ChessBoard]):
+        """ Updates all UI elements to reflect the state of the given board object """
 
-        h, w = board_img.shape
-        q_img = QImage(board_img.data, w, h, w, QImage.Format.Format_Grayscale8)
-        pixmap = QPixmap.fromImage(q_img)
-        self.board_preview_label.setPixmap(pixmap)
-
-    def _update_board_ui_from_params(self):
-        """ Populates the UI spinboxes with values from the current board object """
-
-        board = self._mainwindow.board_params
-
-        # Block all signals
-        for widget in [self.board_type_combo, self.rows_spin, self.cols_spin, self.sq_len_spin, self.marker_size_spin,
-                       self.margin_spin, self.padding_spin]:
-            widget.blockSignals(True)
+        for w in [self.board_type_combo, self.rows_spin, self.cols_spin, self.sq_len_spin, self.marker_size_spin,
+                  self.margin_spin, self.padding_spin]:
+            w.blockSignals(True)
 
         self.board_type_combo.setCurrentText(board.kind.title())
         self.rows_spin.setValue(board.rows)
         self.cols_spin.setValue(board.cols)
         self.sq_len_spin.setValue(board.square_length)
 
-        if isinstance(board, CharucoBoard):
+        is_charuco = isinstance(board, CharucoBoard)
+
+        if is_charuco:
             self.marker_size_spin.setCurrentText(str(board.markers_size))
             self.margin_spin.setValue(board.margin)
             self.padding_spin.setValue(board.padding)
 
-        # Unblock all signals
-        for widget in [self.board_type_combo, self.rows_spin, self.cols_spin, self.sq_len_spin, self.marker_size_spin,
-                       self.margin_spin, self.padding_spin]:
-            widget.blockSignals(False)
+        for w in [self.board_type_combo, self.rows_spin, self.cols_spin, self.sq_len_spin, self.marker_size_spin,
+                  self.margin_spin, self.padding_spin]:
+            w.blockSignals(False)
 
-        self.update_board_preview(board)  # update the preview image
-        self._update_board_ui_visibility()
+        # Update widget visibility
+        for w in [self.marker_size_label, self.marker_size_spin, self.margin_label, self.margin_spin,
+                  self.padding_label, self.padding_spin]:
+            w.setVisible(is_charuco)
 
-    def _toggle_board_editing(self, checked: bool):
+        # Update preview image with aspect ratio correction
+        aspect_ratio = board.cols / board.rows
+        preview_h, max_w = 100, 120
+        preview_w = int(preview_h * aspect_ratio)
+        if preview_w > max_w:
+            preview_w, preview_h = max_w, int(max_w / aspect_ratio)
 
+        self.board_preview_label.setFixedSize(preview_w, preview_h)
+        board_img = board.to_image((preview_w * 2, preview_h * 2))
+        if len(board_img.shape) == 3:
+            board_img = cv2.cvtColor(board_img, cv2.COLOR_BGR2GRAY)
+        q_img = QImage(board_img.data, board_img.shape[1], board_img.shape[0], board_img.shape[1],
+                       QImage.Format.Format_Grayscale8)
+        self.board_preview_label.setPixmap(
+            QPixmap.fromImage(q_img).scaled(preview_w, preview_h, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+    @Slot(bool)
+    def _apply_board(self, checked: bool):
+        """ Handles the 'Edit Board' / 'Apply Changes' button """
         self.is_editing_board = checked
 
-        widgets_to_toggle = [
-            self.board_type_combo, self.rows_spin, self.cols_spin,
-            self.sq_len_spin, self.marker_size_spin, self.margin_spin,
-            self.padding_spin
-        ]
-        for widget in widgets_to_toggle:
-            widget.setEnabled(checked)
+        for w in [self.board_type_combo, self.rows_spin, self.cols_spin, self.sq_len_spin, self.marker_size_spin,
+                  self.margin_spin, self.padding_spin]:
+            w.setEnabled(checked)
 
         if checked:
             self.edit_board_button.setText("Apply Changes")
@@ -326,53 +366,18 @@ class CentralCalibrationWindow(Base):
         else:
             self.edit_board_button.setText("Edit Board")
             self.edit_board_button.setStyleSheet("")
-            self._on_board_params_changed()
 
-    def _update_board_ui_visibility(self):
-        """ Shows or hides the ChArUco-specific parameter widgets """
+            new_board = self._create_board()
+            if new_board:
+                # Commit successful changes to the system
+                self._mainwindow.board_params = new_board
+                self._mainwindow.coordinator.handle_board_change(new_board)
+                print("[INFO] Board parameters applied successfully.")
 
-        # TODO: This will need to be a bit smarter for different board types
-
-        is_charuco = self.board_type_combo.currentText() == "ChArUco"
-
-        self.marker_size_label.setVisible(is_charuco)
-        self.marker_size_spin.setVisible(is_charuco)
-        self.margin_label.setVisible(is_charuco)
-        self.margin_spin.setVisible(is_charuco)
-        self.padding_label.setVisible(is_charuco)
-        self.padding_spin.setVisible(is_charuco)
-
-    @Slot()
-    def _on_board_params_changed(self):
-        """ Creates a new board object from the UI and updates the system """
-
-        board_class = BOARD_TYPES[self.board_type_combo.currentText()]
-
-        try:
-            if board_class == CharucoBoard:
-                new_board = CharucoBoard(
-                    rows=self.rows_spin.value(),
-                    cols=self.cols_spin.value(),
-                    square_length=self.sq_len_spin.value(),
-                    markers_size=int(self.marker_size_spin.currentText()),
-                    margin=self.margin_spin.value(),
-                    padding=self.padding_spin.value()
-                )
             else:
-                new_board = ChessBoard(
-                    rows=self.rows_spin.value(),
-                    cols=self.cols_spin.value(),
-                    square_length=self.sq_len_spin.value()
-                )
-
-            self._mainwindow.board_params = new_board
-            self._mainwindow.coordinator.handle_board_change(new_board)
-            self.update_board_preview(new_board)  # update preview on successful change
-            print("[INFO] Board parameters applied successfully.")
-
-        except Exception as e:
-            print(f"[ERROR] Could not create board with new parameters: {e}")
-            self._update_board_ui_from_params()
+                # On failure, revert UI to last known good state
+                print("[ERROR] Could not apply board settings. Reverting UI.")
+                self._refresh_board_ui(self._mainwindow.board_params)
 
     @Slot()
     def _on_print_board(self):

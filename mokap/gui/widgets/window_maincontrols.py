@@ -733,9 +733,6 @@ class MainControls(QMainWindow, SnapMixin):
             self.opengl_window = CentralCalibrationWindow(self)
             self.opengl_window.show()
 
-            # now that the window exists, set the board params and get the origin camera name
-            self.opengl_window.update_board_preview(self.board_params)
-
             self.opengl_window.request_board_settings.connect(self.show_global_board_dialog)
             self.opengl_window.request_load_calibration.connect(self.on_load_calibration)
 
