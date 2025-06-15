@@ -144,7 +144,7 @@ class Recording(PreviewBase):
             line_layout.setContentsMargins(1, 1, 1, 1)
             line_layout.setSpacing(2)
 
-            param_value = getattr(self._camera, label)
+            param_value = getattr(self._camera, label) or 0
 
             slider_label = QLabel(f'{label.title()}:')
             slider_label.setFixedWidth(70)

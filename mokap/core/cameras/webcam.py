@@ -148,8 +148,7 @@ class WebcamCamera(AbstractCamera):
 
     @property
     def exposure(self) -> float:
-        val = self._get_cv2_property(cv2.CAP_PROP_EXPOSURE)
-        return val if val is not None else 0.0
+        return self._get_cv2_property(cv2.CAP_PROP_EXPOSURE)
 
     @exposure.setter
     def exposure(self, value: float):
@@ -158,8 +157,7 @@ class WebcamCamera(AbstractCamera):
 
     @property
     def gain(self) -> float:
-        val = self._get_cv2_property(cv2.CAP_PROP_GAIN)
-        return val if val is not None else 0.0
+        return self._get_cv2_property(cv2.CAP_PROP_GAIN)
 
     @gain.setter
     def gain(self, value: float):
@@ -168,8 +166,7 @@ class WebcamCamera(AbstractCamera):
 
     @property
     def blacks(self) -> float:
-        val = self._get_cv2_property(cv2.CAP_PROP_BRIGHTNESS)
-        return val if val is not None else 0.0
+        return self._get_cv2_property(cv2.CAP_PROP_BRIGHTNESS)
 
     @blacks.setter
     def blacks(self, value: float):
@@ -178,8 +175,7 @@ class WebcamCamera(AbstractCamera):
 
     @property
     def gamma(self) -> float:
-        val = self._get_cv2_property(cv2.CAP_PROP_GAMMA)
-        return val if val is not None else 0.0
+        return self._get_cv2_property(cv2.CAP_PROP_GAMMA)
 
     @gamma.setter
     def gamma(self, value: float):
@@ -188,8 +184,7 @@ class WebcamCamera(AbstractCamera):
 
     @property
     def framerate(self) -> float:
-        val = self._get_cv2_property(cv2.CAP_PROP_FPS)
-        return val if val is not None else 0.0
+        return self._get_cv2_property(cv2.CAP_PROP_FPS)
 
     @framerate.setter
     def framerate(self, value: float):
@@ -236,21 +231,22 @@ class WebcamCamera(AbstractCamera):
     # --- These are likely unsupported by all webcams, but we need to implement them ---
 
     @property
-    def binning(self) -> int:
-        return 1
+    def binning(self) -> Optional[int]:
+        return None
 
     @binning.setter
     def binning(self, value: int):
-        if value != 1:
-            print('[Warning] Webcams do not support hardware binning.')
+        print('[Warning] Webcams do not support hardware binning. Ignoring.')
+        pass
 
     @property
-    def binning_mode(self) -> str:
-        return 'N/A'
+    def binning_mode(self) -> Optional[str]:
+        return None
 
     @binning_mode.setter
     def binning_mode(self, value: str):
-        print('[Warning] Webcams do not support hardware binning.')
+        print('[Warning] Webcams do not support hardware binning. Ignoring.')
+        pass
 
     @property
     def temperature(self) -> Optional[float]:

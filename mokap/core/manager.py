@@ -20,6 +20,11 @@ from mokap.core.writers import FrameWriter, ImageSequenceWriter, FFmpegWriter
 from mokap.utils import fileio
 from mokap.utils.system import setup_ulimit
 
+METADATA_KEYS = {
+# which keys from the main config are relevant to a recording session
+    'framerate', 'gain', 'blacks', 'exposure', 'roi', 'pixel_format',
+    'binning', 'save_format', 'save_quality', 'hardware_trigger'
+}
 
 class MultiCam:
     """
@@ -92,6 +97,10 @@ class MultiCam:
         self._latest_frame_locks: List[Lock] = [Lock() for _ in self.cameras]
 
         self._writer_queues: List[Queue] = [Queue(maxsize=buffer_size) for _ in self.cameras]
+
+        # Keep track of writer instances and their parameters to build final metadata
+        self._writers: List[Optional[FrameWriter]] = [None] * self.nb_cameras
+        self._session_encoding_params: List[Dict] = [{} for _ in self.cameras]
 
         self._finished_saving_events: List[Event] = [Event() for _ in self.cameras]
         for event in self._finished_saving_events:
@@ -285,19 +294,22 @@ class MultiCam:
             print("[WARN] Already recording.")
             return
 
+        # Prepare a lean configuration snapshot for this session
+        session_config = {
+            key: self.config[key] for key in METADATA_KEYS if key in self.config
+        }
+
         # Prepare metadata for this new session
         session_metadata = {
             'start_timestamp': datetime.now().timestamp(),
             'end_timestamp': None,
-            'duration': 0.0,
-            'config': self.config,  # Store a snapshot of the config
-            'cameras': {cam.unique_id: {
-                'name': cam.name,
-                'model': CameraFactory.get_camera_info(cam.unique_id)['model'],
-                'frames_recorded': 0
-            } for cam in self.cameras
-            }
+            'duration_seconds': 0.0,
+            'requested_framerate': self._trigger_framerate,
+            'total_frames_recorded': 0,
+            'session_config': session_config,
+            'cameras': {}  # This will be populated in pause_recording
         }
+
         self._metadata['sessions'].append(session_metadata)
 
         # Reset the frame counters for the new session
@@ -323,13 +335,52 @@ class MultiCam:
         for event in self._finished_saving_events:
             event.wait(timeout=5.0)
 
-        # Update metadata with final counts
+        # Update metadata with final counts, timestamps, and calculated values
         session_idx = len(self._metadata['sessions']) - 1
         current_session = self._metadata['sessions'][session_idx]
-        # Read the counts that the writer threads have reported back
+
+        # timestamps and duration
+        start_ts = current_session['start_timestamp']
+        end_ts = datetime.now().timestamp()
+        duration = end_ts - start_ts if end_ts > start_ts else 0.0
+
+        current_session['end_timestamp'] = end_ts
+        current_session['duration_seconds'] = round(duration, 4)
+        current_session['total_frames_recorded'] = sum(self._session_frame_counts)
+
+        cameras_data = {}
+        global_config = current_session.get('session_config', {})
+
         for i, cam in enumerate(self.cameras):
-            count = self._session_frame_counts[i]
-            current_session['cameras'][cam.unique_id]['frames_recorded'] = count
+            frames = self._session_frame_counts[i]
+            actual_fps = (frames / duration) if duration > 0 else 0.0
+
+            # Find the actual settings that differ from the global config
+            overrides = {}
+            for param in METADATA_KEYS:
+                if hasattr(cam, param):
+                    actual_value = getattr(cam, param)
+                    global_value = global_config.get(param)
+
+                    # Store the parameter if it differs from the global setting
+                    if actual_value is not None and actual_value != 'N/A' and actual_value != global_value:
+                        overrides[param] = actual_value
+
+            # Build the final data block for this camera
+            cam_data_block = {
+                'serial': cam.unique_id,
+                'model': CameraFactory.get_camera_info(cam.unique_id)['model'],
+                'frames_recorded': frames,
+                'actual_framerate': round(actual_fps, 2),
+                'encoding': self._session_encoding_params[i]
+            }
+
+            # Only add the overrides key if there were any actual differences
+            if overrides:
+                cam_data_block['settings_overrides'] = overrides
+
+            cameras_data[cam.name] = cam_data_block
+        current_session['cameras'] = cameras_data
 
         self.save_metadata()
 
@@ -405,11 +456,11 @@ class MultiCam:
         """
         cam = self.cameras[cam_idx]
         queue = self._writer_queues[cam_idx]
-        writer: Optional[FrameWriter] = None
+        self._writers[cam_idx] = None
 
         while self._acquiring:
             # State A - Waiting to start a new recording session
-            if self._recording and writer is None:
+            if self._recording and self._writers[cam_idx] is None:
                 self._finished_saving_events[cam_idx].clear()
 
                 try:
@@ -417,7 +468,8 @@ class MultiCam:
 
                     # Now that we have a frame, create the writer
                     session_idx = len(self._metadata['sessions']) - 1
-                    writer = self._create_writer(cam, session_idx)
+                    self._writers[cam_idx] = self._create_writer(cam, session_idx)
+                    writer = self._writers[cam_idx]
 
                     if not self._silent:
                         print(f"[INFO] Writer for {cam.name} created: {type(writer).__name__}")
@@ -440,6 +492,7 @@ class MultiCam:
                     continue
 
             # State B - Actively writing frames
+            writer = self._writers[cam_idx]
             if self._recording and writer:
                 try:
                     frame, metadata = queue.get(timeout=1.0)
@@ -459,20 +512,28 @@ class MultiCam:
                     except Empty:
                         break
 
-                # Now close the writer
+                # Now close the writer and report back its info
                 self._session_frame_counts[cam_idx] = writer.frame_count
+                self._session_encoding_params[cam_idx] = writer.encoding_params
                 writer.close()
-                writer = None  # set writer to None to signal it's closed
+                self._writers[cam_idx] = None  # set writer to None to signal it's closed
                 self._finished_saving_events[cam_idx].set()
 
             # State D - Idle, not recording
-            if not self._recording and writer is None:
+            if not self._recording and self._writers[cam_idx] is None:
                 # To prevent this thread from busy-waiting, we can sleep
                 time.sleep(0.1)
 
     def _create_writer(self, cam: AbstractCamera, session_idx: int) -> FrameWriter:
         """ Factory method to instantiate the correct writer based on config """
-        save_format = self.config.get('save_format', 'mp4')
+
+        # Get the camera-specific config, if it exists
+        cam_config = self.config.get('sources', {}).get(cam.name, {})
+
+        # Check for a per-camera override, otherwise use the global setting
+        save_format = cam_config.get('save_format', self.config.get('save_format', 'mp4'))
+        save_quality = cam_config.get('save_quality', self.config.get('save_quality', 90))
+
         base_path = self.full_path / f"{self.session_name}_{cam.name}_session{session_idx}"
 
         # Common parameters for all writers
@@ -498,7 +559,7 @@ class MultiCam:
             return ImageSequenceWriter(
                 folder=base_path,
                 ext=save_format,
-                quality=self.config.get('save_quality', 90),
+                quality=save_quality,
                 pixel_format=cam.pixel_format,
                 **writer_params
             )

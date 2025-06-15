@@ -24,6 +24,14 @@ class FrameWriter(ABC):
         self.pixel_format = pixel_format
         self.frame_count = 0
 
+        # Each writer subclass must define its specific encoding parameters (for metadata logging)
+        self._encoding_params: Dict[str, Any] = {}
+
+    @property
+    def encoding_params(self) -> Dict[str, Any]:
+        """ Returns the specific encoding parameters used by this writer instance """
+        return self._encoding_params
+
     def write(self, frame: np.ndarray, metadata: Dict[str, Any]):
         """
         Writes a single frame
@@ -59,8 +67,14 @@ class ImageSequenceWriter(FrameWriter):
         super().__init__(folder, **kwargs)
 
         self.ext = ext.lstrip('.').lower()
-        self.quality = quality
+        self.quality = int(quality)
         self._imwrite_params = []
+
+        # Store the specific parameters for metadata logging
+        self._encoding_params = {
+            'format': 'images',
+            'extension': self.ext,
+        }
 
         # Determine if the chosen format supports 16-bit depth
         self._supports_16bit = self.ext in ('png', 'tif', 'tiff')
@@ -68,6 +82,7 @@ class ImageSequenceWriter(FrameWriter):
         # Configure OpenCV save parameters based on extension and quality
         if self.ext in ('jpg', 'jpeg'):
             # For JPEG, the quality parameter is a direct 0-100 scale
+            self._encoding_params['quality'] = int(self.quality)
             self._imwrite_params = [cv2.IMWRITE_JPEG_QUALITY, int(self.quality)]
 
         elif self.ext == 'png':
@@ -80,6 +95,7 @@ class ImageSequenceWriter(FrameWriter):
             # Low Quality (0) -> High Compression (9) -> Slower write, smaller file
             #
             compression_level = int(np.round(np.interp(self.quality, [0, 100], [9, 1])))
+            self._encoding_params['compression'] = compression_level
             self._imwrite_params = [cv2.IMWRITE_PNG_COMPRESSION, compression_level]
             print(f"[INFO] ImageSequenceWriter: PNG quality {self.quality} mapped to compression level {compression_level}.")
 
@@ -90,12 +106,19 @@ class ImageSequenceWriter(FrameWriter):
             if self.quality >= 95:
                 # Use value 1 for no compression (ZLIB would be 8)
                 self._imwrite_params = [cv2.IMWRITE_TIFF_COMPRESSION, 1]
+                self._encoding_params['lossless'] = True
                 print(f"[INFO] ImageSequenceWriter: TIFF quality {self.quality} >= 95. Using no compression.")
 
             else:
                 # Use JPEG compression (value 7) and pass the quality setting
                 self._imwrite_params = [cv2.IMWRITE_TIFF_COMPRESSION, 7, cv2.IMWRITE_JPEG_QUALITY, int(self.quality)]
+                self._encoding_params['lossless'] = False
+                self._encoding_params['quality'] = int(self.quality)
                 print(f"[INFO] ImageSequenceWriter: TIFF quality {self.quality} < 95. Using JPEG compression inside TIFF.")
+
+        elif self.ext in ('bmp'):
+            self._encoding_params['lossless'] = True
+            print(f"[INFO] ImageSequenceWriter: BMP. Lossless.")
 
         # Ensure the output directory exists
         self.filepath.mkdir(parents=True, exist_ok=True)
@@ -176,6 +199,15 @@ class FFmpegWriter(FrameWriter):
         # Determine if we use CPU or GPU
         param_key = self._get_platform_param_key(use_gpu)
         encoder_params = params.get(param_key)
+
+        # --- ADDED ---
+        # Store the specific parameters for metadata logging
+        self._encoding_params = {
+            'format': 'ffmpeg_video',
+            'encoder_profile': param_key,
+            'encoder_options': encoder_params
+        }
+        # --- END ADDED ---
 
         if not encoder_params:
             raise ValueError(f"FFmpeg parameters for '{param_key}' not found in config.")
