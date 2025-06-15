@@ -8,15 +8,16 @@ VERBOSE = True
 DEFAULT_BOARD = CharucoBoard(rows=6, cols=5, square_length=1.5, markers_size=4)
 # DEFAULT_BOARD = ChessBoard(rows=6, cols=5, square_length=1.5)
 # DEFAULT_BOARD.to_file(Path.home())
+# TODO: Add a "print board" button to GUI
 
 def do_nothing():
     print('Nothing')
 
-SLOW_UPDATE = 5.0   # update texts and other things only 5 times per second
+SLOW_UPDATE = 15.0
 SLOW_UPDATE_INTERVAL = 1.0 / SLOW_UPDATE
 
-DISPLAY_FRAMERATE = 60.0    # video previews should update at 60 fps
+DISPLAY_FRAMERATE = 50.0
 DISPLAY_INTERVAL = 1.0 / DISPLAY_FRAMERATE
 
-PROCESSING_FRAMERATE = 15.0 # let's process at... 15 Hz ?
+PROCESSING_FRAMERATE = 15.0     # let's process at... idk, 15 Hz?
 PROCESSING_INTERVAL = 1.0 / PROCESSING_FRAMERATE

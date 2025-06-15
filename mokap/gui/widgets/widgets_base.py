@@ -160,6 +160,10 @@ class Base(QWidget, SnapMixin):
         """ Subclasses can override if they need more timers """
         self.timer_slow.start(int(SLOW_UPDATE_INTERVAL * 1000))
 
+    def _stop_timers(self):
+        """ Subclasses can override if they need more timers """
+        self.timer_slow.stop()
+
 
 class PreviewBase(Base):
 
@@ -249,7 +253,6 @@ class PreviewBase(Base):
         self.send_frame.connect(self.worker.handle_frame, type=Qt.QueuedConnection)
 
         # Receive results and state from worker
-        self.worker.annotations.connect(self.on_worker_result)
         self.worker.finished.connect(self.on_worker_finished)
         self.worker.blocking.connect(self.blocking_toggle)
 
@@ -466,10 +469,12 @@ class PreviewBase(Base):
 
         # If a new frame has arrived since the last processing tick, send it.
         if self._latest_frame is not None:
-            # We send the RAW latest frame for processing
-            frame_to_process = self._latest_frame.copy()
+
+            frame_to_process = self._latest_frame # no copy here
             frame_number = self._current_frame_metadata.get('frame_number', -1)
 
+            # we send the *reference* to the latest frame
+            # the worker is responsible for copying it (only if it needs to modify it)
             self.send_frame.emit(frame_to_process, frame_number)
             self._worker_busy = True
 
@@ -521,28 +526,33 @@ class PreviewBase(Base):
                 self._last_polled_values[param] = current_value
 
         if self._mainwindow.manager.acquiring:
-            brightness = np.round(self._latest_display_frame.mean() / 255 * 100, decimals=2)
-            self.brightness_value.setText(f"{brightness:.2f}%")
+            h, w, _ = self._latest_display_frame.shape
+            if w > 0:
+                scale = 100 / w
+                thumbnail_h = int(h * scale)
+                thumbnail = cv2.resize(self._latest_display_frame, (100, thumbnail_h), interpolation=cv2.INTER_AREA)
+                brightness = np.round(thumbnail.mean() / 255 * 100, decimals=2)
+                self.brightness_value.setText(f"{brightness:.2f}%")
         else:
             self.capturefps_value.setText("Off")
             self.brightness_value.setText("-")
             self._warning = False
             self._capture_fps_deque.clear()
 
-        temp = self._camera.temperature
-        temp_state = self._camera.temperature_state
-
-        # Update the temperature label colour
-        if temp is not None:
-            self.temperature_value.setText(f'{temp:.1f}°C')
-        if temp_state == 'Ok':
-            self.temperature_value.setStyleSheet(f"color: {col_green}; font: bold;")
-        elif temp_state == 'Critical':
-            self.temperature_value.setStyleSheet(f"color: {col_orange}; font: bold;")
-        elif temp_state == 'Error':
-            self.temperature_value.setStyleSheet(f"color: {col_red}; font: bold;")
-        else:
-            self.temperature_value.setStyleSheet(f"color: {col_yellow}; font: bold;")
+        # temp = self._camera.temperature
+        # temp_state = self._camera.temperature_state
+        #
+        # # Update the temperature label colour
+        # if temp is not None:
+        #     self.temperature_value.setText(f'{temp:.1f}°C')
+        # if temp_state == 'Ok':
+        #     self.temperature_value.setStyleSheet(f"color: {col_green}; font: bold;")
+        # elif temp_state == 'Critical':
+        #     self.temperature_value.setStyleSheet(f"color: {col_orange}; font: bold;")
+        # elif temp_state == 'Error':
+        #     self.temperature_value.setStyleSheet(f"color: {col_red}; font: bold;")
+        # else:
+        #     self.temperature_value.setStyleSheet(f"color: {col_yellow}; font: bold;")
 
     #  ============= Fast update methods for image refresh =============
 
@@ -576,9 +586,7 @@ class PreviewBase(Base):
 
     #  ============= Qt method overrides =============
     def closeEvent(self, event):
-        """
-        This is a critical part of the graceful shutdown.
-        """
+        """ This is a critical part of the graceful shutdown """
         if self._force_destroy:
             # Stop the consumer thread first
             # (otherwise it crashes on quitting on macOS)
@@ -612,10 +620,6 @@ class PreviewBase(Base):
         # This forces the image to always fill the view correctly.
         if self.view_box and self._video_initialised:
             self.view_box.setRange(rect=self.image_item.boundingRect(), padding=0)
-
-        # if self.view_box:
-        #     # After the normal window resize we just tell our ViewBox to fit the item
-        #     self.view_box.autoRange()
 
     #  ============= Thread control =============
     def _pause_worker(self):

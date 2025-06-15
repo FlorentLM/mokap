@@ -1,8 +1,7 @@
 from typing import Union, Optional
 import numpy as np
-from PySide6.QtCore import Signal, Slot
+from PySide6.QtCore import Slot
 from numpy.typing import ArrayLike
-
 from mokap.calibration.monocular import MonocularCalibrationTool
 from mokap.gui.workers import DEBUG_SIGNALS_FLOW
 from mokap.gui.workers.workers_base import CalibrationProcessingWorker
@@ -11,8 +10,6 @@ from mokap.utils.datatypes import (ChessBoard, CharucoBoard, CalibrationData, Er
 
 
 class MonocularWorker(CalibrationProcessingWorker):
-
-    annotations = Signal(np.ndarray)       # Annotations are already burned into the image, so emit the whole thing
 
     def __init__(self,
             board_params: Union[ChessBoard, CharucoBoard],
@@ -103,7 +100,10 @@ class MonocularWorker(CalibrationProcessingWorker):
         if self._paused:
             return
 
-        self.monocular_tool.process_frame(frame)
+        # we received a *reference* to the latest frame so a copy is necessary to avoid it being overwritten
+        local_frame = frame.copy()
+
+        self.monocular_tool.process_frame(local_frame)
         self.monocular_tool.detect()    # TODO: Detection can be moved out of this class it's much cleaner
 
         # Stage 0: Compute initial intrinsics
@@ -146,16 +146,20 @@ class MonocularWorker(CalibrationProcessingWorker):
                 CalibrationData(self.cam_name, ExtrinsicsPayload(rvec=rvec, tvec=tvec, error=pose_error))
             )
 
-        # Stage 1 and 2: In these stages, the worker's ONLY job is to send detections to the Multiview system
-        if self._current_stage >= 1:    # TODO: we only have two stages now so this check is useless
-            if self.monocular_tool.has_detection:
-                self.send_payload.emit(
-                    CalibrationData(self.cam_name, DetectionPayload(frame_idx, *self.monocular_tool.detection))
-                )
+        # in all stages, if a detection happened, send its data for visualization
+        if self.monocular_tool.has_detection:
+            # we use this payload for visualization AND to feed the multiview processing
+            self.send_payload.emit(
+                CalibrationData(self.cam_name, DetectionPayload(frame_idx, *self.monocular_tool.detection))
+            )
+        else:
+            # when no detection, pyqtgraph still wants a 2D array
+            empty_points = np.zeros((0, 2), dtype=np.float32)
+            empty_ids = np.array([], dtype=int)
+            self.send_payload.emit(
+                CalibrationData(self.cam_name, DetectionPayload(frame_idx, empty_points, empty_ids))
+            )
 
-        annotated = self.monocular_tool.visualise(errors_mm=True)
-
-        self.annotations.emit(annotated)
         self.finished.emit()
 
     # Other slots for manual control

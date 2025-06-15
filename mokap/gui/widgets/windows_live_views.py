@@ -10,7 +10,7 @@ from mokap.gui.widgets import MAX_PLOT_X
 from mokap.gui.widgets.widgets_base import PreviewBase, FastImageItem
 from mokap.gui.workers.worker_monocular import MonocularWorker
 from mokap.gui.workers.worker_movement import MovementWorker
-from mokap.utils.datatypes import ErrorsPayload, CalibrationData, IntrinsicsPayload, ExtrinsicsPayload
+from mokap.utils.datatypes import ErrorsPayload, CalibrationData, IntrinsicsPayload, ExtrinsicsPayload, DetectionPayload
 
 
 class Recording(PreviewBase):
@@ -93,7 +93,6 @@ class Recording(PreviewBase):
 
         # Magnifier target
         self.magnifier_source_rect = QGraphicsRectItem()
-        # self.magnifier_source_rect.setPen(pg.mkPen('y', width=1, style=Qt.DashLine))
         self.magnifier_source_rect.setPen(pg.mkPen('y', width=1))
         # this one lives in the main view box, not the group
         self.view_box.addItem(self.magnifier_source_rect)
@@ -103,7 +102,7 @@ class Recording(PreviewBase):
         self.magnifier_source_rect.hide()
 
         # Capture mouse event in the graphics widget
-        # TODO: Maybe this will need to be moved to the PreviewBase once we add interactive calibration tools
+        # TODO: Maybe this will need to be moved to the PreviewBase once I add interactive calibration tools
         self.graphics_widget.scene().installEventFilter(self)
 
         # RIGHT GROUP
@@ -211,8 +210,6 @@ class Recording(PreviewBase):
         line.setMaximumHeight(80)
         line_layout = QHBoxLayout(line)
 
-        # line_layout.addStretch(1)
-
         self.n_button = QPushButton('Nothing')
         self.n_button.setCheckable(True)
         self.n_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -238,7 +235,7 @@ class Recording(PreviewBase):
     def _annotate_frame(self):
         """ This is called every frame by _update_fast """
 
-        # copy here before adding annotations
+        # we copy here before adding annotations
         np.copyto(self._latest_display_frame, self._latest_frame)
 
         if not self.magnifier_group.isVisible():
@@ -370,7 +367,6 @@ class Recording(PreviewBase):
         scale = self.camera_controls_sliders_scales.get(label, 1)
         value_float = int_value / scale
 
-        # Use a clean format for the text display
         if value_float.is_integer():
             self.camera_controls_sliders_labels[label].setText(f'{int(value_float)}')
         else:
@@ -406,8 +402,7 @@ class Monocular(PreviewBase):
         self.live_error_deque = deque(maxlen=MAX_PLOT_X)
         self.historical_errors_data = []  # tuples of (index, mean, std)
 
-        # The worker annotates the frame by itself so we keep a reference to the latest annotated frame
-        self.annotated_frame = None
+        self.latest_detected_points = np.zeros((0, 2))
 
         # Registration is handled by MainControls
         self._setup_worker(MonocularWorker(
@@ -438,6 +433,15 @@ class Monocular(PreviewBase):
 
         layout = QHBoxLayout(self.RIGHT_GROUP)
         layout.setContentsMargins(5, 5, 5, 5)
+
+        # Scatter plot item for drawing detected points
+        self.detection_points_item = pg.ScatterPlotItem(
+            pen=pg.mkPen('y', width=1),
+            symbol='o',     # Use a circle symbol
+            size=4,         # 4-pixel diameter
+            pxMode=True
+        )
+        self.view_box.addItem(self.detection_points_item)
 
         # Overlay text
         self.computing_text = pg.TextItem(anchor=(0.5, 0.5), color=(255, 255, 255))
@@ -557,13 +561,14 @@ class Monocular(PreviewBase):
         else:
             self.computing_text.setVisible(False)
 
-        # if we have a valid annotation, copy it ON TOP of the display buffer
-        # Since the worker is throttled, this will be the same frame for several calls of _annotate_frame
-        # so it will look like it's lagging. It's fine for now
-        # TODO: trash the annotation function from the monocular tool, it should send raw data and we annotate here in an overlay
-        if self.annotated_frame is not None:
-            np.copyto(self._latest_display_frame, self.annotated_frame)
-            # we DON'T consume the annotated frame here (we reuse it until a new one arrives)
+        if self.latest_detected_points.shape[0] > 0:
+            # the points are in image coordinates (y down from top left)
+            plot_points = self.latest_detected_points.copy()
+            plot_points[:, 1] = self._source_height - plot_points[:, 1]
+            self.detection_points_item.setData(pos=plot_points)
+        else:
+            # if no points, ensure plot is empty
+            self.detection_points_item.clear()
 
     @Slot(CalibrationData)
     def handle_payload(self, data: CalibrationData):
@@ -571,8 +576,12 @@ class Monocular(PreviewBase):
 
         payload = data.payload
 
+        if isinstance(payload, DetectionPayload):
+            self.latest_detected_points = payload.points2D
+            return  # early exit for this common payload
+
         if isinstance(payload, ErrorsPayload):
-            # This is a historical calibration result
+            # this is a historical calibration result
             errors = np.asarray(payload.errors)
             if not np.all(np.isfinite(errors)):
                 return
@@ -601,8 +610,7 @@ class Monocular(PreviewBase):
             self.live_error_curve.setData(list(self.live_error_deque))
 
         elif isinstance(payload, IntrinsicsPayload):
-            # this comes from loading a file
-            # TODO: It can also come from refined intrinsics from the multiview tool
+            # received whenever intrinsics are updated (loading a file, new monocular calculation, or after refinement)
             self.load_save_message.setText(f"Intrinsics updated from {data.camera_name}.")
 
     def on_save_parameters(self):
@@ -614,11 +622,6 @@ class Monocular(PreviewBase):
         if file_path:
             self.request_save.emit(file_path)
             self.load_save_message.setText(f"Intrinsics saved to\n{Path(file_path).name}")
-
-    @Slot(np.ndarray)
-    def on_worker_result(self, annotated_frame):
-        # This is where the worker sends back the fully annotated frame at the slow processing rate
-        self.annotated_frame = annotated_frame
 
     def on_clear_intrinsics(self):
         # Clear plot data stores
@@ -634,7 +637,7 @@ class Monocular(PreviewBase):
 
     def on_load_parameters(self):
         file_path = self._show_file_dialog(self._mainwindow.manager.full_path.parent)
-        if file_path and file_path.is_file():   # Might still be None if the picker did not succeed
+        if file_path and file_path.is_file():   # might still be None if the picker did not succeed
             self.request_load.emit(file_path.as_posix())
             self.load_save_message.setText(f"Intrinsics <b>loaded</b> from {file_path.parent}")
 

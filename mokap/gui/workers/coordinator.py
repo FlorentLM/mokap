@@ -1,15 +1,11 @@
 from typing import Dict, List, Union
-
 import numpy as np
 from PySide6.QtCore import QObject, Signal, Slot
-
 from mokap.calibration.multiview import MultiviewCalibrationTool
 from mokap.gui.workers.workers_base import CalibrationProcessingWorker
 from mokap.gui.workers.worker_monocular import MonocularWorker
-from mokap.utils.datatypes import ChessBoard, CharucoBoard, CalibrationData, IntrinsicsPayload, ExtrinsicsPayload, DetectionPayload, ErrorsPayload
-
-DEBUG_SIGNALS_FLOW = True
-VERBOSE = True
+from mokap.utils.datatypes import ChessBoard, CharucoBoard, CalibrationData, IntrinsicsPayload
+from mokap.gui.workers import DEBUG_SIGNALS_FLOW, VERBOSE
 
 
 class CalibrationCoordinator(QObject):
@@ -64,17 +60,13 @@ class CalibrationCoordinator(QObject):
     @Slot(object)
     def handle_board_change(self, new_board_params: Union[ChessBoard, CharucoBoard]):
         """ Receives new board parameters from the GUI and triggers a system-wide reset """
+
         if DEBUG_SIGNALS_FLOW:
             print(f"[{self.name.title()}] Board parameters changed. Triggering full system reset.")
 
-        # Reset internal state
         self._initial_intrinsics.clear()
-
-        # Force the entire system back to the beginning
-        self.set_stage(0)
-
-        # Explicitly tell all workers to reset their internal state (clear buffers, tools, etc)
-        self.broadcast_reset.emit()
+        self.set_stage(0)    # force the entire system back to the beginning
+        self.broadcast_reset.emit() # tell all workers to reset their internal state
 
         # Broadcast the new board parameters to all MonocularWorkers so they can recreate their tools
         self.broadcast_new_board.emit(new_board_params)
@@ -117,7 +109,7 @@ class CalibrationCoordinator(QObject):
             intr = self._initial_intrinsics[name]
             init_cam_matrices.append(intr.camera_matrix)
             init_dist_coeffs.append(intr.dist_coeffs)
-            images_sizes_wh.append((worker.cam_shape[1], worker.cam_shape[0]))  # w, h order
+            images_sizes_wh.append((worker.cam_width, worker.cam_height))
 
         # This assumes the first registered monocular worker's board is representative
         object_points = self._workers[self._cameras_names[0]].board_object_points
@@ -130,7 +122,7 @@ class CalibrationCoordinator(QObject):
             init_cam_matrices=np.array(init_cam_matrices),
             init_dist_coeffs=np.array(init_dist_coeffs),
             object_points=object_points,
-            min_detections=15,
+            min_detections=15,      # TODO: Move these into the init, and have GUI controls for them
             max_detections=100,
             debug_print=VERBOSE
         )
@@ -151,7 +143,8 @@ class CalibrationCoordinator(QObject):
         target_worker_name = data.camera_name
 
         if target_worker_name not in self._workers:
-            print(f"[Coordinator] Warning: Received payload for unknown worker '{target_worker_name}'.")
+            if DEBUG_SIGNALS_FLOW:
+                print(f"[Coordinator] Warning: Received payload for unknown worker '{target_worker_name}'.")
             return
 
         # Use the target worker's public 'receive_payload' signal to send the data
@@ -180,43 +173,19 @@ class CalibrationCoordinator(QObject):
 
         # Route based on payload type and current stage
         payload = data.payload
-        target = data.camera_name
 
-        # Payloads that are always needed by the GUI
-        if isinstance(payload, (IntrinsicsPayload, ExtrinsicsPayload, ErrorsPayload, DetectionPayload)):
-            self.send_to_main.emit(data)
+        # always send all payloads to the main UI thread for plots, text fields, etc
+        self.send_to_main.emit(data)
 
         # Inter-worker routing
-        if isinstance(payload, IntrinsicsPayload):
-            # An IntrinsicsPayload can come from a MonocularWorker (initial calibration)
-            # or the MultiviewWorker (refined calibration)
-
-            # Update the coordinator's internal cache for multiview tool initialization
-            # (only for payloads NOT from the multiview worker to avoid loops)
-            if sending_worker_name != 'multiview':
-                self._initial_intrinsics[target] = payload
-
-            # Forward the refined intrinsics to the corresponding MonocularWorker
-            # so its visualization tool is updated with the new data
-            if target in self._workers:
-                target_worker = self._workers[target]
-                if isinstance(target_worker, MonocularWorker):
-                    target_worker.receive_payload.emit(data)
-            else:
-                print(f"[Coordinator] Warning: No worker registered for camera '{target}' to route intrinsics to.")
-
-        elif isinstance(payload, DetectionPayload):
-            # This comes from a MonocularWorker. If we are in the right stage, route it to the MultiviewWorker
-            if self._current_stage >= 1 and 'multiview' in self._workers:
+        # If the payload comes from a MonocularWorker, it should be sent to the MultiviewWorker
+        if sending_worker_name != 'multiview':
+            if 'multiview' in self._workers:
                 self._workers['multiview'].receive_payload.emit(data)
 
-        elif isinstance(payload, ExtrinsicsPayload):
-            # The Monocular window's live error plot needs this payload regardless of stage
-            # The 3D viewer uses it for initial visualization but only in stage 0
-            if self._current_stage == 0:
-                self.send_to_main.emit(data)
-
-            # in stage 1, we ONLY send extrinsics to the UI if they come from the 'multiview' worker
-            # (this prevents individual monocular estimates from overwriting the stable global poses in the 3D view)
-            elif sending_worker_name == 'multiview':
-                self.send_to_main.emit(data)
+        # If the payload is refined intrinsics from Multiview, send it back to the
+        # relevant MonocularWorker so it can update its internal tool state
+        if sending_worker_name == 'multiview' and isinstance(payload, IntrinsicsPayload):
+            target_worker = self._workers.get(data.camera_name)
+            if isinstance(target_worker, MonocularWorker):
+                target_worker.receive_payload.emit(data)

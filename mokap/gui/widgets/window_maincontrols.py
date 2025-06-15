@@ -334,7 +334,8 @@ class MainControls(QMainWindow, SnapMixin):
         statusbar.addWidget(self._mem_pressure_bar)
 
         self.frames_saved_label = QLabel()
-        self.frames_saved_label.setText(f'Saved frames: {self.manager.saved} (0 bytes)')
+        # self.frames_saved_label.setText(f'Saved frames: {self.manager.saved} (0 bytes)')
+        self.frames_saved_label.setText(f'Saved: (0 bytes)')
         self.frames_saved_label.setStyleSheet(f"background-color: {'#00000000'}")
         statusbar.addPermanentWidget(self.frames_saved_label)
 
@@ -344,32 +345,12 @@ class MainControls(QMainWindow, SnapMixin):
     @Slot(CalibrationData)
     def route_payload_to_widgets(self, data: CalibrationData):
         target_name = data.camera_name
+
         # Route to the specific monocular window
         for w in self.video_windows:
             if isinstance(w, Monocular) and w.name == target_name:
                 w.handle_payload(data)
                 break
-
-        # Always send extrinsics/intrinsics to the 3D view
-        if self.opengl_window and isinstance(data.payload, (IntrinsicsPayload, ExtrinsicsPayload)):
-            self.opengl_window.handle_payload(data)
-
-    @Slot(CalibrationData)
-    def route_payload_to_widgets(self, data: CalibrationData):
-        """
-        Receives all data from the coordinator destined for the UI
-        """
-        target_name = data.camera_name
-        payload = data.payload
-
-        # Update the monocular windows
-        for w in self.video_windows:
-            if isinstance(w, Monocular) and w.name == target_name:
-                w.handle_payload(data)
-
-        # Update the 3D view
-        if self.opengl_window and isinstance(payload, (IntrinsicsPayload, ExtrinsicsPayload)):
-            self.opengl_window.handle_payload(data)
 
     @Slot()
     def on_load_calibration(self):
@@ -404,9 +385,6 @@ class MainControls(QMainWindow, SnapMixin):
                 extrinsics = ExtrinsicsPayload.from_file(file_path, cam_name)
                 if extrinsics.rvec is not None:
                     self.coordinator.receive_from_main.emit(CalibrationData(cam_name, extrinsics))
-
-            # move to the Extrinsics stage
-            # self.opengl_window.calibration_stage_combo.setCurrentIndex(1)
 
         except Exception as e:
             print(f"[MainControls] Error loading calibration file: {e}")
@@ -485,13 +463,16 @@ class MainControls(QMainWindow, SnapMixin):
         if self.manager.acquiring and override is False:
             self._toggle_recording(False)
             self.manager.off()
+
             # Reset Acquisition folder name
             self.acq_name_textbox.setText('')
             self.save_dir_current.setText('')
+
             self.button_acquisition.setText("Acquisition off")
             self.button_acquisition.setIcon(icon_capture_bw)
             self.button_snapshot.setDisabled(True)
             self.button_recpause.setDisabled(True)
+
             # Re-enable the framerate sliders when acquisition stops
             if self.manager.hardware_triggered and not self.is_calibrating:
                 for w in self.video_windows:
@@ -499,14 +480,15 @@ class MainControls(QMainWindow, SnapMixin):
                         w.camera_controls_sliders['framerate'].setDisabled(False)
 
         elif not self.manager.acquiring and override is True:
+
             self.manager.on()
-            # if not self.is_calibrating and self.manager.triggered:
-            #     for w in self.video_windows:
-            #         w.camera_controls_sliders['framerate'].setDisabled(True)
+
             self.save_dir_current.setText(f'{self.manager.full_path.resolve()}')
+
             self.button_acquisition.setText("Acquiring")
             self.button_acquisition.setIcon(icon_capture)
             self.button_snapshot.setDisabled(False)
+
             if not self.is_calibrating:
                 self.button_recpause.setDisabled(False)
 
@@ -589,6 +571,7 @@ class MainControls(QMainWindow, SnapMixin):
         self.set_monitor(val)
         self._update_monitors_buttons()
         new_monitor = self.selected_monitor
+
         # Move windows by the difference
         for win in self.visible_windows(include_main=True):
             geo = win.geometry()
@@ -614,9 +597,7 @@ class MainControls(QMainWindow, SnapMixin):
                     pass
 
     def autotile_windows(self):
-        """
-        Automatically arranges and resizes windows
-        """
+        """ Automatically arranges and resizes windows """
         ax, ay, aw, ah = self._avail_screenspace()
 
         main_frame = self.frameGeometry()
@@ -654,14 +635,10 @@ class MainControls(QMainWindow, SnapMixin):
                 pass
 
     def cascade_windows(self):
-        """
-        Cascade all visible windows
-        """
+        """ Cascade all visible windows """
 
         # adjust stacking order
         self.raise_()  # Main window on top
-        if self.opengl_window and self.opengl_window.isVisible():
-            self.opengl_window.lower()  # 3D viewer at back
 
         ax, ay, aw, ah = self._avail_screenspace()
 
@@ -734,6 +711,8 @@ class MainControls(QMainWindow, SnapMixin):
 
             # Create the 3D visualization window first
             self.opengl_window = Multiview3D(self)
+            self.opengl_window.show()
+
             # now that the window exists, set the board params and get the origin camera name
             self.opengl_window.update_board_preview(self.board_params)
 
@@ -744,16 +723,21 @@ class MainControls(QMainWindow, SnapMixin):
 
             # Create and start the headless Multiview worker with the correct origin name.
             self.multiview_thread = QThread(self)
-            self.multiview_worker = MultiviewWorker(self.cameras_names, origin_name)
+            self.multiview_worker = MultiviewWorker(
+                self.cameras_names,
+                origin_name,
+                self.sources_shapes,
+                self.board_params
+            )
             self.multiview_worker.moveToThread(self.multiview_thread)
+
+            self.multiview_worker.scene_data_ready.connect(self.opengl_window.on_scene_data_ready)
+            self.opengl_window.run_ba_button.clicked.connect(self.multiview_worker.trigger_refinement)
+
             self.multiview_thread.start()
 
             # register the new worker with the coordinator
             self.coordinator.register_worker(self.multiview_worker)
-
-            # Connect the 3D window's BA button to the worker's slot
-            self.opengl_window.run_ba_button.clicked.connect(self.multiview_worker.trigger_refinement)
-            self.opengl_window.show()
 
         # Create Monocular/Recording windows and their workers
         for i, cam in enumerate(self.manager.cameras):
@@ -775,31 +759,6 @@ class MainControls(QMainWindow, SnapMixin):
             w.show()
 
         self.cascade_windows()
-
-    # def _stop_secondary_windows(self):
-    #     for w in self.video_windows:
-    #         w.worker_thread.quit()
-    #         w.worker_thread.wait()
-    #         w._force_destroy = True
-    #         w.close()
-    #
-    #     if self.opengl_window:
-    #         if self.opengl_window.worker_thread:
-    #             self.opengl_window.worker_thread.quit()
-    #             self.opengl_window.worker_thread.wait()
-    #         self.opengl_window.close()
-    #         self.opengl_window.timer_slow.stop()
-    #         self.opengl_window._force_destroy = True
-    #         self.opengl_window.deleteLater()
-    #         self.opengl_window = None
-    #
-    #     if self.multiview_thread:
-    #         self.multiview_thread.quit()
-    #         self.multiview_thread.wait()
-    #         self.multiview_thread = None
-    #         self.multiview_worker = None
-    #
-    #     self.video_windows.clear()
 
     def _stop_secondary_windows(self):
 
@@ -823,14 +782,17 @@ class MainControls(QMainWindow, SnapMixin):
 
     def _update_main(self):
 
-        # Get an estimation of the saved data size
+        # get an estimation of the saved data size
         try:
             # This works for both image sequences and video files
             size = sum(f.stat().st_size for f in self.manager.full_path.glob('**/*') if f.is_file())
-            self.frames_saved_label.setText(f'Saved frames: {self.manager.saved} ({pretty_size(size)})')
+            # self.frames_saved_label.setText(f'Saved frames: {self.manager.saved} ({pretty_size(size)})')
+            self.frames_saved_label.setText(f'Saved: ({pretty_size(size)})')
+
         except FileNotFoundError:
             # This can happen if the folder doesn't exist yet
-            self.frames_saved_label.setText(f'Saved frames: {self.manager.saved} (0 bytes)')
+            # self.frames_saved_label.setText(f'Saved frames: {self.manager.saved} (0 bytes)')
+            self.frames_saved_label.setText(f'Saved: (0 bytes)')
 
         # Update memory pressure estimation
         self._mem_pressure += (psutil.virtual_memory().percent - self._mem_baseline) / self._mem_baseline * 100

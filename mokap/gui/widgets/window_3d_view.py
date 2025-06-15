@@ -1,17 +1,13 @@
-from PySide6.QtCore import Signal, Qt, Slot, QTimer
+from PySide6.QtCore import Signal, Qt, Slot
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QHBoxLayout, QFrame, QVBoxLayout, QGroupBox, QGridLayout, QLabel, QComboBox, QPushButton
 from pyqtgraph.opengl import GLGridItem, GLViewWidget, GLScatterPlotItem, GLLinePlotItem, GLMeshItem, MeshData
 import numpy as np
 import jax.numpy as jnp
 from mokap.gui.style.commons import *
-from mokap.gui.widgets import VERBOSE
-from mokap.gui.widgets import SLOW_UPDATE_INTERVAL, DISPLAY_INTERVAL, PROCESSING_INTERVAL
 from mokap.gui.widgets.widgets_base import Base
 from mokap.utils import hex_to_rgb
-from mokap.utils.datatypes import CalibrationData, ExtrinsicsPayload, IntrinsicsPayload, DetectionPayload
-from mokap.utils.geometry.projective import back_projection_batched, back_projection
-from mokap.utils.geometry.transforms import extrinsics_matrix, rotate_points3d, rotate_extrinsics_matrix
+from mokap.utils.geometry.transforms import rotate_points3d, rotate_extrinsics_matrix
 
 
 class Multiview3D(Base):
@@ -35,24 +31,20 @@ class Multiview3D(Base):
                                        for cam, col in self._cam_colours_rgba.items()}
         self._sources_shapes = self._mainwindow.sources_shapes
 
-        # Data stores for visualization
-        self._cameras_matrices = np.zeros((self.nb_cams, 3, 3), dtype=np.float32)
-        self._dist_coeffs = np.zeros((self.nb_cams, 14), dtype=np.float32)
-        self._rvecs = np.zeros((self.nb_cams, 3), dtype=np.float32)
-        self._tvecs = np.zeros((self.nb_cams, 3), dtype=np.float32)
-
         # Data stores for dynamic points
         self.max_board_points = self._mainwindow.board_params.object_points().shape[0]
-        self.board_points_3d = np.zeros((self.max_board_points, 3))  # Placeholder for global 3D points
-        self.board_points_3d_vis = np.zeros(self.max_board_points, dtype=bool)  # Visibility mask
 
-        # Per-camera 2D detections
-        self.points_2d = {cam_name: np.zeros((self.max_board_points, 2)) for cam_name in self._cameras_names}
-        self.points_2d_ids = {cam_name: np.array([], dtype=int) for cam_name in self._cameras_names}
+        # self.board_points_3d = np.zeros((self.max_board_points, 3))  # Placeholder for global 3D points
+        # self.board_points_3d_vis = np.zeros(self.max_board_points, dtype=bool)  # Visibility mask
+
+        # # Per-camera 2D detections
+        # self.points_2d = {cam_name: np.zeros((self.max_board_points, 2)) for cam_name in self._cameras_names}
+        # self.points_2d_ids = {cam_name: np.array([], dtype=int) for cam_name in self._cameras_names}
 
         # These are aliases to the (rotated for display) rvec and tvec (filled using the fixed camera order)
         self.optical_axes = np.zeros((self.nb_cams, 3), dtype=np.float32)
         self.cam_positions = np.zeros((self.nb_cams, 3), dtype=np.int32)
+
         # And a reference to the shared focal point
         self.focal_point = np.zeros((1, 3), dtype=np.float32)
 
@@ -109,12 +101,6 @@ class Multiview3D(Base):
         self.grid.setSpacing(self._gridsize * 0.1, self._gridsize * 0.1, self._gridsize * 0.1)
         self.view.addItem(self.grid)
         self.view.opts['distance'] = self._gridsize
-
-        # A timer to control the 3D scene update rate
-        self.update_timer = QTimer(self)
-        self.update_timer.setInterval(int(DISPLAY_INTERVAL * 2 * 1000))  # update at 30 Hz
-        self.update_timer.timeout.connect(self.update_scene)
-        self.update_timer.start()
 
     def _init_ui(self):
         self.view = GLViewWidget()
@@ -189,33 +175,13 @@ class Multiview3D(Base):
         self.resize(h, w)
         self.show()
 
-    @Slot(CalibrationData)
-    def handle_payload(self, data: CalibrationData):
-        """ This is the single entry point for all data
-        updates the internal data stores and then triggers one full scene update
-        """
+    def update_scene_single_camera(self, cam_idx: int):
+        # simplified version of the scene update method to draw one camera
+        # (i.e. not a full back-projection of all cameras)
 
-        if VERBOSE:
-            print(f'[3D Widget] Received {data.camera_name} {data.payload}')
-
-        cam_idx = self._cameras_names.index(data.camera_name)
-
-        # Update internal data stores
-        payload = data.payload
-        if isinstance(payload, ExtrinsicsPayload) and payload.rvec is not None:
-            self._rvecs[cam_idx] = payload.rvec
-            self._tvecs[cam_idx] = payload.tvec
-        elif isinstance(payload, IntrinsicsPayload):
-            self._cameras_matrices[cam_idx] = payload.camera_matrix
-            dist_len = len(payload.dist_coeffs)
-            self._dist_coeffs[cam_idx, :dist_len] = payload.dist_coeffs
-        elif isinstance(payload, DetectionPayload):
-            # Just update the 2D point data for the specific camera
-            self.points_2d[data.camera_name] = payload.points2D
-            self.points_2d_ids[data.camera_name] = payload.pointsIDs
-
-        # TODO: Triangulated board points
-        # elif isinstance(data.payload, TriangulatedPointsPayload):
+        # TODO: implement this
+        # just call the full update for now
+        self.update_scene()
 
     def update_board_preview(self, board_params):
         max_w, max_h = 100, 100
@@ -280,43 +246,20 @@ class Multiview3D(Base):
             self.view.addItem(self.camera_gl_items[cam_name]['optical_axis'])
             self.view.addItem(self.camera_gl_items[cam_name]['detections'])
 
-    @Slot()
-    def update_scene(self):
-        """ Performs all calculations for the 3D scene and updates all GL items """
+    @Slot(dict)
+    def on_scene_data_ready(self, scene_data: dict):
+        """ Receives pre-computed 3D data from the worker and updates GL items """
 
-        # Prepare data
-        all_E = extrinsics_matrix(self._rvecs, self._tvecs)
-        all_K = self._cameras_matrices
-        all_D = self._dist_coeffs
+        all_E = scene_data['extrinsics']
+        all_frustums_3d = scene_data['frustums_3d']
+        all_centers_3d = scene_data['centers_3d']
+        all_detections_3d = scene_data['detections_3d']
 
-        # Frustum corner points
-        all_frustums_3d = back_projection_batched(
-            self._frustums_points2d, self._frustum_depth, all_K, all_E, all_D
-        )
-
-        # Frustum center points (for optical axes)
-        all_centers_3d = back_projection_batched(
-            self._centres_points2d, self._frustum_depth, all_K, all_E, all_D
-        ).squeeze(axis=1)
-
-        # Back-projected 2D detections
-        all_detections_3d = []
         for i, cam_name in enumerate(self._cameras_names):
-            ids = self.points_2d_ids.get(cam_name)
-            if ids is not None and len(ids) > 0:
-                # Use non-batched back-projection for variable-sized detections per camera
-                points3d = back_projection(
-                    self.points_2d[cam_name], self._frustum_depth * 0.95,
-                    all_K[i], all_E[i], all_D[i]
-                )
-                all_detections_3d.append(points3d)
-            else:
-                all_detections_3d.append(np.zeros((0, 3))) # empty array if no detections
+            if not np.all(np.isfinite(all_frustums_3d[i])):
+                continue
 
-        # Update GL items
-        for i, cam_name in enumerate(self._cameras_names):
             self._update_camera_gl(
-                cam_idx=i,
                 cam_name=cam_name,
                 extrinsics_mat=all_E[i],
                 frustum_points3d=all_frustums_3d[i],
@@ -324,15 +267,8 @@ class Multiview3D(Base):
                 detection_points3d=all_detections_3d[i]
             )
 
-    def _update_camera_gl(self,
-            cam_idx: int,
-            cam_name: str,
-            extrinsics_mat: jnp.ndarray,
-            frustum_points3d: jnp.ndarray,
-            center_point3d: jnp.ndarray,
-            detection_points3d: jnp.ndarray):
-
-        """ Dumb helper function. Only updates GL item data with pre-calculated 3D points
+    def _update_camera_gl(self, cam_name: str, extrinsics_mat: jnp.ndarray, frustum_points3d: jnp.ndarray, center_point3d: jnp.ndarray, detection_points3d: jnp.ndarray):
+        """ Only updates GL item data with pre-calculated 3D points
         All points are rotated 180 degrees on Y for correct visualization """
 
         if not np.all(np.isfinite(frustum_points3d)):
@@ -363,10 +299,9 @@ class Multiview3D(Base):
 
         gl_items['frustum_lines'].setData(pos=line_verts)
 
+    # TODO: These should migrate to the Multiview Worker
     def update_3d_points(self):
-        """
-        Updates the global 3D board points scatter plot
-        """
+        """ Updates the global 3D board points scatter plot """
         board_plot = self.global_gl_items['board_3d']
 
         # Get only the visible points
