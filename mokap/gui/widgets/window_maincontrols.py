@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QMainWindow, QVBoxLayout, QWidget, QFrame, QHBoxL
                                QCheckBox, QGraphicsView, QGraphicsScene, QTextEdit, QStatusBar,
                                QProgressBar, QFileDialog, QApplication, QDialog, QGraphicsRectItem, QGraphicsTextItem)
 from mokap.gui.style.commons import *
-from mokap.gui.widgets import DEFAULT_BOARD, SLOW_UPDATE, GUI_LOGGER
+from mokap.gui.widgets import DEFAULT_BOARD, GUI_LOGGER, SLOW_UPDATE_INTERVAL
 from mokap.gui.widgets.widgets_base import SnapMixin
 from mokap.gui.widgets.dialogs import BoardParamsDialog
 from mokap.gui.widgets.windows_live_views import Monocular, Recording
@@ -106,7 +106,7 @@ class MainControls(QMainWindow, SnapMixin):
         # Setup MainWindow update
         self.timer_slow = QTimer(self)
         self.timer_slow.timeout.connect(self._update_main)
-        self.timer_slow.start(SLOW_UPDATE)
+        self.timer_slow.start(int(SLOW_UPDATE_INTERVAL * 1000))
 
         self._mem_baseline = psutil.virtual_memory().percent
 
@@ -407,7 +407,7 @@ class MainControls(QMainWindow, SnapMixin):
         self.manager.disconnect_cameras()
 
         # close the main window and exit the application
-        self.timer_slow.stop()
+        # self.timer_slow.stop()
         self.close()
         QApplication.instance().quit()
 
@@ -781,20 +781,21 @@ class MainControls(QMainWindow, SnapMixin):
             self.multiview_worker = None
 
     def _update_main(self):
-
-        # get an estimation of the saved data size
-        try:
-            # This works for both image sequences and video files
-            size = sum(f.stat().st_size for f in self.manager.full_path.glob('**/*') if f.is_file())
-            # self.frames_saved_label.setText(f'Saved frames: {self.manager.saved} ({pretty_size(size)})')
-            self.frames_saved_label.setText(f'Saved: ({pretty_size(size)})')
-
-        except FileNotFoundError:
-            # This can happen if the folder doesn't exist yet
-            # self.frames_saved_label.setText(f'Saved frames: {self.manager.saved} (0 bytes)')
-            self.frames_saved_label.setText(f'Saved: (0 bytes)')
-
-        # Update memory pressure estimation
-        self._mem_pressure += (psutil.virtual_memory().percent - self._mem_baseline) / self._mem_baseline * 100
-        self._mem_pressure_bar.setValue(int(round(self._mem_pressure)))
-        self._mem_baseline = psutil.virtual_memory().percent
+        # TODO: Reimplement these but faster
+        pass
+        # # get an estimation of the saved data size
+        # try:
+        #     # This works for both image sequences and video files
+        #     size = sum(f.stat().st_size for f in self.manager.full_path.glob('**/*') if f.is_file())
+        #     # self.frames_saved_label.setText(f'Saved frames: {self.manager.saved} ({pretty_size(size)})')
+        #     self.frames_saved_label.setText(f'Saved: ({pretty_size(size)})')
+        #
+        # except FileNotFoundError:
+        #     # This can happen if the folder doesn't exist yet
+        #     # self.frames_saved_label.setText(f'Saved frames: {self.manager.saved} (0 bytes)')
+        #     self.frames_saved_label.setText(f'Saved: (0 bytes)')
+        #
+        # # Update memory pressure estimation
+        # self._mem_pressure += (psutil.virtual_memory().percent - self._mem_baseline) / self._mem_baseline * 100
+        # self._mem_pressure_bar.setValue(int(round(self._mem_pressure)))
+        # self._mem_baseline = psutil.virtual_memory().percent

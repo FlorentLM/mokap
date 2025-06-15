@@ -85,15 +85,9 @@ class MultiCam:
         ## --- Threading Resources ---
         buffer_size = self.config.get('frame_buffer_size', 200)
 
-        self._display_queues: List[Queue] = [Queue(maxsize=2) for _ in self.cameras]
-
-        # The 'tee' queues that will be used to 'snoop' on frames for display
-        self._display_tee_queues: List[Queue] = [Queue(maxsize=2) for _ in self.cameras]
-
         # shared state for the most recent frame protected by a lock
         self._latest_frames: List[Optional[Tuple[np.ndarray, Dict]]] = [None] * self.nb_cameras
         self._latest_frame_locks: List[Lock] = [Lock() for _ in self.cameras]
-
         self._writer_queues: List[Queue] = [Queue(maxsize=buffer_size) for _ in self.cameras]
 
         # Keep track of writer instances and their parameters to build final metadata
@@ -254,11 +248,9 @@ class MultiCam:
             # Start one grabber, one writer, and one display thread per camera
             g = Thread(target=self._grabber_thread, args=(i,))
             w = Thread(target=self._writer_thread, args=(i,))
-            d = Thread(target=self._display_updater_thread, args=(i,))
-            self._threads.extend([g, w, d])
+            self._threads.extend([g, w])
             g.start()
             w.start()
-            d.start()
 
         if not self._silent:
             print(f"[INFO] Acquisition started with {self.nb_cameras} cameras.")
@@ -401,62 +393,31 @@ class MultiCam:
 
         cam = self.cameras[cam_idx]
         writer_queue = self._writer_queues[cam_idx]
-        display_tee_queue = self._display_tee_queues[cam_idx]
+        lock = self._latest_frame_locks[cam_idx]
 
         cam.start_grabbing()
         while self._acquiring.is_set():
             try:
                 frame, metadata = cam.grab_frame(timeout_ms=2000)
                 if frame is not None:
+                    # Update the shared buffer for any other thread to read
+                    with lock:
+                        self._latest_frames[cam_idx] = (frame, metadata)
 
-                    # also put the same frame in the display "tee" queue, non-blocking
-                    if not display_tee_queue.full():
-                        display_tee_queue.put_nowait((frame, metadata))
-
+                    # Feed the high-priority writer queue.
                     if self._recording.is_set():
                         try:
                             writer_queue.put_nowait((frame, metadata))
                         except queue.Full:
-                            # This is the expected behavior when the writer can't keep up
-                            # it's better to log it and continue grabbing than to block
                             if not self._silent:
                                 print(f"[WARN] Cam {cam.name}: Writer queue is full. Recording frame dropped.")
 
             except (IOError, RuntimeError) as e:
-                if self._acquiring.is_set():  # avoid spamming errors on shutdown
+                if self._acquiring.is_set():
                     print(f"[ERROR] Grabber thread for {cam.name} failed: {e}")
-                    time.sleep(1)  # prevent flooding error loops
+                    time.sleep(1)
 
         cam.stop_grabbing()
-
-    def _display_updater_thread(self, cam_idx: int):
-        """
-        This thread's job is to manage the flow of preview frames
-        1. It gets a frame from the grabber's tee queue
-        2. It updates a shared variable with this "latest" frame for snapshots
-        3. It tries to push the frame to the GUI queue for live display
-        """
-        tee_queue = self._display_tee_queues[cam_idx]
-        display_queue = self._display_queues[cam_idx]
-        lock = self._latest_frame_locks[cam_idx]
-
-        while self._acquiring.is_set():
-            try:
-                # Block and wait for a new frame from the grabber
-                frame, metadata = tee_queue.get(timeout=1.0)
-
-                # Update the shared state for snapshots
-                with lock:
-                    self._latest_frames[cam_idx] = (frame, metadata)
-
-                #Try to push to the actual GUI queue
-                # If the GUI is lagging, we just drop the frame and continue
-                if not display_queue.full():
-                    display_queue.put_nowait((frame, metadata))
-
-            except queue.Empty:
-                # No frame came from the grabber in 1s, just continue
-                continue
 
     def _writer_thread(self, cam_idx: int):
         """
@@ -596,8 +557,9 @@ class MultiCam:
         ]
 
         try:
-            subprocess.run(command, check=True, capture_output=True, text=True)
-            os.replace(temp_filepath, filepath)
+            p = subprocess.run(command, check=True, capture_output=True, text=True)
+            if p.returncode == 0:
+                os.replace(temp_filepath, filepath)
 
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             print(f"[ERROR] FFmpeg failed to correct framerate for {filepath.name}: {e}")

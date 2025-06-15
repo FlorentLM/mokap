@@ -1,4 +1,3 @@
-import queue
 import time
 from collections import deque
 from threading import Thread
@@ -104,8 +103,8 @@ class FastImageItem(QGraphicsObject):
             self._bytes_per_line = self._channels * self._width
 
         self.prepareGeometryChange()
-        contiguous_data = np.ascontiguousarray(data)
-        self._image = QImage(contiguous_data.data, self._width, self._height, self._bytes_per_line, QImage.Format.Format_BGR888)
+        contiguous_arr = np.ascontiguousarray(data)
+        self._image = QImage(contiguous_arr.data, self._width, self._height, self._bytes_per_line, QImage.Format.Format_BGR888)
         self.update()
 
     def boundingRect(self) -> QRectF:
@@ -167,7 +166,7 @@ class Base(QWidget, SnapMixin):
 
 class PreviewBase(Base):
 
-    frame_received = Signal(np.ndarray, dict)   # frame and metadata
+    # frame_received = Signal(np.ndarray, dict)   # frame and metadata
     send_frame = Signal(np.ndarray, int)
 
     def __init__(self, camera, main_window_ref):
@@ -214,10 +213,9 @@ class PreviewBase(Base):
         self._capture_fps_deque = deque(maxlen=10)
 
         # Connect the new frame signal to a slot that updates the UI
-        self.frame_received.connect(self.on_frame_received)
+        # self.frame_received.connect(self.on_frame_received)
 
         # This timer is for DISPLAY only (updating the QImage)
-        # It was previously named timer_fast
         self.timer_display = QTimer(self)
         self.timer_display.timeout.connect(self._update_display)
 
@@ -374,54 +372,50 @@ class PreviewBase(Base):
 
     def _consume_frames_loop(self):
         """
-        This runs in a background thread. It grabs frames from the camera's
-        display queue and converts them to a displayable 8-bit BGR format
+        This runs in a background thread. It polls the manager's latest frame
+        buffer at a controlled rate, converts the frame to a displayable format,
+        and updates the reference used by the GUI's display timer
         """
-        display_queue = self._mainwindow.manager._display_queues[self._cam_idx]
+
+        manager = self._mainwindow.manager
+        lock = manager._latest_frame_locks[self._cam_idx]
+        last_frame_id = -1
 
         # Pre-allocate the destination buffer to avoid creating new arrays in the loop
         bgr_frame = np.empty((self._source_height, self._source_width, 3), dtype=np.uint8)
 
-        last_emit_time = 0  # this is a bit of a hack...
-        # ...but otherwise this function emits waaaay too many Signals and cripples everything
-
         while self._consumer_thread_active:
-            try:
-                raw_frame, metadata = display_queue.get(timeout=1.0)
-                current_time = time.time()
+            # This sleep controls the display framerate and prevents this thread
+            # from consuming 100% CPU
+            time.sleep(DISPLAY_INTERVAL)
 
-                # Throttle the display rate
-                if (current_time - last_emit_time) < DISPLAY_INTERVAL:
-                    continue
-                last_emit_time = current_time
+            raw_frame = None
+            metadata = None
+            with lock:
+                # check if a new frame has arrived since last check
+                latest_data = manager._latest_frames[self._cam_idx]
+                if latest_data:
+                    current_frame_id = latest_data[1].get('frame_number', -1)
+                    if current_frame_id != last_frame_id:
+                        raw_frame, metadata = latest_data
+                        last_frame_id = current_frame_id
 
-                if raw_frame is None:
-                    self.frame_received.emit(None, metadata)
-                    continue
-
+            # if we found a new frame, process it for display
+            if raw_frame is not None and metadata is not None:
                 pixel_format = metadata.get('pixel_format') or self._fmt
-
                 try:
                     match pixel_format:
-                        # High Bit-Depth Monochrome (convert to 8-bit gray, then to BGR)
                         case 'Mono16':
-                            # shift 16-bit data down to 8-bit
                             gray_8bit = (raw_frame >> 8).astype(np.uint8)
                             cv2.cvtColor(gray_8bit, cv2.COLOR_GRAY2BGR, dst=bgr_frame)
                         case 'Mono12':
-                            # shift 12-bit data down to 8-bit
                             gray_8bit = (raw_frame >> 4).astype(np.uint8)
                             cv2.cvtColor(gray_8bit, cv2.COLOR_GRAY2BGR, dst=bgr_frame)
                         case 'Mono10':
-                            # shift 10-bit data down to 8-bit
                             gray_8bit = (raw_frame >> 2).astype(np.uint8)
                             cv2.cvtColor(gray_8bit, cv2.COLOR_GRAY2BGR, dst=bgr_frame)
-
-                        # Standard 8-bit Monochrome
                         case 'Mono8':
                             cv2.cvtColor(raw_frame, cv2.COLOR_GRAY2BGR, dst=bgr_frame)
-
-                        # 8-bit Bayer Patterns (Debayering)
                         case 'BayerRG8':
                             cv2.cvtColor(raw_frame, cv2.COLOR_BAYER_RG2BGR, dst=bgr_frame)
                         case 'BayerGR8':
@@ -430,31 +424,24 @@ class PreviewBase(Base):
                             cv2.cvtColor(raw_frame, cv2.COLOR_BAYER_GB2BGR, dst=bgr_frame)
                         case 'BayerBG8':
                             cv2.cvtColor(raw_frame, cv2.COLOR_BAYER_BG2BGR, dst=bgr_frame)
-
-                        # 8-bit Color Formats
                         case 'RGB8':
                             cv2.cvtColor(raw_frame, cv2.COLOR_RGB2BGR, dst=bgr_frame)
                         case 'RGBA8':
                             cv2.cvtColor(raw_frame, cv2.COLOR_RGBA2BGR, dst=bgr_frame)
-
-                        # Default (assumes BGR ...or hope for the best)
                         case _:
                             if raw_frame.shape == bgr_frame.shape and raw_frame.dtype == bgr_frame.dtype:
                                 np.copyto(bgr_frame, raw_frame)
                             else:
-                                # Fallback for unexpected formats: trippy magenta error
                                 print(f"[{self.name}] Unsupported pixel format for display: {pixel_format}")
                                 bgr_frame[:] = (255, 0, 255)
 
                 except cv2.error as e:
                     print(f"[{self.name}] OpenCV Error during color conversion: {e}")
-                    # Fill frame with red to indicate a conversion error
                     bgr_frame[:] = (0, 0, 255)
 
-                self.frame_received.emit(bgr_frame, metadata)
-
-            except queue.Empty:
-                continue
+                # Directly update the shared variables used by the main GUI thread
+                self._latest_frame = bgr_frame
+                self._current_frame_metadata = metadata
 
     @Slot()
     def _send_frame_for_processing(self):
@@ -478,11 +465,11 @@ class PreviewBase(Base):
             self.send_frame.emit(frame_to_process, frame_number)
             self._worker_busy = True
 
-    @Slot(np.ndarray, dict)
-    def on_frame_received(self, frame, metadata):
-        """ this runs in the main GUI thread. We just update the references """
-        self._current_frame_metadata = metadata
-        self._latest_frame = frame
+    # @Slot(np.ndarray, dict)
+    # def on_frame_received(self, frame, metadata):
+    #     """ this runs in the main GUI thread. We just update the references """
+    #     self._current_frame_metadata = metadata
+    #     self._latest_frame = frame
 
     #  ============= Common update method for texts and stuff =============
     def _update_slow(self):
@@ -571,7 +558,7 @@ class PreviewBase(Base):
         """ This is the main display updater. It runs at a controlled rate for smooth video """
 
         if self._latest_frame is None:
-            return # no new frame do nothing
+            return
 
         # subclasses do their own thing
         self._annotate_frame()

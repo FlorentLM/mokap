@@ -1,3 +1,4 @@
+import time
 from collections import deque
 import numpy as np
 import pyqtgraph as pg
@@ -6,7 +7,7 @@ from PySide6.QtWidgets import (QHBoxLayout, QWidget, QVBoxLayout, QGroupBox, QLa
                                QSlider, QCheckBox, QSizePolicy, QPushButton, QFileDialog,
                                QGraphicsRectItem, QGraphicsItemGroup)
 from mokap.gui.style.commons import *
-from mokap.gui.widgets import MAX_PLOT_X
+from mokap.gui.widgets import MAX_PLOT_X, DISPLAY_INTERVAL
 from mokap.gui.widgets.widgets_base import PreviewBase, FastImageItem
 from mokap.gui.workers.worker_monocular import MonocularWorker
 from mokap.gui.workers.worker_movement import MovementWorker
@@ -233,10 +234,15 @@ class Recording(PreviewBase):
         right_group_layout.addWidget(right_group_additional)
 
     def _annotate_frame(self):
-        """ This is called every frame by _update_fast """
+        """ This is called every frame by _update_display """
+
+        # First, ensure the display buffer has the latest video frame
+        if self._latest_frame is None:
+            return
 
         # we copy here before adding annotations
         np.copyto(self._latest_display_frame, self._latest_frame)
+        self._latest_frame = None
 
         if not self.magnifier_group.isVisible():
             return
@@ -549,9 +555,11 @@ class Monocular(PreviewBase):
         """
 
         # first, ensure the display buffer has the latest video frame
-        if self._latest_frame is not None:
-            np.copyto(self._latest_display_frame, self._latest_frame)
-            self._latest_frame = None
+        if self._latest_frame is None:
+            return
+
+        np.copyto(self._latest_display_frame, self._latest_frame)
+        self._latest_frame = None
 
         # If the worker delivered a new annotated frame, we store it
         # (the annotation frame is persistent)
