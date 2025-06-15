@@ -1,3 +1,4 @@
+import logging
 from collections import deque
 from typing import Tuple, Dict, Optional, List, Any
 import cv2
@@ -14,6 +15,9 @@ from mokap.utils.geometry.transforms import extrinsics_matrix, extmat_to_rtvecs,
     quaternion_to_axisangle, invert_extrinsics_matrix, invert_rtvecs
 
 
+logger = logging.getLogger(__name__)
+
+
 class MultiviewCalibrationTool:
     def __init__(self,
                  nb_cameras:            int,
@@ -26,11 +30,9 @@ class MultiviewCalibrationTool:
                  max_detections:        int = 100,
                  angular_thresh:        float = 10.0,   # in degrees
                  translational_thresh:  float = 10.0,   # in object_points' units
-                 debug_print = True):
+    ):
 
         # TODO: Typing and optimising this class
-
-        self._debug_print = debug_print
 
         self.nb_cameras = nb_cameras
         self.origin_idx = origin_idx
@@ -99,8 +101,7 @@ class MultiviewCalibrationTool:
             rvec, tvec = rvec.squeeze(), tvec.squeeze()
 
             if not np.all(np.isfinite(rvec)) or not np.all(np.isfinite(tvec)):
-                if self._debug_print:
-                    print(f"[WARN] Cam {cam_idx} solvePnP produced non-finite pose. Discarding.")
+                logger.warning(f"Cam {cam_idx} solvePnP produced non-finite pose. Discarding.")
                 return
 
             # if PnP placed the board behind the camera, return
@@ -194,9 +195,8 @@ class MultiviewCalibrationTool:
         )
 
         if not success:
-            if self._debug_print:
-                print(f"[CONSENSUS_FAIL] Frame rejected. Could not find a consistent board pose among {rt_stack.shape[0]} views.")
-                # (this happens for instance if the initial camera extrinsics are very inaccurate)
+            logger.debug(f"[CONSENSUS_FAIL] Frame rejected. Could not find a consistent board pose among {rt_stack.shape[0]} views.")
+            # (this happens for instance if the initial camera extrinsics are very inaccurate)
             return
 
         E_b2w = extrinsics_matrix(quaternion_to_axisangle(q_avg), t_avg)
@@ -224,8 +224,7 @@ class MultiviewCalibrationTool:
 
         FRAME_ERROR_THRESHOLD = 5.0
         if mean_frame_error > FRAME_ERROR_THRESHOLD:
-            if self._debug_print:
-                print(f"[QUALITY_REJECT] Frame rejected. High reproj error: {mean_frame_error:.2f}px")
+            logger.debug(f"[QUALITY_REJECT] Frame rejected. High reproj error: {mean_frame_error:.2f}px")
             return
 
         # --- Update camera extrinsics and buffer data ---
@@ -241,12 +240,13 @@ class MultiviewCalibrationTool:
 
         self._estimated = True
 
-        if self._debug_print:
-            per_cam_vis_pts = jnp.sum(visibility_mask, axis=1)
-            per_cam_err_sum = jnp.sum(jnp.where(visibility_mask, errors, 0.0), axis=1)
-            per_cam_mean_err = jnp.where(per_cam_vis_pts > 0, per_cam_err_sum / per_cam_vis_pts, 0.0)
-            print(f"[REPROJ_ERR] Frame mean: {mean_frame_error:.2f}px. Per-cam: " +
-                  ", ".join([f"{c}:{e:.2f}px" for c, e in zip(cam_indices, per_cam_mean_err)]))
+        # DEBUG START
+        per_cam_vis_pts = jnp.sum(visibility_mask, axis=1)
+        per_cam_err_sum = jnp.sum(jnp.where(visibility_mask, errors, 0.0), axis=1)
+        per_cam_mean_err = jnp.where(per_cam_vis_pts > 0, per_cam_err_sum / per_cam_vis_pts, 0.0)
+        logger.debug(f"[REPROJ_ERR] Frame mean: {mean_frame_error:.2f}px. Per-cam: " +
+              ", ".join([f"{c}:{e:.2f}px" for c, e in zip(cam_indices, per_cam_mean_err)]))
+        # DEBUG END
 
         # Buffer data for final BA and intrinsics refinement
         self.ba_samples.append(entries)
@@ -262,16 +262,15 @@ class MultiviewCalibrationTool:
         """
 
         if not self._estimated:
-            print("[BA] Error: Initial extrinsics have not been estimated yet.")
+            logger.error("[BA] Initial extrinsics have not been estimated yet.")
             return False
 
         P = self.ba_sample_count
         if P < self._min_detections:
-            print(f"[BA] Not enough samples for bundle adjustment. Have {P}, need {self._min_detections}.")
+            logger.error(f"[BA] Not enough samples for bundle adjustment. Have {P}, need {self._min_detections}.")
             return False
 
-        if self._debug_print:
-            print(f"[BA] Starting 3-Stage Bundle Adjustment with {P} samples.")
+        logger.debug(f"[BA] Starting 3-Stage Bundle Adjustment with {P} samples.")
 
         C = self.nb_cameras
         N = self._object_points.shape[0]
@@ -322,11 +321,9 @@ class MultiviewCalibrationTool:
         pts2d_buf = jnp.asarray(pts2d_buf)
         vis_buf = jnp.asarray(vis_buf)
 
-        # STAGE 1: Ideal Pinhole World (Shared Intrinsics, simple distortion)
-        # ----------------------------
-        print("\n" + "=" * 80)
-        print(">>> STAGE 1: BA on Ideal World (Shared Intrinsics, simple distortion)")
-        print("=" * 80)
+        # STAGE 1: Ideal pinhole world (shared intrinsics, no distortion)   (wellllll maybe better with simple dist)
+        # ---------------------------------------------------------------
+        logger.debug("[BA] >>> STAGE 1: Consolidating cameras position...")
         success_s1, results_s1 = bundle_adjustment.run_bundle_adjustment(
 
             K_online, D_online, cam_r_online, cam_t_online, board_r_online, board_t_online,
@@ -340,7 +337,8 @@ class MultiviewCalibrationTool:
 
             shared_intrinsics=True,
             fix_aspect_ratio=True,
-            distortion_model='simple',    # Fixes distortion params to zero
+            distortion_model='none',        # Fixes distortion params to zero
+            # distortion_model='simple',
 
             # What to optimize:
             fix_focal_principal=False,
@@ -350,7 +348,7 @@ class MultiviewCalibrationTool:
         )
 
         if not success_s1:
-            print("[ERROR] BA Stage 1 failed. Aborting calibration.")
+            logger.error("[BA] Stage 1 failed. Aborting calibration.")
             return False
 
         # Use results of S1 as initial guess for S2
@@ -361,11 +359,9 @@ class MultiviewCalibrationTool:
         board_r_s2_init = results_s1['board_r_opt']
         board_t_s2_init = results_s1['board_t_opt']
 
-        # STAGE 2: Per-camera pinhole world (Per-camera intrinsics, no Distortion)
-        # ---------------------------------
-        print("\n" + "=" * 80)
-        print(">>> STAGE 2: BA on Pinhole World (Per-Camera Intrinsics, No Distortion)")
-        print("=" * 80)
+        # STAGE 2: Per-camera pinhole world (shared intrinsics, simple distortion)
+        # ------------------------------------------------------------------------
+        logger.debug("[BA] >>> STAGE 2: Consolidating per-camera intrinsics...")
 
         success_s2, results_s2 = bundle_adjustment.run_bundle_adjustment(
 
@@ -377,7 +373,8 @@ class MultiviewCalibrationTool:
 
             shared_intrinsics=False,  # Now we optimize per-camera
             fix_aspect_ratio=False,   # we allow fx and fy to differ
-            distortion_model='none',
+            # distortion_model='none',
+            distortion_model='simple',
 
             fix_focal_principal=False,
             fix_distortion=True,
@@ -386,7 +383,7 @@ class MultiviewCalibrationTool:
         )
 
         if not success_s2:
-            print("[ERROR] BA Stage 2 failed. Aborting calibration.")
+            logger.error("[BA] Stage 2 failed. Aborting calibration.")
             return False
 
         # Use results of stage 2 as initial guess for stage 3
@@ -397,11 +394,9 @@ class MultiviewCalibrationTool:
         board_r_s3_init = results_s2['board_r_opt']
         board_t_s3_init = results_s2['board_t_opt']
 
-        # STAGE 3: Real world (Full Refinement with Distortion)
-        # -------------------
-        print("\n" + "=" * 80)
-        print(">>> STAGE 3: BA on Real World (Full Refinement with Distortion)")
-        print("=" * 80)
+        # STAGE 3: Real world (Full extrinsics + intrinsics refinement with distortion)
+        # -----------------------------------------------------------------------------
+        logger.debug("[BA] >>> STAGE 3: Full refinement...")
 
         success_s3, final_results = bundle_adjustment.run_bundle_adjustment(
 
@@ -427,7 +422,7 @@ class MultiviewCalibrationTool:
         # Finish
         # -----------
         if success_s3:
-            print("\nBundle adjustment complete. Storing refined parameters.")
+            logger.info("Bundle adjustment complete. Storing refined parameters.")
 
             # store the globally optimized results
             final_K = final_results['K_opt']
@@ -450,7 +445,7 @@ class MultiviewCalibrationTool:
 
             return True
         else:
-            print("[ERROR] Final BA Stage 3 failed. Aborting calibration.")
+            logger.error("[BA] Stage 3 failed. Aborting calibration.")
             return False
 
     @property

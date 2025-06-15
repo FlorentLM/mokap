@@ -1,14 +1,14 @@
-import os
+import logging
 import subprocess
 import shlex
 import platform
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Dict, Any, Optional
-
 import cv2
 import numpy as np
-from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 
 class FrameWriter(ABC):
@@ -98,7 +98,7 @@ class ImageSequenceWriter(FrameWriter):
             compression_level = int(np.round(np.interp(self.quality, [0, 100], [9, 1])))
             self._encoding_params['compression'] = compression_level
             self._imwrite_params = [cv2.IMWRITE_PNG_COMPRESSION, compression_level]
-            print(f"[INFO] ImageSequenceWriter: PNG quality {self.quality} mapped to compression level {compression_level}.")
+            logger.info(f"ImageSequenceWriter: PNG quality {self.quality} mapped to compression level {compression_level}.")
 
         elif self.ext in ('tif', 'tiff'):
             # For TIFF we can offer a simple choice
@@ -108,18 +108,18 @@ class ImageSequenceWriter(FrameWriter):
                 # Use value 1 for no compression (ZLIB would be 8)
                 self._imwrite_params = [cv2.IMWRITE_TIFF_COMPRESSION, 1]
                 self._encoding_params['lossless'] = True
-                print(f"[INFO] ImageSequenceWriter: TIFF quality {self.quality} >= 95. Using no compression.")
+                logger.info(f"ImageSequenceWriter: TIFF quality {self.quality} >= 95. Using no compression.")
 
             else:
                 # Use JPEG compression (value 7) and pass the quality setting
                 self._imwrite_params = [cv2.IMWRITE_TIFF_COMPRESSION, 7, cv2.IMWRITE_JPEG_QUALITY, int(self.quality)]
                 self._encoding_params['lossless'] = False
                 self._encoding_params['quality'] = int(self.quality)
-                print(f"[INFO] ImageSequenceWriter: TIFF quality {self.quality} < 95. Using JPEG compression inside TIFF.")
+                logger.info(f"ImageSequenceWriter: TIFF quality {self.quality} < 95. Using JPEG compression inside TIFF.")
 
         elif self.ext in ('bmp'):
             self._encoding_params['lossless'] = True
-            print(f"[INFO] ImageSequenceWriter: BMP. Lossless.")
+            logger.info(f"ImageSequenceWriter: BMP. Lossless.")
 
         # Ensure the output directory exists
         self.filepath.mkdir(parents=True, exist_ok=True)
@@ -179,7 +179,7 @@ class ImageSequenceWriter(FrameWriter):
 
         except Exception as e:
             # Catch any potential PIL or OS error during the save operation
-            print(f"[ERROR] Failed to save frame {self.frame_count} to {image_path}: {e}")
+            logger.error(f"Failed to save frame {self.frame_count} to {image_path}: {e}")
 
             # re-raising an error to prevent the frame_count from being incremented in the parent write() method
             raise IOError(f"Disk write failed for frame {self.frame_count}") from e
@@ -237,7 +237,7 @@ class FFmpegWriter(FrameWriter):
             f"-framerate {self.framerate:.3f} -pix_fmt {input_pixel_format} -i pipe:0"
         )
         command = f"{self.ffmpeg_path} -hide_banner {input_args} {encoder_params} {shlex.quote(str(filepath))}"
-        print(f"[DEBUG] FFmpeg command: {command}")
+        logger.debug(f"FFmpeg command: {command}")
 
         # Start the subprocess, redirecting stdout/stderr to prevent console spam
         self.proc = subprocess.Popen(
@@ -265,7 +265,7 @@ class FFmpegWriter(FrameWriter):
         elif system == 'Darwin':
             return 'gpu_videotoolbox'
         else:
-            print(f"[WARN] Unsupported OS '{system}' for GPU encoding. Falling back to CPU.")
+            logger.warning(f"Unsupported OS '{system}' for GPU encoding. Falling back to CPU.")
             return 'cpu'
 
     def _write_frame(self, frame: np.ndarray, metadata: Dict[str, Any]):
@@ -278,7 +278,7 @@ class FFmpegWriter(FrameWriter):
             except (IOError, BrokenPipeError) as e:
 
                 # This can happen if FFmpeg closes unexpectedly
-                print(f"[ERROR] Failed to write to FFmpeg process: {e}")
+                logger.error(f"Failed to write to FFmpeg process: {e}")
 
                 # We can try to get more info from stderr if it was captured
                 self.close()  # Attempt to clean up

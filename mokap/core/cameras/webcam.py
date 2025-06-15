@@ -1,8 +1,12 @@
+import logging
+
 import cv2
 import numpy as np
 import time
 from typing import Any, Dict, Optional, Tuple
 from mokap.core.cameras.interface import AbstractCamera
+
+logger = logging.getLogger(__name__)
 
 
 class WebcamCamera(AbstractCamera):
@@ -30,7 +34,7 @@ class WebcamCamera(AbstractCamera):
 
     def connect(self, config: Optional[Dict[str, Any]] = None) -> None:
         if self.is_connected:
-            print(f'Camera {self.unique_id} is already connected.')
+            logger.warning(f'Camera {self.unique_id} is already connected.')
             return
 
         try:
@@ -43,7 +47,7 @@ class WebcamCamera(AbstractCamera):
 
             self._is_connected = True
             self._apply_configuration(config)
-            print(f'Connected to Webcam: {self.unique_id}')
+            logger.info(f'Connected to Webcam: {self.unique_id}')
 
         except Exception as e:
             self._is_connected = False
@@ -104,7 +108,7 @@ class WebcamCamera(AbstractCamera):
         self._ptr = None
         self._is_connected = False
         self._is_grabbing = False
-        print(f'Disconnected from Webcam: {self.unique_id}')
+        logger.info(f'Disconnected from Webcam: {self.unique_id}')
 
     def start_grabbing(self) -> None:
         if self.is_connected and not self.is_grabbing:
@@ -226,7 +230,7 @@ class WebcamCamera(AbstractCamera):
     @pixel_format.setter
     def pixel_format(self, value: str):
         if value.upper() not in ['BGR8', 'BGR']:
-            print(f'[Warning] Webcam pixel format cannot be changed. It is typically BGR8.')
+            logger.warning(f'Webcam pixel format cannot be changed. It is typically BGR8.')
 
     # --- These are likely unsupported by all webcams, but we need to implement them ---
 
@@ -236,7 +240,7 @@ class WebcamCamera(AbstractCamera):
 
     @binning.setter
     def binning(self, value: int):
-        print('[Warning] Webcams do not support hardware binning. Ignoring.')
+        logger.warning('Webcams do not support hardware binning. Ignoring.')
         pass
 
     @property
@@ -245,7 +249,7 @@ class WebcamCamera(AbstractCamera):
 
     @binning_mode.setter
     def binning_mode(self, value: str):
-        print('[Warning] Webcams do not support hardware binning. Ignoring.')
+        logger.warning('Webcams do not support hardware binning. Ignoring.')
         pass
 
     @property

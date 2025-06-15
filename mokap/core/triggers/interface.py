@@ -1,8 +1,11 @@
+import logging
 from abc import ABC, abstractmethod
 from typing import Optional, Dict
 from dotenv import load_dotenv
 from mokap.utils.fileio import read_config
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 class AbstractTrigger(ABC):
@@ -11,8 +14,7 @@ class AbstractTrigger(ABC):
     Defines a common interface for different hardware trigger implementations
     """
 
-    def __init__(self, config: Optional[Dict] = None, silent: bool = False):
-        self._silent = silent
+    def __init__(self, config: Optional[Dict] = None):
         self._config = config if config else read_config(Path(__file__).parents[3] / 'config.yaml').get('trigger', {})
         self._connected: bool = False
         load_dotenv()
@@ -55,7 +57,6 @@ class AbstractTrigger(ABC):
     def __exit__(self, exc_type, exc_val, exc_tb):
         """ Context manager exit point. Ensures stop() and disconnect() are called """
         if self.connected:
-            if not self._silent:
-                print("[INFO] Exiting context: stopping and disconnecting trigger.")
+            logger.debug("Exiting context: stopping and disconnecting trigger.")
             self.stop()
             self.disconnect()

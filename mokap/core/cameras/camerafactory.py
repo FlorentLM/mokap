@@ -1,9 +1,12 @@
+import logging
 import os
 from contextlib import redirect_stderr
 from typing import List, Dict, Optional, Union, Any, TYPE_CHECKING
 import cv2
 from mokap.core.cameras.interface import AbstractCamera
 from mokap.core.cameras.webcam import WebcamCamera
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from mokap.core.cameras.basler import BaslerCamera
@@ -23,7 +26,7 @@ def discover_webcams(max_to_check: int = 10):  # increased default just in case
 
         if cap.isOpened():
             # if successful, create an instance and release the capture
-            print(f"Found webcam at index {index}")
+            logger.debug(f"Found Webcam at index {index}")
             found_cams.append(WebcamCamera(camera_index=index))
             cap.release()
             index += 1
@@ -59,11 +62,11 @@ class CameraFactory:
                     'native_object': dev_info  # SDK-specific object
                 })
         except ImportError:
-            # print("Pylon SDK not found. Skipping Basler camera discovery.")
+            logger.debug("Pylon SDK not found. Skipping Basler camera discovery.")
             pass
 
         except Exception as e:
-            print(f"Error during Basler discovery: {e}")
+            logger.error(f"Error during Basler discovery: {e}")
 
         # --- Discover FLIR Cameras ---
         try:
@@ -84,8 +87,9 @@ class CameraFactory:
                 node_serial = PySpin.CStringPtr(nodemap_tldevice.GetNode("DeviceSerialNumber"))
 
                 if not PySpin.IsAvailable(node_serial) or not PySpin.IsReadable(node_serial):
-                    print("Warning: Found a FLIR camera but could not get its serial number. Skipping.")
+                    logger.warning("Found a FLIR camera but could not get its serial number. Skipping.")
                     continue  # can't use a camera without a serial number
+
                 else:
                     serial_number = node_serial.GetValue()
 
@@ -103,7 +107,7 @@ class CameraFactory:
             system.ReleaseInstance()
 
         except ImportError:
-            # print("PySpin SDK not found. Skipping FLIR camera discovery.")
+            logger.debug("PySpin SDK not found. Skipping FLIR camera discovery.")
             pass
 
         # --- Discover Webcams ---
@@ -121,7 +125,7 @@ class CameraFactory:
                 del cam_instance
 
         except Exception as e:
-            # print(f"Error during Webcam discovery: {e}")
+            logger.error(f"Error during Webcam discovery: {e}")
             pass
 
         return CameraFactory._discovered_devices
@@ -175,14 +179,15 @@ class CameraFactory:
                 return BaslerCamera(native_obj)
 
             except ImportError:
-                print("Error: Cannot create Basler camera. The Pylon SDK is not installed.")
+                logger.error("Cannot create Basler camera. Is the Pylon SDK installed?")
                 return None
 
         elif vendor == 'flir':
             # For FLIR, we must re-acquire the camera using its serial number
             serial = device_info.get('serial')
+
             if not serial:
-                print("Error: Cannot get FLIR camera without a serial number.")
+                logger.error("Cannot get FLIR camera without a serial number.")
                 return None
 
             system = None
@@ -202,18 +207,19 @@ class CameraFactory:
                     return FLIRCamera(cam_ptr, system)
                 else:
                     # camera was not found (maybe disconnected?)
-                    print(f"Error: Could not re-acquire FLIR camera with serial {serial}. Was it disconnected?")
+                    logger.error(f"Could not re-acquire FLIR camera with serial {serial}. Was it disconnected?")
+
                     if system:
                         system.ReleaseInstance() # clean up the system instance
                     return None
 
             except ImportError:
-                print("Error: Cannot create FLIR camera. The PySpin SDK is not installed.")
-                # No need to release system, as PySpin wasn't imported
+                logger.error("Cannot create FLIR camera. Is the PySpin SDK installed?")
+                # No need to release system, PySpin wasn't imported
                 return None
 
             except Exception as e:
-                print(f"Error during FLIR camera re-acquisition: {e}")
+                logger.error(f"Error during FLIR camera re-acquisition: {e}")
                 # clean up if an exception occurred
 
                 if system:
@@ -227,12 +233,13 @@ class CameraFactory:
                     # We already have the WebcamCamera class imported
                     return WebcamCamera(camera_index=cam_index)
                 else:
-                    print("Error: Webcam device info is missing the camera index.")
+                    logger.error("Webcam device info is missing the camera index.")
                     return None
+
             except Exception as e:
-                print(f"Error creating Webcam instance: {e}")
+                logger.error(f"Error creating Webcam instance: {e}")
                 return None
 
         else:
-            print(f"Error: Vendor '{vendor}' is not supported.")
+            logger.error(f"Error: Vendor '{vendor}' is not supported (yet).")
             return None

@@ -1,6 +1,9 @@
 import abc
+import logging
 from typing import Any, Dict, Optional, Tuple
 from mokap.core.cameras.interface import AbstractCamera
+
+logger = logging.getLogger(__name__)
 
 
 class GenICamCamera(AbstractCamera, abc.ABC):
@@ -177,7 +180,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
             actual_value = self._set_feature_value('AcquisitionFrameRate', value)
             self._framerate = actual_value
         except AttributeError:
-            print(f"[Warning] Camera {self.unique_id}: Could not set framerate explicitly.")
+            logger.warning(f"Camera {self.unique_id}: Could not set framerate explicitly.")
             self._framerate = self._get_feature_value('AcquisitionFrameRate')
 
     @property
@@ -235,7 +238,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         v_val = self._set_feature_value('BinningVertical', value)
 
         if h_val != v_val:
-            print(f"[WARN] Binning mismatch H={h_val} V={v_val}")
+            logger.warning(f"Binning mismatch! H={h_val} V={v_val}")
 
         self._binning = h_val
 

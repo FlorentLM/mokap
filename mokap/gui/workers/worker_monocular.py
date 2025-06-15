@@ -1,13 +1,14 @@
+import logging
 from typing import Union, Optional
 import numpy as np
 from PySide6.QtCore import Slot
 from numpy.typing import ArrayLike
 from mokap.calibration.monocular import MonocularCalibrationTool
-from mokap.gui.workers import DEBUG_SIGNALS_FLOW
 from mokap.gui.workers.workers_base import CalibrationProcessingWorker
 from mokap.utils.datatypes import (ChessBoard, CharucoBoard, CalibrationData, ErrorsPayload,
                                    IntrinsicsPayload, ExtrinsicsPayload, DetectionPayload)
 
+logger = logging.getLogger(__name__)
 
 class MonocularWorker(CalibrationProcessingWorker):
 
@@ -45,8 +46,7 @@ class MonocularWorker(CalibrationProcessingWorker):
     def _create_tool(self, board_params: Union[ChessBoard, CharucoBoard]):
         """ Create and configure a new MonocularCalibrationTool. Used in init or after calibration board change """
 
-        if DEBUG_SIGNALS_FLOW:
-            print(f"[{self.name.title()}] Received new board parameters.")
+        logger.debug(f"[{self.name.title()}] Received new board parameters.")
 
         # Update the worker's own reference to the board points for the coordinator
         self.board_object_points = board_params.object_points()
@@ -63,8 +63,8 @@ class MonocularWorker(CalibrationProcessingWorker):
     @Slot(object)
     def configure_new_board(self, board_params: Union[ChessBoard, CharucoBoard]):
         """ Slot to handle a full reset when board parameters change """
-        if DEBUG_SIGNALS_FLOW:
-            print(f"[{self.name.title()}] Received new board parameters. Recreating tool.")
+
+        logger.debug(f"[{self.name.title()}] Received new board parameters. Recreating tool.")
 
         # Re-create the tool with the new parameters
         self._create_tool(board_params)

@@ -1,8 +1,11 @@
+import logging
 import time
 import threading
 from typing import Optional, Dict
 import serial
 from mokap.core.triggers.interface import AbstractTrigger
+
+logger = logging.getLogger(__name__)
 
 
 class FTDITrigger(AbstractTrigger):
@@ -16,8 +19,8 @@ class FTDITrigger(AbstractTrigger):
     very high-frequency or high-precision timing applications
     """
 
-    def __init__(self, config: Optional[Dict] = None, silent: bool = False):
-        super().__init__(config=config, silent=silent)
+    def __init__(self, config: Optional[Dict] = None):
+        super().__init__(config=config)
 
         self.ser: Optional[serial.Serial] = None
         self._trigger_thread: Optional[threading.Thread] = None
@@ -33,13 +36,15 @@ class FTDITrigger(AbstractTrigger):
         if self.pin not in ['RTS', 'DTR']:
             raise ValueError("Invalid pin specified for FTDI trigger. Must be 'RTS' or 'DTR'.")
 
+        logger.debug(f'FTDI trigger on port {self.port}, using pin {self.pin}.')
+
         self._connect()
 
     def _connect(self) -> None:
         """ Establishes the serial connection to the FTDI device """
 
-        if not self._silent:
-            print(f'[INFO] Connecting to FTDI trigger at {self.port}...')
+        logger.debug(f'Connecting to FTDI trigger at {self.port}...')
+
         try:
             self.ser = serial.Serial(self.port, self.baud_rate, timeout=1)
             # Connection success is just the port opening
@@ -48,11 +53,11 @@ class FTDITrigger(AbstractTrigger):
             # ensure the pin is in a low state initially
             self._set_pin_state(False)
 
-            if not self._silent:
-                print(f'[INFO] FTDI trigger connected successfully on pin {self.pin}.')
+            logger.info(f'Trigger connected successfully.')
 
         except serial.SerialException as e:
-            print(f'[ERROR] FTDI trigger connection failed: {e}')
+
+            logger.error(f'Trigger connection failed: {e}')
             self.ser = None
             self._connected = False
 
@@ -68,7 +73,7 @@ class FTDITrigger(AbstractTrigger):
                 self.ser.dtr = state
 
         except serial.SerialException as e:
-            print(f'[ERROR] Lost connection to FTDI device while setting pin state: {e}')
+            logger.error(f'Lost connection to FTDI device while setting pin state: {e}')
             self.disconnect()
 
     def _trigger_loop(self, on_time: float, off_time: float):
@@ -91,20 +96,19 @@ class FTDITrigger(AbstractTrigger):
     def start(self, frequency: float, duty_cycle_percent: int = 50) -> None:
         """ Starts the trigger signal by launching a software PWM thread """
         if not self.connected:
-            print('[ERROR] Cannot start trigger: not connected.')
+            logger.error('Cannot start trigger: not connected.')
             return
 
         if self._trigger_thread and self._trigger_thread.is_alive():
-            if not self._silent:
-                print('[WARNING] Trigger is already running. Stopping it before starting new frequency.')
+            logger.warning('Trigger is already running. Stopping it before starting new frequency.')
             self.stop()
 
         if frequency <= 0:
-            print('[ERROR] Frequency must be positive.')
+            logger.error('Frequency must be positive.')
             return
 
         if not (0 <= duty_cycle_percent <= 100):
-            print('[ERROR] Duty cycle must be between 0 and 100.')
+            logger.error('Duty cycle must be between 0 and 100.')
             return
 
         period = 1.0 / frequency
@@ -119,9 +123,7 @@ class FTDITrigger(AbstractTrigger):
         )
         self._trigger_thread.start()
 
-        if not self._silent:
-            print(
-                f"[INFO] Trigger started at {frequency:.2f} Hz with {duty_cycle_percent}% duty cycle on pin {self.pin}.")
+        logger.info(f"Trigger started at {frequency:.2f} Hz with {duty_cycle_percent}% duty cycle.")
 
     def stop(self) -> None:
         """ Stops the trigger signal thread """
@@ -129,8 +131,8 @@ class FTDITrigger(AbstractTrigger):
         if self._trigger_thread and self._trigger_thread.is_alive():
             self._stop_event.set()
             self._trigger_thread.join()  # wait for thread to finish
-            if not self._silent:
-                print('[INFO] Trigger stopped.')
+
+            logger.info('Trigger stopped.')
 
         self._trigger_thread = None
 
@@ -150,8 +152,8 @@ class FTDITrigger(AbstractTrigger):
             self.ser = None
 
         self._connected = False
-        if not self._silent:
-            print('[INFO] FTDI trigger disconnected.')
+
+        logger.info('Trigger disconnected.')
 
 
 if __name__ == '__main__':
@@ -165,7 +167,7 @@ if __name__ == '__main__':
     print("--- Testing FtdiTrigger ---")
 
     try:
-        with FTDITrigger(silent=False) as trigger:
+        with FTDITrigger() as trigger:
             if trigger.connected:
                 print(f"Starting trigger for {secs} seconds at {freq} Hz...")
                 trigger.start(frequency=freq, duty_cycle_percent=50)

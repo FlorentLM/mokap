@@ -1,14 +1,16 @@
+import logging
 import numpy as np
 from typing import List, Optional, Union
 from PySide6.QtCore import QTimer, Slot, Signal
 from numpy.typing import ArrayLike
 from mokap.calibration.multiview import MultiviewCalibrationTool
-from mokap.gui.workers import DEBUG_SIGNALS_FLOW
 from mokap.gui.workers.workers_base import CalibrationProcessingWorker
 from mokap.utils.datatypes import (CalibrationData, DetectionPayload, ExtrinsicsPayload, IntrinsicsPayload,
                                    ChessBoard, CharucoBoard)
 from mokap.utils.geometry.projective import back_projection_batched, back_projection
 from mokap.utils.geometry.transforms import extrinsics_matrix
+
+logger = logging.getLogger(__name__)
 
 
 class MultiviewWorker(CalibrationProcessingWorker):
@@ -49,14 +51,12 @@ class MultiviewWorker(CalibrationProcessingWorker):
         # TODO: Rename this, make it consistent with the monocular tool's names
 
         self.multiview_tool = tool
-        if DEBUG_SIGNALS_FLOW:
-            print(f"[{self.name.title()}] Multiview tool initialized and ready.")
+        logger.debug(f"[{self.name.title()}] Multiview tool initialized and ready.")
 
     @Slot(CalibrationData)
     def on_payload_received(self, data: CalibrationData):
 
-        if DEBUG_SIGNALS_FLOW:
-            print(f'[{self.name.title()}] Received (from Coordinator): ({data.camera_name}) {data.payload}')
+        logger.debug(f'[{self.name.title()}] Received (from Coordinator): ({data.camera_name}) {data.payload}')
 
         # if the tool isn't ready, do nothing
         if self.multiview_tool is None:
@@ -132,14 +132,14 @@ class MultiviewWorker(CalibrationProcessingWorker):
         if self._paused or self.multiview_tool is None:
             return
 
-        print(f"[{self.name.title()}] Attempting to run final Bundle Adjustment.")
+        logger.info(f"[{self.name.title()}] Attempting to run final Bundle Adjustment.")
 
         self.blocking.emit(True)
         success = self.multiview_tool.refine_all()
         self.blocking.emit(False)
 
         if success:
-            print(f"[{self.name.title()}] Bundle Adjustment successful. Emitting refined results.")
+            logger.info(f"[{self.name.title()}] Bundle Adjustment successful. Emitting refined results.")
 
             # emit the final results
             K_opts, D_opts = self.multiview_tool.refined_intrinsics
@@ -154,7 +154,7 @@ class MultiviewWorker(CalibrationProcessingWorker):
                 extr_payload = ExtrinsicsPayload(r_opts[i], t_opts[i])
                 self.send_payload.emit(CalibrationData(cam_name, extr_payload))
         else:
-            print(f"[{self.name.title()}] Bundle Adjustment failed.")
+            logger.info(f"[{self.name.title()}] Bundle Adjustment failed.")
 
     @Slot()
     def reset(self):
@@ -162,8 +162,7 @@ class MultiviewWorker(CalibrationProcessingWorker):
         super().reset()
 
         if self.multiview_tool is not None:
-            if DEBUG_SIGNALS_FLOW:
-                print(f"[{self.name.title()}] Resetting. Multiview tool destroyed.")
+            logger.debug(f"[{self.name.title()}] Resetting. Multiview tool destroyed.")
 
             self.update_timer.stop()
             self.multiview_tool = None
@@ -174,6 +173,6 @@ class MultiviewWorker(CalibrationProcessingWorker):
 
         # If we move back to stage 0, we must destroy the tool and stop the timer
         if stage == 0 and self.multiview_tool is not None:
-            print(f"[{self.name.title()}] Resetting. Multiview tool destroyed.")
+            logger.debug(f"[{self.name.title()}] Resetting. Multiview tool destroyed.")
             self.update_timer.stop()
             self.multiview_tool = None

@@ -1,8 +1,11 @@
+import logging
 from typing import Tuple, Union, Optional
 import cv2
 import numpy as np
 from numpy.typing import ArrayLike
 from mokap.utils.datatypes import CharucoBoard
+
+logger = logging.getLogger(__name__)
 
 
 class ChessboardDetector:
@@ -113,7 +116,7 @@ class ChessboardDetector:
                                                      zeroZone=self._zero_zone,
                                                      criteria=self._subpix_criteria)
             except cv2.error as e:
-                print(e)
+                logger.error(e)
 
         # we want (N, 2)
         points2d_coords = chessboard_points.reshape(-1, 2).astype(np.float32)
@@ -198,6 +201,6 @@ class CharucoDetector(ChessboardDetector):
                                                      zeroZone=self._zero_zone,
                                                      criteria=self._subpix_criteria)
             except cv2.error as e:
-                print(e)
+                logger.error(e)
 
         return chessboard_points[:, 0, :], chessboard_points_ids[:, 0]

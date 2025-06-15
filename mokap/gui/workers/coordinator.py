@@ -1,3 +1,4 @@
+import logging
 from typing import Dict, List, Union
 import numpy as np
 from PySide6.QtCore import QObject, Signal, Slot
@@ -5,7 +6,9 @@ from mokap.calibration.multiview import MultiviewCalibrationTool
 from mokap.gui.workers.workers_base import CalibrationProcessingWorker
 from mokap.gui.workers.worker_monocular import MonocularWorker
 from mokap.utils.datatypes import ChessBoard, CharucoBoard, CalibrationData, IntrinsicsPayload
-from mokap.gui.workers import DEBUG_SIGNALS_FLOW, VERBOSE
+
+
+logger = logging.getLogger(__name__)
 
 
 class CalibrationCoordinator(QObject):
@@ -49,8 +52,7 @@ class CalibrationCoordinator(QObject):
             return
 
         self._current_stage = stage
-        if DEBUG_SIGNALS_FLOW:
-            print(f"[{self.name.title()}] Broadcasting calibration stage: {stage}")
+        logger.debug(f"[{self.name.title()}] Broadcasting calibration stage: {stage}")
 
         if self._current_stage == 1:
             self._initialize_multiview_tool()
@@ -61,8 +63,7 @@ class CalibrationCoordinator(QObject):
     def handle_board_change(self, new_board_params: Union[ChessBoard, CharucoBoard]):
         """ Receives new board parameters from the GUI and triggers a system-wide reset """
 
-        if DEBUG_SIGNALS_FLOW:
-            print(f"[{self.name.title()}] Board parameters changed. Triggering full system reset.")
+        logger.debug(f"[{self.name.title()}] Board parameters changed. Triggering full system reset.")
 
         self._initial_intrinsics.clear()
         self.set_stage(0)    # force the entire system back to the beginning
@@ -76,10 +77,10 @@ class CalibrationCoordinator(QObject):
 
         if camera_name in self._cameras_names:
             self._origin_camera_name = camera_name
-            print(f"[{self.name.title()}] Origin camera set to: {camera_name}")
+            logger.info(f"[{self.name.title()}] Origin camera set to: {camera_name}")
 
         else:
-            print(f"[{self.name.title()}] Error: Unknown camera name '{camera_name}' for origin.")
+            logger.error(f"[{self.name.title()}] Unknown camera name '{camera_name}' for origin.")
 
     def _initialize_multiview_tool(self):
         """ Gathers all required data, creates the MultiviewCalibrationTool, and sends it to the MultiviewWorker """
@@ -87,18 +88,18 @@ class CalibrationCoordinator(QObject):
         multiview_worker = self._workers.get('multiview')
 
         if not multiview_worker:
-            print("[Coordinator] Error: MultiviewWorker not registered.")
+            logger.error("[Coordinator] MultiviewWorker not registered.")
             return
 
         # Check if we have all initial intrinsics
         if len(self._initial_intrinsics) != len(self._cameras_names):
-            print(f"[Coordinator] Error: Cannot start extrinsics stage. Have {len(self._initial_intrinsics)}/{len(self._cameras_names)} initial intrinsics.")
+            logger.error(f"[Coordinator] Cannot start extrinsics stage. Have {len(self._initial_intrinsics)}/{len(self._cameras_names)} initial intrinsics.")
 
             # Revert stage to 0 to prevent getting stuck
             self.set_stage(0)
             return
 
-        print("[Coordinator] All initial intrinsics received. Initializing Multiview tool.")
+        logger.debug("[Coordinator] All initial intrinsics received. Initializing Multiview tool.")
 
         # Gather data for the tool's constructor
         init_cam_matrices = []
@@ -123,8 +124,7 @@ class CalibrationCoordinator(QObject):
             init_dist_coeffs=np.array(init_dist_coeffs),
             object_points=object_points,
             min_detections=15,      # TODO: Move these into the init, and have GUI controls for them
-            max_detections=100,
-            debug_print=VERBOSE
+            max_detections=100
         )
 
         # Send the tool to the worker
@@ -136,15 +136,14 @@ class CalibrationCoordinator(QObject):
         Handles payloads sent directly from the main thread, typically from loading a file
         This method acts as a router to dispatch the data to the correct workers
         """
-        if DEBUG_SIGNALS_FLOW:
-            print(f'[{self.name.title()}] Received (from Main): ({data.camera_name}) {data.payload}')
+
+        logger.debug(f'[{self.name.title()}] Received (from Main): ({data.camera_name}) {data.payload}')
 
         payload = data.payload
         target_worker_name = data.camera_name
 
         if target_worker_name not in self._workers:
-            if DEBUG_SIGNALS_FLOW:
-                print(f"[Coordinator] Warning: Received payload for unknown worker '{target_worker_name}'.")
+            logger.debug(f"[Coordinator] Warning: Received payload for unknown worker '{target_worker_name}'.")
             return
 
         # Use the target worker's public 'receive_payload' signal to send the data
@@ -167,8 +166,7 @@ class CalibrationCoordinator(QObject):
         """
 
         sending_worker_name = self.sender().name
-        if DEBUG_SIGNALS_FLOW:
-            print(
+        logger.debug(
                 f'[{self.name.title()}] Received (from {sending_worker_name.title()}): ({data.camera_name}) {data.payload}')
 
         # Route based on payload type and current stage

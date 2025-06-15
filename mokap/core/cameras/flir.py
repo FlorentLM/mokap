@@ -1,8 +1,12 @@
+import logging
+
 import PySpin
 import numpy as np
 import re
 from typing import Any, Dict, Optional, Tuple
 from mokap.core.cameras.genicam import GenICamCamera
+
+logger = logging.getLogger(__name__)
 
 
 class FLIRCamera(GenICamCamera):
@@ -47,13 +51,13 @@ class FLIRCamera(GenICamCamera):
     def connect(self, config: Optional[Dict[str, Any]] = None) -> None:
 
         if self.is_connected:
-            print(f"Camera {self.unique_id} is already connected.")
+            logger.warning(f"Camera {self.unique_id} is already connected.")
             return
         try:
             self._cam_ptr.Init()
             self._is_connected = True
             self._apply_configuration(config)
-            print(f"Connected to FLIR camera: {self.unique_id}")
+            logger.info(f"Connected to FLIR camera {self.unique_id}")
 
         except PySpin.SpinnakerException as e:
             self._is_connected = False
@@ -71,7 +75,7 @@ class FLIRCamera(GenICamCamera):
             self._cam_ptr = None
 
         self._is_connected = False
-        print(f"Disconnected from FLIR camera: {self.unique_id}")
+        logger.info(f"Disconnected from FLIR camera {self.unique_id}")
 
         # After releasing the camera, we must release the system instance reference
         # that was acquired when this camera was created
@@ -169,22 +173,30 @@ class FLIRCamera(GenICamCamera):
                 case PySpin.intfIEnumeration:
                     enum_node = PySpin.CEnumerationPtr(node)
                     entry = enum_node.GetEntryByName(str(value))
+
                     if not PySpin.IsAvailable(entry) or not PySpin.IsReadable(entry):
                         raise ValueError(f"Enum entry '{value}' not found for '{name}'.")
+
                     enum_node.SetIntValue(entry.GetValue())
                     return str(value)
 
                 case PySpin.intfIFloat:
                     float_node = PySpin.CFloatPtr(node)
                     clamped_value = max(float_node.GetMin(), min(float_node.GetMax(), float(value)))
-                    if clamped_value != value: print(f"[Warning] Clamped {name} from {value} to {clamped_value}")
+
+                    if clamped_value != value:
+                        logger.warning(f"Clamped {name} from {value} to {clamped_value}")
+
                     float_node.SetValue(clamped_value)
                     return clamped_value
 
                 case PySpin.intfIInteger:
                     int_node = PySpin.CIntegerPtr(node)
                     clamped_value = max(int_node.GetMin(), min(int_node.GetMax(), int(value)))
-                    if clamped_value != value: print(f"[Warning] Clamped {name} from {value} to {clamped_value}")
+
+                    if clamped_value != value:
+                        logger.info(f"Clamped {name} from {value} to {clamped_value}")
+
                     int_node.SetValue(clamped_value)
                     return clamped_value
 
@@ -201,6 +213,7 @@ class FLIRCamera(GenICamCamera):
         try:
             node = self._get_nodemap().GetNode(name)
             iface = node.GetPrincipalInterfaceType()
+
             match iface:
                 case PySpin.intfIFloat:
                     return PySpin.CFloatPtr(node).GetMax()

@@ -1,8 +1,9 @@
+import logging
 import numpy as np
 from PySide6.QtCore import QObject, Signal, Slot
-
-from mokap.gui.workers import DEBUG_SIGNALS_FLOW
 from mokap.utils.datatypes import CalibrationData
+
+logger = logging.getLogger(__name__)
 
 
 class CalibrationWorker(QObject):
@@ -21,8 +22,7 @@ class CalibrationWorker(QObject):
     @Slot(CalibrationData)
     def on_payload_received(self, data: CalibrationData):
         """ Handles incoming payloads routed from the Coordinator """
-        if DEBUG_SIGNALS_FLOW:
-            print(f'[{self.name.title()}] Received (from Coordinator): ({data.camera_name}) {data.payload}')
+        logger.debug(f'[{self.name.title()}] Received (from Coordinator): ({data.camera_name}) {data.payload}')
 
 
 class ProcessingWorker(QObject):
@@ -55,13 +55,11 @@ class CalibrationProcessingWorker(CalibrationWorker, ProcessingWorker):
         """ Resets the worker's internal state (typically when changing calibration stages or board params)
         Implemented by subclasses """
 
-        if DEBUG_SIGNALS_FLOW:
-            print(f"[{self.name.title()}] Received reset signal.")
+        logger.debug(f"[{self.name.title()}] Received reset signal.")
 
         self.set_stage(0) # default reset behavior is to go back to stage 0
 
     @Slot(int)
     def set_stage(self, stage: int):
         self._current_stage = stage
-        if DEBUG_SIGNALS_FLOW:
-            print(f"[{self.name.title()}] Received calibration stage: {stage}")
+        logger.debug(f"[{self.name.title()}] Received calibration stage: {stage}")

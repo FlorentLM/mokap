@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 import subprocess
@@ -23,6 +24,7 @@ from mokap.gui.workers.worker_multiview import MultiviewWorker
 from mokap.utils import hex_to_hls, pretty_size
 from mokap.utils.datatypes import CalibrationData, IntrinsicsPayload, ExtrinsicsPayload
 
+logger = logging.getLogger(__name__)
 
 class MainControls(QMainWindow, SnapMixin):
 
@@ -368,7 +370,7 @@ class MainControls(QMainWindow, SnapMixin):
 
         # Ensure we are in the right mode (should be impossible to call from recording mode anyway)
         if not self.is_calibrating:
-            print("[MainControls] Must be in Calibration mode to load calibration.")
+            logger.warning("[MainControls] Must be in Calibration mode to load calibration.")
             return
 
         file_path, _ = QFileDialog.getOpenFileName(
@@ -380,7 +382,7 @@ class MainControls(QMainWindow, SnapMixin):
         if not file_path:
             return
 
-        print(f"[MainControls] Loading calibration from: {file_path}")
+        logger.info(f"[MainControls] Loading calibration from: {file_path}")
 
         try:
             for cam_name in self.cameras_names:
@@ -395,7 +397,7 @@ class MainControls(QMainWindow, SnapMixin):
                     self.coordinator.receive_from_main.emit(CalibrationData(cam_name, extrinsics))
 
         except Exception as e:
-            print(f"[MainControls] Error loading calibration file: {e}")
+            logger.error(f"[MainControls] Problem loading calibration file: {e}")
 
     #  ============= Qt method overrides =============
     def closeEvent(self, event):

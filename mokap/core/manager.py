@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import queue
 import subprocess
@@ -8,10 +9,8 @@ from pathlib import Path
 from queue import Queue, Empty
 from threading import Thread, Event, Lock
 from typing import List, Dict, Optional, Tuple, Any
-
 import numpy as np
 from PIL import Image
-
 from mokap.core.cameras.interface import AbstractCamera, CAMERAS_COLOURS
 from mokap.core.cameras.camerafactory import CameraFactory
 from mokap.core.triggers.interface import AbstractTrigger
@@ -21,6 +20,9 @@ from mokap.core.triggers.ftdi import FTDITrigger
 from mokap.core.writers import FrameWriter, ImageSequenceWriter, FFmpegWriter
 from mokap.utils import fileio
 from mokap.utils.system import setup_ulimit
+
+
+logger = logging.getLogger(__name__)
 
 
 class MultiCam:
@@ -46,9 +48,7 @@ class MultiCam:
         self._session_name = ""
         self.session_name = session_name  # use setter to initialize
 
-        self._silent = self.config.get('silent', False)
-
-        setup_ulimit(silent=self._silent)   # Linux only, does nothing on other platforms
+        setup_ulimit()   # Linux only, does nothing on other platforms
 
         # internal value for the framerate used to broadcast to all cameras
         self._framerate = self.config.get('framerate', 60)
@@ -67,19 +67,18 @@ class MultiCam:
             trigger_kind = trigger_conf.get('kind', '')
 
             if trigger_kind == 'raspberry':
-                print(trigger_kind)
-                self._trigger_instance = RaspberryTrigger(config=trigger_conf, silent=self._silent)
+                self._trigger_instance = RaspberryTrigger(config=trigger_conf)
             elif trigger_kind == 'arduino':
-                self._trigger_instance = ArduinoTrigger(config=trigger_conf, silent=self._silent)
+                self._trigger_instance = ArduinoTrigger(config=trigger_conf)
             elif trigger_kind == 'ftdi':
-                self._trigger_instance = FTDITrigger(config=trigger_conf, silent=self._silent)
-                print("[INFO] FTDI Trigger is not recommended for high-precision applications.")
+                self._trigger_instance = FTDITrigger(config=trigger_conf)
+                logger.info("FTDI Trigger is not recommended for high-precision applications.")
             else:
-                print("[ERROR] No valid trigger 'kind' found in config. Running without hardware trigger.")
+                logger.error("No valid trigger 'kind' found in config. Running without hardware trigger.")
                 self._trigger_instance = None
 
             if self._trigger_instance and not self._trigger_instance.connected:
-                print("[ERROR] Failed to connect to trigger. Running without hardware trigger.")
+                logger.error("Failed to connect to trigger. Running without hardware trigger.")
                 self._trigger_instance = None
 
         ## --- Threading Resources ---
@@ -111,14 +110,14 @@ class MultiCam:
     def connect_cameras(self):
         """ Discovers and connects to all available cameras using the camera factory """
 
-        if not self._silent:
-            print("[INFO] Discovering cameras...")
+        logger.debug("Discovering cameras...")
 
         # Get a list of all physically present devices from the factory
         # TODO: re-implement virtual cameras support
         all_discovered_devices = CameraFactory.discover_cameras()
+
         if not all_discovered_devices:
-            print("[WARN] No cameras found.")
+            logger.warning("No cameras found.")
             return
 
         # Create a lookup from serial number to the device info object
@@ -129,7 +128,7 @@ class MultiCam:
         # Get the camera configurations from the config file
         configured_sources = self.config.get('sources', {})
         if not configured_sources:
-            print("[WARN] No cameras defined in the 'sources' section of the config file.")
+            logger.warning("No cameras defined in the 'sources' section of the config file.")
             return
 
         # Define the list of global keys that can be applied to cameras
@@ -153,12 +152,12 @@ class MultiCam:
                 # Case 1: Serial is provided, find it directly
                 device_info = device_lookup.get(serial)
                 if not device_info:
-                    print(f"[WARN] Skipping '{friendly_name}': camera with serial {serial} not found.")
+                    logger.warning(f"Skipping '{friendly_name}': camera with serial {serial} not found.")
                     continue
             else:
                 # Case 2: No serial provided, find an unclaimed camera of the specified vendor
                 if not vendor:
-                    print(f"[WARN] Skipping '{friendly_name}': must provide a 'vendor' if 'serial' is omitted.")
+                    logger.warning(f"Skipping '{friendly_name}': must provide a 'vendor' if 'serial' is omitted.")
                     continue
 
                 # Find the first available camera of the right vendor that hasn't been claimed
@@ -166,11 +165,11 @@ class MultiCam:
                     if dev['vendor'].lower() == vendor.lower() and dev['serial'] not in claimed_serials:
                         device_info = dev
                         serial = dev['serial']  # Get the serial for future reference
-                        print(f"[INFO] Assigning unclaimed {vendor} camera (S/N: {serial}) to '{friendly_name}'.")
+                        logger.info(f"Assigning unclaimed {vendor} camera (S/N: {serial}) to '{friendly_name}'.")
                         break  # stop after finding one
 
                 if not device_info:
-                    print(f"[WARN] Skipping '{friendly_name}': No unclaimed '{vendor}' cameras available.")
+                    logger.warning(f"Skipping '{friendly_name}': No unclaimed '{vendor}' cameras available.")
                     continue
 
             # Once a device is chosen (either by serial or by vendor), get the camera instance
@@ -192,8 +191,8 @@ class MultiCam:
                     }
                     nested_settings = cam_config.get('settings', {})
                     if nested_settings:
-                        print(
-                            '[DEPRECATION WARNING] Nested "settings" block inside cameras configs will be deprecated.')
+                        logger.warning(
+                            '[DEPRECATION] Nested "settings" block inside cameras configs will be deprecated.')
                         # Merge nested settings into the specific settings
                         camera_specific_settings.update(nested_settings)
 
@@ -211,11 +210,10 @@ class MultiCam:
                     color = cam_config.get('color', CAMERAS_COLOURS[len(self.cameras) % len(CAMERAS_COLOURS)])
                     self.camera_colours[cam.unique_id] = f"#{color}"
 
-                    if not self._silent:
-                        print(f"[INFO] Successfully connected to {cam}")
+                    logger.info(f"Successfully connected to {cam}")
 
                 except Exception as e:
-                    print(f"[ERROR] Failed to connect or configure camera '{friendly_name}' (S/N: {serial}): {e}")
+                    logger.error(f"Failed to connect or configure camera '{friendly_name}' (S/N: {serial}): {e}")
 
     def disconnect_cameras(self):
         """ Cleanly disconnect all cameras """
@@ -224,18 +222,17 @@ class MultiCam:
             if cam.is_connected:
                 cam.disconnect()
 
-        if not self._silent:
-            print("[INFO] All cameras disconnected.")
+        logger.info("All cameras disconnected.")
 
     def start_acquisition(self):
         """ Starts all background threads for grabbing and displaying frames """
 
         if self._acquiring.is_set():
-            print("[WARN] Acquisition is already running.")
+            logger.info("Acquisition is already running.")
             return
 
         if self.nb_cameras == 0:
-            print("[ERROR] No cameras connected. Cannot start acquisition.")
+            logger.error("No cameras connected. Cannot start acquisition.")
             return
 
         self._acquiring.set()
@@ -252,8 +249,7 @@ class MultiCam:
             g.start()
             w.start()
 
-        if not self._silent:
-            print(f"[INFO] Acquisition started with {self.nb_cameras} cameras.")
+        logger.info(f"Acquisition started with {self.nb_cameras} cameras.")
 
     def stop_acquisition(self):
         """ Stops all background threads """
@@ -266,8 +262,7 @@ class MultiCam:
 
         self._acquiring.clear()
 
-        if not self._silent:
-            print("[INFO] Stopping acquisition threads...")
+        logger.debug("Stopping acquisition threads...")
 
         for thread in self._threads:
             thread.join(timeout=2.0)
@@ -279,18 +274,17 @@ class MultiCam:
         # Clean up session folder if it's empty
         fileio.rm_if_empty(self.full_path)
 
-        if not self._silent:
-            print("[INFO] Acquisition stopped.")
+        logger.info("Acquisition stopped.")
 
     def start_recording(self):
         """ Begins a recording session, signaling the writer threads to save frames """
 
         if not self._acquiring.is_set():
-            print("[ERROR] Cannot record, acquisition is not running.")
+            logger.error("Cannot record, acquisition is not running.")
             return
 
         if self._recording.is_set():
-            print("[WARN] Already recording.")
+            logger.warning("Already recording.")
             return
 
         # Prepare metadata snapshot for this session
@@ -322,8 +316,7 @@ class MultiCam:
         # signal that writers can start
         self._recording.set()
 
-        if not self._silent:
-            print(f"[INFO] Recording started. Saving to: {self.full_path}")
+        logger.info(f"Recording started. Saving to: {self.full_path}")
 
     def pause_recording(self):
         """ Pauses the current recording session, finalizing files """
@@ -333,8 +326,7 @@ class MultiCam:
 
         self._recording.clear()
 
-        if not self._silent:
-            print("[INFO] Finishing writing for current session...")
+        logger.info("Finishing writing for current session...")
 
         # we calculate and store session duration BEFORE asking the threads to stop
         session_idx = len(self._metadata['sessions']) - 1
@@ -385,8 +377,7 @@ class MultiCam:
         current_session['cameras'] = cameras_data
         self.save_metadata()
 
-        if not self._silent:
-            print("[INFO] Recording paused. Files saved.")
+        logger.info("Recording paused. Files saved.")
 
     def _grabber_thread(self, cam_idx: int):
         """ Dedicated thread to continuously grab frames from a single camera """
@@ -409,12 +400,11 @@ class MultiCam:
                         try:
                             writer_queue.put_nowait((frame, metadata))
                         except queue.Full:
-                            if not self._silent:
-                                print(f"[WARN] Cam {cam.name}: Writer queue is full. Recording frame dropped.")
+                            logger.warning(f"[WARN] Cam {cam.name}: Writer queue is full. Recording frame dropped.")
 
             except (IOError, RuntimeError) as e:
                 if self._acquiring.is_set():
-                    print(f"[ERROR] Grabber thread for {cam.name} failed: {e}")
+                    logger.error(f"[ERROR] Grabber thread for {cam.name} failed: {e}")
                     time.sleep(1)
 
         cam.stop_grabbing()
@@ -443,22 +433,21 @@ class MultiCam:
                     self._writers[cam_idx] = self._create_writer(cam, session_idx)
                     writer = self._writers[cam_idx]
 
-                    if not self._silent:
-                        print(f"[INFO] Writer for {cam.name} created: {type(writer).__name__}")
+                    logger.debug(f"Writer for {cam.name} created: {type(writer).__name__}")
 
                     writer.write(first_frame, first_metadata)
 
                 except Empty:
                     # If we timeout waiting for the first frame, it means the
                     # grabber isn't feeding the writer queue - so we should log it and try again
-                    if not self._silent:
-                        print(f"[WARN] Cam {cam.name}: Timed out waiting for first frame to record. Writer not started.")
-                    continue  # Skip to the next loop iteration to try again
+                    logger.warning(f"Cam {cam.name}: Timed out waiting for first frame to record. Trying again.")
+                    continue  # skip to the next loop iteration to try again
 
                 except Exception as e:
-                    print(f"[ERROR] Failed to create writer for {cam.name}: {e}")
+                    logger.error(f"Failed to create writer for {cam.name}: {e}")
                     self._recording.clear()  # this is debatable, but prevents getting stuck in an error loop
-                    # TODO: Maybe we want to keep a separate status for each camera?
+                    # TODO: Maybe keep a separate status for each camera?
+
                     self._finished_saving_events[cam_idx].set()
                     continue
 
@@ -544,7 +533,7 @@ class MultiCam:
         if not filepath.exists() or actual_fps <= 0:
             return
 
-        print(f"[INFO] Correcting framerate for {filepath.name} to {actual_fps:.3f} fps.")
+        logger.info(f"Correcting framerate for {filepath.name} to {actual_fps:.3f} fps.")
         temp_filepath = filepath.with_suffix('.temp.mp4')
         ffmpeg_path = self.config.get('ffmpeg', {}).get('path', 'ffmpeg')
 
@@ -562,10 +551,10 @@ class MultiCam:
                 os.replace(temp_filepath, filepath)
 
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            print(f"[ERROR] FFmpeg failed to correct framerate for {filepath.name}: {e}")
+            logger.error(f"FFmpeg failed to correct framerate for {filepath.name}: {e}")
 
             if isinstance(e, subprocess.CalledProcessError):
-                print(f"FFmpeg stderr:\n{e.stderr}")
+                logger.error(f"FFmpeg stderr:\n{e.stderr}")
 
             if temp_filepath.exists():
                 os.remove(temp_filepath)
@@ -574,7 +563,7 @@ class MultiCam:
         """ Takes a snapshot from all cameras (tries to sync) """
 
         if not self.acquiring:
-            print("[WARN] Cannot take snapshot, acquisition is not running.")
+            logger.warning("Cannot take snapshot, acquisition is not running.")
             return False
 
         self.full_path.mkdir(parents=True, exist_ok=True)
@@ -586,7 +575,7 @@ class MultiCam:
                 frame_data = self._latest_frames[i]
 
             if frame_data is None:
-                print(f"[ERROR] Snapshot failed: No frame has been received from camera {self.cameras[i].name} yet.")
+                logger.error(f"Snapshot failed: No frame has been received from camera {self.cameras[i].name} yet.")
                 return False
 
             current_frames.append(frame_data)
@@ -604,9 +593,9 @@ class MultiCam:
 
         # Save
         if is_synchronized:
-            print(f"[INFO] Saving synchronized frame set with ID: {first_frame_id}")
+            logger.info(f"Saving synchronized frame set with ID: {first_frame_id}")
         else:
-            print("[WARN] Frame set is not synchronized. Saving latest available frames.")
+            logger.warning("Frame set is not synchronized. Saving latest available frames.")
 
         success = True
 
@@ -614,12 +603,14 @@ class MultiCam:
         for i, cam in enumerate(self.cameras):
             try:
                 Image.fromarray(frames[i]).save(self.full_path / f"snapshot_{now}_{cam.name}.png")
+                # TODO: use cv2 and the config's quality settings
+
             except Exception as e:
-                print(f"[ERROR] Could not save snapshot for camera {cam.name}: {e}")
+                logger.error(f"Could not save snapshot for camera {cam.name}: {e}")
                 success = False
 
         if success:
-            print(f"[INFO] Snapshot saved in {self.full_path}")
+            logger.info(f"Snapshot saved in {self.full_path}")
 
         return success
 
@@ -627,7 +618,7 @@ class MultiCam:
         """ Broadcasts a setting to all cameras """
         # TODO: we probably want to have setters that will call this, like the framerate one for other properties
 
-        print(f"[INFO] Broadcasting '{parameter} = {value}' to all cameras.")
+        logger.debug(f"Broadcasting '{parameter} = {value}' to all cameras.")
 
         # The trigger framerate must be set via its own property
         if parameter == 'framerate' and self.hardware_triggered:
@@ -638,7 +629,7 @@ class MultiCam:
                 # use setattr to dynamically set the property (e.g., 'exposure', 'gain')
                 setattr(cam, parameter, value)
             except Exception as e:
-                print(f"[ERROR] Could not set '{parameter}' on camera {cam.name}: {e}")
+                logger.error(f"Could not set '{parameter}' on camera {cam.name}: {e}")
 
     # --- Session and Metadata Management ---
 
@@ -703,17 +694,16 @@ class MultiCam:
             all_cams_synced = True
             for cam in self.cameras:
                 if cam.framerate != new_framerate:
-                    print(f"[WARN] Camera {cam.name} could not be set to {new_framerate} fps. Actual: {cam.framerate} fps.")
+                    logger.warning(f"Camera {cam.name} could not be set to {new_framerate} fps. Actual: {cam.framerate} fps.")
                     all_cams_synced = False
                     break
 
             if all_cams_synced:
                 self._framerate = new_framerate
-                if not self._silent:
-                    print(f"[INFO] All cameras successfully set to {new_framerate} fps.")
+                logger.debug(f"All cameras successfully set to {new_framerate} fps.")
             else:
                 self._framerate = None
-                print("[ERROR] Not all cameras could be set to the requested framerate. System framerate is now undefined.")
+                logger.warning("Not all cameras could be set to the requested framerate. System framerate is now undefined.")
 
     @property
     def acquiring(self) -> bool:

@@ -551,6 +551,8 @@ def run_bundle_adjustment(
         return np.asarray(jac_scaled).copy()    # copy necessaruy here too
 
     # --- Call the scipy solver ---
+    # with alive_bar(title='Bundle adjustment...', length=20, force_tty=True) as bar:
+    #     with CallbackOutputStream(bar, keep_stdout=False):
     result = least_squares(
         scipy_cost_wrapper,
         x0_scaled_np,

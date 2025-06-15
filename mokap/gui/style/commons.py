@@ -1,9 +1,8 @@
 import platform
 from pathlib import Path
-
 from PySide6.QtGui import QIcon
-
 from mokap.utils import hex_to_rgb
+
 
 # Height (in pixels) of the OS taskbar
 # TODO: this probably should be improved
@@ -30,7 +29,6 @@ icon_snapshot_bw = QIcon((resources_path / 'snapshot_bw.png').as_posix())
 icon_rec_on = QIcon((resources_path / 'rec.png').as_posix())
 icon_rec_bw = QIcon((resources_path / 'srec_bw.png').as_posix())
 icon_move_bw = QIcon((resources_path / 'move.png').as_posix())     # TODO make an icon - this is a temp one
-
 
 # Colours
 col_white = "#ffffff"

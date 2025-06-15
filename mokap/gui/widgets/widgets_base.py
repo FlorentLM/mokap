@@ -1,3 +1,4 @@
+import logging
 import time
 from collections import deque
 from threading import Thread
@@ -14,6 +15,8 @@ from numpy.typing import ArrayLike
 from mokap.gui.style.commons import *
 from mokap.gui.widgets.dialogs import SnapPopup
 from mokap.gui.widgets import SLOW_UPDATE_INTERVAL, DISPLAY_INTERVAL, PROCESSING_INTERVAL
+
+logger = logging.getLogger(__name__)
 
 
 class SnapMixin:
@@ -434,11 +437,11 @@ class LiveViewBase(Base):
                             if raw_frame.shape == bgr_frame.shape and raw_frame.dtype == bgr_frame.dtype:
                                 np.copyto(bgr_frame, raw_frame)
                             else:
-                                print(f"[{self.name}] Unsupported pixel format for display: {pixel_format}")
+                                logger.error(f"[{self.name}] Unsupported pixel format for display: {pixel_format}")
                                 bgr_frame[:] = (255, 0, 255)
 
                 except cv2.error as e:
-                    print(f"[{self.name}] OpenCV Error during color conversion: {e}")
+                    logger.error(f"[{self.name}] OpenCV Error during color conversion: {e}")
                     bgr_frame[:] = (0, 0, 255)
 
                 # Directly update the shared variables used by the main GUI thread
@@ -587,6 +590,7 @@ class LiveViewBase(Base):
     #  ============= Qt method overrides =============
     def closeEvent(self, event):
         """ This is a critical part of the graceful shutdown """
+
         if self._force_destroy:
             # Stop the consumer thread first
             # (otherwise it crashes on quitting on macOS)
@@ -594,7 +598,7 @@ class LiveViewBase(Base):
                 self._consumer_thread_active = False
                 self._frame_consumer.join(timeout=2.0)
                 if self._frame_consumer.is_alive():
-                    print(f"[WARN] {self.name} consumer thread did not shut down cleanly.")
+                    logger.warning(f"{self.name} consumer thread did not shut down cleanly.")
 
             # stop the QThread worker
             if self.worker_thread:

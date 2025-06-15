@@ -8,13 +8,7 @@ BOARD_TYPES = {
 # TODO: Board should be loaded from config file
 DEFAULT_BOARD = CharucoBoard(rows=6, cols=5, square_length=1.5, markers_size=4)
 
-
 MAX_PLOT_X = 50
-VERBOSE = True
-
-def do_nothing():
-    print('Nothing')
-
 
 SLOW_UPDATE = 5.0
 SLOW_UPDATE_INTERVAL = 1.0 / SLOW_UPDATE

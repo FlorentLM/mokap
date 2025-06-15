@@ -1,3 +1,4 @@
+import logging
 from collections import deque
 from typing import Union, Optional, Iterable, Tuple, Dict
 import cv2
@@ -11,6 +12,8 @@ from mokap.utils.datatypes import ChessBoard, CharucoBoard
 from mokap.utils import SENSOR_SIZES, estimate_camera_matrix
 from mokap.utils.geometry.projective import project_points
 
+logger = logging.getLogger(__name__)
+
 
 class MonocularCalibrationTool:
     """
@@ -23,15 +26,13 @@ class MonocularCalibrationTool:
                  min_stack: int = 15,
                  max_stack: int = 100,
                  focal_mm: Optional[int] = None,
-                 sensor_size: Optional[Union[Tuple[float], str]] = None,
-                 verbose: bool = False):
+                 sensor_size: Optional[Union[Tuple[float], str]] = None
+    ):
 
         if type(board_params) is ChessBoard:
             self.dt: ChessboardDetector = ChessboardDetector(board_params)
         else:
             self.dt: CharucoDetector = CharucoDetector(board_params)
-
-        self._verbose: bool = verbose
 
         # TODO: these 3 alternatives should be selectable from the config file
         # self._min_pts: int = 4      # SQPNP method needs at least 3 points but in practice 4 is safer
@@ -313,7 +314,7 @@ class MonocularCalibrationTool:
             return  # Abort but keep the stacks
 
         if self._camera_matrix is None and fix_aspect_ratio:
-            print('[WARN] [MonocularCalibrationTool] No current camera matrix guess, unfixing aspect ratio.')
+            logger.warning('[MonocularCalibrationTool] No current camera matrix guess, unfixing aspect ratio.')
             fix_aspect_ratio = False
 
         calib_flags = 0
@@ -369,7 +370,7 @@ class MonocularCalibrationTool:
                 )
 
         except cv2.error as e:
-            print(f"[WARN] [MonocularCalibrationTool] OpenCV Error in calibrateCamera:\n\n{e}")
+            logger.warning(f"[WARN] [MonocularCalibrationTool] OpenCV Error in calibrateCamera:\n\n{e}")
             return
 
         # std_cam_mat, std_dist_coeffs = np.split(std_intrinsics.squeeze(), [4])
@@ -413,8 +414,7 @@ class MonocularCalibrationTool:
 
             self._intrinsics_errors = stack_intr_errors
 
-            if self._verbose:
-                print(f"[INFO] [MonocularCalibrationTool] Computed intrinsics")
+            logger.debug(f"[MonocularCalibrationTool] Computed intrinsics.")
 
         # or update them if this stack's errors are better
         elif self._check_new_errors(stack_intr_errors, self._intrinsics_errors):
@@ -424,8 +424,7 @@ class MonocularCalibrationTool:
 
             self._intrinsics_errors = stack_intr_errors
 
-            if self._verbose:
-                print(f"[INFO] [MonocularCalibrationTool] Updated intrinsics")
+            logger.debug(f"[INFO] [MonocularCalibrationTool] Updated intrinsics.")
 
         if clear_stack:
             self.clear_stacks()
@@ -466,7 +465,7 @@ class MonocularCalibrationTool:
             )
 
         except cv2.error as e:
-            print(f"[WARN] [MonocularCalibrationTool] OpenCV Error in PnP:\n\n{e}")
+            logger.error(f"[WARN] [MonocularCalibrationTool] OpenCV Error in PnP:\n\n{e}")
             self._rvec, self._tvec = None, None
             self._pose_error = np.nan
             return

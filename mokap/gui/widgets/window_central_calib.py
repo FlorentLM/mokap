@@ -1,5 +1,5 @@
+import logging
 from typing import Union
-
 import cv2
 from PySide6.QtCore import Signal, Qt, Slot
 from PySide6.QtGui import QImage, QPixmap
@@ -14,6 +14,8 @@ from mokap.gui.widgets.widgets_base import Base
 from mokap.utils import hex_to_rgb
 from mokap.utils.datatypes import CharucoBoard, ChessBoard
 from mokap.utils.geometry.transforms import rotate_points3d, rotate_extrinsics_matrix
+
+logger = logging.getLogger(__name__)
 
 
 class CentralCalibrationWindow(Base):
@@ -295,8 +297,9 @@ class CentralCalibrationWindow(Base):
                     rows=self.rows_spin.value(), cols=self.cols_spin.value(),
                     square_length=self.sq_len_spin.value()
                 )
+
         except Exception as e:
-            print(f"[DEBUG] Failed to create board from UI: {e}")
+            logger.error(f"Failed to create board from UI: {e}")
             return None
 
     @Slot()
@@ -372,11 +375,11 @@ class CentralCalibrationWindow(Base):
                 # Commit successful changes to the system
                 self._mainwindow.board_params = new_board
                 self._mainwindow.coordinator.handle_board_change(new_board)
-                print("[INFO] Board parameters applied successfully.")
+                logger.info("Board parameters applied successfully.")
 
             else:
                 # On failure, revert UI to last known good state
-                print("[ERROR] Could not apply board settings. Reverting UI.")
+                logger.error("Could not apply board settings. Reverting UI.")
                 self._refresh_board_ui(self._mainwindow.board_params)
 
     @Slot()
@@ -402,10 +405,10 @@ class CentralCalibrationWindow(Base):
             try:
                 save_dir = Path(file_path).parent
                 board.to_file(save_dir)
-                print(f"Successfully saved printable board to {save_dir}")
+                logger.info(f"Successfully saved printable board to {save_dir}")
 
             except Exception as e:
-                print(f"[ERROR] Could not save board to file: {e}")
+                logger.error(f"Could not save board to file: {e}")
 
     def _create_gl_items(self):
 
