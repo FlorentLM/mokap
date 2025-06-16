@@ -118,7 +118,7 @@ class RecordingLiveView(LiveViewBase):
         slider_params = [       # TODO: To we want real accessors to get min and max from the cameras instead of hard limits
             ('framerate', (int, 1, 240, 1, 1)),
             ('exposure', (int, 21, 100000, 5, 1)),  # in microseconds - 100000 microseconds ~ 10 fps
-            ('blacks', (float, 0.0, 32.0, 0.5, 3)),
+            ('black_level', (float, 0.0, 32.0, 0.5, 3)),
             ('gain', (float, 0.0, 36.0, 0.5, 3)),
             ('gamma', (float, 0.0, 3.99, 0.05, 3))
         ]

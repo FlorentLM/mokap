@@ -45,7 +45,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
             'framerate': 60.0,
             'pixel_format': 'Mono8',
             'hardware_trigger': True,
-            'trigger_line': 'Line4',
+            'trigger_line': 4,
             'binning': 1,
             'binning_mode': 'Sum',
             'gamma': 1.0,

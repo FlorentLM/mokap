@@ -23,7 +23,8 @@ class CameraTrigger(AbstractTrigger):
             raise TypeError("The primary camera for PrimaryCameraTrigger must be a GenICamCamera subclass.")
 
         self.primary_camera = primary_camera
-        self._output_line = self._config.get('output_line', 'Line2')
+
+        self._output_line = f"Line{''.join([char for char in str(self._config.get('output_line', 2)) if char.isdigit()])}"
 
         logger.debug(
             f"Primary Camera trigger '{self.primary_camera.name}', using {self._output_line} as output.")

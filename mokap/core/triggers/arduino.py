@@ -20,7 +20,7 @@ class ArduinoTrigger(AbstractTrigger):
 
         self.ser: serial.Serial | None = None
 
-        if self._config.get('kind', '') == 'arduino':
+        if self._config.get('type', '') == 'arduino':
             self.port = self._config.get('port')
             self.baud_rate = self._config.get('baudrate', 115200)
             self.gpio_pin = self._config.get('gpio_pin', 11)

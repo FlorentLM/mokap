@@ -507,7 +507,7 @@ class LiveViewBase(Base):
             self._fps_clock = now
             self._last_frame_number_for_fps = current_frame_number
 
-        params_to_poll = ['exposure', 'framerate', 'gain', 'blacks', 'gamma']
+        params_to_poll = ['exposure', 'framerate', 'gain', 'black_level', 'gamma']
 
         for param in params_to_poll:
             current_value = getattr(self._camera, param)

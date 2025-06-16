@@ -26,7 +26,7 @@ class FTDITrigger(AbstractTrigger):
         self._trigger_thread: Optional[threading.Thread] = None
         self._stop_event: Optional[threading.Event] = None
 
-        if self._config.get('kind', '') == 'ftdi':
+        if self._config.get('type', '') == 'ftdi':
             self.port: str = self._config.get('port')
             self.pin: str = self._config.get('pin', 'RTS').upper()  # RTS pin by default (but can still use DTR)
             self.baud_rate: int = self._config.get('baudrate', 9600)

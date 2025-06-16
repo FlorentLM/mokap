@@ -52,10 +52,11 @@ Mokap is an easy to use multi-camera acquisition software developed for animal b
 ### Features
 * Cross platform (Linux, Windows, macOS)
 * Supports Basler and FLIR cameras (they can be used at the same time, yes 🙂)
-* Supports hardware-synchronisation of cameras (using a Raspberry Pi, or an Aduino, or a USB-to-TTL adapter)
-* Supports encoding to individual frames or straight to video (with or without GPU acceleration)
+* Supports hardware-synchronisation of cameras (using a Raspberry Pi, an Aduino, a USB-to-TTL adapter, or one of your cameras itself)
+* Many encoding options (with or without GPU acceleration)
 * Live multi-camera calibration and pose estimation
 * Supports classic USB (and internal) Webcams, but their features are limited (no hardware sync, etc.)
+* Generate printable calibration boards in 1 click
 
 <p>(<a href="#readme-top">back to top</a>)</p>
 
@@ -294,6 +295,17 @@ You can also use one of the cameras to act as a hardware trigger for the others.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
+### Cameras GPIO pins
+
+---
+
+<img height="300" src="./images/basler_pins.svg"/>
+
+---
+
+<img height="300" src="./images/flir_pins.svg"/>
+
+---
 
 ### Remarks
 
@@ -304,8 +316,9 @@ You can also use one of the cameras to act as a hardware trigger for the others.
 
 - [x] Add support for Arduino triggers
 - [x] Add support for FLIR cameras
-- [ ] Add support for daisy-chained cameras as trigger
+- [x] Add support for cameras as trigger
 - [ ] Add support for other camera brands
+- [ ] Add support for AMD GPU encoding
 - [x] ~~Finish calibration mode~~  erm... needs some fixes 
 
 

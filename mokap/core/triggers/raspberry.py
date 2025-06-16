@@ -36,7 +36,7 @@ class RaspberryTrigger(AbstractTrigger):
         self.user = os.getenv('TRIGGER_USER')
         self.password = os.getenv('TRIGGER_PASS')
 
-        if self._config.get('kind', '') == 'raspberry':
+        if self._config.get('type', '') == 'raspberry':
             self.gpio_pin = self._config.get('gpio_pin', 18)
         else:
             raise EnvironmentError(f"Missing required config (did you define the Raspberry Pi trigger in the config file?")
