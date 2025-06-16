@@ -100,13 +100,13 @@ class AbstractCamera(abc.ABC):
 
     @property
     @abc.abstractmethod
-    def blacks(self) -> float:
+    def black_level(self) -> float:
         """ Black level offset. Sometimes called "Brightness" or "Offset" """
         pass
 
-    @blacks.setter
+    @black_level.setter
     @abc.abstractmethod
-    def blacks(self, value: float):
+    def black_level(self, value: float):
         pass
 
     @property

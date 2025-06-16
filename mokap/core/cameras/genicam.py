@@ -29,7 +29,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         self._framerate: Optional[float] = None
         self._exposure: Optional[float] = None
         self._gain: Optional[float] = None
-        self._blacks: Optional[float] = None
+        self._black_level: Optional[float] = None
         self._gamma: Optional[float] = None
         self._roi: Optional[Tuple[int, int, int, int]] = None
 
@@ -49,7 +49,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
             'binning': 1,
             'binning_mode': 'Sum',
             'gamma': 1.0,
-            'blacks': 1.0,
+            'black_level': 1.0,
             'roi': None
         }
         if config:
@@ -67,7 +67,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         self._framerate = settings['framerate']
         self._exposure = settings['exposure']
         self._gain = settings['gain']
-        self._blacks = settings['blacks']
+        self._black_level = settings['black_level']
         self._gamma = settings['gamma']
 
         # Apply to the hardware by calling the setters
@@ -78,7 +78,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         self.framerate = self._framerate
         self.exposure = self._exposure
         self.gain = self._gain
-        self.blacks = self._blacks
+        self.black_level = self._black_level
         self.gamma = self._gamma
 
         # Set ROI last, it depends on other stuff
@@ -125,12 +125,12 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         pass
 
     @property
-    def blacks(self) -> str:
-        return self._blacks
+    def black_level(self) -> str:
+        return self._black_level
 
-    @blacks.setter
-    def blacks(self, value: float):
-        self._blacks = self._set_feature_value('BlackLevel', value)
+    @black_level.setter
+    def black_level(self, value: float):
+        self._black_level = self._set_feature_value('BlackLevel', value)
 
     @property
     def gain(self) -> str:

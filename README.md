@@ -144,37 +144,49 @@ Configuration example:
 # ----------------------------------
 
 # --- Global Acquisition Settings ---
-base_path: D:/MokapTests    # Where the recordings will be stored
-silent: false
-hardware_trigger: true
-framerate: 60
-exposure: 15000
-# Other values are supported (gain, gamma, roi, etc)
+base_path: D:/MokapTests    # where the recordings will be stored
+hardware_trigger: true      # whether to use an external hardware trigger
+framerate: 60               # in frames per seconds (Hz)
+exposure: 15000             # in milliseconds
+trigger_line: 4             # which GPIO line is used as an input (to listen to the hardware trigger)
+gain: 1.0
+pixel_format: Mono8         # or Mono10, BGR8, BayerRG8, ...
+binning: 1                  # or 2, 3, 4
+binning_mode: average       # or sum
+black_level: 1.0
+gamma: 1.0
+roi: [0, 0, 1440, 1080]
 
 # --- Global Saving & Encoding Settings ---
-save_format: 'mp4'        # or 'png', 'jpg', 'bmp', 'tiff'
-save_quality: 90          # 0-100 scale (meaning depends on format)
+save_format: mp4          # or 'png', 'jpg', 'bmp', 'tiff'
+save_quality: 90          # 0-100 scale (only for images, ignored in video encoding)
 frame_buffer_size: 200    # max number of frames to buffer in RAM (per camera)
 
 # --- Hardware trigger parameters ---
 # You can use a Raspberry Pi
 trigger:
-  kind: raspberry
+  type: raspberry
   pin: 18           # The GPIO pin you connect your cameras to. Pin 18 is recommended.
 
 ## or an Arduino
 #trigger:
-#  kind: arduino
+#  type: arduino
 #  port: COM5        # 'COMX' on Windows, '/dev/ttyUSBX' on Linux, '/dev/cu.usbserial-XXXX' on macOS
 #  pin: 11           # The GPIO pin you connect your cameras to. Usually 3 or 11 on Arduino
 #  baudrate: 115200  # Optional. If you use one of the two firmwares provided with Mokap, you should not change this
 
 ## or a USB-to-TTL adapter (this is less accurate though)
 #trigger:
-#  kind: ftdi
+#  type: ftdi
 #  port: COM3         # 'COMX' on Windows, '/dev/ttyUSBX' on Linux, '/dev/cu.usbserial-XXXX' on macOS
 #  pin: RTS           # Optional, can be 'RTS' or 'DTR'
 #  baudrate: 9600     # Optional. Should not matter too much
+
+## or use one of the cameras to control the others
+#trigger:
+#  type: camera
+#  name: my-first-camera     # use the friendly name from 'sources'
+#  output_line: 2            # The GPIO line to use for output
 
 # --- Video encoding parameters ---
 ffmpeg:
@@ -198,25 +210,25 @@ ffmpeg:
 sources:
   my-first-camera: # This is your defined, friendly name for this camera :)
     vendor: basler
-    serial: xxxxxxxx  # You can specify the serial number to make sure it gets the right name, colour etc
+    serial: xxxxxxxx  # you can specify the serial number to make sure it gets the right name, colour etc
     color: da141d
 #    # Camera-specific settings can override globals
 #    exposure: 9000
-#    gain: 1.0
-#    gamma: 1.0
-#    pixel_format: 'Mono8'
+#    gain: 2.0
+#    gamma: 1.5
+#    pixel_format: Mono8
 #    blacks: 1.0
 #    binning: 1
-#    save_format: jpg   # you can set per-camera writer settings
-#    save_quality: 90
-  
+#    save_format: jpg
+#    save_quality: 90   # you can set per-camera writer settings
+
   some-other-camera:
     vendor: flir
     color: 7a9c21
-  
-  # You can also use your laptop's internal camera (or any USB webcam) 
+
+  # You can also use your laptop's internal camera (or any USB webcam)
   # Features are limited of course, but it is useful for debugging
-  laptop-camera:    
+  laptop-camera:
     vendor: webcam
     color: f3d586
 ```
@@ -272,6 +284,13 @@ If you're recording at less than 31 fps you will **have** to use the `trigger_mi
 
 This is a very cheap and quick solution. But the timing is under the control of your host computer, so it is less accurate than the other two alternatives
 (jitter is in the order of 1-15+ milliseconds). Not recommended for recording above 30 fps.
+
+#### Primary camera
+
+You can also use one of the cameras to act as a hardware trigger for the others. The idea is the same, except that the primary camera is configured with a line output, and is connected to the other cameras' input lines.
+
+**Note**: You will be subject to the drive-current limit on the primary camera's I/O line, so probably won't work reliably with more than 3-4 secondary cameras.
+
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 

@@ -1,4 +1,6 @@
 import logging
+import os
+import shutil
 import subprocess
 import shlex
 import platform
@@ -196,7 +198,15 @@ class FFmpegWriter(FrameWriter):
         super().__init__(filepath, **kwargs)
 
         self.proc: Optional[subprocess.Popen] = None
-        self.ffmpeg_path = ffmpeg_path
+
+        which_ffmpeg = shutil.which(ffmpeg_path)
+        if not which_ffmpeg:
+            raise OSError(f"Can't find FFmpeg. Is it installed?")
+
+        self.ffmpeg_path = Path(which_ffmpeg)
+
+        if not os.access(self.ffmpeg_path, os.X_OK):
+            raise PermissionError(f"Can't run FFmpeg from `{self.ffmpeg_path.as_posix()}`. Is it executable?.")
 
         # Determine if we use CPU or GPU
         param_key = self._get_platform_param_key(use_gpu)

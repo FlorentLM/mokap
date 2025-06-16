@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import queue
+import shutil
 import subprocess
 import time
 from datetime import datetime
@@ -11,13 +12,11 @@ from threading import Thread, Event, Lock
 from typing import List, Dict, Optional, Tuple, Any
 import numpy as np
 from PIL import Image
-from mokap.core.cameras.interface import AbstractCamera, CAMERAS_COLOURS
-from mokap.core.cameras.camerafactory import CameraFactory
-from mokap.core.triggers.interface import AbstractTrigger
-from mokap.core.triggers.raspberry import RaspberryTrigger
-from mokap.core.triggers.arduino import ArduinoTrigger
-from mokap.core.triggers.ftdi import FTDITrigger
+
+from mokap.core.cameras import CameraFactory, AbstractCamera, CAMERAS_COLOURS
+from mokap.core.triggers import AbstractTrigger, CameraTrigger, RaspberryTrigger, ArduinoTrigger, FTDITrigger
 from mokap.core.writers import FrameWriter, ImageSequenceWriter, FFmpegWriter
+
 from mokap.utils import fileio
 from mokap.utils.system import setup_ulimit
 
@@ -59,27 +58,9 @@ class MultiCam:
         self._camera_setting_overrides: Dict[str, Dict] = {}
         self.connect_cameras()
 
-        # setup hardware trigger
+        # Setup hardware trigger (must be done after connecting cameras, in case one of them *is* the trigger)
         self._trigger_instance: Optional[AbstractTrigger] = None
-        if self.config.get('hardware_trigger', False):
-
-            trigger_conf = self.config.get('trigger', {})
-            trigger_kind = trigger_conf.get('kind', '')
-
-            if trigger_kind == 'raspberry':
-                self._trigger_instance = RaspberryTrigger(config=trigger_conf)
-            elif trigger_kind == 'arduino':
-                self._trigger_instance = ArduinoTrigger(config=trigger_conf)
-            elif trigger_kind == 'ftdi':
-                self._trigger_instance = FTDITrigger(config=trigger_conf)
-                logger.info("FTDI Trigger is not recommended for high-precision applications.")
-            else:
-                logger.error("No valid trigger 'kind' found in config. Running without hardware trigger.")
-                self._trigger_instance = None
-
-            if self._trigger_instance and not self._trigger_instance.connected:
-                logger.error("Failed to connect to trigger. Running without hardware trigger.")
-                self._trigger_instance = None
+        self._initialize_trigger()
 
         ## --- Threading Resources ---
         buffer_size = self.config.get('frame_buffer_size', 200)
@@ -103,9 +84,61 @@ class MultiCam:
         # --- Metadata ---
         self._metadata = {'sessions': []}
 
-    @property
-    def nb_cameras(self) -> int:
-        return len(self.cameras)
+    def _initialize_trigger(self):
+
+        if not self.config.get('hardware_trigger', False):
+            self._trigger_instance = None
+            return
+
+        trigger_conf = self.config.get('trigger', {})
+        trigger_type = trigger_conf.get('type', '')
+
+        if not trigger_type:
+            logger.error(
+                "Config contains 'hardware_trigger: true', but no trigger 'type' found. Running without hardware trigger.")
+            self._trigger_instance = None
+            return
+
+        if trigger_type == 'camera':
+            primary_cam_name = trigger_conf.get('name')
+            
+            if not primary_cam_name:
+                logger.error("Camera trigger requires 'name' in config. Disabling trigger.")
+                self._trigger_instance = None
+                return
+
+            primary_camera = next((cam for cam in self.cameras if cam.name == primary_cam_name), None)
+
+            if not primary_camera:
+                logger.error(
+                    f"Camera '{primary_cam_name}' for trigger not found among connected cameras. Disabling trigger.")
+                self._trigger_instance = None
+                return
+
+            # if primary_camera.hardware_triggered:
+            #     logger.warning(
+            #         f"Primary camera '{primary_cam_name}' was configured with 'hardware_trigger: true'.\n"
+            #         f"This will be overridden, as it cannot be both a primary and a secondary.")
+
+            self._trigger_instance = CameraTrigger(primary_camera=primary_camera, config=trigger_conf)
+
+        elif trigger_type == 'raspberry':
+            self._trigger_instance = RaspberryTrigger(config=trigger_conf)
+
+        elif trigger_type == 'arduino':
+            self._trigger_instance = ArduinoTrigger(config=trigger_conf)
+
+        elif trigger_type == 'ftdi':
+            self._trigger_instance = FTDITrigger(config=trigger_conf)
+            logger.info("FTDI Trigger is not recommended for high-precision applications.")
+
+        else:
+            logger.error(f"Trigger 'type' '{trigger_type}' is not valid. Running without hardware trigger.")
+            self._trigger_instance = None
+
+        if self._trigger_instance and not self._trigger_instance.connected:
+            logger.error("Failed to connect to trigger. Running without hardware trigger.")
+            self._trigger_instance = None
 
     def connect_cameras(self):
         """ Discovers and connects to all available cameras using the camera factory """
@@ -133,7 +166,7 @@ class MultiCam:
 
         # Define the list of global keys that can be applied to cameras
         valid_global_settings = [
-            'exposure', 'gain', 'gamma', 'pixel_format', 'blacks',
+            'exposure', 'gain', 'gamma', 'pixel_format', 'black_level',
             'binning', 'framerate', 'hardware_trigger', 'roi'
         ]
 
@@ -238,7 +271,7 @@ class MultiCam:
         self._acquiring.set()
         self._threads = []
 
-        if self._trigger_instance and self._trigger_instance.connected:
+        if self.hardware_triggered:
             self._trigger_instance.start(self._framerate)
 
         for i, cam in enumerate(self.cameras):
@@ -267,8 +300,8 @@ class MultiCam:
         for thread in self._threads:
             thread.join(timeout=2.0)
 
-        # Stop trigger if enabled
-        if self._trigger_instance and self._trigger_instance.connected:
+        # stop trigger if enabled
+        if self.hardware_triggered:
             self._trigger_instance.stop()
 
         # Clean up session folder if it's empty
@@ -288,7 +321,7 @@ class MultiCam:
             return
 
         # Prepare metadata snapshot for this session
-        keys_order = ['exposure', 'gain', 'gamma', 'blacks', 'pixel_format',
+        keys_order = ['exposure', 'gain', 'gamma', 'black_level', 'pixel_format',
                       'binning', 'binning_mode', 'roi', 'save_format']
         session_config = {k: self.config[k] for k in keys_order if k in self.config}
 
@@ -400,11 +433,11 @@ class MultiCam:
                         try:
                             writer_queue.put_nowait((frame, metadata))
                         except queue.Full:
-                            logger.warning(f"[WARN] Cam {cam.name}: Writer queue is full. Recording frame dropped.")
+                            logger.warning(f"Cam {cam.name}: Writer queue is full. Recording frame dropped.")
 
             except (IOError, RuntimeError) as e:
                 if self._acquiring.is_set():
-                    logger.error(f"[ERROR] Grabber thread for {cam.name} failed: {e}")
+                    logger.error(f"Grabber thread for {cam.name} failed: {e}")
                     time.sleep(1)
 
         cam.stop_grabbing()
@@ -533,9 +566,12 @@ class MultiCam:
         if not filepath.exists() or actual_fps <= 0:
             return
 
+        ffmpeg_path = shutil.which(self.config.get('ffmpeg', {}).get('path', 'ffmpeg'))
+        if not ffmpeg_path or not os.access(ffmpeg_path, os.X_OK):
+            return
+
         logger.info(f"Correcting framerate for {filepath.name} to {actual_fps:.3f} fps.")
         temp_filepath = filepath.with_suffix('.temp.mp4')
-        ffmpeg_path = self.config.get('ffmpeg', {}).get('path', 'ffmpeg')
 
         command = [
             ffmpeg_path,
@@ -704,6 +740,10 @@ class MultiCam:
             else:
                 self._framerate = None
                 logger.warning("Not all cameras could be set to the requested framerate. System framerate is now undefined.")
+
+    @property
+    def nb_cameras(self) -> int:
+        return len(self.cameras)
 
     @property
     def acquiring(self) -> bool:

@@ -71,7 +71,7 @@ class WebcamCamera(AbstractCamera):
             'binning': 1,
             'binning_mode': 'average',
             'gamma': 100,  # Often a 0-255 scale
-            'blacks': 0,
+            'black_level': 0,
         }
         if config:
             settings.update(config)
@@ -82,7 +82,7 @@ class WebcamCamera(AbstractCamera):
         self._exposure = settings['exposure']
         self._gain = settings['gain']
         self._gamma = settings['gamma']
-        self._blacks = settings['blacks']
+        self._black_level = settings['black_level']
 
         # Apply settings to the webcam via property setters
         # ROI (which is really only resolution) should be set first
@@ -169,13 +169,13 @@ class WebcamCamera(AbstractCamera):
         self._gain = self.gain
 
     @property
-    def blacks(self) -> float:
+    def black_level(self) -> float:
         return self._get_cv2_property(cv2.CAP_PROP_BRIGHTNESS)
 
-    @blacks.setter
-    def blacks(self, value: float):
+    @black_level.setter
+    def black_level(self, value: float):
         self._set_cv2_property(cv2.CAP_PROP_BRIGHTNESS, value)
-        self._blacks = self.blacks
+        self._black_level = self.black_level
 
     @property
     def gamma(self) -> float:

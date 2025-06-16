@@ -35,7 +35,7 @@ class ArduinoTrigger(AbstractTrigger):
         """ Establishes the serial connection to the Arduino """
 
         try:
-            logger.debug(f'[INFO] Connecting to Arduino trigger at {self.port}...')
+            logger.debug(f'Connecting to Arduino trigger at {self.port}...')
 
             self.ser = serial.Serial(self.port, self.baud_rate, timeout=2)
             time.sleep(2)  # wait for arduino to reset and initialize
