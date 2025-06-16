@@ -1,4 +1,3 @@
-import time
 from collections import deque
 import numpy as np
 import pyqtgraph as pg
@@ -7,11 +6,12 @@ from PySide6.QtWidgets import (QHBoxLayout, QWidget, QVBoxLayout, QGroupBox, QLa
                                QSlider, QCheckBox, QSizePolicy, QPushButton, QFileDialog,
                                QGraphicsRectItem, QGraphicsItemGroup)
 from mokap.gui.style.commons import *
-from mokap.gui.widgets import MAX_PLOT_X, DISPLAY_INTERVAL
+from mokap.gui.widgets import MAX_PLOT_X
 from mokap.gui.widgets.widgets_base import LiveViewBase, FastImageItem
 from mokap.gui.workers.worker_monocular import MonocularWorker
 from mokap.gui.workers.worker_movement import MovementWorker
-from mokap.utils.datatypes import ErrorsPayload, CalibrationData, IntrinsicsPayload, ExtrinsicsPayload, DetectionPayload
+from mokap.utils.datatypes import (ErrorsPayload, CalibrationData, IntrinsicsPayload, ExtrinsicsPayload,
+                                   DetectionPayload, ReprojectionPayload, CoveragePayload, StatePayload)
 
 
 class RecordingLiveView(LiveViewBase):
@@ -408,7 +408,12 @@ class CalibrationLiveView(LiveViewBase):
         self.live_error_deque = deque(maxlen=MAX_PLOT_X)
         self.historical_errors_data = []  # tuples of (index, mean, std)
 
+        # Data stores for image annotations
+        # TODO: This should be filled instead of recreated
         self.latest_detected_points = np.zeros((0, 2))
+        self.latest_reprojected_points = np.zeros((0, 2))
+        self.latest_detected_ids = np.array([])
+        self.coverage_grid_rgba = np.zeros((1, 1, 4), dtype=np.uint8)
 
         # Registration is handled by MainControls
         self._setup_worker(MonocularWorker(
@@ -440,15 +445,6 @@ class CalibrationLiveView(LiveViewBase):
         layout = QHBoxLayout(self.RIGHT_GROUP)
         layout.setContentsMargins(5, 5, 5, 5)
 
-        # Scatter plot item for drawing detected points
-        self.detection_points_item = pg.ScatterPlotItem(
-            pen=pg.mkPen('y', width=1),
-            symbol='o',     # Use a circle symbol
-            size=4,         # 4-pixel diameter
-            pxMode=True
-        )
-        self.view_box.addItem(self.detection_points_item)
-
         # Overlay text
         self.computing_text = pg.TextItem(anchor=(0.5, 0.5), color=(255, 255, 255))
         self.computing_text.setPos(self.source_shape_hw[1] / 2, self.source_shape_hw[0] / 2)
@@ -456,9 +452,55 @@ class CalibrationLiveView(LiveViewBase):
         self.view_box.addItem(self.computing_text)
         self.computing_text.hide()
 
+        # Coverage overlay (semi-transparent green grid)
+        # self.coverage_overlay_item = FastImageItem()
+        self.coverage_overlay_item = pg.ImageItem()
+        # self.coverage_overlay_item.setCompositionMode(pg.QtGui.QPainter.CompositionMode.CompositionMode_Plus)
+        self.view_box.addItem(self.coverage_overlay_item)
+
+        self.perimeter_item = pg.PlotDataItem(
+            pen=pg.mkPen(color=(255, 0, 255), width=2),
+            connect='all'  # Connects the last point to the first to close the shape
+        )
+        self.view_box.addItem(self.perimeter_item)
+
+        # Scatter plot for ALL reprojected points (white)
+        self.reprojection_points_item = pg.ScatterPlotItem(
+            pen=None, brush=pg.mkBrush('w'), symbol='o', size=5, pxMode=True
+        )
+        self.view_box.addItem(self.reprojection_points_item)
+
+        # Scatter plot for DETECTED points (yellow)
+        self.detection_points_item = pg.ScatterPlotItem(
+            pen=None, brush=pg.mkBrush('y'), symbol='o', size=7, pxMode=True
+        )
+        self.view_box.addItem(self.detection_points_item)
+
+        # Set Z-order for correct layering
+        self.image_item.setZValue(0)
+        self.coverage_overlay_item.setZValue(1)
+        self.perimeter_item.setZValue(2)
+        self.reprojection_points_item.setZValue(3)
+        self.detection_points_item.setZValue(4)
+
+        # Text info group
+        info_group = QWidget()
+        info_layout = QVBoxLayout(info_group)
+
+        self.points_label = QLabel("Points: -/-")
+        self.area_label = QLabel("Area: - %")
+        self.samples_label = QLabel("Samples: -")
+
+        info_layout.addWidget(self.points_label)
+        info_layout.addWidget(self.area_label)
+        info_layout.addWidget(self.samples_label)
+        info_group.setLayout(info_layout)
+
         # Detection and sampling
         sampling_group = QWidget()
         sampling_layout = QVBoxLayout(sampling_group)
+
+        sampling_layout.addWidget(info_group)   # TODO: move this back as an image overlay
 
         self.auto_sample_check = QCheckBox("Sample automatically")
         self.auto_sample_check.setChecked(True)
@@ -569,14 +611,29 @@ class CalibrationLiveView(LiveViewBase):
         else:
             self.computing_text.setVisible(False)
 
+        h = self._source_height
+
         if self.latest_detected_points.shape[0] > 0:
             # the points are in image coordinates (y down from top left)
             plot_points = self.latest_detected_points.copy()
-            plot_points[:, 1] = self._source_height - plot_points[:, 1]
+            plot_points[:, 1] = h - plot_points[:, 1]
             self.detection_points_item.setData(pos=plot_points)
         else:
-            # if no points, ensure plot is empty
             self.detection_points_item.clear()
+
+        if self.latest_reprojected_points.shape[0] > 0:
+            all_points = np.array(self.latest_reprojected_points).copy()
+            all_points[:, 1] = h - all_points[:, 1]
+
+            # inner points (not corners) (white)
+            self.reprojection_points_item.setData(pos=all_points[:-4])
+
+            # Perimeter (purple)
+            perimeter = np.vstack((all_points[-4:, :], all_points[-4, :]))
+            self.perimeter_item.setData(x=perimeter[:, 0], y=perimeter[:, 1])
+        else:
+            self.reprojection_points_item.clear()
+            self.perimeter_item.clear()
 
     @Slot(CalibrationData)
     def handle_payload(self, data: CalibrationData):
@@ -587,6 +644,33 @@ class CalibrationLiveView(LiveViewBase):
         if isinstance(payload, DetectionPayload):
             self.latest_detected_points = payload.points2D
             return  # early exit for this common payload
+
+        if isinstance(payload, ReprojectionPayload):
+            self.latest_reprojected_points = payload.all_points_2d
+            self.latest_detected_ids = payload.detected_ids
+            return
+
+        if isinstance(payload, CoveragePayload):
+            grid = payload.grid
+            if grid.any():
+                h, w = grid.shape
+
+                # semi-transparent green image from the boolean grid
+                rgba_image = np.zeros((h, w, 4), dtype=np.uint8)
+                rgba_image[grid] = [0, 150, 0, 100]  # R, G, B, alpha
+
+                self.coverage_overlay_item.setImage(rgba_image, autoLevels=False)
+                # position and scale to match the video frame
+                self.coverage_overlay_item.setRect(0, 0, self._source_width, self._source_height)
+            else:
+                self.coverage_overlay_item.clear()
+            return
+
+        if isinstance(payload, StatePayload):
+            self.points_label.setText(f"Points: {self.latest_detected_points.shape[0]}/{payload.total_points}")
+            self.area_label.setText(f"Area: {payload.coverage_percent:.1f} %")
+            self.samples_label.setText(f"Samples: {payload.nb_samples}")
+            return
 
         if isinstance(payload, ErrorsPayload):
             # this is a historical calibration result
@@ -639,6 +723,14 @@ class CalibrationLiveView(LiveViewBase):
         # Update plots with empty data
         self.live_error_curve.clear()
         self.historical_error_bars.setData(x=np.array([]), y=np.array([]))
+
+        # Clear visualization data and items
+        self.latest_detected_points = np.zeros((0, 2))
+        self.latest_reprojected_points = np.zeros((0, 2))
+        self.detection_points_item.clear()
+        self.reprojection_points_item.clear()
+        self.perimeter_item.clear()
+        self.coverage_overlay_item.clear()
 
         # Clear text
         self.load_save_message.setText('')

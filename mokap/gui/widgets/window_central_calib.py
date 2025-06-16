@@ -42,7 +42,7 @@ class CentralCalibrationWindow(Base):
         self.is_editing_board = False
 
         # Data stores for dynamic points
-        self.max_board_points = self._mainwindow.board_params.object_points().shape[0]
+        self.max_board_points = self._mainwindow.board_params.object_points.shape[0]
 
         # self.board_points_3d = np.zeros((self.max_board_points, 3))  # Placeholder for global 3D points
         # self.board_points_3d_vis = np.zeros(self.max_board_points, dtype=bool)  # Visibility mask
@@ -317,7 +317,7 @@ class CentralCalibrationWindow(Base):
                   self.margin_spin, self.padding_spin]:
             w.blockSignals(True)
 
-        self.board_type_combo.setCurrentText(board.kind.title())
+        self.board_type_combo.setCurrentText(board.type.title())
         self.rows_spin.setValue(board.rows)
         self.cols_spin.setValue(board.cols)
         self.sq_len_spin.setValue(board.square_length)
@@ -346,7 +346,7 @@ class CentralCalibrationWindow(Base):
             preview_w, preview_h = max_w, int(max_w / aspect_ratio)
 
         self.board_preview_label.setFixedSize(preview_w, preview_h)
-        board_img = board.to_image((preview_w * 2, preview_h * 2))
+        board_img = board.to_image()
         if len(board_img.shape) == 3:
             board_img = cv2.cvtColor(board_img, cv2.COLOR_BGR2GRAY)
         q_img = QImage(board_img.data, board_img.shape[1], board_img.shape[0], board_img.shape[1],

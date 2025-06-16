@@ -34,7 +34,7 @@ class MultiviewWorker(CalibrationProcessingWorker):
         self._rvecs = None
         self._tvecs = None
         self._sources_shapes = sources_shapes
-        self._points_2d = {cam_name: np.zeros((board_params.object_points().shape[0], 2)) for cam_name in
+        self._points_2d = {cam_name: np.zeros((board_params.object_points.shape[0], 2)) for cam_name in
                            self._cameras_names}
         self._points_2d_ids = {cam_name: np.array([], dtype=int) for cam_name in self._cameras_names}
         self._frustum_depth = 200

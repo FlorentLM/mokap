@@ -440,6 +440,9 @@ class MainControls(QMainWindow, SnapMixin):
     #  ============= General toggles =============
     def _toggle_calib_record(self):
 
+        if self.is_recording:
+            return
+
         if self.is_calibrating and self.mode_combo.currentIndex() == 0:
             self.is_calibrating = False
 
@@ -455,6 +458,10 @@ class MainControls(QMainWindow, SnapMixin):
             self.is_calibrating = True
 
             self._stop_secondary_windows()
+
+            if self.manager.framerate > 30:
+                logger.debug('Forcing framerate to 30 fps for calibration mode')
+                self.manager.framerate = 30
 
             self.button_recpause.setDisabled(True)
 

@@ -11,16 +11,22 @@ from mokap.utils import fileio
 
 
 class ChessBoard:
+
+    type = 'ChessBoard'
+
     def __init__(self,
                  rows: int,
                  cols: int,
                  square_length: float):  # in real-life units (e.g. mm)
 
+        if rows < 2 or cols < 2:
+            raise ValueError(f"{self.type.title()} must be least 2x2 squares.")
+
         self.rows = rows
         self.cols = cols
         self.square_length = square_length
-        self.kind = 'chessboard'
 
+    @property
     def object_points(self) -> np.ndarray:
         """
         Returns the theoretical 3D locations (X, Y, Z=0) of the inner chessboard corners
@@ -32,17 +38,19 @@ class ChessBoard:
 
         return np.stack((xx, yy, np.zeros_like(xx)), axis=-1).reshape(-1, 3).astype(np.float32)
 
+    @property
+    def corner_points(self) -> np.ndarray:
+        corners = np.array([
+            [0, 0, 0], [0, 1, 0], [1, 1, 0], [1, 0, 0]
+        ], dtype=np.float32) * [self.cols, self.rows, 0] * self.square_length
+        return corners
+
     def to_opencv(self):
         raise NotImplementedError()
 
-    def to_image(self, imsize_hw):
-        w, h = imsize_hw    # yes it's flipped...
-        yy = (np.arange(h) * self.rows) // h
-        xx = (np.arange(w) * self.cols) // w
-        grid_y = yy[:, None]
-        grid_x = xx[None, :]
-        checker = ((grid_x + grid_y) % 2)
-        return np.where(checker == 0, 0, 255).astype(np.uint8)
+    def to_image(self, square_size_px: Optional[int] = None):
+        f = square_size_px if square_size_px else 1
+        return ((np.indices((self.rows * f, self.cols * f)) // f).sum(axis=0) % 2).astype(np.uint8) * 255
 
     def to_file(self, file_path: Union[Path, str], multi_size=False, factor=2.0, dpi=1200):
         generate_board_svg(self, file_path, multi_size=multi_size, factor=factor, dpi=dpi)
@@ -52,6 +60,9 @@ class ChessBoard:
 
 
 class CharucoBoard(ChessBoard):
+
+    type = 'CharucoBoard'
+
     def __init__(self,
                  rows:          int,
                  cols:          int,
@@ -62,9 +73,9 @@ class CharucoBoard(ChessBoard):
                  ):
         super().__init__(rows, cols, square_length)
 
-        self.markers_size = markers_size
-        self.margin = margin
-        self.kind = 'charuco'
+        self.markers_size = max(1, markers_size)
+        self.margin = max(0, margin)
+        self.type = 'charuco'
 
         self.all_dict_sizes = [50, 100, 250, 1000]
         self.padding = padding
@@ -85,10 +96,34 @@ class CharucoBoard(ChessBoard):
                                       self.marker_length,  # marker side length (same unit as square_length)
                                       self.aruco_dict)
 
-    def to_image(self, imsize_hw):
-        return self.to_opencv().generateImage(imsize_hw)
+    def to_image(self, square_size_px: Optional[int] = None):
+        side_pixels = self.markers_size + 2 * self.padding + 2 * self.margin
+        w = self.cols * side_pixels + 2 * self.margin
+        h = self.rows * side_pixels + 2 * self.margin
+        f = square_size_px if square_size_px else 1
+        return self.to_opencv().generateImage((w * f, h * f), marginSize=self.margin, borderBits=self.padding)
 
 ##
+
+# TODO: merge some of these payloads
+
+@dataclass
+class ReprojectionPayload:
+    """ Payload for reprojected points for visualization """
+    all_points_2d: np.ndarray       # Reprojection of all board points
+    detected_ids: np.ndarray        # IDs of currently detected points
+
+@dataclass
+class CoveragePayload:
+    """ Payload for the coverage grid visualization """
+    grid: np.ndarray                # The boolean cumulative grid (H, W)
+
+@dataclass
+class StatePayload:
+    """ Payload for general state information for UI text fields """
+    coverage_percent: float
+    nb_samples: int
+    total_points: int
 
 @dataclass
 class ErrorsPayload:
@@ -133,7 +168,7 @@ class CalibrationData:
     Encapsulation of a payload with the camera name
     """
     camera_name: str
-    payload: IntrinsicsPayload | ExtrinsicsPayload | DetectionPayload | ErrorsPayload
+    payload: IntrinsicsPayload | ExtrinsicsPayload | DetectionPayload | ErrorsPayload | ReprojectionPayload | CoveragePayload | StatePayload
 
     def to_file(self, filepath):
         if isinstance(self.payload, IntrinsicsPayload):

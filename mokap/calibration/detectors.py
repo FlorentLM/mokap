@@ -17,25 +17,16 @@ class ChessboardDetector:
                  board: CharucoBoard,
                  downsample_size: int = 480):
 
-        self._n_cols, self._n_rows = board.cols, board.rows
-
-        if self._n_cols < 2 or self._n_rows < 2:
-            raise ValueError("BoardParams must have at least 2x2 squares for a valid chessboard.")
-
         # Create 3D coordinates for board corners (in board-centric coordinates)
-        self._board_points_3d = board.object_points()
-        self._board_corners_3d = (
-                np.array([[0, 0, 0],
-                          [0, 1, 0],
-                          [1, 1, 0],
-                          [1, 0, 0]], dtype=np.float32) * [self._n_cols, self._n_rows, 0] * board.square_length)
+        self._board_points_3d = board.object_points
+        self._board_corners_3d = board.corner_points
 
         # Maximum number of board points and distances
         self._total_points: int = len(self._board_points_3d)
         self._total_distances: int = int((self._total_points * (self._total_points - 1)) / 2.0)
 
         # OpenCV expects this tuple
-        self._n_inner_size: Tuple[int, int] = (self._n_cols - 1, self._n_rows - 1)
+        self._n_inner_size: Tuple[int, int] = (board.cols - 1, board.rows - 1)
 
         # chessboard detections always returns either all or no points, so we fix the points_ids once
         self._points2d_ids = np.arange(np.prod(self._n_inner_size), dtype=np.int32)
@@ -46,8 +37,8 @@ class ChessboardDetector:
         # Detection flags
         self._detection_flags = (cv2.CALIB_CB_ADAPTIVE_THRESH |
                                  cv2.CALIB_CB_NORMALIZE_IMAGE |
-                                 cv2.CALIB_CB_FAST_CHECK |  # quickly dismisses frames with no board in view
-                                 cv2.CALIB_CB_FILTER_QUADS)  # pre‐filters candidate quads before full points grouping
+                                 cv2.CALIB_CB_FAST_CHECK |     # quickly dismisses frames with no board in view
+                                 cv2.CALIB_CB_FILTER_QUADS)    # pre‐filters candidate quads before full points grouping
 
         # Criteria for subpixel refinement
         self._win_size: Tuple[int, int] = (11, 11)
@@ -71,10 +62,6 @@ class ChessboardDetector:
     @property
     def nb_points(self) -> int:
         return self._total_points
-
-    @property
-    def board_dims(self) -> Tuple[int, int]:
-        return self._n_cols, self._n_rows
 
     def detect(self,
                frame: ArrayLike,

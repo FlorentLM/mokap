@@ -6,7 +6,8 @@ from numpy.typing import ArrayLike
 from mokap.calibration.monocular import MonocularCalibrationTool
 from mokap.gui.workers.workers_base import CalibrationProcessingWorker
 from mokap.utils.datatypes import (ChessBoard, CharucoBoard, CalibrationData, ErrorsPayload,
-                                   IntrinsicsPayload, ExtrinsicsPayload, DetectionPayload)
+                                   IntrinsicsPayload, ExtrinsicsPayload, DetectionPayload, CoveragePayload,
+                                   StatePayload, ReprojectionPayload)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ class MonocularWorker(CalibrationProcessingWorker):
         self._simple_distortion = False
         self._complex_distortion = False    # TODO: Replace the 3 flags with the Literal like in MultiviewCalibTool
         self._coverage_threshold = 75
+        self._new_area_threshold = 0.2
         self._stack_length_threshold = 20
 
     def _create_tool(self, board_params: Union[ChessBoard, CharucoBoard]):
@@ -49,7 +51,7 @@ class MonocularWorker(CalibrationProcessingWorker):
         logger.debug(f"[{self.name.title()}] Received new board parameters.")
 
         # Update the worker's own reference to the board points for the coordinator
-        self.board_object_points = board_params.object_points()
+        self.board_object_points = board_params.object_points
 
         # Create a brand new MonocularCalibrationTool instance
         self.monocular_tool = MonocularCalibrationTool(
@@ -77,8 +79,11 @@ class MonocularWorker(CalibrationProcessingWorker):
         if self.monocular_tool:
             self.monocular_tool.clear_stacks()
             self.monocular_tool.clear_intrinsics()
-            # Notify the UI that errors are now reset/invalid
+
+            # Notify the UI that errors and data are reset/invalid
             self.send_payload.emit(CalibrationData(self.cam_name, ErrorsPayload(np.array([np.inf]))))
+            self.send_payload.emit(CalibrationData(self.cam_name, CoveragePayload(grid=np.zeros((1, 1), dtype=bool))))
+            self.send_payload.emit(CalibrationData(self.cam_name, StatePayload(0.0, 0, self.monocular_tool.dt.nb_points)))
 
     @Slot(int)
     def set_stage(self, stage: int):
@@ -109,7 +114,12 @@ class MonocularWorker(CalibrationProcessingWorker):
         # Stage 0: Compute initial intrinsics
         if self._current_stage == 0:
             if self._auto_sample:
-                self.monocular_tool.auto_register_area_based(area_threshold=0.2)
+                sample_added = self.monocular_tool.auto_register_area_based(area_threshold=self._new_area_threshold)
+                if sample_added:
+                    # if a sample was added, send the updated coverage grid for visualization
+                    self.send_payload.emit(
+                        CalibrationData(self.cam_name, CoveragePayload(grid=self.monocular_tool.grid))
+                    )
 
             if self._auto_compute:
                 if self.monocular_tool.coverage >= self._coverage_threshold and self.monocular_tool.nb_samples > self._stack_length_threshold:
@@ -146,6 +156,19 @@ class MonocularWorker(CalibrationProcessingWorker):
                 CalibrationData(self.cam_name, ExtrinsicsPayload(rvec=rvec, tvec=tvec, error=pose_error))
             )
 
+            # Send reprojection data for visualisation if extrinsics were found
+            if self.monocular_tool.has_extrinsics:
+
+                self.monocular_tool.reproject()
+
+                points2d, pointsids = self.monocular_tool.detection
+                reproj_points = self.monocular_tool.reprojection
+
+                self.send_payload.emit(
+                    CalibrationData(self.cam_name, ReprojectionPayload(all_points_2d=reproj_points,
+                                                                       detected_ids=pointsids))
+                )
+
         # in all stages, if a detection happened, send its data for visualization
         if self.monocular_tool.has_detection:
             # we use this payload for visualization AND to feed the multiview processing
@@ -158,6 +181,18 @@ class MonocularWorker(CalibrationProcessingWorker):
             empty_ids = np.array([], dtype=int)
             self.send_payload.emit(
                 CalibrationData(self.cam_name, DetectionPayload(frame_idx, empty_points, empty_ids))
+            )
+
+            # Always send the current state for UI text updates
+            self.send_payload.emit(
+                CalibrationData(
+                    self.cam_name,
+                    StatePayload(
+                        coverage_percent=self.monocular_tool.coverage,
+                        nb_samples=self.monocular_tool.nb_samples,
+                        total_points=self.monocular_tool.dt.nb_points
+                    )
+                )
             )
 
         self.finished.emit()
