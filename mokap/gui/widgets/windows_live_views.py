@@ -1,4 +1,6 @@
 from collections import deque
+from typing import Tuple
+
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, Slot, Signal, QEvent
@@ -10,6 +12,7 @@ from mokap.gui.widgets import MAX_PLOT_X
 from mokap.gui.widgets.widgets_base import LiveViewBase, FastImageItem
 from mokap.gui.workers.worker_monocular import MonocularWorker
 from mokap.gui.workers.worker_movement import MovementWorker
+from mokap.utils import pretty_microseconds
 from mokap.utils.datatypes import (ErrorsPayload, CalibrationData, IntrinsicsPayload, ExtrinsicsPayload,
                                    DetectionPayload, ReprojectionPayload, CoveragePayload, StatePayload)
 
@@ -40,6 +43,9 @@ class RecordingLiveView(LiveViewBase):
 
         # Store worker results and its current state
         self._bboxes = []
+
+        # Store parameters for logarithmic sliders
+        self.log_slider_params = {}
 
         # Finish building the UI by calling the other constructors
         self._init_common_ui()
@@ -115,14 +121,6 @@ class RecordingLiveView(LiveViewBase):
         self.camera_controls_sliders_scales = {}
         self._val_in_sync = {}
 
-        slider_params = [       # TODO: To we want real accessors to get min and max from the cameras instead of hard limits
-            ('framerate', (int, 1, 240, 1, 1)),
-            ('exposure', (int, 21, 100000, 5, 1)),  # in microseconds - 100000 microseconds ~ 10 fps
-            ('black_level', (float, 0.0, 32.0, 0.5, 3)),
-            ('gain', (float, 0.0, 36.0, 0.5, 3)),
-            ('gamma', (float, 0.0, 3.99, 0.05, 3))
-        ]
-
         right_group_sliders = QWidget()
         right_group_sliders_layout = QVBoxLayout(right_group_sliders)
         right_group_sliders_layout.setContentsMargins(0, 20, 0, 5)
@@ -134,54 +132,83 @@ class RecordingLiveView(LiveViewBase):
 
         sync_groupbox_layout.setSpacing(12)
 
-        for label, params in slider_params:
-            type_, min_val, max_val, step, digits = params
+        # The order here determines the order in the GUI
+        params_to_create = ['framerate', 'exposure', 'black_level', 'gain', 'gamma']
 
+        for label in params_to_create:
             line = QWidget()
             line_layout = QHBoxLayout(line)
             line_layout.setContentsMargins(1, 1, 1, 1)
             line_layout.setSpacing(2)
 
-            param_value = getattr(self._camera, label) or 0
+            try:
+                # Query the camera for all necessary info
+                current_range = getattr(self._camera, f"{label}_range")
+                current_value = getattr(self._camera, label)
+
+                min_val, max_val = current_range
+                param_value = current_value or 0
+
+                # Determine if it's a float or int
+                is_float = isinstance(param_value, float) or isinstance(min_val, float)
+
+            except AttributeError:
+                # If the camera doesn't have a property (e.g., no gamma), skip creating the slider
+                print(f"Camera {self._camera.name} does not support '{label}'. Skipping slider.")
+                continue
 
             slider_label = QLabel(f'{label.title()}:')
             slider_label.setFixedWidth(70)
             slider_label.setContentsMargins(0, 5, 5, 0)
             slider_label.setAlignment(Qt.AlignRight)
-
             line_layout.addWidget(slider_label)
 
-            if type_ == int:
-                slider = QSlider(Qt.Horizontal)
-                slider.setMinimum(min_val)
-                slider.setMaximum(max_val)
-                slider.setSingleStep(step)
-                slider.setValue(param_value)
+            slider = QSlider(Qt.Horizontal)
 
-                self.camera_controls_sliders_scales[label] = 1
-            else:
-                # For floats, map to an integer range
+            # For floats, we only want to scale them if their range is small (i.e. they need decimal precision)
+            should_scale = is_float and max_val < 1000
+
+            if label == 'exposure':
+                slider_min_pos, slider_max_pos = 0, 1000
+                slider.setRange(slider_min_pos, slider_max_pos)
+
+                # Store the log mapping parameters
+                self.log_slider_params[label] = {
+                    'min_val': min_val, 'max_val': max_val,
+                    'slider_min': slider_min_pos, 'slider_max': slider_max_pos
+                }
+
+                initial_pos = self._log_map(param_value, min_val, max_val, slider_min_pos, slider_max_pos)
+                slider.setValue(initial_pos)
+                self.camera_controls_sliders_scales[label] = 'log'
+
+                value_text = pretty_microseconds(param_value)
+
+            elif should_scale:
+                # For small floats, use a scale to map them to an integer slider
+                digits = 2
                 scale = 10 ** digits
-                scaled_min = int(min_val * scale)
-                scaled_max = int(max_val * scale)
-                scaled_step = int(step * scale)
-                scaled_initial = int(param_value * scale)
-
-                slider = QSlider(Qt.Horizontal)
-                slider.setMinimum(scaled_min)
-                slider.setMaximum(scaled_max)
-                slider.setSingleStep(scaled_step)
-                slider.setValue(scaled_initial)
-
+                slider.setMinimum(int(min_val * scale))
+                slider.setMaximum(int(max_val * scale))
+                slider.setSingleStep(1)
+                slider.setValue(int(param_value * scale))
                 self.camera_controls_sliders_scales[label] = scale
+                value_text = f"{param_value:.2f}"
+            else:
+                # For ints and large linear floats (like framerate), it's straightforward
+                slider.setMinimum(int(min_val))
+                slider.setMaximum(int(max_val))
+                slider.setSingleStep(1)
+                slider.setValue(int(param_value))
+                self.camera_controls_sliders_scales[label] = 1
+                value_text = f"{int(param_value)}"
 
             slider.setMinimumWidth(100)
             slider.valueChanged.connect(lambda value, lbl=label: self._slider_changed(lbl, value))
             slider.sliderReleased.connect(lambda lbl=label: self._slider_released(lbl))
-
             line_layout.addWidget(slider, 1)
 
-            value_label = QLabel(f"{param_value}")
+            value_label = QLabel(value_text)
             value_label.setFixedWidth(40)
             value_label.setAlignment(Qt.AlignVCenter)
             self.camera_controls_sliders_labels[label] = value_label
@@ -317,8 +344,39 @@ class RecordingLiveView(LiveViewBase):
         """ Shows or hides the warning text """
         self.warning_text.setVisible(show_warning)
 
+    def _log_map(self, value, min_val, max_val, slider_min, slider_max):
+        """ Maps a value from a log scale to a linear slider position """
+        if value <= min_val:
+            return slider_min
+        if value >= max_val:
+            return slider_max
+
+        log_min = np.log(min_val)
+        log_max = np.log(max_val)
+        log_val = np.log(value)
+
+        # Normalize the log value to 0-1 range
+        scale = (log_val - log_min) / (log_max - log_min)
+        return int(slider_min + scale * (slider_max - slider_min))
+
+    def _inv_log_map(self, pos, min_val, max_val, slider_min, slider_max):
+        """ Maps a linear slider position back to a log scale value """
+
+        if pos <= slider_min:
+            return min_val
+        if pos >= slider_max:
+            return max_val
+
+        log_min = np.log(min_val)
+        log_max = np.log(max_val)
+
+        # Normalize the slider position to 0-1 range
+        scale = (pos - slider_min) / (slider_max - slider_min)
+        log_val = log_min + scale * (log_max - log_min)
+        return np.exp(log_val)
+
     @Slot(str, object)
-    def update_slider_ui(self, label, value):
+    def update_slider_value(self, label, value):
         """
         This runs on the main GUI thread and is called by the polling loop in PreviewBase._update_slow
         (when a parameter change is detected on the camera object)
@@ -330,16 +388,53 @@ class RecordingLiveView(LiveViewBase):
         scale = self.camera_controls_sliders_scales.get(label, 1)
         value_label = self.camera_controls_sliders_labels[label]
 
-        # Block signals to prevent triggering the _slider_changed or _slider_released callbacks
         slider.blockSignals(True)
-        slider.setValue(int(value * scale))
+
+        if scale == 'log':
+            # This logic shouldn't be needed for log sliders as their value isn't clamped by range,
+            # but we keep it for correctness.
+            params = self.log_slider_params[label]
+            current_value = self._inv_log_map(slider.value(), **params)
+            value_label.setText(pretty_microseconds(current_value))
+        else:
+            # Get the new, clamped integer value directly from the slider
+            clamped_int_value = slider.value()
+            current_value = clamped_int_value / scale
+            value_label.setText(f'{int(current_value)}')
+
+        self._last_polled_values[label] = current_value
+
+        if label == 'framerate':
+            self._capture_fps_deque.clear()
+
         slider.blockSignals(False)
 
-        # Update the text label next to the slider to show the new value
-        if isinstance(value, int) or (isinstance(value, float) and value.is_integer()):
-            value_label.setText(f'{int(value)}')
+    @Slot(str, object)
+    def update_slider_range(self, label, value: Tuple[float, float]):
+        if label not in self.camera_controls_sliders:
+            return
+
+        slider = self.camera_controls_sliders[label]
+        scale = self.camera_controls_sliders_scales.get(label, 1)
+        min_val, max_val = value
+
+        # Block signals to prevent the slider from re-emitting signals while we modify it.
+        slider.blockSignals(True)
+
+        if scale == 'log':
+            # Update the stored parameters for the log mapping
+            self.log_slider_params[label]['min_val'] = min_val
+            self.log_slider_params[label]['max_val'] = max_val
+            # The slider's own integer range (0-1000) does not change
         else:
-            value_label.setText(f'{value:.2f}')
+            # For linear sliders, just update the min/max
+            slider.setMinimum(int(min_val * scale))
+            slider.setMaximum(int(max_val * scale))
+
+        slider.blockSignals(False)
+
+        current_value_from_camera = getattr(self._camera, label)
+        self.update_slider_value(label, current_value_from_camera)
 
     @Slot(list)
     def on_worker_result(self, bboxes):
@@ -371,30 +466,46 @@ class RecordingLiveView(LiveViewBase):
         """ Updates the text label next to a slider as it's being moved """
 
         scale = self.camera_controls_sliders_scales.get(label, 1)
-        value_float = int_value / scale
 
-        if value_float.is_integer():
-            self.camera_controls_sliders_labels[label].setText(f'{int(value_float)}')
+        if scale == 'log':
+            params = self.log_slider_params[label]
+            value_float = self._inv_log_map(int_value, **params)
+            self.camera_controls_sliders_labels[label].setText(pretty_microseconds(value_float))
         else:
-            self.camera_controls_sliders_labels[label].setText(f'{value_float:.2f}')
+            value_float = int_value / scale
+            if value_float.is_integer():
+                self.camera_controls_sliders_labels[label].setText(f'{int(value_float)}')
+            else:
+                self.camera_controls_sliders_labels[label].setText(f'{value_float:.2f}')
 
     def _slider_released(self, label):
         """ Called when a slider is used: either sets the parameter on one camera or broadcasts it via the manager """
 
         slider = self.camera_controls_sliders[label]
         scale = self.camera_controls_sliders_scales.get(label, 1)
-        value = slider.value() / scale
+
+        if scale == 'log':
+            params = self.log_slider_params[label]
+            value = self._inv_log_map(slider.value(), **params)
+        else:
+            value = slider.value() / scale
 
         if self._val_in_sync[label].isChecked():
-            # tell the manager to broadcast the setting to everyone
-            # The polling loop in each GUI window will later detect the change and update the UI
+            # Tell the manager to broadcast the setting to everyone
             self._mainwindow.manager.set_all_cameras(label, value)
         else:
             # Set the parameter only on this specific camera
-            # The polling loop in this window will later update the UI if the value was
-            # clamped or caused a side-effect
             setattr(self._camera, label, value)
 
+        # After setting the value, immediately read it back
+        # to get the actual clamped value that the hardware accepted
+        actual_value_set = getattr(self._camera, label)
+
+        # tell the UI to update with this *actual* value
+        self.update_slider_value(label, actual_value_set)
+
+        # update the polled value cache. This prevents the slow update loop from redundantly updating on next tick
+        self._last_polled_values[label] = actual_value_set
 
 class CalibrationLiveView(LiveViewBase):
 

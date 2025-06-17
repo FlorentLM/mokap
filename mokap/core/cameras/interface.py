@@ -89,6 +89,12 @@ class AbstractCamera(abc.ABC):
 
     @property
     @abc.abstractmethod
+    def exposure_range(self) -> Tuple[float, float]:
+        """ Min and max exposure """
+        pass
+
+    @property
+    @abc.abstractmethod
     def gain(self) -> float:
         """ Gain in device-specific units (e.g., dB or a raw value) """
         pass
@@ -96,6 +102,12 @@ class AbstractCamera(abc.ABC):
     @gain.setter
     @abc.abstractmethod
     def gain(self, value: float):
+        pass
+
+    @property
+    @abc.abstractmethod
+    def gain_range(self) -> Tuple[float, float]:
+        """ Min and max gain """
         pass
 
     @property
@@ -111,6 +123,12 @@ class AbstractCamera(abc.ABC):
 
     @property
     @abc.abstractmethod
+    def black_level_range(self) -> Tuple[float, float]:
+        """ Min and max black level """
+        pass
+
+    @property
+    @abc.abstractmethod
     def gamma(self) -> float:
         """ Gamma correction value """
         pass
@@ -118,6 +136,12 @@ class AbstractCamera(abc.ABC):
     @gamma.setter
     @abc.abstractmethod
     def gamma(self, value: float):
+        pass
+
+    @property
+    @abc.abstractmethod
+    def gamma_range(self) -> Tuple[float, float]:
+        """ Min and max gamma """
         pass
 
     @property
@@ -143,6 +167,11 @@ class AbstractCamera(abc.ABC):
         pass
 
     @property
+    def available_binning_modes(self) -> list[str]:
+        """ Returns a list of available binning mode strings """
+        pass
+
+    @property
     @abc.abstractmethod
     def framerate(self) -> float:
         """ Acquisition framerate in fps """
@@ -151,6 +180,12 @@ class AbstractCamera(abc.ABC):
     @framerate.setter
     @abc.abstractmethod
     def framerate(self, value: float):
+        pass
+
+    @property
+    @abc.abstractmethod
+    def framerate_range(self) -> Tuple[float, float]:
+        """ Min and max framerate """
         pass
 
     # --- Image Format and ROI Properties ---
@@ -175,6 +210,11 @@ class AbstractCamera(abc.ABC):
     @pixel_format.setter
     @abc.abstractmethod
     def pixel_format(self, value: str):
+        pass
+
+    @property
+    def available_pixel_formats(self) -> list[str]:
+        """ Returns a list of available pixel format strings """
         pass
 
     # --- Triggering and Synchronization ---

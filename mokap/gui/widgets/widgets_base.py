@@ -170,7 +170,6 @@ class Base(QWidget, SnapMixin):
 
 class LiveViewBase(Base):
 
-    # frame_received = Signal(np.ndarray, dict)   # frame and accompanying data
     send_frame = Signal(np.ndarray, int)
 
     def __init__(self, camera, main_window_ref):
@@ -210,14 +209,12 @@ class LiveViewBase(Base):
         self._warning = False
 
         self._last_polled_values = {}
+        self._last_polled_ranges = {}
 
         # clock and counter
         self._fps_clock = time.monotonic()
         self._last_frame_number_for_fps = 0
-        self._capture_fps_deque = deque(maxlen=10)
-
-        # Connect the new frame signal to a slot that updates the UI
-        # self.frame_received.connect(self.on_frame_received)
+        self._capture_fps_deque = deque(maxlen=5)
 
         # This timer is for DISPLAY only (updating the QImage)
         self.timer_display = QTimer(self)
@@ -381,7 +378,6 @@ class LiveViewBase(Base):
         buffer at a controlled rate, converts the frame to a displayable format,
         and updates the reference used by the GUI's display timer
         """
-
         manager = self._mainwindow.manager
         lock = manager._latest_frame_locks[self._cam_idx]
         last_frame_id = -1
@@ -478,12 +474,6 @@ class LiveViewBase(Base):
             self.send_frame.emit(frame_to_process, frame_number)
             self._worker_busy = True
 
-    # @Slot(np.ndarray, dict)
-    # def on_frame_received(self, frame, frame_data):
-    #     """ this runs in the main GUI thread. We just update the references """
-    #     self._current_frame_data = frame_data
-    #     self._latest_frame = frame
-
     #  ============= Common update method for texts and stuff =============
     def _update_slow(self):
 
@@ -518,12 +508,22 @@ class LiveViewBase(Base):
         params_to_poll = ['exposure', 'framerate', 'gain', 'black_level', 'gamma']
 
         for param in params_to_poll:
+
+            # Poll for parameter *value* changes
             current_value = getattr(self._camera, param)
             last_value = self._last_polled_values.get(param)
 
             if current_value != last_value:
-                self.update_slider_ui(param, current_value)
+                self.update_slider_value(param, current_value)
                 self._last_polled_values[param] = current_value
+
+            # Poll for parameter *range* changes
+            current_range = getattr(self._camera, f"{param}_range")
+            last_range = self._last_polled_ranges.get(param)
+
+            if current_range != last_range:
+                self.update_slider_range(param, current_range)
+                self._last_polled_ranges[param] = current_range
 
         if self._mainwindow.manager.acquiring:
             h, w, _ = self._latest_display_frame.shape
@@ -647,7 +647,12 @@ class LiveViewBase(Base):
     #  ============= Some signals =============
 
     @Slot(str, object)
-    def update_slider_ui(self, label, value):
+    def update_slider_value(self, label, value):
+        # Implemented in the concrete class
+        pass
+
+    @Slot(str, object)
+    def update_slider_range(self, label, value):
         # Implemented in the concrete class
         pass
 

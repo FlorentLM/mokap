@@ -219,6 +219,35 @@ class FLIRCamera(GenICamCamera):
         except PySpin.SpinnakerException as e:
             raise AttributeError(f"Failed to set feature '{name}' to '{value}': {e}") from e
 
+    def _get_feature_entries(self, name: str) -> list[str]:
+        try:
+            node = self._get_nodemap().GetNode(name)
+            if not PySpin.IsAvailable(node) or not PySpin.IsReadable(node):
+                raise AttributeError(f"Feature '{name}' not readable.")
+
+            enum_node = PySpin.CEnumerationPtr(node)
+
+            return [entry.GetSymbolic() for entry in enum_node.GetEntries()]
+
+        except PySpin.SpinnakerException as e:
+            raise AttributeError(f"Failed to get entries for feature '{name}': {e}") from e
+
+    def _get_feature_min_value(self, name: str) -> Any:
+        try:
+            node = self._get_nodemap().GetNode(name)
+            iface = node.GetPrincipalInterfaceType()
+
+            match iface:
+                case PySpin.intfIFloat:
+                    return PySpin.CFloatPtr(node).GetMin()
+                case PySpin.intfIInteger:
+                    return PySpin.CIntegerPtr(node).GetMin()
+
+            raise TypeError(f"Cannot get min for feature '{name}' of type {iface}")
+
+        except PySpin.SpinnakerException as e:
+            raise AttributeError(f"Failed to get min for feature '{name}': {e}") from e
+
     def _get_feature_max_value(self, name: str) -> Any:
         try:
             node = self._get_nodemap().GetNode(name)

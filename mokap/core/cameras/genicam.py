@@ -109,6 +109,17 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         """ A hook for subclasses to run code after the main configuration is applied """
         pass
 
+    def _get_feature_range(self, name: str) -> Tuple[float, float]:
+        """ Helper to get the min/max of a float-based feature """
+        try:
+            min_val = float(self._get_feature_min_value(name))
+            max_val = float(self._get_feature_max_value(name))
+            return min_val, max_val
+
+        except AttributeError as e:
+            logger.error(f"Could not retrieve range for '{name}': {e}")
+            return 0.0, 0.0
+
     @abc.abstractmethod
     def _get_feature_value(self, name: str) -> Any:
         """ Vendor-specific implementation to get a feature's value """
@@ -120,12 +131,22 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         pass
 
     @abc.abstractmethod
+    def _get_feature_min_value(self, name: str) -> Any:
+        """ Vendor-specific implementation to get a feature's maximum possible value """
+        pass
+
+    @abc.abstractmethod
     def _get_feature_max_value(self, name: str) -> Any:
         """ Vendor-specific implementation to get a feature's maximum possible value """
         pass
 
+    @abc.abstractmethod
+    def _get_feature_entries(self, name: str) -> list[str]:
+        """ Vendor-specific implementation to get all enum entries for a feature """
+        pass
+
     @property
-    def black_level(self) -> str:
+    def black_level(self) -> float:
         return self._black_level
 
     @black_level.setter
@@ -133,7 +154,11 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         self._black_level = self._set_feature_value('BlackLevel', value)
 
     @property
-    def gain(self) -> str:
+    def black_level_range(self) -> Tuple[float, float]:
+        return self._get_feature_range('BlackLevel')
+
+    @property
+    def gain(self) -> float:
         return self._gain
 
     @gain.setter
@@ -141,7 +166,11 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         self._gain = self._set_feature_value('Gain', value)
 
     @property
-    def gamma(self) -> str:
+    def gain_range(self) -> Tuple[float, float]:
+        return self._get_feature_range('Gain')
+
+    @property
+    def gamma(self) -> float:
         return self._gamma
 
     @gamma.setter
@@ -153,18 +182,23 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         self._gamma = self._set_feature_value('Gamma', value)
 
     @property
+    def gamma_range(self) -> Tuple[float, float]:
+        return self._get_feature_range('Gamma')
+
+    @property
     def exposure(self) -> float:
         return self._exposure
 
     @exposure.setter
     def exposure(self, value: float):
         self._exposure = self._set_feature_value('ExposureTime', value)
-        try:
-            max_fps = self._get_feature_max_value('AcquisitionFrameRate')
-            if self._framerate > max_fps:
-                self.framerate = max_fps
-        except AttributeError:
-            pass  # Not all cameras link exposure and framerate this way
+        # After setting exposure, the max framerate might have decreased
+        # re-apply the current framerate setting to ensure it's still valid or let the framerate setter handle clamping
+        self.framerate = self._framerate
+
+    @property
+    def exposure_range(self) -> Tuple[float, float]:
+        return self._get_feature_range('ExposureTime')
 
     @property
     def framerate(self) -> float:
@@ -172,16 +206,55 @@ class GenICamCamera(AbstractCamera, abc.ABC):
 
     @framerate.setter
     def framerate(self, value: float):
+        self._framerate = value  # cache the desired value first
+
+        # if in hardware trigger mode, the camera's internal pacer is off
         if self.hardware_triggered:
-            self._framerate = value
+            logger.debug(f"Hardware trigger is on. Skipping setting framerate on {self.name} camera directly.")
             return
+
+        # if not hardware triggered
         try:
+            # enable framerate control
             self._set_feature_value('AcquisitionFrameRateEnable', True)
-            actual_value = self._set_feature_value('AcquisitionFrameRate', value)
-            self._framerate = actual_value
+
+            # set the target framerate. The setter will clamp it
+            actual_value_set = self._set_feature_value('AcquisitionFrameRate', value)
+
+            # update the cached value with what was actually set
+            self._framerate = actual_value_set
+            logger.debug(f"Set {self.name}'s framerate to {self._framerate} fps.")
+
         except AttributeError:
-            logger.warning(f"Camera {self.unique_id}: Could not set framerate explicitly.")
-            self._framerate = self._get_feature_value('AcquisitionFrameRate')
+
+            # Fallback for cameras that might not support explicit framerate control
+            logger.warning(f"Camera {self.name} does not support explicit framerate control.")
+
+            # Try to read the current framerate as a best-effort guess
+            try:
+                self._framerate = float(self._get_feature_value('ResultingFrameRate'))
+            except AttributeError:
+                logger.warning(f"Could not read ResultingFrameRate for {self.unique_id}.")
+                self._framerate = 0.0
+
+    @property
+    def framerate_range(self) -> Tuple[float, float]:
+        try:
+            min_fps = self._get_feature_min_value('AcquisitionFrameRate')
+            # Disabling manual control allows to query the current maximum *possible* framerate
+            self._set_feature_value('AcquisitionFrameRateEnable', False)
+            max_fps = self._get_feature_value('ResultingFrameRate')
+
+            # reactivate if needed
+            if not self.hardware_triggered:
+                self._set_feature_value('AcquisitionFrameRateEnable', True)
+
+            return float(min_fps), float(max_fps)
+
+        except AttributeError:
+            # fallback if the feature isn't available
+            logger.warning(f"Could not determine settable framerate range for {self.unique_id}.")
+            return 0.5, 500.0
 
     @property
     def pixel_format(self) -> str:
@@ -197,6 +270,10 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         finally:
             if was_grabbing:
                 self.start_grabbing()
+
+    @property
+    def available_pixel_formats(self) -> list[str]:
+        return self._get_feature_entries('PixelFormat')
 
     @property
     def hardware_triggered(self) -> bool:
@@ -262,6 +339,10 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         h_mode = self._set_feature_value('BinningHorizontalMode', mode)
         self._set_feature_value('BinningVerticalMode', mode)
         self._binning_mode = h_mode
+
+    @property
+    def available_binning_modes(self) -> list[str]:
+        return self._get_feature_entries('BinningHorizontalMode')
 
     @property
     def temperature(self) -> Optional[float]:

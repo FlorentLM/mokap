@@ -320,6 +320,7 @@ You can also use one of the cameras to act as a hardware trigger for the others.
 - [ ] Add support for other camera brands
 - [ ] Add support for AMD GPU encoding
 - [x] ~~Finish calibration mode~~  erm... needs some fixes 
+- [ ] Embed useful metadata in the videos / images
 
 
 <p>(<a href="#readme-top">back to top</a>)</p>

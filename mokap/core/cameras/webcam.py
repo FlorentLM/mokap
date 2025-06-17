@@ -232,6 +232,10 @@ class WebcamCamera(AbstractCamera):
         if value.upper() not in ['BGR8', 'BGR']:
             logger.warning(f'Webcam pixel format cannot be changed. It is typically BGR8.')
 
+    @property
+    def available_pixel_formats(self) -> list[str]:
+        return []
+
     # --- These are likely unsupported by all webcams, but we need to implement them ---
 
     @property
@@ -246,6 +250,10 @@ class WebcamCamera(AbstractCamera):
     @property
     def binning_mode(self) -> Optional[str]:
         return None
+
+    @property
+    def available_binning_modes(self) -> list[str]:
+        return []
 
     @binning_mode.setter
     def binning_mode(self, value: str):

@@ -31,8 +31,6 @@ class BaslerCamera(GenICamCamera):
             self._is_connected = True
             self._apply_configuration(config)
 
-            logger.info(f"Connected to Basler camera {self.unique_id}")
-
         except geni.GenericException as e:
             self._is_connected = False
             raise RuntimeError(f"Failed to connect to Basler camera {self.unique_id}: {e}") from e
@@ -128,6 +126,25 @@ class BaslerCamera(GenICamCamera):
 
         except geni.GenericException as e:
             raise AttributeError(f"Failed to set feature '{name}' to '{value}': {e}") from e
+
+    def _get_feature_entries(self, name: str) -> list[str]:
+        try:
+            node = self._ptr.GetNodeMap().GetNode(name)
+
+            if not isinstance(node, geni.IEnumeration):
+                raise TypeError(f"Feature '{name}' is not an enumeration.")
+
+            return [entry.GetSymbolic() for entry in node.GetEntries()]
+
+        except geni.GenericException as e:
+            raise AttributeError(f"Failed to get entries for feature '{name}': {e}") from e
+
+    def _get_feature_min_value(self, name: str) -> Any:
+        try:
+            return self._ptr.GetNodeMap().GetNode(name).GetMin()
+
+        except geni.GenericException as e:
+            raise AttributeError(f"Failed to get min for feature '{name}': {e}") from e
 
     def _get_feature_max_value(self, name: str) -> Any:
         try:

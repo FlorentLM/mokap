@@ -20,7 +20,6 @@ logger = logging.getLogger(__name__)
 
 class CentralCalibrationWindow(Base):
 
-    request_board_settings = Signal()
     request_load_calibration = Signal()
     request_save_calibration = Signal()
 
@@ -442,7 +441,6 @@ class CentralCalibrationWindow(Base):
                                       drawEdges=True, edgeColor=color_translucent_80, color=color_translucent_50)
 
             # Dashed lines for optical axis requires are slow
-            # so we replace them with a solid line for now
             # TODO: custom shader for that
             optical_axis_line = GLLinePlotItem(pos=np.zeros((2, 3)), color=color, width=2, antialias=self._antialiasing)
 

@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 from contextlib import redirect_stderr
 from typing import List, Dict, Optional, Union, Any, TYPE_CHECKING
 import cv2
@@ -13,6 +14,20 @@ if TYPE_CHECKING:
     from mokap.core.cameras.flir import FLIRCamera
 
 
+class noprint:
+    def __enter__(self):
+        self._original_stdout = sys.stdout
+        self._original_stderr = sys.stderr
+        sys.stdout = open(os.devnull, 'w')
+        sys.stderr = open(os.devnull, 'w')
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        sys.stdout.close()
+        sys.stderr.close()
+        sys.stdout = self._original_stdout
+        sys.stderr = self._original_stderr
+
+
 def discover_webcams(max_to_check: int = 10):  # increased default just in case
     """ Attempts to find available webcams by trying to open them sequentially """
     found_cams = []
@@ -20,9 +35,8 @@ def discover_webcams(max_to_check: int = 10):  # increased default just in case
 
     while len(found_cams) < max_to_check:
         # try to open the camera at the current index
-        with open(os.devnull, 'w') as f:
-            with redirect_stderr(f):
-                cap = cv2.VideoCapture(index)
+        with noprint():
+            cap = cv2.VideoCapture(index)
 
         if cap.isOpened():
             # if successful, create an instance and release the capture
@@ -116,6 +130,7 @@ class CameraFactory:
         try:
             # We call the discover_webcams function which returns WebcamCamera instances
             found_webcams = discover_webcams()
+
             for cam_instance in found_webcams:
                 CameraFactory._discovered_devices.append({
                     'vendor': 'Webcam',

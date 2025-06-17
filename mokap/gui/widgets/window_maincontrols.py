@@ -11,12 +11,11 @@ from PySide6.QtGui import QFont, QGuiApplication, QCursor, QBrush, QColor, QPen
 from PySide6.QtWidgets import (QMainWindow, QVBoxLayout, QWidget, QFrame, QHBoxLayout, QLabel,
                                QComboBox, QPushButton, QSizePolicy, QGroupBox, QLineEdit, QScrollArea,
                                QCheckBox, QGraphicsView, QGraphicsScene, QTextEdit, QStatusBar,
-                               QProgressBar, QFileDialog, QApplication, QDialog, QGraphicsRectItem, QGraphicsTextItem)
+                               QProgressBar, QFileDialog, QApplication, QGraphicsRectItem, QGraphicsTextItem)
 from mokap.gui import GUI_LOGGER
 from mokap.gui.style.commons import *
 from mokap.gui.widgets import DEFAULT_BOARD, SLOW_UPDATE_INTERVAL
 from mokap.gui.widgets.widgets_base import SnapMixin
-from mokap.gui.widgets.dialogs import BoardParamsDialog
 from mokap.gui.widgets.windows_live_views import CalibrationLiveView, RecordingLiveView
 from mokap.gui.widgets.window_central_calib import CentralCalibrationWindow
 from mokap.gui.workers.coordinator import CalibrationCoordinator
@@ -70,7 +69,7 @@ class MainControls(QMainWindow, SnapMixin):
         self.is_recording = False
 
         # Refs for the secondary windows
-        self.opengl_window = None
+        self.central_calib_window = None
         self.video_windows = []
 
         # Other things to init
@@ -557,18 +556,6 @@ class MainControls(QMainWindow, SnapMixin):
         except:
             pass
 
-    def show_global_board_dialog(self):
-        dlg = BoardParamsDialog(self.board_params, self)
-        if dlg.exec_() == QDialog.Accepted:
-            new_board_params = dlg.get_values()
-            self.board_params = new_board_params
-
-            if self.opengl_window:
-                self.opengl_window.update_board_preview(self.board_params)
-
-            # Send the new board to the coordinator to trigger a system reset
-            self.coordinator.handle_board_change(self.board_params)
-
     def _avail_screenspace(self) -> Tuple[int, int, int, int]:
         """
         Finds the QScreen that matches the selected_monitor and returns available space
@@ -638,22 +625,22 @@ class MainControls(QMainWindow, SnapMixin):
         self.move(x_main, y_main)
 
         # if 3D viewer exists and is visible, place it immediately to the right or main windowa
-        if self.opengl_window and self.opengl_window.isVisible():
+        if self.central_calib_window and self.central_calib_window.isVisible():
             try:
                 # if the 3D viewer has its own auto_size()
-                self.opengl_window.auto_size()
+                self.central_calib_window.auto_size()
             except AttributeError:
                 pass
 
-            ogl_frame = self.opengl_window.frameGeometry()
+            ogl_frame = self.central_calib_window.frameGeometry()
             ogl_w, ogl_h = ogl_frame.width(), ogl_frame.height()
             x_ogl = x_main + main_w + SPACING
             y_ogl = ay + ah - ogl_h
 
-            self.opengl_window.move(x_ogl, y_ogl)
+            self.central_calib_window.move(x_ogl, y_ogl)
 
         for w in self.visible_windows(include_main=False):
-            if w is self.opengl_window:
+            if w is self.central_calib_window:
                 # we just positioned it already
                 continue
             try:
@@ -729,8 +716,8 @@ class MainControls(QMainWindow, SnapMixin):
 
     def visible_windows(self, include_main=False):
         windows = [w for w in self.video_windows if w.isVisible()]
-        if self.opengl_window:
-            windows += [self.opengl_window]
+        if self.central_calib_window:
+            windows += [self.central_calib_window]
         if include_main:
             windows += [self]
         return windows
@@ -739,13 +726,13 @@ class MainControls(QMainWindow, SnapMixin):
         if self.is_calibrating:
 
             # Create the 3D visualization window first
-            self.opengl_window = CentralCalibrationWindow(self)
-            self.opengl_window.show()
+            self.central_calib_window = CentralCalibrationWindow(self)
+            self.central_calib_window.show()
 
-            self.opengl_window.request_board_settings.connect(self.show_global_board_dialog)
-            self.opengl_window.request_load_calibration.connect(self.on_load_calibration)
+            # self.opengl_window.request_board_settings.connect(self.show_global_board_dialog)
+            self.central_calib_window.request_load_calibration.connect(self.on_load_calibration)
 
-            origin_name = self.opengl_window.origin_camera_combo.currentText()
+            origin_name = self.central_calib_window.origin_camera_combo.currentText()
 
             # Create and start the headless Multiview worker with the correct origin name.
             self.multiview_thread = QThread(self)
@@ -757,8 +744,8 @@ class MainControls(QMainWindow, SnapMixin):
             )
             self.multiview_worker.moveToThread(self.multiview_thread)
 
-            self.multiview_worker.scene_data_ready.connect(self.opengl_window.on_scene_data_ready)
-            self.opengl_window.run_ba_button.clicked.connect(self.multiview_worker.trigger_refinement)
+            self.multiview_worker.scene_data_ready.connect(self.central_calib_window.on_scene_data_ready)
+            self.central_calib_window.run_ba_button.clicked.connect(self.multiview_worker.trigger_refinement)
 
             self.multiview_thread.start()
 
@@ -792,13 +779,13 @@ class MainControls(QMainWindow, SnapMixin):
             w._force_destroy = True  # signal the window it should really close
             w.close()   # and trigger the closeEvent
 
-        if self.opengl_window:
-            self.opengl_window._force_destroy = True
-            self.opengl_window.close()
+        if self.central_calib_window:
+            self.central_calib_window._force_destroy = True
+            self.central_calib_window.close()
 
         # clear the lists
         self.video_windows.clear()
-        self.opengl_window = None
+        self.central_calib_window = None
 
         if self.multiview_thread:
             self.multiview_thread.quit()

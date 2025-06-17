@@ -115,6 +115,16 @@ def pretty_size(value: int, verbose=False, decimal=False) -> str:
     return f"{int(amount)} {unit}" if amount.is_integer() else f"{amount:.2f} {unit}"
 
 
+def pretty_microseconds(microsecons_value):
+    """ Formats microseconds into a human-readable string (µs, ms, s) """
+    if microsecons_value < 1000:
+        return f"{microsecons_value:.0f} µs"
+    elif microsecons_value < 1_000_000:
+        return f"{microsecons_value / 1000:.1f} ms"
+    else:
+        return f"{microsecons_value / 1_000_000:.2f} s"
+
+
 def is_locked(path: Union[Path, str]):
     if 'Windows' in platform.platform():
         try:
