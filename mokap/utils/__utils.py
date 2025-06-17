@@ -290,4 +290,4 @@ def pol_to_hsv(quad_0:   ArrayLike,
     S = np.clip(dolp, 0, 1)
     V = (S0 - S0.min()) / np.ptp(S0)
 
-    return np.dstack((H, S, V))
+    return np.dstack((H, S, V)).astype(np.float32)

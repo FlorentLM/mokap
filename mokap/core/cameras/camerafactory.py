@@ -70,9 +70,12 @@ class CameraFactory:
 
         # --- Discover FLIR Cameras ---
         try:
+
             import PySpin
+
             system = PySpin.System.GetInstance()
             cam_list = system.GetCameras()
+
             for cam in cam_list:
                 nodemap_tldevice = cam.GetTLDeviceNodeMap()
 
@@ -102,9 +105,8 @@ class CameraFactory:
 
                 del cam     #  also we must explicitly delete this to release the reference
 
-            cam_list.Clear()    # This is safe because we are not holding the ref to the pointer
-
-            system.ReleaseInstance()
+                cam_list.Clear()  # This is safe because we are not holding the ref to the pointer
+                system.ReleaseInstance()
 
         except ImportError:
             logger.debug("PySpin SDK not found. Skipping FLIR camera discovery.")

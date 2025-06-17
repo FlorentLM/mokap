@@ -5,6 +5,7 @@ import numpy as np
 import re
 from typing import Any, Dict, Optional, Tuple
 from mokap.core.cameras.genicam import GenICamCamera
+from mokap.utils import pol_to_hsv
 
 logger = logging.getLogger(__name__)
 
@@ -108,18 +109,27 @@ class FLIRCamera(GenICamCamera):
             if image_result.IsIncomplete():
                 raise IOError(f"Grab failed: Image incomplete with status {image_result.GetImageStatus()}")
             else:
-                meta = {'frame_number': image_result.GetFrameID(), 'timestamp': image_result.GetTimeStamp()}
+                frame_meta = {'frame_number': image_result.GetFrameID(), 'timestamp': image_result.GetTimeStamp()}
 
                 if self._polarisation_sensor:
+
+                    # quad_0 = PySpin.ImageUtilityPolarization.ExtractPolarQuadrant(image_result, 0).GetNDArray().copy()
+                    # quad_45 = PySpin.ImageUtilityPolarization.ExtractPolarQuadrant(image_result, 1).GetNDArray().copy()
+                    # quad_90 = PySpin.ImageUtilityPolarization.ExtractPolarQuadrant(image_result, 2).GetNDArray().copy()
+                    # quad_135 = PySpin.ImageUtilityPolarization.ExtractPolarQuadrant(image_result, 3).GetNDArray().copy()
+                    #
+                    # image_arr = pol_to_hsv(quad_0, quad_45, quad_90, quad_135)
+                    # frame_meta['pixel_format'] = 'HSV'
+
                     quad_0 = PySpin.ImageUtilityPolarization.ExtractPolarQuadrant(image_result, 0)
                     image_arr = quad_0.GetNDArray().copy()
-                    meta['pixel_format'] = self._POL_PATTERN.sub('', self._pixel_format)
+                    frame_meta['pixel_format'] = self._POL_PATTERN.sub('', self._pixel_format)
 
                 else:
                     # IMPORTANT: GetNDArray returns a view. We must copy it!!
                     image_arr = image_result.GetNDArray().copy()
 
-                return image_arr, meta
+                return image_arr, frame_meta
 
         finally:
             if image_result: image_result.Release()

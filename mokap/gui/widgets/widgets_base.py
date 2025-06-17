@@ -433,6 +433,14 @@ class LiveViewBase(Base):
                             cv2.cvtColor(raw_frame, cv2.COLOR_RGB2BGR, dst=bgr_frame)
                         case 'RGBA8':
                             cv2.cvtColor(raw_frame, cv2.COLOR_RGBA2BGR, dst=bgr_frame)
+                        case 'HSV':
+                            if raw_frame.dtype != np.uint8:
+                                h = (raw_frame[..., 0] * 180).astype(np.uint8)
+                                s = (raw_frame[..., 1] * 255).astype(np.uint8)
+                                v = (raw_frame[..., 2] * 255).astype(np.uint8)
+                                cv2.cvtColor( cv2.merge([h, s, v]), cv2.COLOR_HSV2BGR, dst=bgr_frame)
+                            else:
+                                cv2.cvtColor(raw_frame, cv2.COLOR_HSV2BGR, dst=bgr_frame)
                         case _:
                             if raw_frame.shape == bgr_frame.shape and raw_frame.dtype == bgr_frame.dtype:
                                 np.copyto(bgr_frame, raw_frame)

@@ -237,6 +237,7 @@ class FFmpegWriter(FrameWriter):
             'Mono10': 'gray10le',
             'Mono12': 'gray12le',
             'Mono16': 'gray16le',
+            # TODO: Add support for HSV for pol cameras
         }
         input_pixel_format = format_map.get(self.pixel_format)
         if not input_pixel_format:
