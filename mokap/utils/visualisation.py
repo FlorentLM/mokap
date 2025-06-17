@@ -1,12 +1,8 @@
 from typing import Optional, Sized, Any, Dict, Iterable
-
-import matplotlib
 import numpy as np
-
 from mokap.utils.geometry.fitting import rays_intersection_3d
 from mokap.utils.geometry.projective import back_projection_batched
 from mokap.utils.geometry.transforms import extrinsics_matrix, invert_extrinsics_matrix
-
 np.set_printoptions(precision=3, suppress=True, threshold=150)
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
