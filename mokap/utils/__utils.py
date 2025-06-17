@@ -230,3 +230,32 @@ def estimate_camera_matrix(
     ], dtype=np.float32)
 
     return camera_matrix
+
+
+def pol_to_hsv(quad_0:   ArrayLike,
+               quad_45:  ArrayLike,
+               quad_90:  ArrayLike,
+               quad_135: ArrayLike
+) -> np.ndarray:
+    """
+    Packs 4 polarisation quadrants into a HSV colour image
+          - Hue encodes polarisation angle (0–180°)
+          - Saturation encodes degree of linear polarisation (0–1)
+          - Value encodes relative total intensity
+    """
+    # Stokes
+    S0 = quad_0 + quad_90
+    S1 = quad_0 - quad_90
+    S2 = quad_45 - quad_135
+
+    # Degree of linear polarisation and angle
+    dolp = np.sqrt(S1 ** 2 + S2 ** 2) / (S0 + 1e-8)
+    theta = 0.5 * np.arctan2(S2, S1)  # radians
+    theta = np.where(theta < 0, theta + np.pi, theta)  # wrap to [0, pi]
+
+    # Normalize channels
+    H = theta / np.pi
+    S = np.clip(dolp, 0, 1)
+    V = (S0 - S0.min()) / np.ptp(S0)
+
+    return np.dstack((H, S, V))
