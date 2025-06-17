@@ -6,8 +6,7 @@ from numpy.typing import ArrayLike
 from mokap.calibration.monocular import MonocularCalibrationTool
 from mokap.gui.workers.workers_base import CalibrationProcessingWorker
 from mokap.utils.datatypes import (ChessBoard, CharucoBoard, CalibrationData, ErrorsPayload,
-                                   IntrinsicsPayload, ExtrinsicsPayload, DetectionPayload, CoveragePayload,
-                                   StatePayload, ReprojectionPayload)
+                                   IntrinsicsPayload, ExtrinsicsPayload, DetectionPayload, CoveragePayload, ReprojectionPayload)
 
 logger = logging.getLogger(__name__)
 
@@ -81,9 +80,15 @@ class MonocularWorker(CalibrationProcessingWorker):
             self.monocular_tool.clear_intrinsics()
 
             # Notify the UI that errors and data are reset/invalid
-            self.send_payload.emit(CalibrationData(self.cam_name, ErrorsPayload(np.array([np.inf]))))
-            self.send_payload.emit(CalibrationData(self.cam_name, CoveragePayload(grid=np.zeros((1, 1), dtype=bool))))
-            self.send_payload.emit(CalibrationData(self.cam_name, StatePayload(0.0, 0, self.monocular_tool.dt.nb_points)))
+            self.send_payload.emit(
+                CalibrationData(self.cam_name, ErrorsPayload(np.array([np.inf])))
+            )
+            self.send_payload.emit(
+                CalibrationData(self.cam_name, CoveragePayload(grid=np.zeros((1, 1), dtype=bool),
+                                                               coverage_percent=0.0,
+                                                               nb_samples=0,
+                                                               total_points=self.monocular_tool.dt.nb_points))
+            )
 
     @Slot(int)
     def set_stage(self, stage: int):
@@ -118,7 +123,10 @@ class MonocularWorker(CalibrationProcessingWorker):
                 if sample_added:
                     # if a sample was added, send the updated coverage grid for visualization
                     self.send_payload.emit(
-                        CalibrationData(self.cam_name, CoveragePayload(grid=self.monocular_tool.grid))
+                        CalibrationData(self.cam_name, CoveragePayload(grid=self.monocular_tool.grid,
+                                                                       coverage_percent=self.monocular_tool.coverage,
+                                                                       nb_samples=self.monocular_tool.nb_samples,
+                                                                       total_points=self.monocular_tool.dt.nb_points))
                     )
 
             if self._auto_compute:
@@ -181,18 +189,6 @@ class MonocularWorker(CalibrationProcessingWorker):
             empty_ids = np.array([], dtype=int)
             self.send_payload.emit(
                 CalibrationData(self.cam_name, DetectionPayload(frame_idx, empty_points, empty_ids))
-            )
-
-            # Always send the current state for UI text updates
-            self.send_payload.emit(
-                CalibrationData(
-                    self.cam_name,
-                    StatePayload(
-                        coverage_percent=self.monocular_tool.coverage,
-                        nb_samples=self.monocular_tool.nb_samples,
-                        total_points=self.monocular_tool.dt.nb_points
-                    )
-                )
             )
 
         self.finished.emit()

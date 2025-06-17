@@ -115,12 +115,8 @@ class ReprojectionPayload:
 
 @dataclass
 class CoveragePayload:
-    """ Payload for the coverage grid visualization """
-    grid: np.ndarray                # The boolean cumulative grid (H, W)
-
-@dataclass
-class StatePayload:
     """ Payload for general state information for UI text fields """
+    grid: np.ndarray  # The boolean cumulative grid (H, W)
     coverage_percent: float
     nb_samples: int
     total_points: int
@@ -168,7 +164,7 @@ class CalibrationData:
     Encapsulation of a payload with the camera name
     """
     camera_name: str
-    payload: IntrinsicsPayload | ExtrinsicsPayload | DetectionPayload | ErrorsPayload | ReprojectionPayload | CoveragePayload | StatePayload
+    payload: IntrinsicsPayload | ExtrinsicsPayload | DetectionPayload | ErrorsPayload | ReprojectionPayload | CoveragePayload
 
     def to_file(self, filepath):
         if isinstance(self.payload, IntrinsicsPayload):

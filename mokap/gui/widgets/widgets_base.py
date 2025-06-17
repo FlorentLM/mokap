@@ -118,8 +118,6 @@ class FastImageItem(QGraphicsObject):
 
     def paint(self, painter, option, widget=None):
         if not self._image.isNull():
-            painter.scale(1, -1)
-            painter.translate(0, -self._height)
             painter.drawImage(0, 0, self._image)
 
 
@@ -277,6 +275,7 @@ class LiveViewBase(Base):
         self.view_box.setMouseEnabled(x=False, y=False)  # no pan/zoom
         self.view_box.setMenuEnabled(False)
         self.view_box.disableAutoRange()
+        self.view_box.invertY(True)  # set origin to match image coordinates
 
         self.image_item = FastImageItem()
         self.view_box.addItem(self.image_item)
@@ -661,6 +660,8 @@ class LiveViewBase(Base):
         # called in the main thread when worker finishes processing and emits its 'annotation'
         # Needs to be defined in each subclass because the result is not necessarily the same thing
         pass
+
+
 
     @Slot()
     def on_worker_finished(self):

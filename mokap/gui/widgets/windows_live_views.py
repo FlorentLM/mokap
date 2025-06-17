@@ -1,5 +1,6 @@
 from collections import deque
 from typing import Tuple
+from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
@@ -14,7 +15,7 @@ from mokap.gui.workers.worker_monocular import MonocularWorker
 from mokap.gui.workers.worker_movement import MovementWorker
 from mokap.utils import pretty_microseconds
 from mokap.utils.datatypes import (ErrorsPayload, CalibrationData, IntrinsicsPayload, ExtrinsicsPayload,
-                                   DetectionPayload, ReprojectionPayload, CoveragePayload, StatePayload)
+                                   DetectionPayload, ReprojectionPayload, CoveragePayload)
 
 
 class RecordingLiveView(LiveViewBase):
@@ -287,8 +288,7 @@ class RecordingLiveView(LiveViewBase):
         slice_x1 = int(source_rect_x)
         slice_x2 = slice_x1 + self.magn_window_w
 
-        slice_y1 = int(self._source_height - source_rect_y - self.magn_window_h)
-        slice_y1 = max(0, min(self._source_height - self.magn_window_h, slice_y1))
+        slice_y1 = int(source_rect_y)
         slice_y2 = slice_y1 + self.magn_window_h
 
         magnifier_source_data = self._latest_display_frame[slice_y1:slice_y2, slice_x1:slice_x2]
@@ -563,10 +563,18 @@ class CalibrationLiveView(LiveViewBase):
         self.view_box.addItem(self.computing_text)
         self.computing_text.hide()
 
+        # Stats overlay text (top-left) - Use native pyqtgraph styling
+        self.stats_text = pg.TextItem(
+            color='w',
+            anchor=(0, 0),
+            fill=pg.mkBrush(0, 0, 0, 120),  # Semi-transparent black fill
+            #border=pg.mkPen(col_darkgray)  # Subtle border
+        )
+        self.stats_text.setPos(10, 10)
+        self.view_box.addItem(self.stats_text)
+
         # Coverage overlay (semi-transparent green grid)
-        # self.coverage_overlay_item = FastImageItem()
         self.coverage_overlay_item = pg.ImageItem()
-        # self.coverage_overlay_item.setCompositionMode(pg.QtGui.QPainter.CompositionMode.CompositionMode_Plus)
         self.view_box.addItem(self.coverage_overlay_item)
 
         self.perimeter_item = pg.PlotDataItem(
@@ -593,25 +601,12 @@ class CalibrationLiveView(LiveViewBase):
         self.perimeter_item.setZValue(2)
         self.reprojection_points_item.setZValue(3)
         self.detection_points_item.setZValue(4)
-
-        # Text info group
-        info_group = QWidget()
-        info_layout = QVBoxLayout(info_group)
-
-        self.points_label = QLabel("Points: -/-")
-        self.area_label = QLabel("Area: - %")
-        self.samples_label = QLabel("Samples: -")
-
-        info_layout.addWidget(self.points_label)
-        info_layout.addWidget(self.area_label)
-        info_layout.addWidget(self.samples_label)
-        info_group.setLayout(info_layout)
+        self.stats_text.setZValue(5)
+        self.computing_text.setZValue(6)
 
         # Detection and sampling
         sampling_group = QWidget()
         sampling_layout = QVBoxLayout(sampling_group)
-
-        sampling_layout.addWidget(info_group)   # TODO: move this back as an image overlay
 
         self.auto_sample_check = QCheckBox("Sample automatically")
         self.auto_sample_check.setChecked(True)
@@ -722,19 +717,13 @@ class CalibrationLiveView(LiveViewBase):
         else:
             self.computing_text.setVisible(False)
 
-        h = self._source_height
-
         if self.latest_detected_points.shape[0] > 0:
-            # the points are in image coordinates (y down from top left)
-            plot_points = self.latest_detected_points.copy()
-            plot_points[:, 1] = h - plot_points[:, 1]
-            self.detection_points_item.setData(pos=plot_points)
+            self.detection_points_item.setData(pos=self.latest_detected_points)
         else:
             self.detection_points_item.clear()
 
         if self.latest_reprojected_points.shape[0] > 0:
-            all_points = np.array(self.latest_reprojected_points).copy()
-            all_points[:, 1] = h - all_points[:, 1]
+            all_points = np.array(self.latest_reprojected_points)
 
             # inner points (not corners) (white)
             self.reprojection_points_item.setData(pos=all_points[:-4])
@@ -762,7 +751,7 @@ class CalibrationLiveView(LiveViewBase):
             return
 
         if isinstance(payload, CoveragePayload):
-            grid = payload.grid
+            grid = payload.grid.T  # Transpose the grid to match (row, col) expectation
             if grid.any():
                 h, w = grid.shape
 
@@ -775,12 +764,16 @@ class CalibrationLiveView(LiveViewBase):
                 self.coverage_overlay_item.setRect(0, 0, self._source_width, self._source_height)
             else:
                 self.coverage_overlay_item.clear()
-            return
 
-        if isinstance(payload, StatePayload):
-            self.points_label.setText(f"Points: {self.latest_detected_points.shape[0]}/{payload.total_points}")
-            self.area_label.setText(f"Area: {payload.coverage_percent:.1f} %")
-            self.samples_label.setText(f"Samples: {payload.nb_samples}")
+            stats_html = f"""
+                            <div style='font-family: sans-serif; font-size: 12pt; padding: 6px;'>
+                            Points: {self.latest_detected_points.shape[0]}/{payload.total_points}<br>
+                            Coverage: {payload.coverage_percent:.1f} %<br>
+                            Samples: {payload.nb_samples}
+                            </div>
+                            """
+            self.stats_text.setHtml(stats_html)
+
             return
 
         if isinstance(payload, ErrorsPayload):
@@ -845,6 +838,7 @@ class CalibrationLiveView(LiveViewBase):
 
         # Clear text
         self.load_save_message.setText('')
+        self.stats_text.setHtml('')
 
     def on_load_parameters(self):
         file_path = self._show_file_dialog(self._mainwindow.manager.full_path.parent)
