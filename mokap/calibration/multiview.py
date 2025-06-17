@@ -408,8 +408,8 @@ class MultiviewCalibrationTool:
 
             shared_intrinsics=False,
             fix_aspect_ratio=False,
-            # distortion_model='standard',  # Use the 5-parameter model
-            distortion_model='full',  # Use the 8-parameter model
+            distortion_model='standard',  # Use the 5-parameter model
+            # distortion_model='full',  # Use the 8-parameter model
 
             fix_focal_principal=False,
             fix_distortion=False,

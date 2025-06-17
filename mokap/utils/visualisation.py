@@ -1,4 +1,6 @@
-from typing import Optional, Sized, Any, Dict, Iterable
+from typing import Optional, Any, Dict, Iterable, Sequence
+
+import matplotlib
 import numpy as np
 from mokap.utils.geometry.fitting import rays_intersection_3d
 from mokap.utils.geometry.projective import back_projection_batched
@@ -55,10 +57,10 @@ def plot_cameras_3d(
         tvecs_c2w:          ArrayLike,
         camera_matrices:    ArrayLike,
         dist_coeffs:        ArrayLike,
-        cameras_names:      Optional[Sized[Any]] = None,
+        cameras_names:      Optional[Sequence[Any]] = None,
         imsizes:            ArrayLike = np.array([1440, 1080]),
         depth:              float = 130.0,
-        colors:             Optional[Sized[str]] = None,
+        colors:             Optional[Sequence[str]] = None,
         trust_volume:       Optional[Dict[str, ArrayLike]] = None,
         ax:                 Optional[Axes3D] = None,
 ) -> Axes3D:
@@ -148,7 +150,7 @@ def plot_cameras_3d(
 
 def plot_points_3d(
         points3d:       ArrayLike,
-        points_names:   Optional[Sized[Any]] = None,
+        points_names:   Optional[Sequence[Any]] = None,
         errors:         Optional[ArrayLike] = None,
         color:          str = 'k',
         ax:             Optional[Axes3D] = None,
@@ -241,14 +243,15 @@ def plot_points2d_3d(
                                      c=colors[n],
                                      marker='.', label='3D points', alpha=0.5)
 
-        for p, name in enumerate(points_names):
-            point = points2d_3d[n][p]
-            if np.isfinite(point).all():
-                if errors is not None:
-                    c = pts_scatter.to_rgba(errors[p]) if np.isfinite(errors[p]) else colors[n]
-                else:
-                    c = colors[n]
-                ax.text(*point, f"  {name}", c=c, alpha=0.8, fontweight='bold')
+        if points_names is not None:
+            for p, name in enumerate(points_names):
+                point = points2d_3d[n][p]
+                if np.isfinite(point).all():
+                    if errors is not None:
+                        c = pts_scatter.to_rgba(errors[p]) if np.isfinite(errors[p]) else colors[n]
+                    else:
+                        c = colors[n]
+                    ax.text(*point, f"  {name}", c=c, alpha=0.8, fontweight='bold')
 
     ax.set_aspect('equal')
     ax.set_xlabel('X')
