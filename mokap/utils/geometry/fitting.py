@@ -7,8 +7,7 @@ from jax import numpy as jnp
 from mokap.utils.geometry.transforms import ID_QUAT, ZERO_T, quaternions_angular_distance
 
 
-@jax.jit
-def find_rigid_transform(
+def _find_rigid_transform(
     points_A: jnp.ndarray,  # (M, 3)
     points_B: jnp.ndarray   # (M, 3)
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
@@ -52,12 +51,13 @@ def find_rigid_transform(
 
     return R_corrected, t
 
+find_rigid_transform = jax.jit(_find_rigid_transform)
+
 # batched version for multiple point sets
-find_rigid_transform_batched = jax.jit(jax.vmap(find_rigid_transform))
+find_rigid_transform_batched = jax.jit(jax.vmap(_find_rigid_transform))
 
 
-@jax.jit
-def find_affine_transform(
+def _find_affine_transform(
     points_A: jnp.ndarray, # (M, 3)
     points_B: jnp.ndarray  # (M, 3)
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
@@ -84,8 +84,10 @@ def find_affine_transform(
     t_vec = T[3, :]     # (3,)
     return A_mat, t_vec
 
+find_affine_transform = jax.jit(_find_affine_transform)
+
 # batched version for multiple sets of points
-find_affine_transform_batched = jax.jit(jax.vmap(find_affine_transform, in_axes=(0, 0), out_axes=(0, 0)))
+find_affine_transform_batched = jax.jit(jax.vmap(_find_affine_transform, in_axes=(0, 0), out_axes=(0, 0)))
 
 
 @jax.jit
@@ -275,7 +277,7 @@ def filter_rt_samples(
 
 
 @jax.jit
-def find_rays_intersection_3d(
+def rays_intersection_3d(
     ray_origins:     jnp.ndarray, # (C, 3)
     ray_directions:  jnp.ndarray  # (C, 3)
 ) -> jnp.ndarray:

@@ -203,8 +203,7 @@ def reproject_and_compute_error(
     return jnp.where(visibility_mask, errors, jnp.nan)
 
 
-@jax.jit
-def undistort_points(
+def _undistort_points(
     points2d:       jnp.ndarray,
     camera_matrix:  jnp.ndarray,
     dist_coeffs:    jnp.ndarray,
@@ -259,9 +258,12 @@ def undistort_points(
     unsistorted_points = pts_p[..., :2]       # (..., 2)
     return unsistorted_points
 
+
+undistort_points = jax.jit(_undistort_points)
+
 # undistort a set of points in multiple cameras
 undistort_multiple = jax.jit(
-    jax.vmap(undistort_points,
+    jax.vmap(_undistort_points,
              in_axes=(
                 0,     # each camera has its own points2d
                 0,     # its own camera_matrix
@@ -271,19 +273,16 @@ undistort_multiple = jax.jit(
 )
 
 
-@jax.jit
-def back_projection(
+def _back_projection(
         points2d: jnp.ndarray,
         depth: Union[float, jnp.ndarray],
         camera_matrix: jnp.ndarray,
-        extrinsics_matrix: jnp.ndarray,
+        E_w2c: jnp.ndarray,
         dist_coeffs: Optional[jnp.ndarray] = None
 ) -> jnp.ndarray:
     """
     Back-project 2D points into 3D world coords at given depth
     """
-
-    original_shape = points2d.shape
 
     points2d_flat = points2d.reshape((-1, 2))  # (N, 2)
 
@@ -311,22 +310,25 @@ def back_projection(
     cam_pts = cam_dirs * depth_arr[..., None]
 
     # camera -> world
-    E_inv = invert_extrinsics_matrix(extrinsics_matrix)  # (..., 4, 4)
+    E_c2w = invert_extrinsics_matrix(E_w2c)  # (..., 4, 4)
 
     # build homogeneous cam_pts [Xc, 1]
     ones4 = jnp.ones((cam_pts.shape[0], 1), dtype=cam_pts.dtype)
     hom_cam = jnp.concatenate([cam_pts, ones4], axis=1)  # (N, 4)
 
-    # E_inv @ hom_cam.T   (..., 4, N) → .T → (N, 4)
-    world_h = (E_inv @ hom_cam.T).T  # (N, 4)
+    # E_c2w @ hom_cam.T   (..., 4, N) → .T → (N, 4)
+    world_h = (E_c2w @ hom_cam.T).T  # (N, 4)
     world_pts = world_h[:, :3]  # (N, 3)
 
     return world_pts
 
-# back-project a set of points into multiple cameras
+
+back_projection = jax.jit(_back_projection)
+
+# back-project (the same number of) points to multiple cameras
 back_projection_batched = jax.jit(
     jax.vmap(
-        back_projection,
+        _back_projection,
         in_axes=(0, None, 0, 0, 0),
         out_axes=0
     )

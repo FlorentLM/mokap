@@ -201,8 +201,7 @@ def projection_matrix(
     return P
 
 
-@jax.jit
-def fundamental_matrix(
+def _fundamental_matrix(
         K_pair: Tuple[jnp.ndarray, jnp.ndarray],
         r_pair: Tuple[jnp.ndarray, jnp.ndarray],  # these are world -> camera rvecs
         t_pair: Tuple[jnp.ndarray, jnp.ndarray],  # these are world -> camera tvecs
@@ -256,9 +255,11 @@ def fundamental_matrix(
 
     return F_normalized
 
+fundamental_matrix = jax.jit(_fundamental_matrix)
+
 batched_fundamental_matrices = jax.jit(
     jax.vmap(
-        fundamental_matrix,
+        _fundamental_matrix,
         in_axes=(
             0,    # K_pair: shape (P, 2, 3, 3) where P is the number of camera pairs (NOT the number of cameras!)
             0,    # r_pair: shape (P, 2, 3)
@@ -429,11 +430,10 @@ def rotate_extrinsics_matrix(
     return E_rot
 
 
-@jax.jit
-def axisangle_to_quaternion(rvec: jnp.ndarray) -> jnp.ndarray:
+def _axisangle_to_quaternion(rvec: jnp.ndarray) -> jnp.ndarray:
     """
-    Convert one axis–angle (Rodrigues) vector rvec ∈ ℝ³ into a unit quaternion [w,x,y,z].
-    If ‖rvec‖ < eps, returns [1,0,0,0].
+    Convert one axis–angle (Rodrigues) vector rvec ∈ ℝ³ into a unit quaternion [w,x,y,z]
+    If ||rvec|| < eps, returns [1, 0, 0, 0]
     """
     theta = jnp.linalg.norm(rvec)
     eps = 1e-8
@@ -450,11 +450,11 @@ def axisangle_to_quaternion(rvec: jnp.ndarray) -> jnp.ndarray:
 
     return jax.lax.cond(theta < eps, small_angle_quat, normal_quat)
 
-axisangle_to_quaternion_batched = jax.jit(jax.vmap(axisangle_to_quaternion))
+axisangle_to_quaternion = jax.jit(_axisangle_to_quaternion)
+axisangle_to_quaternion_batched = jax.jit(jax.vmap(_axisangle_to_quaternion))
 
 
-@jax.jit
-def quaternion_to_axisangle(q: jnp.ndarray) -> jnp.ndarray:
+def _quaternion_to_axisangle(q: jnp.ndarray) -> jnp.ndarray:
     """
     Convert one quaternion q = [w, x, y, z] to a rvec ∈ ℝ³ (axis–angle)
     if sin(theta/2) ~ 0, it returns [0, 0, 0]
@@ -478,11 +478,11 @@ def quaternion_to_axisangle(q: jnp.ndarray) -> jnp.ndarray:
 
     return jax.lax.cond(s2 < (eps * eps), small_case, normal_case)
 
-quaternion_to_axisangle_batched = jax.jit(jax.vmap(quaternion_to_axisangle))
+quaternion_to_axisangle = jax.jit(_quaternion_to_axisangle)
+quaternion_to_axisangle_batched = jax.jit(jax.vmap(_quaternion_to_axisangle))
 
 
-@jax.jit
-def quaternion_inverse(q: jnp.ndarray) -> jnp.ndarray:
+def _quaternion_inverse(q: jnp.ndarray) -> jnp.ndarray:
     """
     Invert a unit quaternion q = [w, x, y, z]
     For a unit quaternion, q^{-1} = [w, -x, -y, -z]
@@ -490,7 +490,8 @@ def quaternion_inverse(q: jnp.ndarray) -> jnp.ndarray:
     w, x, y, z = q
     return jnp.array([w, -x, -y, -z], dtype=q.dtype)
 
-quaternion_inverse_batched = jax.jit(jax.vmap(quaternion_inverse))
+quaternion_inverse = jax.jit(_quaternion_inverse)
+quaternion_inverse_batched = jax.jit(jax.vmap(_quaternion_inverse))
 
 
 @jax.jit
@@ -505,8 +506,7 @@ def quaternion_multiply(q1: jnp.ndarray, q2: jnp.ndarray) -> jnp.ndarray:
     return jnp.array([w, x, y, z])
 
 
-@jax.jit
-def rotate_vector_by_quat(q: jnp.ndarray, v: jnp.ndarray) -> jnp.ndarray:
+def _rotate_vector_by_quat(q: jnp.ndarray, v: jnp.ndarray) -> jnp.ndarray:
     """
     Rotate a 3D vector v by the unit-quaternion q using q * v * q_inv
     """
@@ -520,10 +520,12 @@ def rotate_vector_by_quat(q: jnp.ndarray, v: jnp.ndarray) -> jnp.ndarray:
     # Return the vector part
     return v_rot_quat[1:]
 
+rotate_vector_by_quat = jax.jit(_rotate_vector_by_quat)
+
 # vmap over v, but not q (to rotate multiple vectors by one quaternion)
-rotate_vectors_by_quat = jax.jit(jax.vmap(rotate_vector_by_quat, in_axes=(None, 0)))
+rotate_vectors_by_quat = jax.jit(jax.vmap(_rotate_vector_by_quat, in_axes=(None, 0)))
 # vmap over both q and v (to rotate multiple vectors by multiple quaternions)
-rotate_vectors_by_quats = jax.jit(jax.vmap(rotate_vector_by_quat, in_axes=(0, 0)))
+rotate_vectors_by_quats = jax.jit(jax.vmap(_rotate_vector_by_quat, in_axes=(0, 0)))
 
 
 def quaternions_angular_distance(q1: jnp.ndarray, q2: jnp.ndarray) -> jnp.ndarray:
