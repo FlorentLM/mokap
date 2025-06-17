@@ -170,7 +170,7 @@ class Base(QWidget, SnapMixin):
 
 class LiveViewBase(Base):
 
-    # frame_received = Signal(np.ndarray, dict)   # frame and metadata
+    # frame_received = Signal(np.ndarray, dict)   # frame and accompanying data
     send_frame = Signal(np.ndarray, int)
 
     def __init__(self, camera, main_window_ref):
@@ -202,7 +202,7 @@ class LiveViewBase(Base):
 
         self._video_initialised = False
 
-        self._current_frame_metadata = {}
+        self._current_frame_data = {}
 
         # states
         self._worker_busy = False
@@ -395,19 +395,19 @@ class LiveViewBase(Base):
             time.sleep(DISPLAY_INTERVAL)
 
             raw_frame = None
-            metadata = None
+            frame_data = None
             with lock:
                 # check if a new frame has arrived since last check
                 latest_data = manager._latest_frames[self._cam_idx]
                 if latest_data:
                     current_frame_id = latest_data[1].get('frame_number', -1)
                     if current_frame_id != last_frame_id:
-                        raw_frame, metadata = latest_data
+                        raw_frame, frame_data = latest_data
                         last_frame_id = current_frame_id
 
             # if we found a new frame, process it for display
-            if raw_frame is not None and metadata is not None:
-                pixel_format = metadata.get('pixel_format') or self._fmt
+            if raw_frame is not None and frame_data is not None:
+                pixel_format = frame_data.get('pixel_format') or self._fmt
                 try:
                     match pixel_format:
                         case 'Mono16':
@@ -446,7 +446,7 @@ class LiveViewBase(Base):
 
                 # Directly update the shared variables used by the main GUI thread
                 self._latest_frame = bgr_frame
-                self._current_frame_metadata = metadata
+                self._current_frame_data = frame_data
 
     @Slot()
     def _send_frame_for_processing(self):
@@ -463,7 +463,7 @@ class LiveViewBase(Base):
         if self._latest_frame is not None:
 
             frame_to_process = self._latest_frame # no copy here
-            frame_number = self._current_frame_metadata.get('frame_number', -1)
+            frame_number = self._current_frame_data.get('frame_number', -1)
 
             # we send the *reference* to the latest frame
             # the worker is responsible for copying it (only if it needs to modify it)
@@ -471,9 +471,9 @@ class LiveViewBase(Base):
             self._worker_busy = True
 
     # @Slot(np.ndarray, dict)
-    # def on_frame_received(self, frame, metadata):
+    # def on_frame_received(self, frame, frame_data):
     #     """ this runs in the main GUI thread. We just update the references """
-    #     self._current_frame_metadata = metadata
+    #     self._current_frame_data = frame_data
     #     self._latest_frame = frame
 
     #  ============= Common update method for texts and stuff =============
@@ -486,7 +486,7 @@ class LiveViewBase(Base):
         dt = now - self._fps_clock
 
         if dt > 0 and self._mainwindow.manager.acquiring:
-            current_frame_number = self._current_frame_metadata.get('frame_number', 0)
+            current_frame_number = self._current_frame_data.get('frame_number', 0)
 
             frames_acquired = current_frame_number - self._last_frame_number_for_fps
 

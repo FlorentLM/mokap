@@ -1,7 +1,10 @@
 import numpy as np
-import os
 from subprocess import  check_output
+import os
+import time
+import errno
 import platform
+
 
 
 def setup_ulimit(wanted_value=8192, silent=True):
@@ -87,3 +90,90 @@ def disable_usb(hub_number):
         out = os.popen(f'uhubctl -l {hub_number} -a 0')
         ret = out.read()
 
+
+def is_locked(path: str) -> bool:
+    path = str(path)
+    if platform.system().startswith('Windows'):
+        import win32file, win32con
+        GENERIC_READ = win32con.GENERIC_READ
+        OPEN_EXISTING = win32con.OPEN_EXISTING
+        FILE_SHARE_READ = 0
+        FILE_SHARE_WRITE = 0
+        try:
+            handle = win32file.CreateFile(
+                path,
+                GENERIC_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                None,
+                OPEN_EXISTING,
+                0,
+                None
+            )
+        except Exception:
+            return True
+        else:
+            win32file.CloseHandle(handle)
+            return False
+    else:
+        import fcntl
+        try:
+            with open(path, 'a+') as f:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(f, fcntl.LOCK_UN)
+            return False
+        except OSError as e:
+            if e.errno in (errno.EACCES, errno.EAGAIN):
+                return True
+            raise
+
+def wait_until_unlocked(path: str, timeout: float = 5.0, poll: float = 0.1) -> bool:
+    start = time.time()
+    while time.time() - start < timeout:
+        if not is_locked(path):
+            return True
+        time.sleep(poll)
+    return False
+
+def wait_for_size_stable(path: str, checks: int = 3, pause: float = 0.2) -> bool:
+    try:
+        prev = os.path.getsize(path)
+    except OSError:
+        return False
+    for _ in range(checks):
+        time.sleep(pause)
+        try:
+            curr = os.path.getsize(path)
+        except OSError:
+            return False
+        if curr != prev:
+            prev = curr
+            return False
+    return True
+
+def safe_replace(src: str, dst: str, *,
+                 lock_timeout: float = 5.0,
+                 size_checks: int = 3,
+                 size_pause: float = 0.2,
+                 replace_timeout: float = 5.0) -> bool:
+
+    # wait until both files are unlocked
+    for p in (src, dst):
+        if os.path.exists(p):
+            if not wait_until_unlocked(p, timeout=lock_timeout):
+                return False
+
+    # wait until src looks finished
+    if not wait_for_size_stable(src, checks=size_checks, pause=size_pause):
+        # might still be writing
+        return False
+
+    # try replace in loop
+    start = time.time()
+    while True:
+        try:
+            os.replace(src, dst)
+            return True
+        except PermissionError:
+            if time.time() - start > replace_timeout:
+                return False
+            time.sleep(0.1)

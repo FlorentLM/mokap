@@ -1,6 +1,11 @@
+import errno
+import platform
 import sys
 import os
 import colorsys
+from pathlib import Path
+from typing import Union
+
 import numpy as np
 from numpy.typing import ArrayLike
 
@@ -108,6 +113,33 @@ def pretty_size(value: int, verbose=False, decimal=False) -> str:
     unit = f"{prefix[:e]}{_b + _i[:bool(len(prefix[:e]))]}{suffix[s:e]}"
 
     return f"{int(amount)} {unit}" if amount.is_integer() else f"{amount:.2f} {unit}"
+
+
+def is_locked(path: Union[Path, str]):
+    if 'Windows' in platform.platform():
+        try:
+            import msvcrt
+
+            # open existing file without truncate
+            fd = os.open(path, os.O_RDWR | os.O_EXCL)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, os.path.getsize(path) or 1)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, os.path.getsize(path) or 1)
+            os.close(fd)
+            return False
+        except OSError:
+            return True
+    else:
+        try:
+            import fcntl
+
+            with open(path, 'a+') as f:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(f, fcntl.LOCK_UN)
+            return False  # lock acquired so probably not in use
+        except OSError as e:
+            if e.errno in (errno.EACCES, errno.EAGAIN):
+                return True  # already locked by another process
+            raise
 
 
 # This can be used to estimate thepretical camera matrices

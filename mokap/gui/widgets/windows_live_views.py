@@ -247,21 +247,21 @@ class RecordingLiveView(LiveViewBase):
         if not self.magnifier_group.isVisible():
             return
 
-        view_target_cx = self.magn_target_cx * self._source_shape[1]
-        view_target_cy = self.magn_target_cy * self._source_shape[0]
+        view_target_cx = self.magn_target_cx * self._source_width
+        view_target_cy = self.magn_target_cy * self._source_height
 
         source_rect_x = view_target_cx - self.magn_window_w / 2
         source_rect_y = view_target_cy - self.magn_window_h / 2
-        source_rect_x = max(0, min(self._source_shape[1] - self.magn_window_w, source_rect_x))
-        source_rect_y = max(0, min(self._source_shape[0] - self.magn_window_h, source_rect_y))
+        source_rect_x = max(0, min(self._source_width - self.magn_window_w, source_rect_x))
+        source_rect_y = max(0, min(self._source_height - self.magn_window_h, source_rect_y))
 
         self.magnifier_source_rect.setRect(source_rect_x, source_rect_y, self.magn_window_w, self.magn_window_h)
 
         slice_x1 = int(source_rect_x)
         slice_x2 = slice_x1 + self.magn_window_w
 
-        slice_y1 = int(self._source_shape[0] - source_rect_y - self.magn_window_h)
-        slice_y1 = max(0, min(self._source_shape[0] - self.magn_window_h, slice_y1))
+        slice_y1 = int(self._source_height - source_rect_y - self.magn_window_h)
+        slice_y1 = max(0, min(self._source_height - self.magn_window_h, slice_y1))
         slice_y2 = slice_y1 + self.magn_window_h
 
         magnifier_source_data = self._latest_display_frame[slice_y1:slice_y2, slice_x1:slice_x2]

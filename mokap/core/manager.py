@@ -6,9 +6,10 @@ import shutil
 import subprocess
 import time
 from datetime import datetime
+from multiprocessing.dummy import current_process
 from pathlib import Path
 from queue import Queue, Empty
-from threading import Thread, Event, Lock
+from threading import Thread, Event, Lock, current_thread
 from typing import List, Dict, Optional, Tuple, Any
 import numpy as np
 from PIL import Image
@@ -17,9 +18,8 @@ from mokap.core.cameras import CameraFactory, AbstractCamera, CAMERAS_COLOURS
 from mokap.core.triggers import AbstractTrigger, CameraTrigger, RaspberryTrigger, ArduinoTrigger, FTDITrigger
 from mokap.core.writers import FrameWriter, ImageSequenceWriter, FFmpegWriter
 
-from mokap.utils import fileio
-from mokap.utils.system import setup_ulimit
-
+from mokap.utils import fileio, is_locked
+from mokap.utils.system import setup_ulimit, safe_replace
 
 logger = logging.getLogger(__name__)
 
@@ -330,6 +330,7 @@ class MultiCam:
 
         # Prepare metadata for this new session
         session_metadata = {
+            'session_nb': len(self._metadata['sessions']),
             'start_time': datetime.now().timestamp(),
             'end_time': None,
             'duration': 0.0,
@@ -357,21 +358,20 @@ class MultiCam:
         if not self._recording.is_set():
             return
 
+        end_ts = datetime.now().timestamp()
+
         self._recording.clear()
 
         logger.info("Finishing writing for current session...")
 
         # we calculate and store session duration BEFORE asking the threads to stop
-        session_idx = len(self._metadata['sessions']) - 1
+        curr_session = self._metadata['sessions'][-1]
 
-        end_ts = datetime.now().timestamp()
-        current_session = self._metadata['sessions'][session_idx]
-
-        start_ts = current_session['start_time']
+        start_ts = curr_session['start_time']
         duration = end_ts - start_ts if end_ts > start_ts else 0.0
 
-        current_session['end_time'] = end_ts
-        current_session['duration'] = duration
+        curr_session['end_time'] = end_ts
+        curr_session['duration'] = duration
 
         # Wait for all writer threads to confirm they have finished
         for event in self._finished_saving_events:
@@ -382,13 +382,15 @@ class MultiCam:
             frames = self._session_frame_counts[i]
             actual_fps = (frames / duration) if duration > 0 else 0.0
 
+            diff = abs(cam.framerate - actual_fps)
+
             # Correct the video files framerates if needed
             save_format = (self.config.get('sources', {})
                            .get(cam.name, {})
                            .get('save_format', self.config.get('save_format', 'mp4')))
 
-            if save_format == 'mp4' and frames > 0:
-                video_path = self.full_path / f"{self.session_name}_{cam.name}_session{session_idx}.mp4"
+            if save_format == 'mp4' and frames > 0 and diff > 0.05:
+                video_path = self.full_path / f"{self.session_name}_{cam.name}_session{curr_session['session_nb']}.mp4"
                 self._correct_video_framerate(video_path, actual_fps)
 
             # Build the final data block for this camera
@@ -407,7 +409,7 @@ class MultiCam:
 
             cameras_data[cam.name] = cam_data_block
 
-        current_session['cameras'] = cameras_data
+        curr_session['cameras'] = cameras_data
         self.save_metadata()
 
         logger.info("Recording paused. Files saved.")
@@ -422,16 +424,16 @@ class MultiCam:
         cam.start_grabbing()
         while self._acquiring.is_set():
             try:
-                frame, metadata = cam.grab_frame(timeout_ms=2000)
+                frame, frame_data = cam.grab_frame(timeout_ms=2000)
                 if frame is not None:
                     # Update the shared buffer for any other thread to read
                     with lock:
-                        self._latest_frames[cam_idx] = (frame, metadata)
+                        self._latest_frames[cam_idx] = (frame, frame_data)
 
                     # Feed the high-priority writer queue.
                     if self._recording.is_set():
                         try:
-                            writer_queue.put_nowait((frame, metadata))
+                            writer_queue.put_nowait((frame, frame_data))
                         except queue.Full:
                             logger.warning(f"Cam {cam.name}: Writer queue is full. Recording frame dropped.")
 
@@ -450,7 +452,6 @@ class MultiCam:
         cam = self.cameras[cam_idx]
         w_queue = self._writer_queues[cam_idx]
         self._writers[cam_idx] = None
-        session_idx: Optional[int] = None
 
         while self._acquiring.is_set():
             # State A - Waiting to start a new recording session
@@ -458,17 +459,16 @@ class MultiCam:
                 self._finished_saving_events[cam_idx].clear()
 
                 try:
-                    first_frame, first_metadata = w_queue.get(timeout=2.0)
+                    first_frame, first_frame_data = w_queue.get(timeout=2.0)
 
-                    # store the session idnex
-                    session_idx = len(self._metadata['sessions']) - 1
+                    curr_session_idx = len(self._metadata['sessions']) -1
 
-                    self._writers[cam_idx] = self._create_writer(cam, session_idx)
+                    self._writers[cam_idx] = self._create_writer(cam, curr_session_idx)
                     writer = self._writers[cam_idx]
 
                     logger.debug(f"Writer for {cam.name} created: {type(writer).__name__}")
 
-                    writer.write(first_frame, first_metadata)
+                    writer.write(first_frame, first_frame_data)
 
                 except Empty:
                     # If we timeout waiting for the first frame, it means the
@@ -488,8 +488,8 @@ class MultiCam:
             writer = self._writers[cam_idx]
             if self._recording.is_set() and writer:
                 try:
-                    frame, metadata = w_queue.get(timeout=1.0)
-                    writer.write(frame, metadata)
+                    frame, frame_data = w_queue.get(timeout=1.0)
+                    writer.write(frame, frame_data)
                 except Empty:
                     # this is less critical, just means a momentary lull in frames
                     continue
@@ -500,8 +500,8 @@ class MultiCam:
                 # First drain any remaining frames from the queue
                 while not w_queue.empty():
                     try:
-                        frame, metadata = w_queue.get_nowait()
-                        writer.write(frame, metadata)
+                        frame, frame_data = w_queue.get_nowait()
+                        writer.write(frame, frame_data)
                     except Empty:
                         break
 
@@ -512,7 +512,6 @@ class MultiCam:
                 writer.close()
 
                 self._writers[cam_idx] = None  # set writer to None to signal it's closed
-                session_idx = None  # reset for the next run
                 self._finished_saving_events[cam_idx].set()
 
             # State D - Idle, not recording
@@ -534,9 +533,11 @@ class MultiCam:
 
         # Common parameters for all writers
         writer_params = {
+            'pixel_format': cam.pixel_format,
             'width': cam.roi[2],
             'height': cam.roi[3],
             'framerate': cam.framerate,
+            'cam_name': cam.name,
         }
 
         if save_format == 'mp4':
@@ -547,7 +548,6 @@ class MultiCam:
                 ffmpeg_path=ffmpeg_config.get('path', 'ffmpeg'),
                 params=ffmpeg_config.get('params', {}),
                 use_gpu=ffmpeg_config.get('gpu', False),
-                pixel_format=cam.pixel_format,
                 **writer_params
             )
         else:
@@ -556,7 +556,6 @@ class MultiCam:
                 folder=base_path,
                 ext=save_format,
                 quality=save_quality,
-                pixel_format=cam.pixel_format,
                 **writer_params
             )
 
@@ -584,7 +583,8 @@ class MultiCam:
         try:
             p = subprocess.run(command, check=True, capture_output=True, text=True)
             if p.returncode == 0:
-                os.replace(temp_filepath, filepath)
+                if not safe_replace(str(temp_filepath), str(filepath)):
+                    logger.error(f"Could not rename {temp_filepath}.")
 
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             logger.error(f"FFmpeg failed to correct framerate for {filepath.name}: {e}")
@@ -617,14 +617,14 @@ class MultiCam:
             current_frames.append(frame_data)
 
         # Reconcile frames
-        frames, metadatas = zip(*current_frames)
+        frames, frames_datas = zip(*current_frames)
 
         # We only have one frame per camera, so we check if their IDs match
         # This is a much simpler check than the previous buffer search
-        first_frame_id = metadatas[0].get('frame_id')
+        first_frame_id = frames_datas[0].get('frame_id')
         is_synchronized = False
         if first_frame_id is not None:
-            if all(meta.get('frame_id') == first_frame_id for meta in metadatas[1:]):
+            if all(dat.get('frame_id') == first_frame_id for dat in frames_datas[1:]):
                 is_synchronized = True
 
         # Save

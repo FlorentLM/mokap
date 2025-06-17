@@ -19,12 +19,13 @@ class FrameWriter(ABC):
     interface for all writer types (e.g., video, image sequence)
     """
 
-    def __init__(self, filepath: Path, width: int, height: int, framerate: float, pixel_format: str):
+    def __init__(self, filepath: Path, pixel_format: str, width: int, height: int, framerate: float, cam_name: str):
         self.filepath = filepath
+        self.pixel_format = pixel_format
         self.width = width
         self.height = height
         self.framerate = framerate
-        self.pixel_format = pixel_format
+        self.cam_name = cam_name
         self.frame_count = 0
 
         # Each writer subclass must define its specific encoding parameters (for metadata logging)
@@ -35,17 +36,17 @@ class FrameWriter(ABC):
         """ Returns the specific encoding parameters used by this writer instance """
         return self._encoding_params
 
-    def write(self, frame: np.ndarray, metadata: Dict[str, Any]):
+    def write(self, frame: np.ndarray, frame_data: Dict[str, Any]):
         """
         Writes a single frame
         Calls the internal format-specific writing method
         Increments the internal counter
         """
-        self._write_frame(frame, metadata)
+        self._write_frame(frame, frame_data)
         self.frame_count += 1   # this counter is only incremented if _write_frame succeeds
 
     @abstractmethod
-    def _write_frame(self, frame: np.ndarray, metadata: Dict[str, Any]):
+    def _write_frame(self, frame: np.ndarray, frame_data: Dict[str, Any]):
         """ The specific implementation for writing a frame """
         raise NotImplementedError
 
@@ -166,7 +167,7 @@ class ImageSequenceWriter(FrameWriter):
         # if it's Mono8, BGR8, or unknown, return as is
         return frame
 
-    def _write_frame(self, frame: np.ndarray, metadata: Dict[str, Any]):
+    def _write_frame(self, frame: np.ndarray, frame_data: Dict[str, Any]):
 
         image_path = self.filepath / f"{str(self.frame_count).zfill(9)}.{self.ext}"
 
@@ -246,7 +247,10 @@ class FFmpegWriter(FrameWriter):
             f"-y -s {self.width}x{self.height} -f rawvideo "
             f"-framerate {self.framerate:.3f} -pix_fmt {input_pixel_format} -i pipe:0"
         )
-        command = f"{self.ffmpeg_path} -hide_banner {input_args} {encoder_params} {shlex.quote(str(filepath))}"
+
+        metadata = f'-movflags +use_metadata_tags -metadata camera={self.cam_name}' # TODO: why is it not working???
+
+        command = f"{shlex.quote(str(self.ffmpeg_path))} -hide_banner {input_args} {metadata} {encoder_params} {shlex.quote(str(filepath))}"
         logger.debug(f"FFmpeg command: {command}")
 
         # Start the subprocess, redirecting stdout/stderr to prevent console spam
@@ -278,7 +282,7 @@ class FFmpegWriter(FrameWriter):
             logger.warning(f"Unsupported OS '{system}' for GPU encoding. Falling back to CPU.")
             return 'cpu'
 
-    def _write_frame(self, frame: np.ndarray, metadata: Dict[str, Any]):
+    def _write_frame(self, frame: np.ndarray, frame_data: Dict[str, Any]):
 
         if self.proc and self.proc.stdin:
             try:
