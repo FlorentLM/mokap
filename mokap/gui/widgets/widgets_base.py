@@ -707,23 +707,42 @@ class LiveViewBase(Base):
         self.snap_popup.show_popup(button_pos)
 
     def auto_size(self):
+        width_multiplier = 1.0
+        layout = self.video_container_layout
+        if layout and layout.count() > 1:
+            total_stretch = 0
+            video_widget_stretch = 1
+
+            for i in range(layout.count()):
+                stretch = layout.stretch(i)
+                total_stretch += stretch
+
+                # Find the graphics_widget to get its specific stretch factor
+                item = layout.itemAt(i)
+                if item and item.widget() is self.graphics_widget:
+                    video_widget_stretch = stretch
+
+            if video_widget_stretch > 0:
+                width_multiplier = total_stretch / video_widget_stretch
+
+        monitor = self._mainwindow.selected_monitor
 
         # If landscape screen
-        if self._mainwindow.selected_monitor.height < self._mainwindow.selected_monitor.width:
-            available_h = (self._mainwindow.selected_monitor.height - TASKBAR_H) // 2 - SPACING * 3
+        if monitor.height < monitor.width:
+            available_h = (monitor.height - TASKBAR_H) // 2 - SPACING * 3
             video_max_h = available_h - self.BOTTOM_PANEL.height() - TOPBAR_H
             video_max_w = video_max_h * self.aspect_ratio
 
             h = int(video_max_h + self.BOTTOM_PANEL.height())
-            w = int(video_max_w)
+            w = int(video_max_w * width_multiplier)
 
         # If portrait screen
         else:
-            video_max_w = self._mainwindow.selected_monitor.width // 2 - SPACING * 3
+            video_max_w = monitor.width // 2 - SPACING * 3
             video_max_h = video_max_w / self.aspect_ratio
 
             h = int(video_max_h + self.BOTTOM_PANEL.height())
-            w = int(video_max_w)
+            w = int(video_max_w * width_multiplier)
 
         self.resize(w, h)
 

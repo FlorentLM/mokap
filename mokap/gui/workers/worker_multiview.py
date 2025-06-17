@@ -69,17 +69,17 @@ class MultiviewWorker(CalibrationProcessingWorker):
         if isinstance(payload, DetectionPayload):
             self.multiview_tool.register(cam_idx, payload)
 
-            self._points_2d[data.camera_name] = payload.points2D
-            self._points_2d_ids[data.camera_name] = payload.pointsIDs
+            # self._points_2d[data.camera_name] = payload.points2D
+            # self._points_2d_ids[data.camera_name] = payload.pointsIDs
 
-        elif isinstance(payload, ExtrinsicsPayload) and payload.rvec is not None:
-            self._rvecs[cam_idx] = payload.rvec
-            self._tvecs[cam_idx] = payload.tvec
+        # elif isinstance(payload, ExtrinsicsPayload) and payload.rvec is not None:
+        #     self._rvecs[cam_idx] = payload.rvec
+        #     self._tvecs[cam_idx] = payload.tvec
 
-        elif isinstance(payload, IntrinsicsPayload):
-            self._cameras_matrices[cam_idx] = payload.camera_matrix
-            dist_len = len(payload.dist_coeffs)
-            self._dist_coeffs[cam_idx, :dist_len] = payload.dist_coeffs
+        # elif isinstance(payload, IntrinsicsPayload):
+        #     self._cameras_matrices[cam_idx] = payload.camera_matrix
+        #     dist_len = len(payload.dist_coeffs)
+        #     self._dist_coeffs[cam_idx, :dist_len] = payload.dist_coeffs
 
     def process_and_emit_3d_data(self):
         """ Performs all calculations and emits the results for the 3D view
@@ -91,8 +91,8 @@ class MultiviewWorker(CalibrationProcessingWorker):
             all_r, all_t = self.multiview_tool.refined_extrinsics
 
         elif self.multiview_tool and self.multiview_tool._estimated:
-            all_K, all_D = self.multiview_tool.init_cam_matrices, self.multiview_tool.init_dist_coeffs
-            all_r, all_t = self.multiview_tool.initial_extrinsics
+            all_K, all_D = self.multiview_tool.intrinsics
+            all_r, all_t = self.multiview_tool.extrinsics
 
         else:
             all_K, all_D = self._cameras_matrices, self._dist_coeffs

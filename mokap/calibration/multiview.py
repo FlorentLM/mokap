@@ -449,7 +449,11 @@ class MultiviewCalibrationTool:
             return False
 
     @property
-    def initial_extrinsics(self):
+    def intrinsics(self):
+        return np.array(self._cam_matrices), np.array(self._dist_coeffs)
+
+    @property
+    def extrinsics(self):
         return np.array(self._rvecs_c2w), np.array(self._tvecs_c2w)
 
     @property
@@ -508,5 +512,9 @@ class MultiviewCalibrationTool:
             return self._volume_of_trust
 
     @property
-    def ba_sample_count(self):
+    def ba_sample_count(self) -> int:
         return len(self.ba_samples)
+
+    @property
+    def is_refined(self) -> bool:
+        return self._refined

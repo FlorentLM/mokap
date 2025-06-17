@@ -841,25 +841,14 @@ class CalibrationLiveView(LiveViewBase):
         self.stats_text.setHtml('')
 
     def on_load_parameters(self):
-        file_path = self._show_file_dialog(self._mainwindow.manager.full_path.parent)
-        if file_path and file_path.is_file():   # might still be None if the picker did not succeed
-            self.request_load.emit(file_path.as_posix())
-            self.load_save_message.setText(f"Intrinsics <b>loaded</b> from {file_path.parent}")
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Load Intrinsics",
+            str(self._mainwindow.manager.full_path.parent),
+            "TOML Files (*.toml)"
+        )
 
-    #  ============= Calibration video window functions =============
-    def _show_file_dialog(self, startpath: str | Path):
-        """
-        Opens the small file selector to let the user load a parameters.toml file
-        """
-        dial = QFileDialog(self)
-        dial.setWindowTitle("Choose folder")
-        dial.setViewMode(QFileDialog.ViewMode.Detail)
-        dial.setDirectory(Path(startpath).resolve().as_posix())
-
-        if dial.exec():
-            selected = dial.selectedFiles()
-            if selected:
-                file = Path(selected[0])
-                if file.exists():
-                    return file
-        return None
+        if file_path:
+            self.on_clear_intrinsics()
+            # then send the request to the worker
+            self.request_load.emit(file_path)
+            self.load_save_message.setText(f"Intrinsics loading from\n{Path(file_path).name}")

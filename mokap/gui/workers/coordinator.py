@@ -43,6 +43,10 @@ class CalibrationCoordinator(QObject):
             self._cameras_names.append(worker.name)
             self.broadcast_new_board.connect(worker.configure_new_board)
 
+            # if this is the first camera being registered, set it as the default origin
+            if self._origin_camera_name is None:
+                self.set_origin_camera(worker.name)
+
         worker.set_stage(self._current_stage)
 
     @Slot(int)
@@ -110,7 +114,7 @@ class CalibrationCoordinator(QObject):
             intr = self._initial_intrinsics[name]
             init_cam_matrices.append(intr.camera_matrix)
             init_dist_coeffs.append(intr.dist_coeffs)
-            images_sizes_wh.append((worker.cam_width, worker.cam_height))
+            images_sizes_wh.append((worker.img_w, worker.img_h))
 
         # This assumes the first registered monocular worker's board is representative
         object_points = self._workers[self._cameras_names[0]].board_object_points

@@ -34,6 +34,13 @@ class MonocularWorker(CalibrationProcessingWorker):
         self.board_object_points: Optional[np.ndarray] = None
         self._create_tool(board_params)
 
+        # Create empty payloads to be used in case of failure
+        self.empty_points = np.zeros((0, 2), dtype=np.float32)
+        self.empty_ids = np.array([], dtype=int)
+        self.empty_reproj_payload = CalibrationData(
+            self.cam_name, ReprojectionPayload(all_points_2d=self.empty_points, detected_ids=self.empty_ids)
+        )
+
         # TODO: These need to be configurable from the GUI
         self._auto_sample = True
         self._auto_compute = True
@@ -116,6 +123,16 @@ class MonocularWorker(CalibrationProcessingWorker):
         self.monocular_tool.process_frame(local_frame)
         self.monocular_tool.detect()    # TODO: Detection can be moved out of this class it's much cleaner
 
+        # Detection Payload (always sent)
+        if self.monocular_tool.has_detection:
+            self.send_payload.emit(
+                CalibrationData(self.cam_name, DetectionPayload(frame_idx, *self.monocular_tool.detection))
+            )
+        else:
+            self.send_payload.emit(
+                CalibrationData(self.cam_name, DetectionPayload(frame_idx, self.empty_points, self.empty_ids))
+            )
+
         # Stage 0: Compute initial intrinsics
         if self._current_stage == 0:
             if self._auto_sample:
@@ -152,7 +169,7 @@ class MonocularWorker(CalibrationProcessingWorker):
                             CalibrationData(self.cam_name, IntrinsicsPayload(*self.monocular_tool.intrinsics))
                         )
 
-        # This extrinsics computation is only used to provide visualisation of the board pose (perimeter) and plotting
+        # Extrinsics and Reprojection Payloads (always attempt if intrinsics exist)
         if self.monocular_tool.has_intrinsics:
             self.monocular_tool.compute_extrinsics()
 
@@ -177,19 +194,13 @@ class MonocularWorker(CalibrationProcessingWorker):
                                                                        detected_ids=pointsids))
                 )
 
-        # in all stages, if a detection happened, send its data for visualization
-        if self.monocular_tool.has_detection:
-            # we use this payload for visualization AND to feed the multiview processing
-            self.send_payload.emit(
-                CalibrationData(self.cam_name, DetectionPayload(frame_idx, *self.monocular_tool.detection))
-            )
+            else:
+                # If extrinsics failed, explicitly clear the reprojection overlay
+                self.send_payload.emit(self.empty_reproj_payload)
+
         else:
-            # when no detection, pyqtgraph still wants a 2D array
-            empty_points = np.zeros((0, 2), dtype=np.float32)
-            empty_ids = np.array([], dtype=int)
-            self.send_payload.emit(
-                CalibrationData(self.cam_name, DetectionPayload(frame_idx, empty_points, empty_ids))
-            )
+            # If no intrinsics, also clear the reprojection overlay
+            self.send_payload.emit(self.empty_reproj_payload)
 
         self.finished.emit()
 
@@ -201,6 +212,15 @@ class MonocularWorker(CalibrationProcessingWorker):
     @Slot()
     def clear_samples(self):
         self.monocular_tool.clear_stacks()
+        # After clearing, emit a payload to update the UI
+        self.send_payload.emit(
+            CalibrationData(self.cam_name, CoveragePayload(
+                grid=self.monocular_tool.grid,
+                coverage_percent=self.monocular_tool.coverage,
+                nb_samples=self.monocular_tool.nb_samples,
+                total_points=self.monocular_tool.dt.nb_points
+            ))
+        )
 
     @Slot()
     def compute_intrinsics(self):
