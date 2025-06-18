@@ -4,7 +4,7 @@ import sys
 import os
 import colorsys
 from pathlib import Path
-from typing import Union
+from typing import Union, Sequence, Tuple, Optional
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -226,10 +226,10 @@ SENSOR_SIZES = {'1/4"': [3.20, 2.40],
 
 def estimate_camera_matrix(
     f_mm:               float,
-    image_wh_px:        tuple,
-    sensor_wh_mm:       tuple = None,
-    pixel_pitch_um:     float = None,
-    roi:                tuple = None,
+    image_wh_px:        Sequence,
+    sensor_wh_mm:       Optional[Sequence[float]] = None,
+    pixel_pitch_um:     Optional[float] = None,
+    roi:                Optional[Sequence[float]] = None,
     skew:               float = 0.0
 ) -> np.ndarray:
     """
@@ -269,7 +269,7 @@ def estimate_camera_matrix(
 
     # Adjust for ROI if given
     if roi is not None:
-        x0, y0, w_roi, h_roi = roi
+        x0, y0 = roi[:2]
         cx = cx_full - x0
         cy = cy_full - y0
     else:
