@@ -371,7 +371,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         return self._roi
 
     @roi.setter
-    def roi(self, value: Union[Sequence[int, int, int, int], Sequence[int, int]]):
+    def roi(self, value: Union[Sequence[int]]):
         was_grabbing = self.is_grabbing
 
         try:

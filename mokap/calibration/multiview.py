@@ -1,19 +1,17 @@
 import logging
 from collections import deque
 from typing import Tuple, Dict, Optional, List, Any
-import cv2
 import numpy as np
-from functools import partial
-import jax
 from jax import numpy as jnp
 from jax.typing import ArrayLike
 from mokap.calibration import bundle_adjustment
+from mokap.calibration.common import solve_pnp_robust
 from mokap.utils.datatypes import DetectionPayload
 from mokap.utils.geometry.projective import project_to_multiple_cameras, reproject_and_compute_error
 from mokap.utils.geometry.fitting import quaternion_average, filter_rt_samples, compute_reliable_bounds_3d
-from mokap.utils.geometry.transforms import extrinsics_matrix, extmat_to_rtvecs, axisangle_to_quaternion_batched, \
-    quaternion_to_axisangle, invert_extrinsics_matrix, invert_rtvecs
-
+from mokap.utils.geometry.transforms import (extrinsics_matrix, extmat_to_rtvecs,
+                                             axisangle_to_quaternion_batched, quaternion_to_axisangle,
+                                             invert_extrinsics_matrix, invert_rtvecs)
 
 logger = logging.getLogger(__name__)
 
@@ -76,54 +74,6 @@ class MultiviewCalibrationTool:
         self._points2d = None
         self._visibility_mask = None
         self._volume_of_trust = None
-
-    def register(self, cam_idx: int, detection: DetectionPayload):
-
-        if detection.pointsIDs is None or detection.points2D is None:
-            return
-
-        if len(detection.pointsIDs) < 4:
-            return
-
-        # Reestimate the board-to-camera pose and validate it
-        try:
-            success, rvec, tvec = cv2.solvePnP(
-                objectPoints=np.asarray(self._object_points[detection.pointsIDs]),
-                imagePoints=detection.points2D,
-                cameraMatrix=np.asarray(self._cam_matrices[cam_idx]),
-                distCoeffs=np.asarray(self._dist_coeffs[cam_idx]),
-                flags=cv2.SOLVEPNP_ITERATIVE
-            )
-            # if PnP fails, return
-            if not success:
-                return
-
-            rvec, tvec = rvec.squeeze(), tvec.squeeze()
-
-            if not np.all(np.isfinite(rvec)) or not np.all(np.isfinite(tvec)):
-                logger.warning(f"Cam {cam_idx} solvePnP produced non-finite pose. Discarding.")
-                return
-
-            # if PnP placed the board behind the camera, return
-            if tvec[2] <= 0:
-                return
-
-        except cv2.error:
-            return
-
-        #--- From here on, rvec and tvec should be sane ---
-
-        f = detection.frame
-        self._last_frame[cam_idx] = f
-
-        E_b2c = extrinsics_matrix(jnp.asarray(rvec), jnp.asarray(tvec))
-        self._detection_buffer[cam_idx][f] = (E_b2c, detection.points2D, detection.pointsIDs)
-
-        if cam_idx == self.origin_idx and not self._has_ext[cam_idx]:
-            self._has_ext[cam_idx] = True
-            # The pose is already (0, 0, 0) we can continue
-
-        self._flush_frames()
 
     def _find_stale_frames(self):
         global_min = int(self._last_frame.min())
@@ -250,6 +200,40 @@ class MultiviewCalibrationTool:
 
         # Buffer data for final BA and intrinsics refinement
         self.ba_samples.append(entries)
+
+    def register(self, cam_idx: int, detection: DetectionPayload):
+
+        if detection.pointsIDs is None or detection.points2D is None:
+            return
+
+        if len(detection.pointsIDs) < 4:
+            return
+
+        # Reestimate the board-to-camera pose and validate it
+        success, rvec, tvec = solve_pnp_robust(
+            object_points=np.asarray(self._object_points[detection.pointsIDs]),
+            image_points=detection.points2D,
+            camera_matrix=np.asarray(self._cam_matrices[cam_idx]),
+            dist_coeffs=np.asarray(self._dist_coeffs[cam_idx])
+        )
+
+        # if PnP fails, return
+        if not success:
+            return
+
+        #--- From here on, rvec and tvec should be sane ---
+
+        f = detection.frame
+        self._last_frame[cam_idx] = f
+
+        E_b2c = extrinsics_matrix(jnp.asarray(rvec), jnp.asarray(tvec))
+        self._detection_buffer[cam_idx][f] = (E_b2c, detection.points2D, detection.pointsIDs)
+
+        if cam_idx == self.origin_idx and not self._has_ext[cam_idx]:
+            self._has_ext[cam_idx] = True
+            # The pose is already (0, 0, 0) we can continue
+
+        self._flush_frames()
 
     def refine_all(self) -> bool:
         """
@@ -449,23 +433,23 @@ class MultiviewCalibrationTool:
             return False
 
     @property
-    def intrinsics(self):
+    def intrinsics(self) -> Tuple[np.ndarray, np.ndarray]:
         return np.array(self._cam_matrices), np.array(self._dist_coeffs)
 
     @property
-    def extrinsics(self):
+    def extrinsics(self) -> Tuple[np.ndarray, np.ndarray]:
         return np.array(self._rvecs_c2w), np.array(self._tvecs_c2w)
 
     @property
-    def refined_intrinsics(self):
+    def refined_intrinsics(self) -> Tuple[jnp.ndarray, jnp.ndarray]:
         return self._refined_intrinsics
 
     @property
-    def refined_extrinsics(self):
+    def refined_extrinsics(self) -> Tuple[jnp.ndarray, jnp.ndarray]:
         return self._refined_extrinsics
 
     @property
-    def refined_board_poses(self):
+    def refined_board_poses(self) -> Tuple[jnp.ndarray, jnp.ndarray]:
         return self._refined_board_poses
 
     @property

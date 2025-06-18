@@ -1,6 +1,6 @@
 import logging
 import numpy as np
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Dict
 from PySide6.QtCore import QTimer, Slot, Signal
 from numpy.typing import ArrayLike
 from mokap.calibration.multiview import MultiviewCalibrationTool
@@ -18,32 +18,69 @@ class MultiviewWorker(CalibrationProcessingWorker):
     scene_data_ready = Signal(dict)
 
     def __init__(self,
-            cameras_names: List[str],
-            origin_camera_name: str,
-            sources_shapes: ArrayLike,
-            board_params: Union[ChessBoard, CharucoBoard]):
+                 cameras_names:     List[str],
+                 origin_camera:     str,
+                 sources_shapes_wh: ArrayLike,
+                 calibration_board: Union[ChessBoard, CharucoBoard]):
         super().__init__(name='multiview')
 
+        # Configuration and static data
         self._cameras_names = cameras_names
-        self._origin_camera_name = origin_camera_name
-        self.multiview_tool: Optional[MultiviewCalibrationTool] = None  # will be initialized later
+        self._orig_cam_name = origin_camera
+        self._orig_cam_idx = self._cameras_names.index(self._orig_cam_name)
 
-        # Keep a local copy of camera parameters
-        self._cameras_matrices = None
-        self._dist_coeffs = None
-        self._rvecs = None
-        self._tvecs = None
-        self._sources_shapes = sources_shapes
-        self._points_2d = {cam_name: np.zeros((board_params.object_points.shape[0], 2)) for cam_name in
-                           self._cameras_names}
-        self._points_2d_ids = {cam_name: np.array([], dtype=int) for cam_name in self._cameras_names}
-        self._frustum_depth = 200
+        self._C = len(cameras_names)
 
+        self._sources_shapes_wh = sources_shapes_wh  # Expects {cam_name: (w, h)}
+        self.calibration_board = calibration_board
+
+        self.multiview_tool: Optional[MultiviewCalibrationTool] = None
+
+        # Local state for visualisation
+        # This worker holds the "master copy" of all camera parameters for the scene
+        self._intrinsics_ready = np.zeros(self._C, dtype=bool)
+        self._cameras_matrices = np.array([np.eye(3)] * self._C, dtype=np.float32)
+        self._dist_coeffs = np.zeros((self._C, 8), dtype=np.float32)
+
+        # We start with no extrinsics, they will be estimated or loaded
+        self._rvecs_c2w = np.zeros((self._C, 3), dtype=np.float32)
+        self._tvecs_c2w = np.zeros((self._C, 3), dtype=np.float32)
+        self._rvecs_c2w[self._orig_cam_idx] = np.zeros(3)  # Origin is fixed at (0, 0, 0)
+        self._tvecs_c2w[self._orig_cam_idx] = np.zeros(3)
+
+        # Buffer for per-frame 2D detections for visualization
+        self._points_2d: Dict[str, np.ndarray] = {name: np.zeros((0, 2)) for name in self._cameras_names}
+
+        # Empty arrays to emit nodata when needed
+        self._nopoints_2d = np.zeros((0, 2))
+        self._nopoints_3d = np.zeros((0, 3))
+
+        self._frustum_depth = 200.0 # TODO: compute this automatically
+
+        # Timer for sending scene data to the 3D view
         self.update_timer = QTimer(self)
-        self.update_timer.setInterval(33)  # ~ 30 Hz for scene updates
+        self.update_timer.setInterval(33)  # ~ 30 Hz
         self.update_timer.timeout.connect(self.process_and_emit_3d_data)
 
-        self.update_timer.start()
+    def _try_create_tool(self):
+        """ Creates the MultiviewCalibrationTool once all intrinsics are available """
+
+        if self.multiview_tool is None and np.all(self._intrinsics_ready) :
+            logger.info(f"[{self.name.title()}] All intrinsics received. Creating Multiview tool.")
+
+            image_sizes_wh = np.array([self._sources_shapes_wh[name] for name in self._cameras_names])
+
+            self.multiview_tool = MultiviewCalibrationTool(
+                nb_cameras=self._C,
+                images_sizes_wh=image_sizes_wh,
+                origin_idx=self._orig_cam_idx,
+                init_cam_matrices=self._cameras_matrices,
+                init_dist_coeffs=self._dist_coeffs,
+                object_points=self.calibration_board.object_points,
+                min_detections=50,  # TODO: Make configurable
+                max_detections=300
+            )
+            self.update_timer.start()  # Start emitting 3D scene data
 
     @Slot(MultiviewCalibrationTool)
     def initialize_tool(self, tool: MultiviewCalibrationTool):
@@ -55,81 +92,83 @@ class MultiviewWorker(CalibrationProcessingWorker):
 
     @Slot(CalibrationData)
     def on_payload_received(self, data: CalibrationData):
+        """ Handles all incoming payloads and updates the worker's state """
 
-        logger.debug(f'[{self.name.title()}] Received (from Coordinator): ({data.camera_name}) {data.payload}')
-
-        # if the tool isn't ready, do nothing
-        if self.multiview_tool is None:
-            return
-
-        payload = data.payload
         cam_idx = self._cameras_names.index(data.camera_name)
+        payload = data.payload
 
-        # update local state based on incoming data
-        if isinstance(payload, DetectionPayload):
+        if isinstance(payload, IntrinsicsPayload):
+            # Update local state for this camera
+            self._cameras_matrices[cam_idx] = payload.camera_matrix
+            d_len = len(payload.dist_coeffs)
+            self._dist_coeffs[cam_idx, :d_len] = payload.dist_coeffs
+            self._intrinsics_ready[cam_idx] = True
+
+            # Check if all intrinsics are now ready to create the tool
+            self._try_create_tool()
+
+        elif isinstance(payload, DetectionPayload) and self.multiview_tool:
+            # Pass detections directly to the tool
             self.multiview_tool.register(cam_idx, payload)
 
-            # self._points_2d[data.camera_name] = payload.points2D
-            # self._points_2d_ids[data.camera_name] = payload.pointsIDs
-
-        # elif isinstance(payload, ExtrinsicsPayload) and payload.rvec is not None:
-        #     self._rvecs[cam_idx] = payload.rvec
-        #     self._tvecs[cam_idx] = payload.tvec
-
-        # elif isinstance(payload, IntrinsicsPayload):
-        #     self._cameras_matrices[cam_idx] = payload.camera_matrix
-        #     dist_len = len(payload.dist_coeffs)
-        #     self._dist_coeffs[cam_idx, :dist_len] = payload.dist_coeffs
+            # Also store the 2D points for visualization
+            self._points_2d[data.camera_name] = payload.points2D if payload.points2D is not None else self._nopoints_2d
 
     def process_and_emit_3d_data(self):
-        """ Performs all calculations and emits the results for the 3D view
-        Works in both Stage 0 (using individual parameters) and Stage 1 (using tool's global parameters)
-        """
+        """ Periodically calculates and emits all data needed for the 3D view """
 
+        # This state is updated by incoming payloads or after a successful BA
+
+        # Determine which set of parameters to use for visualization
         if self.multiview_tool and self.multiview_tool.is_refined:
-            all_K, all_D = self.multiview_tool.refined_intrinsics
-            all_r, all_t = self.multiview_tool.refined_extrinsics
+            K, D = self.multiview_tool.refined_intrinsics
+            r, t = self.multiview_tool.refined_extrinsics
 
         elif self.multiview_tool and self.multiview_tool._estimated:
-            all_K, all_D = self.multiview_tool.intrinsics
-            all_r, all_t = self.multiview_tool.extrinsics
-
+            K, D = self.multiview_tool.intrinsics
+            r, t = self.multiview_tool.extrinsics
         else:
-            all_K, all_D = self._cameras_matrices, self._dist_coeffs
-            all_r, all_t = self._rvecs, self._tvecs
+            # Before estimation, use the initial parameters stored in the worker
+            K, D, r, t = self._cameras_matrices, self._dist_coeffs, self._rvecs_c2w, self._tvecs_c2w
 
-        if all_r is None or np.all(all_r == 0):
+        # Early exit if there's nothing to draw
+        if K is None or r is None:
             return
 
-        all_E = extrinsics_matrix(all_r, all_t)
+        all_E = extrinsics_matrix(r, t) # TODO: This expects jax arrays - make we dont convert back and forth to numpy for no reason
 
-        frustums_points2d = np.stack(
-            [np.array([[0, 0], [shape[1], 0], [shape[1], shape[0]], [0, shape[0]]], dtype=np.int32) for shape in
-             self._sources_shapes.values()])
-        centres_points2d = frustums_points2d[:, 2, :] / 2.0
+        # Frustum visualization
+        # TODO: No need to initialise these arrays over and over - they need to be stored
+        frustums_pts = np.array([
+            [[0, 0], [w, 0], [w, h], [0, h]] for w, h in self._sources_shapes_wh.values()
+        ], dtype=np.float32)
+        centers_pts = np.array([[w / 2, h / 2] for w, h in self._sources_shapes_wh.values()], dtype=np.float32)
 
-        all_frustums_3d = back_projection_batched(frustums_points2d, self._frustum_depth, all_K, all_E, all_D)
-        all_centers_3d = back_projection_batched(centres_points2d, self._frustum_depth, all_K, all_E, all_D).squeeze(
-            axis=1)
+        # TODO: Why two calls to back_projection_batched? We could have one stacked array and one call, then slice it
+        all_frustums_3d = back_projection_batched(frustums_pts, self._frustum_depth, K, all_E, D)
+        all_centers_3d = back_projection_batched(centers_pts[:, np.newaxis, :], self._frustum_depth, K, all_E,
+                                                 D).squeeze(axis=1)
 
+        # Detections visualization
         all_detections_3d = [
-            back_projection(self._points_2d[name], self._frustum_depth * 0.95, all_K[i], all_E[i], all_D[i]) if len(
-                ids) > 0 else np.zeros((0, 3)) for i, (name, ids) in enumerate(self._points_2d_ids.items())]
+            back_projection(self._points_2d[name], self._frustum_depth * 0.95, K[i], all_E[i], D[i])
+            if self._points_2d[name].shape[0] > 0 else self._nopoints_3d
+            for i, name in enumerate(self._cameras_names)
+        ]
 
-        scene_data = {
+        self.scene_data_ready.emit({
             'extrinsics': all_E,
             'frustums_3d': all_frustums_3d,
             'centers_3d': all_centers_3d,
             'detections_3d': all_detections_3d
-        }
-        self.scene_data_ready.emit(scene_data)
+        })
 
     @Slot()
     def trigger_refinement(self):
-        """
-        Slot to be connected to a GUI button. Triggers the final BA
-        """
+        """ Slot connected to the GUI button to trigger the final BA """
+
         if self._paused or self.multiview_tool is None:
+            logger.warning("Cannot trigger refinement: Worker paused or tool not initialized.")
             return
 
         logger.info(f"[{self.name.title()}] Attempting to run final Bundle Adjustment.")
@@ -139,33 +178,37 @@ class MultiviewWorker(CalibrationProcessingWorker):
         self.blocking.emit(False)
 
         if success:
-            logger.info(f"[{self.name.title()}] Bundle Adjustment successful. Emitting refined results.")
+            logger.info(f"[{self.name.title()}] Bundle Adjustment successful. Emitting refined parameters.")
 
-            # emit the final results
             K_opts, D_opts = self.multiview_tool.refined_intrinsics
             r_opts, t_opts = self.multiview_tool.refined_extrinsics
 
-            for i, cam_name in enumerate(self._cameras_names):
-                # Send refined intrinsics
-                intr_payload = IntrinsicsPayload(K_opts[i], D_opts[i])
-                self.send_payload.emit(CalibrationData(cam_name, intr_payload))
+            K_opts = np.asarray(K_opts)
+            D_opts = np.asarray(D_opts)
+            r_opts = np.asarray(r_opts)
+            t_opts = np.asarray(t_opts)
 
-                # Send refined extrinsics
-                extr_payload = ExtrinsicsPayload(r_opts[i], t_opts[i])
-                self.send_payload.emit(CalibrationData(cam_name, extr_payload))
+            # Update worker's internal state with the new best parameters
+            self._cameras_matrices, self._dist_coeffs = K_opts, D_opts
+            self._rvecs_c2w, self._tvecs_c2w = r_opts, t_opts
+
+            # Emit the final results for other workers and for saving
+            for i, cam_name in enumerate(self._cameras_names):
+                self.send_payload.emit(CalibrationData(cam_name, IntrinsicsPayload(K_opts[i], D_opts[i])))
+                self.send_payload.emit(CalibrationData(cam_name, ExtrinsicsPayload(r_opts[i], t_opts[i])))
         else:
-            logger.info(f"[{self.name.title()}] Bundle Adjustment failed.")
+            logger.error(f"[{self.name.title()}] Bundle Adjustment failed.")
 
     @Slot()
     def reset(self):
-        """ Destroys the tool and stops the timer, resets the worker's state """
+        """ Resets the worker to its initial state """
         super().reset()
 
-        if self.multiview_tool is not None:
-            logger.debug(f"[{self.name.title()}] Resetting. Multiview tool destroyed.")
+        self.update_timer.stop()
+        self.multiview_tool = None
+        self._intrinsics_ready.fill(False)
 
-            self.update_timer.stop()
-            self.multiview_tool = None
+        logger.debug(f"[{self.name.title()}] Worker has been reset.")
 
     @Slot(int)
     def set_stage(self, stage: int):

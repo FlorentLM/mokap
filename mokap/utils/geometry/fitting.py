@@ -4,7 +4,7 @@ import jax
 import numpy as np
 from jax import numpy as jnp
 
-from mokap.utils.geometry.transforms import ID_QUAT, ZERO_T, quaternions_angular_distance
+from mokap.utils.geometry.transforms import ID_QUAT, ZERO_T, quaternions_angular_distance, rodrigues, inverse_rodrigues
 
 
 def _find_rigid_transform(
@@ -354,3 +354,51 @@ def compute_reliable_bounds_3d(
         return {'x': (jnp.nan, jnp.nan), 'y': (jnp.nan, jnp.nan), 'z': (jnp.nan, jnp.nan)}
 
     return jax.lax.cond(num_reliable_points < 3, empty_bounds, get_bounds)
+
+
+def _generate_ambiguous_pose(
+        rvec_o2c: jnp.ndarray,
+        tvec_o2c: jnp.ndarray
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    Generates the second, ambiguous solution for a planar PnP problem
+
+    This corresponds to a 180-degree rotation around the board's X-axis,
+    which results in a different camera-to-board pose
+
+    Args:
+        rvec_o2c: The rotation vector from solvePnP (object-to-camera)
+        tvec_o2c: The translation vector from solvePnP (object-to-camera)
+
+    Returns:
+        A tuple (rvec_alt, tvec_alt) representing the alternative pose
+    """
+
+    # Original board-to-camera rotation matrix
+    R_b2c = rodrigues(rvec_o2c)
+
+    # 180-degree rotation matrix around the board's X-axis
+    # This is a rotation in the board's own coordinate frame
+    R_flip = jnp.array([
+        [1.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0],
+        [0.0, 0.0, -1.0]
+    ], dtype=rvec_o2c.dtype)
+
+    # The new rotation is the original rotation composed with the flip
+    R_alt = R_b2c @ R_flip
+    rvec_alt = inverse_rodrigues(R_alt)
+
+    # The translation vector (position of board origin in camera frame) does not change
+    # when we rotate the board about its own origin
+    tvec_alt = tvec_o2c
+
+    return rvec_alt, tvec_alt
+
+
+generate_ambiguous_pose = jax.jit(_generate_ambiguous_pose)
+
+# batched version that works on (N, 3) arrays
+generate_multiple_ambiguous_poses = jax.jit(
+    jax.vmap(_generate_ambiguous_pose, in_axes=(0, 0), out_axes=(0, 0))
+)

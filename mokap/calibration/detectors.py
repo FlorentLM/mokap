@@ -13,9 +13,7 @@ class ChessboardDetector:
     Detects a standard chessboard
     """
 
-    def __init__(self,
-                 board: CharucoBoard,
-                 downsample_size: int = 480):
+    def __init__(self, board: CharucoBoard, downsample_size: int = 480):
 
         # Create 3D coordinates for board corners (in board-centric coordinates)
         self._board_points_3d = board.object_points

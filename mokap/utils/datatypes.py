@@ -1,13 +1,29 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from copy import deepcopy
 import cv2
 import numpy as np
 from numpy.typing import ArrayLike
-from typing import Optional, Union
+from typing import Optional, Union, Literal
 from pathlib import Path
 from mokap.utils.fileio import generate_board_svg
 from mokap.utils import fileio
 
+DistortionModel = Literal['none', 'simple', 'standard', 'full', 'rational']
+
+
+@dataclass
+class CalibrateCameraResult:
+    """ A container for the results of an intrinsic camera calibration """
+    success: bool
+    rms_error: float = np.inf
+    K_new: Optional[np.ndarray] = None
+    D_new: Optional[np.ndarray] = None
+    rvecs: Optional[np.ndarray] = None
+    tvecs: Optional[np.ndarray] = None
+    std_devs_intrinsics: Optional[np.ndarray] = None
+    error_message: str = ""
+    # field avoids including the large error array in the __repr__
+    per_view_errors: Optional[np.ndarray] = field(default=None, repr=False)
 
 
 class ChessBoard:

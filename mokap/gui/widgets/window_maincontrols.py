@@ -457,13 +457,7 @@ class MainControls(QMainWindow, SnapMixin):
             self.is_calibrating = True
 
             self._stop_secondary_windows()
-
-            if self.manager.framerate > 30:
-                logger.debug('Forcing framerate to 30 fps for calibration mode')
-                self.manager.framerate = 30
-
             self.button_recpause.setDisabled(True)
-
             self._start_secondary_windows()
 
         else:

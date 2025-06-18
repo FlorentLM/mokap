@@ -47,8 +47,7 @@ def distortion(
     return radial, dx, dy
 
 
-@jax.jit
-def project_points(
+def _project_points(
     object_points:  jnp.ndarray,
     rvec:           jnp.ndarray,
     tvec:           jnp.ndarray,
@@ -90,19 +89,24 @@ def project_points(
     cx, cy = camera_matrix[0, 2], camera_matrix[1, 2]
     return jnp.stack([fx * x_d + cx, fy * y_d + cy], axis=-1)
 
+project_points = jax.jit(_project_points)
 
-# batched version for projecting a single set of points into multiple cameras
-project_to_multiple_cameras = jax.jit(
-    jax.vmap(
-        project_points,
-        in_axes=(None, 0, 0, 0, 0) # same points to project to everyone, and map over camera params
-    )
+# batched version for projecting a single set of 3D world points using multiple different poses (rvecs, tvecs)
+project_multiple_poses = jax.jit(
+    jax.vmap(_project_points, in_axes=(None, 0, 0, None, None))
 )
 
-# projects multiple sets of world points into multiple cameras
+# batched version for projecting a single set of 3D world points into multiple cameras (using multiple poses)
+_project_to_multiple_cameras = jax.vmap(
+        _project_points,
+        in_axes=(None, 0, 0, 0, 0) # same points to project to everyone, and map over camera params
+)
+project_to_multiple_cameras = jax.jit(_project_to_multiple_cameras)
+
+# projects multiple sets of 3D world points into multiple cameras
 project_multiple_to_multiple = jax.jit(
     jax.vmap( # vmap over different sets of points (e.g., from different poses P)
-        project_to_multiple_cameras,
+        _project_to_multiple_cameras,
         in_axes=(0, None, None, None, None), # map over points, keep camera params the same
         out_axes=1 # put the new mapped axis (P) after the camera axis (C)
     )
