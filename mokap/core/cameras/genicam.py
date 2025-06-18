@@ -1,6 +1,6 @@
 import abc
 import logging
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Union, Sequence
 from mokap.core.cameras.interface import AbstractCamera
 
 logger = logging.getLogger(__name__)
@@ -371,20 +371,69 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         return self._roi
 
     @roi.setter
-    def roi(self, value: Tuple[int, int, int, int]):
+    def roi(self, value: Union[Sequence[int, int, int, int], Sequence[int, int]]):
         was_grabbing = self.is_grabbing
 
-        if was_grabbing:
-            self.stop_grabbing()
+        try:
+            if len(value) == 4:
+                # Standard ROI: (offset_x, offset_y, width, height)
+                off_x, off_y, width, height = value
 
-        off_x, off_y, width, height = value
+                # Disable auto-centering if it exists to ensure manual offsets are applied correctly
+                try:
+                    self._set_feature_value('CenterX', False)
+                    self._set_feature_value('CenterY', False)
+                except AttributeError:
+                    pass  # Features don't exist, which is fine
 
-        actual_off_x = self._set_feature_value('OffsetX', off_x)
-        actual_off_y = self._set_feature_value('OffsetY', off_y)
-        actual_width = self._set_feature_value('Width', width)
-        actual_height = self._set_feature_value('Height', height)
+                # Set size first, then offset
+                self._set_feature_value('Width', width)
+                self._set_feature_value('Height', height)
+                self._set_feature_value('OffsetX', off_x)
+                self._set_feature_value('OffsetY', off_y)
 
-        self._roi = (actual_off_x, actual_off_y, actual_width, actual_height)
+            elif len(value) == 2:
+                # Centered ROI: (width, height)
+                width, height = value
 
-        if was_grabbing:
-            self.start_grabbing()
+                # try to use the camera's built-in centering feature
+                try:
+                    # Set size first, then enable centering
+                    self._set_feature_value('Width', width)
+                    self._set_feature_value('Height', height)
+                    self._set_feature_value('CenterX', True)
+                    self._set_feature_value('CenterY', True)
+                    logger.debug(f"Used camera's built-in centering for ROI ({width}x{height}) on {self.name}.")
+
+                except AttributeError:
+                    # if camera does not support CenterX/Y, calculate and set offset manually
+                    logger.debug(f"Camera {self.name} lacks CenterX/Y support. Calculating centered ROI manually.")
+
+                    # Set size first, and get the actual values that were set (they might be clamped)
+                    actual_width = self._set_feature_value('Width', width)
+                    actual_height = self._set_feature_value('Height', height)
+
+                    # Get max dimensions for offset calculation (respects current binning, etc)
+                    max_w = self._get_feature_max_value('Width')
+                    max_h = self._get_feature_max_value('Height')
+
+                    # Calculate centered offsets based on actual width/height
+                    off_x = (max_w - actual_width) // 2
+                    off_y = (max_h - actual_height) // 2
+
+                    # The SDK should handle rounding to the nearest valid increment
+                    self._set_feature_value('OffsetX', off_x)
+                    self._set_feature_value('OffsetY', off_y)
+            else:
+                raise ValueError(f"ROI must be a sequence of 2 or 4 elements, but got {len(value)}.")
+
+            # After setting, read back the actual values and cache them
+            self._roi = (
+                self._get_feature_value('OffsetX'), self._get_feature_value('OffsetY'),
+                self._get_feature_value('Width'), self._get_feature_value('Height')
+            )
+            logger.debug(f"ROI for {self.name} set to {self._roi}")
+
+        finally:
+            if was_grabbing:
+                self.start_grabbing()

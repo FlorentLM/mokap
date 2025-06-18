@@ -156,7 +156,7 @@ binning: 1                  # or 2, 3, 4
 binning_mode: average       # or sum
 black_level: 1.0
 gamma: 1.0
-roi: [0, 0, 1440, 1080]
+roi: [0, 0, 1440, 1080]     # ROI can be [x offset, y offset, width, height] or [width, height] (automatically centered)
 
 # --- Global Saving & Encoding Settings ---
 save_format: mp4          # or 'png', 'jpg', 'bmp', 'tiff'

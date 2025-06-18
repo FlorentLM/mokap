@@ -1,7 +1,6 @@
 import abc
 import numpy as np
-from typing import Tuple, Dict, Any, Optional
-
+from typing import Tuple, Dict, Any, Optional, Union, Sequence
 
 CAMERAS_COLOURS = ['#3498db', '#f4d03f', '#27ae60', '#e74c3c', '#9b59b6', '#f39c12', '#1abc9c', '#F5A7D4', '#34495e', '#bdc3c7',
                '#2471a3', '#d4ac0d', '#186a3b', '#922b21', '#6c3483', '#d35400', '#117a65', '#e699db', '#1c2833', '#707b7c']
@@ -198,7 +197,7 @@ class AbstractCamera(abc.ABC):
 
     @roi.setter
     @abc.abstractmethod
-    def roi(self, value: Tuple[int, int, int, int]):
+    def roi(self, value: Union[Sequence[int, int, int, int], Sequence[int, int]]):
         pass
 
     @property
