@@ -178,6 +178,26 @@ class WebcamCamera(AbstractCamera):
         self._black_level = self.black_level
 
     @property
+    def black_level_range(self) -> Tuple[float, float]:
+        return 0.0, 0.0
+
+    @property
+    def exposure_range(self) -> Tuple[float, float]:
+        return 0.0, 0.0
+
+    @property
+    def framerate_range(self) -> Tuple[float, float]:
+        return 0.0, 0.0
+
+    @property
+    def gain_range(self) -> Tuple[float, float]:
+        return 0.0, 0.0
+
+    @property
+    def gamma_range(self) -> Tuple[float, float]:
+        return 0.0, 0.0
+
+    @property
     def gamma(self) -> float:
         return self._get_cv2_property(cv2.CAP_PROP_GAMMA)
 
