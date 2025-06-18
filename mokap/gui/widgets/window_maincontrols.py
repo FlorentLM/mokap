@@ -412,6 +412,31 @@ class MainControls(QMainWindow, SnapMixin):
         event.ignore()  # we handle shutdown ourselves
         self.quit()
 
+    def moveEvent(self, event):
+        """ Overrides the QMainWindow's moveEvent to automatically detect the current monitor """
+
+        # Find the QScreen the window's top-left corner is on
+        current_screen = QGuiApplication.screenAt(self.pos())
+        if not current_screen:
+            return
+
+        screen_geom = current_screen.geometry()
+
+        # Find the corresponding screeninfo.Monitor
+        for i, monitor in enumerate(self._monitors):
+            if (monitor.x == screen_geom.x() and
+                    monitor.y == screen_geom.y() and
+                    monitor.width == screen_geom.width() and
+                    monitor.height == screen_geom.height()):
+
+                # If the monitor has changed, update the selection
+                if self.selected_monitor != monitor:
+                    self.set_monitor(i)
+                    self._update_monitors_buttons()
+                break
+
+        super().moveEvent(event)
+
     def quit(self):
 
         # stop and destroy all secondary windows and their associated threads
@@ -686,29 +711,80 @@ class MainControls(QMainWindow, SnapMixin):
         # Do nothing on the main window
         pass
 
+    # def _update_monitors_buttons(self):
+    #     self.monitors_buttons_scene.clear()
+    #
+    #     for i, m in enumerate(self._monitors):
+    #         w, h, x, y = m.width // 40, m.height // 40, m.x // 40, m.y // 40
+    #         col = '#7f7f7f' if m == self.selected_monitor else '#807f7f7f'
+    #
+    #         rect = QGraphicsRectItem(x, y, w - 2, h - 2)
+    #         rect.setBrush(QBrush(QColor(col)))      # Fill colour
+    #         rect.setPen(QPen(Qt.PenStyle.NoPen))    # No outline
+    #         rect.mousePressEvent = partial(self.screen_update, i)  # Bind the function
+    #
+    #         text_item = QGraphicsTextItem(f"{i}")
+    #         text_item.setDefaultTextColor(QColor.fromString('#99ffffff'))
+    #         text_item.setFont(QFont("Monospace", 9))
+    #
+    #         text_rect = text_item.boundingRect()
+    #         text_item.setPos(x, y + h - text_rect.height())
+    #         text_item.setZValue(1)
+    #         rect.setZValue(0)
+    #
+    #         self.monitors_buttons_scene.addItem(text_item)
+    #         self.monitors_buttons_scene.addItem(rect)
+
     def _update_monitors_buttons(self):
         self.monitors_buttons_scene.clear()
 
+        SCALE_FACTOR = 40
+        visible_wins = self.visible_windows(include_main=True)
+
         for i, m in enumerate(self._monitors):
-            w, h, x, y = m.width // 40, m.height // 40, m.x // 40, m.y // 40
+            # Scaled monitor geometry
+            mx, my = m.x // SCALE_FACTOR, m.y // SCALE_FACTOR
+            mw, mh = m.width // SCALE_FACTOR, m.height // SCALE_FACTOR
+
+            # Draw monitor background
             col = '#7f7f7f' if m == self.selected_monitor else '#807f7f7f'
+            monitor_rect_item = QGraphicsRectItem(mx, my, mw - 2, mh - 2)
+            monitor_rect_item.setBrush(QBrush(QColor(col)))
+            monitor_rect_item.setPen(QPen(Qt.PenStyle.NoPen))
+            monitor_rect_item.mousePressEvent = partial(self.screen_update, i)
+            monitor_rect_item.setZValue(0)
+            self.monitors_buttons_scene.addItem(monitor_rect_item)
 
-            rect = QGraphicsRectItem(x, y, w - 2, h - 2)
-            rect.setBrush(QBrush(QColor(col)))      # Fill colour
-            rect.setPen(QPen(Qt.PenStyle.NoPen))    # No outline
-            rect.mousePressEvent = partial(self.screen_update, i)  # Bind the function
+            # Draw silhouettes of visible windows on this monitor
+            for win in visible_wins:
+                win_geom = win.geometry()
+                win_center = win_geom.center()
 
+                # Check if window center is within this monitor's bounds
+                if m.x <= win_center.x() < m.x + m.width and \
+                        m.y <= win_center.y() < m.y + m.height:
+                    # Calculate scaled silhouette geometry
+                    sx = win_geom.x() // SCALE_FACTOR
+                    sy = win_geom.y() // SCALE_FACTOR
+                    sw = max(1, win_geom.width() // SCALE_FACTOR)  # Ensure min width of 1px
+                    sh = max(1, win_geom.height() // SCALE_FACTOR)  # Ensure min height of 1px
+
+                    silhouette_item = QGraphicsRectItem(sx, sy, sw, sh)
+                    # color for the widow silhouette
+                    silhouette_color = QColor.fromString('#b1b1b1b1')
+                    silhouette_item.setBrush(QBrush(silhouette_color))
+                    silhouette_item.setPen(QPen(Qt.PenStyle.NoPen))
+                    silhouette_item.setZValue(1)  # draw on top of monitor and below text
+                    self.monitors_buttons_scene.addItem(silhouette_item)
+
+            # Draw monitor number text on top of everything
             text_item = QGraphicsTextItem(f"{i}")
-            text_item.setDefaultTextColor(QColor.fromString('#99ffffff'))
+            text_item.setDefaultTextColor(QColor.fromString('#ffffffff'))
             text_item.setFont(QFont("Monospace", 9))
-
             text_rect = text_item.boundingRect()
-            text_item.setPos(x, y + h - text_rect.height())
-            text_item.setZValue(1)
-            rect.setZValue(0)
-
+            text_item.setPos(mx + 2, my + mh - text_rect.height() - 2)
+            text_item.setZValue(2)
             self.monitors_buttons_scene.addItem(text_item)
-            self.monitors_buttons_scene.addItem(rect)
 
     def set_monitor(self, idx=None):
         if len(self._monitors) > 1 and idx is None:
@@ -798,21 +874,22 @@ class MainControls(QMainWindow, SnapMixin):
             self.multiview_worker = None
 
     def _update_main(self):
-        # TODO: Reimplement these but faster
-        pass
+        # update the monitor display with live window positions
+        self._update_monitors_buttons()
+
         # # get an estimation of the saved data size
         # try:
         #     # This works for both image sequences and video files
-        #     size = sum(f.stat().st_size for f in self.manager.full_path.glob('**/*') if f.is_file())
-        #     # self.frames_saved_label.setText(f'Saved frames: {self.manager.saved} ({pretty_size(size)})')
-        #     self.frames_saved_label.setText(f'Saved: ({pretty_size(size)})')
+        #     if self.manager.full_path.exists():
+        #         size = sum(f.stat().st_size for f in self.manager.full_path.glob('**/*') if f.is_file())
+        #         self.frames_saved_label.setText(f'Saved: ({pretty_size(size)})')
+        #     else:
+        #         self.frames_saved_label.setText(f'Saved: (0 bytes)')
         #
         # except FileNotFoundError:
         #     # This can happen if the folder doesn't exist yet
-        #     # self.frames_saved_label.setText(f'Saved frames: {self.manager.saved} (0 bytes)')
         #     self.frames_saved_label.setText(f'Saved: (0 bytes)')
-        #
+
         # # Update memory pressure estimation
-        # self._mem_pressure += (psutil.virtual_memory().percent - self._mem_baseline) / self._mem_baseline * 100
-        # self._mem_pressure_bar.setValue(int(round(self._mem_pressure)))
-        # self._mem_baseline = psutil.virtual_memory().percent
+        # current_mem_percent = psutil.virtual_memory().percent
+        # self._mem_pressure_bar.setValue(int(round(current_mem_percent)))
