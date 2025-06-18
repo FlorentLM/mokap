@@ -225,53 +225,63 @@ SENSOR_SIZES = {'1/4"': [3.20, 2.40],
 
 
 def estimate_camera_matrix(
-    f_mm:           float,
-    sensor_wh_mm:   ArrayLike,
-    image_wh_px:    ArrayLike
+    f_mm:               float,
+    image_wh_px:        tuple,
+    sensor_wh_mm:       tuple = None,
+    pixel_pitch_um:     float = None,
+    roi:                tuple = None,
+    skew:               float = 0.0
 ) -> np.ndarray:
     """
-    Estimate the camera matrix K (a 3x3 matrix of the camera intrinsics parameters) using real-world values:
-    focal length (mm), sensor size (mm) and image size (px)
-
-        [ fx, 0, cx ]
-    K = [ 0, fy, cy ]
-        [ 0,  0,  1 ]
-
-    fx and fy (in pixels) are the focal lengths along the x and y axes
-        since they are estimated from the real-world focal length, they are identical
-
-    cx and cy are the coordinates of the principal point (in pixels)
-        This corresponds to the point where the optical axis intersects the image plane
-        and is usually in the centre of the frame
+    Estimate the camera intrinsic matrix K
 
     Args:
-        f_mm: focal length in mm
-        sensor_wh_mm: sensor size in mm
-        image_wh_px: image size in px
+        f_mm: focal length in millimeters
+        image_wh_px: (width, height) of the full image in pixels
+        sensor_wh_mm: optional (sensor_width, sensor_height) in millimeters
+        pixel_pitch_um: optional pixel pitch in micrometers
+            If provided, this overrides sensor_wh_mm
+        roi: optional region of interest as (x_offset, y_offset, width, height) in pixels
+        skew: optional skew coefficient (default 0)
 
     Returns:
-        camera_matrix: the camera matrix K (as a jax array)
+        K: 3×3 camera intrinsic matrix
     """
-
-    sensor_w, sensor_h = sensor_wh_mm
     image_w, image_h = image_wh_px[:2]
 
-    pixel_size_x = sensor_w / image_w
-    pixel_size_y = sensor_h / image_h
+    # Compute fx, fy in pixels
+    if pixel_pitch_um is not None:
+        p_mm = pixel_pitch_um * 1e-3
+        fx = f_mm / p_mm
+        fy = f_mm / p_mm
+    elif sensor_wh_mm is not None:
+        sensor_w_mm, sensor_h_mm = sensor_wh_mm
+        pixel_size_x = sensor_w_mm / image_w
+        pixel_size_y = sensor_h_mm / image_h
+        fx = f_mm / pixel_size_x
+        fy = f_mm / pixel_size_y
+    else:
+        raise ValueError("Provide either sensor_wh_mm or pixel_pitch_um")
 
-    fx = f_mm / pixel_size_x
-    fy = f_mm / pixel_size_y
+    # Principal point (center of full image)
+    cx_full = image_w / 2.0
+    cy_full = image_h / 2.0
 
-    cx = image_w / 2.0
-    cy = image_h / 2.0
+    # Adjust for ROI if given
+    if roi is not None:
+        x0, y0, w_roi, h_roi = roi
+        cx = cx_full - x0
+        cy = cy_full - y0
+    else:
+        cx, cy = cx_full, cy_full
 
-    camera_matrix = np.array([
-        [fx,   0.0, cx],
-        [0.0,  fy,  cy],
-        [0.0,  0.0, 1.0]
-    ], dtype=np.float32)
+    K = np.array([
+        [fx,    skew, cx],
+        [0.0,   fy,   cy],
+        [0.0,   0.0,  1.0]
+    ], dtype=float)
 
-    return camera_matrix
+    return K
 
 
 def pol_to_hsv(quad_0:   ArrayLike,

@@ -1,5 +1,4 @@
 from typing import Optional, Any, Dict, Iterable, Sequence
-
 import matplotlib
 import numpy as np
 from mokap.utils.geometry.fitting import rays_intersection_3d
