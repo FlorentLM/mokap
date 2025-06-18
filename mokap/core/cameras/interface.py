@@ -166,6 +166,7 @@ class AbstractCamera(abc.ABC):
         pass
 
     @property
+    @abc.abstractmethod
     def available_binning_modes(self) -> list[str]:
         """ Returns a list of available binning mode strings """
         pass
@@ -197,7 +198,7 @@ class AbstractCamera(abc.ABC):
 
     @roi.setter
     @abc.abstractmethod
-    def roi(self, value: Union[Sequence[int, int, int, int], Sequence[int, int]]):
+    def roi(self, value: Union[Sequence[int], Sequence[int]]):
         pass
 
     @property
@@ -212,6 +213,7 @@ class AbstractCamera(abc.ABC):
         pass
 
     @property
+    @abc.abstractmethod
     def available_pixel_formats(self) -> list[str]:
         """ Returns a list of available pixel format strings """
         pass
