@@ -6,7 +6,7 @@ from functools import partial
 from typing import Tuple
 import psutil
 import screeninfo
-from PySide6.QtCore import QTimer, Qt, Slot, QRect, QThread
+from PySide6.QtCore import QTimer, Qt, Slot, QRect, QThread, QSize
 from PySide6.QtGui import QFont, QGuiApplication, QCursor, QBrush, QColor, QPen
 from PySide6.QtWidgets import (QMainWindow, QVBoxLayout, QWidget, QFrame, QHBoxLayout, QLabel,
                                QComboBox, QPushButton, QSizePolicy, QGroupBox, QLineEdit, QScrollArea,
@@ -127,12 +127,14 @@ class MainControls(QMainWindow, SnapMixin):
         top_layout = QVBoxLayout(top_container)
         top_layout.setContentsMargins(0, 0, 0, 0)
         top_layout.setSpacing(5)
+        top_container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
-        bottom_container = QWidget()
-        bottom_layout = QVBoxLayout(bottom_container)
+        # FIX: Make bottom_container a member variable 'self.bottom_container'
+        self.bottom_container = QWidget()
+        bottom_layout = QVBoxLayout(self.bottom_container)
         bottom_layout.setContentsMargins(0, 0, 0, 0)
         bottom_layout.setSpacing(5)
-        bottom_container.setVisible(False)  # the entire bottom section starts hidden
+        self.bottom_container.setVisible(False)  # the entire bottom section starts hidden
 
         # Populate top container
         # (Toolbar, Acquisition group, Display group)
@@ -321,11 +323,10 @@ class MainControls(QMainWindow, SnapMixin):
         # Log Button acts as the separator/controller
         self.log_button = QPushButton('Show log ▼')
         self.log_button.setMaximumWidth(100)
-        self.log_button.clicked.connect(lambda: bottom_container.setVisible(not bottom_container.isVisible()))
-        self.log_button.clicked.connect(self.adjustSize)
-        self.main_layout.addWidget(self.log_button)
 
-        self.main_layout.addWidget(bottom_container)
+        self.log_button.clicked.connect(self.toggle_log_panel)
+        self.main_layout.addWidget(self.log_button)
+        self.main_layout.addWidget(self.bottom_container)
 
         # Status Bar
         statusbar = QStatusBar()
@@ -333,23 +334,31 @@ class MainControls(QMainWindow, SnapMixin):
 
         mem_pressure_label = QLabel('Memory pressure: ')
         mem_pressure_label.setStyleSheet("background-color: transparent;")
-
         statusbar.addWidget(mem_pressure_label)
 
         self._mem_pressure_bar = QProgressBar()
         self._mem_pressure_bar.setMaximum(100)
 
         statusbar.addWidget(self._mem_pressure_bar)
+
         self.frames_saved_label = QLabel()
         self.frames_saved_label.setText('Saved: (0 bytes)')
         self.frames_saved_label.setStyleSheet("background-color: transparent;")
         statusbar.addPermanentWidget(self.frames_saved_label)
 
         # Finalize layout and initial size
-        # --------------------------------
-        self.main_layout.addStretch(1)  # add stretch to the very end to push statusbar down
-        self.adjustSize()  # set initial compact size
-        self.setFixedSize(self.size())  # lock the initial size
+        self.main_layout.addStretch(1)
+        self._update_monitors_buttons()
+
+        # Calculate compact height (with log panel hidden)
+        self.adjustSize()
+        self._compact_height = self.height()
+
+        self._expanded_height = 600     # why is computing it automatically so hard?? fuck it, hardcoded to 600
+        self.bottom_container.setVisible(False)
+
+        # Set the initial fixed size to the compact state
+        self.setFixedSize(self.width(), self._compact_height)
 
     @Slot(CalibrationData)
     def route_payload_to_widgets(self, data: CalibrationData):
@@ -424,19 +433,20 @@ class MainControls(QMainWindow, SnapMixin):
 
     @Slot()
     def toggle_log_panel(self):
+        is_visible = self.bottom_container.isVisible()
 
-        if self.log_text_area.isVisible():
-            self.log_text_area.setVisible(False)
-            self.setMinimumHeight(0)  # unlock height constraint temporarily
-            self.setFixedHeight(self._compact_height)
+        if is_visible:
+            # Hide the panel and set the window to its compact height
+            self.bottom_container.setVisible(False)
             self.log_button.setText('Show log ▼')
+            self.setFixedHeight(self._compact_height)
         else:
-            self.setMinimumHeight(0)  # Unlock height constraint
-            self.setFixedHeight(self._expanded_height)
-            self.log_text_area.setVisible(True)
+            # Show the panel and set the window to its expanded height
+            self.bottom_container.setVisible(True)
             self.log_button.setText('Hide log ▲')
+            self.setFixedHeight(self._expanded_height)
 
-    #  ============= General toggles =============
+#  ============= General toggles =============
     def _toggle_calib_record(self):
 
         if self.is_recording:
