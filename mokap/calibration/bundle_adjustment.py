@@ -461,9 +461,14 @@ def run_bundle_adjustment(
         fix_aspect_ratio:       bool = False,
         shared_intrinsics:      bool = False,
         distortion_model:       DistortionModel = 'standard',
+        max_frames:             Optional[int] = None
 ) -> Tuple[bool, Dict]:
 
-    C, P, N = visibility_mask.shape
+    C, P_full, N = visibility_mask.shape
+
+    # if an override is given, use it (this avoids reshaping large arrays)
+    P = max_frames if max_frames is not None else P_full
+
     images_sizes_wh = np.atleast_2d(images_sizes_wh)
 
     spec = _get_parameter_spec(

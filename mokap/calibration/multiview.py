@@ -2,6 +2,8 @@ import logging
 from collections import deque
 from typing import Tuple, Dict, Optional, List, Any
 import numpy as np
+import gc
+import psutil
 from jax import numpy as jnp
 from jax.typing import ArrayLike
 from mokap.calibration import bundle_adjustment
@@ -259,154 +261,185 @@ class MultiviewCalibrationTool:
         C = self.nb_cameras
         N = self._object_points.shape[0]
 
-        # --------Prepare the data-----------
+        # Little safeguard to avoid filling up the RAM because of the jacobian
+        # (it grows quadratically with the nb of samples)
 
-        pts2d_buf = np.zeros((C, P, N, 2), dtype=np.float32)
-        vis_buf = np.zeros((C, P, N), dtype=bool)
+        current_P = self.ba_sample_count
+        ba_succeeded = False
+        final_results = None
 
-        for p_idx, entries in enumerate(self.ba_samples):
-            for cam_idx, _, pts2D, ids in entries:
-                pts2d_buf[cam_idx, p_idx, ids, :] = pts2D
-                vis_buf[cam_idx, p_idx, ids] = True
+        while current_P >= self._min_detections:
+            try:
+                logger.info(f"[BA] Attempting Bundle Adjustment with {current_P} samples.")
 
-        # Initial guess for board poses (from online estimation)
-        r_board_w_list, t_board_w_list = [], []
-        E_c2w_all = extrinsics_matrix(self._rvecs_c2w, self._tvecs_c2w)
+                current_samples = list(self.ba_samples)[-current_P:]
 
-        for p_idx, entries in enumerate(self.ba_samples):
-            # Get the camera indices and their corresponding board-to-camera poses for THIS FRAME
-            cam_indices_in_frame = jnp.array([c for c, _, _, _ in entries])
-            E_b2c_in_frame = jnp.stack([E_b2c for _, E_b2c, _, _ in entries])
+                # --------Prepare the data-----------
 
-            # Get the camera-to-world poses ONLY for the cameras in this frame
-            E_c2w_in_frame = E_c2w_all[cam_indices_in_frame]
+                pts2d_buf = np.zeros((C, current_P, N, 2), dtype=np.float32)
+                vis_buf = np.zeros((C, current_P, N), dtype=bool)
 
-            # Correctly compose poses for this frame's views
-            E_b2w_votes = E_c2w_in_frame @ E_b2c_in_frame
+                for p_idx, entries in enumerate(current_samples):
+                    for cam_idx, _, pts2D, ids in entries:
+                        pts2d_buf[cam_idx, p_idx, ids, :] = pts2D
+                        vis_buf[cam_idx, p_idx, ids] = True
 
-            r_stack, t_stack = extmat_to_rtvecs(E_b2w_votes)
-            q_stack = axisangle_to_quaternion_batched(r_stack)
+                # Initial guess for board poses (from online estimation)
+                r_board_w_list, t_board_w_list = [], []
+                E_c2w_all = extrinsics_matrix(self._rvecs_c2w, self._tvecs_c2w)
 
-            # here we use the simple, lenient average for BA initialization
-            # (Because the spread of this cluster is a direct result of the accumulated errors
-            # during online camera pose estimates - which are unavoidable!!
-            # The hardcore filter used online would likely jusyt eliminate everyone here)
-            r_board_w_list.append(quaternion_to_axisangle(quaternion_average(q_stack)))
-            t_board_w_list.append(jnp.median(t_stack, axis=0))
+                for p_idx, entries in enumerate(current_samples):
 
-        # Start with the online estimates
-        cam_r_online = self._rvecs_c2w
-        cam_t_online = self._tvecs_c2w
-        K_online = self._cam_matrices
-        D_online = self._dist_coeffs
-        board_r_online = jnp.stack(r_board_w_list)
-        board_t_online = jnp.stack(t_board_w_list)
+                    cam_indices_in_frame = jnp.array([c for c, _, _, _ in entries])
 
-        pts2d_buf = jnp.asarray(pts2d_buf)
-        vis_buf = jnp.asarray(vis_buf)
+                    E_b2c_in_frame = jnp.stack([E_b2c for _, E_b2c, _, _ in entries])
+                    E_c2w_in_frame = E_c2w_all[cam_indices_in_frame]
 
-        # STAGE 1: Ideal pinhole world (shared intrinsics, no distortion)   (wellllll maybe better with simple dist)
-        # ---------------------------------------------------------------
-        logger.debug("[BA] >>> STAGE 1: Consolidating cameras position...")
-        success_s1, results_s1 = bundle_adjustment.run_bundle_adjustment(
+                    E_b2w_votes = E_c2w_in_frame @ E_b2c_in_frame
 
-            K_online, D_online, cam_r_online, cam_t_online, board_r_online, board_t_online,
+                    r_stack, t_stack = extmat_to_rtvecs(E_b2w_votes)
+                    q_stack = axisangle_to_quaternion_batched(r_stack)
 
-            pts2d_buf, vis_buf,
+                    #  here we use the simple, lenient average for BA initialization
+                    #  (Because the spread of this cluster is a direct result of the accumulated errors
+                    #  during online camera pose estimates - which are unavoidable!!
+                    #  The hardcore filter used online would likely jusyt eliminate everyone here)
+                    r_board_w_list.append(quaternion_to_axisangle(quaternion_average(q_stack)))
+                    t_board_w_list.append(jnp.median(t_stack, axis=0))
 
-            self._object_points,
-            self._images_sizes_wh,
+                # Start with the online estimates
+                cam_r_online = self._rvecs_c2w
+                cam_t_online = self._tvecs_c2w
+                K_online = self._cam_matrices
+                D_online = self._dist_coeffs
+                board_r_online = jnp.stack(r_board_w_list)
+                board_t_online = jnp.stack(t_board_w_list)
 
-            radial_penalty=0.0,   # for fisrst stage we want to consider all points
+                pts2d_buf = jnp.asarray(pts2d_buf)
+                vis_buf = jnp.asarray(vis_buf)
 
-            shared_intrinsics=True,
-            fix_aspect_ratio=True,
-            distortion_model='none',        # Fixes distortion params to zero
-            # distortion_model='simple',
+                # STAGE 1: Ideal pinhole world (shared intrinsics, no distortion)   (wellllll maybe better with simple dist)
+                # ---------------------------------------------------------------
+                logger.debug(f"[BA] >>> STAGE 1: Consolidating cameras position with {current_P} frames...")
+                success_s1, results_s1 = bundle_adjustment.run_bundle_adjustment(
 
-            # What to optimize:
-            fix_focal_principal=False,
-            fix_distortion=True,        # Redundant with model='none', but explicit
-            fix_extrinsics=False,
-            fix_board_poses=False
-        )
+                    K_online, D_online, cam_r_online, cam_t_online, board_r_online, board_t_online,
 
-        if not success_s1:
-            logger.error("[BA] Stage 1 failed. Aborting calibration.")
-            return False
+                    pts2d_buf, vis_buf,
 
-        # Use results of S1 as initial guess for S2
-        K_s2_init = results_s1['K_opt']
-        D_s2_init = results_s1['D_opt']
-        cam_r_s2_init = results_s1['cam_r_opt']
-        cam_t_s2_init = results_s1['cam_t_opt']
-        board_r_s2_init = results_s1['board_r_opt']
-        board_t_s2_init = results_s1['board_t_opt']
+                    self._object_points,
+                    self._images_sizes_wh,
 
-        # STAGE 2: Per-camera pinhole world (shared intrinsics, simple distortion)
-        # ------------------------------------------------------------------------
-        logger.debug("[BA] >>> STAGE 2: Consolidating per-camera intrinsics...")
+                    max_frames=current_P,
 
-        success_s2, results_s2 = bundle_adjustment.run_bundle_adjustment(
+                    shared_intrinsics=True,
+                    fix_aspect_ratio=True,
+                    distortion_model='none',        # Fixes distortion params to zero
+                    # distortion_model='simple',
 
-            K_s2_init, D_s2_init, cam_r_s2_init, cam_t_s2_init, board_r_s2_init, board_t_s2_init,
+                    fix_focal_principal=False,
+                    fix_distortion=True,
+                    fix_extrinsics=False,
+                    fix_board_poses=False,
 
-            pts2d_buf, vis_buf, self._object_points, self._images_sizes_wh,
+                    radial_penalty=0.0      # for fisrst stage we want to consider all points
+                )
+                if not success_s1:
+                    raise RuntimeError("BA Stage 1 failed.")
 
-            radial_penalty=2.0,   # for second stage we want to start penalising points too far from the working volume
+                # STAGE 2: Per-camera pinhole world (shared intrinsics, simple distortion)
+                # ------------------------------------------------------------------------
+                logger.debug(f"[BA] >>> STAGE 2: Consolidating per-camera intrinsics with {current_P} frames...")
 
-            shared_intrinsics=False,  # Now we optimize per-camera
-            fix_aspect_ratio=False,   # we allow fx and fy to differ
-            # distortion_model='none',
-            distortion_model='simple',
+                K_s2_init, D_s2_init = results_s1['K_opt'], results_s1['D_opt']
+                cam_r_s2_init, cam_t_s2_init = results_s1['cam_r_opt'], results_s1['cam_t_opt']
+                board_r_s2_init, board_t_s2_init = results_s1['board_r_opt'], results_s1['board_t_opt']
 
-            fix_focal_principal=False,
-            fix_distortion=True,
-            fix_extrinsics=False,
-            fix_board_poses=False
-        )
+                success_s2, results_s2 = bundle_adjustment.run_bundle_adjustment(
 
-        if not success_s2:
-            logger.error("[BA] Stage 2 failed. Aborting calibration.")
-            return False
+                    K_s2_init, D_s2_init, cam_r_s2_init, cam_t_s2_init, board_r_s2_init, board_t_s2_init,
 
-        # Use results of stage 2 as initial guess for stage 3
-        K_s3_init = results_s2['K_opt']
-        D_s3_init = results_s2['D_opt']
-        cam_r_s3_init = results_s2['cam_r_opt']
-        cam_t_s3_init = results_s2['cam_t_opt']
-        board_r_s3_init = results_s2['board_r_opt']
-        board_t_s3_init = results_s2['board_t_opt']
+                    pts2d_buf, vis_buf,
 
-        # STAGE 3: Real world (Full extrinsics + intrinsics refinement with distortion)
-        # -----------------------------------------------------------------------------
-        logger.debug("[BA] >>> STAGE 3: Full refinement...")
+                    self._object_points,
+                    self._images_sizes_wh,
 
-        success_s3, final_results = bundle_adjustment.run_bundle_adjustment(
+                    max_frames=current_P,
 
-            K_s3_init, D_s3_init, cam_r_s3_init, cam_t_s3_init, board_r_s3_init, board_t_s3_init,
+                    shared_intrinsics=False,    # Now we optimize per-camera
+                    fix_aspect_ratio=False,     # we allow fx and fy to differ
+                    distortion_model='simple',
+                    fix_focal_principal=False,
+                    fix_distortion=True,
+                    fix_extrinsics=False,
+                    fix_board_poses=False,
 
-            pts2d_buf, vis_buf, self._object_points, self._images_sizes_wh,
+                    radial_penalty=2.0 # for second stage we want to start penalising points too far from the working volume
+                )
+                if not success_s2:
+                    raise RuntimeError("BA Stage 2 failed.")
 
-            radial_penalty=4.0,     # now we kinda want to ignore the points far from the working volume
 
-            shared_intrinsics=False,
-            fix_aspect_ratio=False,
-            distortion_model='standard',  # Use the 5-parameter model
-            # distortion_model='full',  # Use the 8-parameter model
+                # STAGE 3: Real world (Full extrinsics + intrinsics refinement with distortion)
+                # -----------------------------------------------------------------------------
+                logger.debug(f"[BA] >>> STAGE 3: Full refinement with {current_P} frames...")
 
-            fix_focal_principal=False,
-            fix_distortion=False,
-            fix_extrinsics=False,
-            fix_board_poses=False,
+                K_s3_init, D_s3_init = results_s2['K_opt'], results_s2['D_opt']
+                cam_r_s3_init, cam_t_s3_init = results_s2['cam_r_opt'], results_s2['cam_t_opt']
+                board_r_s3_init, board_t_s3_init = results_s2['board_r_opt'], results_s2['board_t_opt']
 
-            priors_weight=0.0
-        )
+                success_s3, final_results_attempt = bundle_adjustment.run_bundle_adjustment(
 
-        # Finish
-        # -----------
-        if success_s3:
-            logger.info("Bundle adjustment complete. Storing refined parameters.")
+                    K_s3_init, D_s3_init, cam_r_s3_init, cam_t_s3_init, board_r_s3_init, board_t_s3_init,
+
+                    pts2d_buf, vis_buf,
+
+                    self._object_points,
+                    self._images_sizes_wh,
+
+                    max_frames=current_P,
+
+                    shared_intrinsics=False,
+                    fix_aspect_ratio=False,
+                    distortion_model='standard',  # Use the 5-parameter model
+                    # distortion_model='full',  # Use the 8-parameter model
+
+                    fix_focal_principal=False,
+                    fix_distortion=False,
+                    fix_extrinsics=False,
+                    fix_board_poses=False,
+
+                    radial_penalty=4.0   # now we kinda want to ignore the points far from the working volume
+                )
+                if not success_s3:
+                    raise RuntimeError("BA Stage 3 failed.")
+
+                # If we reach here, all stages were successful
+                ba_succeeded = True
+                final_results = final_results_attempt
+
+                self._points2d, self._visibility_mask = np.asarray(pts2d_buf), np.asarray(vis_buf) # store points from successful run
+                break # Exit the while loop
+
+            except MemoryError:
+                gc.collect()  # Force garbage collection
+                mem = psutil.virtual_memory()
+                logger.warning(
+                    f"[BA] Memory error encountered with {current_P} samples. "
+                    f"RAM usage: {mem.percent}% ({mem.used / 1e9:.2f}/{mem.total / 1e9:.2f} GB). "
+                    f"Reducing sample count and retrying."
+                )
+
+                # Reduce sample count by 10% for the next attempt
+                current_P = int(current_P * 0.9)
+                continue
+
+            except RuntimeError as e:
+                logger.error(f"[BA] {e}. Could not converge even with {current_P} samples. Aborting.")
+                return False
+
+        if ba_succeeded and final_results is not None:
+            logger.info(f"Bundle adjustment complete using {current_P} samples. Storing refined parameters.")
 
             # store the globally optimized results
             final_K = final_results['K_opt']
@@ -419,17 +452,14 @@ class MultiviewCalibrationTool:
             self._refined_intrinsics = (final_K, final_D)
             self._refined_extrinsics = (final_cam_r, final_cam_t)
             self._refined_board_poses = (final_board_r, final_board_t)
-            self._points2d, self._visibility_mask = np.asarray(pts2d_buf), np.asarray(vis_buf)
 
             self._refined = True
-
             self.volume_of_trust()
-
             self.ba_samples.clear()
-
             return True
         else:
-            logger.error("[BA] Stage 3 failed. Aborting calibration.")
+            logger.error(f"[BA] Failed to complete bundle adjustment. "
+                         f"Minimum sample requirement is {self._min_detections}, but failed even after reducing to {current_P}.")
             return False
 
     @property
