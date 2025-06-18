@@ -1,3 +1,4 @@
+from functools import partial
 from typing import Tuple, Union, Optional
 import jax
 from jax import numpy as jnp
