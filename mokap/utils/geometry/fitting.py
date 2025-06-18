@@ -306,11 +306,11 @@ def rays_intersection_3d(
 
 
 @partial(jax.jit, static_argnames=['error_threshold_px', 'percentile'])
-def compute_reliable_bounds_3d(
-    world_points: jnp.ndarray,        # (..., 3)
-    all_errors: jnp.ndarray,          # (C, ..., 1)
-    error_threshold_px: float = 1.0,
-    percentile: float = 1.0
+def reliability_bounds_3d(
+    world_points:               jnp.ndarray,
+    all_errors:                 jnp.ndarray,
+    error_threshold_px:         float = 1.0,
+    percentile:                 float = 1.0
 ) -> Dict[str, Tuple[float, float]]:
     """
     Computes a bounding box in world coordinates from a cloud of 3D points and their corresponding errors
@@ -354,6 +354,73 @@ def compute_reliable_bounds_3d(
         return {'x': (jnp.nan, jnp.nan), 'y': (jnp.nan, jnp.nan), 'z': (jnp.nan, jnp.nan)}
 
     return jax.lax.cond(num_reliable_points < 3, empty_bounds, get_bounds)
+
+
+@partial(jax.jit, static_argnames=['error_threshold_px', 'iqr_factor'])
+def reliability_bounds_3d_iqr(
+    world_points:           jnp.ndarray,
+    all_errors:             jnp.ndarray,
+    error_threshold_px:     float = 1.0,
+    iqr_factor:             float = 1.5
+) -> Dict[str, Tuple[float, float]]:
+    """
+    Computes a robust bounding box using the Interquartile Range (IQR) method
+
+    Robust to geometric outliers, and avoid the impredictibility of the percentile method
+
+    Args:
+        world_points: A cloud of 3D points (P, N, 3)
+        all_errors: Error values for each point from each observation (C, P, N)
+        error_threshold_px: The maximum mean error for a point to be considered reliable
+        iqr_factor: The multiplier for the IQR to define the outlier fences (default 1.5)
+                    Higher value = larger volume
+
+    Returns:
+        A dictionary with 'x', 'y', 'z' keys, each containing a (min, max) tuple for the bounds.
+        Returns NaN bounds if fewer than 4 reliable points are found (IQR is ill-defined).
+    """
+
+    # Average errors across observations (axis 0, e.g., cameras) for each point instance
+    mean_error_per_point = jnp.nanmean(all_errors, axis=0)
+
+    reliable_mask = mean_error_per_point < error_threshold_px
+    num_reliable_points = jnp.sum(reliable_mask)
+
+    # Replace unreliable points with nans
+    reliable_world_pts = jnp.where(
+        reliable_mask[..., None],
+        world_points,
+        jnp.nan
+    )
+
+    def get_bounds():
+        # Q1 (25th percentile) and Q3 (75th percentile) for each axis
+        q1_x, q3_x = jnp.nanpercentile(reliable_world_pts[..., 0], jnp.array([25.0, 75.0]))
+        q1_y, q3_y = jnp.nanpercentile(reliable_world_pts[..., 1], jnp.array([25.0, 75.0]))
+        q1_z, q3_z = jnp.nanpercentile(reliable_world_pts[..., 2], jnp.array([25.0, 75.0]))
+
+        # Interquartile Range (IQR) for each axis
+        iqr_x = q3_x - q1_x
+        iqr_y = q3_y - q1_y
+        iqr_z = q3_z - q1_z
+
+        # Define the bounds using the IQR
+        x_min = q1_x - iqr_factor * iqr_x
+        x_max = q3_x + iqr_factor * iqr_x
+
+        y_min = q1_y - iqr_factor * iqr_y
+        y_max = q3_y + iqr_factor * iqr_y
+
+        z_min = q1_z - iqr_factor * iqr_z
+        z_max = q3_z + iqr_factor * iqr_z
+
+        return {'x': (x_min, x_max), 'y': (y_min, y_max), 'z': (z_min, z_max)}
+
+    def empty_bounds():
+        return {'x': (jnp.nan, jnp.nan), 'y': (jnp.nan, jnp.nan), 'z': (jnp.nan, jnp.nan)}
+
+    # need at least 4 points for quartiles to be meaningful
+    return jax.lax.cond(num_reliable_points < 4, empty_bounds, get_bounds)
 
 
 def _generate_ambiguous_pose(
@@ -402,3 +469,4 @@ generate_ambiguous_pose = jax.jit(_generate_ambiguous_pose)
 generate_multiple_ambiguous_poses = jax.jit(
     jax.vmap(_generate_ambiguous_pose, in_axes=(0, 0), out_axes=(0, 0))
 )
+

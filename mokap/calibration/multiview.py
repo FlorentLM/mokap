@@ -10,7 +10,8 @@ from mokap.calibration import bundle_adjustment
 from mokap.calibration.common import solve_pnp_robust
 from mokap.utils.datatypes import DetectionPayload
 from mokap.utils.geometry.projective import project_to_multiple_cameras, reproject_and_compute_error
-from mokap.utils.geometry.fitting import quaternion_average, filter_rt_samples, compute_reliable_bounds_3d
+from mokap.utils.geometry.fitting import quaternion_average, filter_rt_samples, reliability_bounds_3d, \
+    reliability_bounds_3d_iqr
 from mokap.utils.geometry.transforms import (extrinsics_matrix, extmat_to_rtvecs,
                                              axisangle_to_quaternion_batched, quaternion_to_axisangle,
                                              invert_extrinsics_matrix, invert_rtvecs)
@@ -488,7 +489,7 @@ class MultiviewCalibrationTool:
 
     def volume_of_trust(self,
             threshold:  float = 1.0,
-            percentile: float = 1.0
+            iqr_factor: float = 1.5
     ) -> Optional[Dict[str, Tuple[float, float]]]:
 
         if self._refined:
@@ -505,11 +506,11 @@ class MultiviewCalibrationTool:
             )
 
             # And compute the reliable bounding box using the world points and their errors
-            volume_of_trust = compute_reliable_bounds_3d(
+            volume_of_trust = reliability_bounds_3d_iqr(
                 world_pts_all_instances,
                 all_errors,
                 error_threshold_px=threshold,
-                percentile=percentile
+                iqr_factor=iqr_factor
             )
 
             # Convert back to floats to save
