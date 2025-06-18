@@ -8,6 +8,19 @@ from mokap.core.cameras.interface import AbstractCamera
 
 logger = logging.getLogger(__name__)
 
+_TYPICAL_RANGES = {
+    'framerate':        (15.0, 60.0),
+    'brightness':       (0.0, 255.0),
+    'contrast':         (0.0, 127.0),
+    'saturation':       (0.0, 255.0),
+    'hue':              (0.0, 179.0),
+    'gain':             (0.0, 127.0),
+    'exposure':         (-13.0, -1.0),
+    'black_level':      (1.0, 1.0),
+    'gamma':            (100.0, 300.0),
+    'white_balance':    (2800.0, 6500.0),
+    'sharpness':        (0.0, 7.0),
+}
 
 class WebcamCamera(AbstractCamera):
     """
@@ -160,6 +173,10 @@ class WebcamCamera(AbstractCamera):
         self._exposure = self.exposure
 
     @property
+    def exposure_range(self) -> Tuple[float, float]:
+        return _TYPICAL_RANGES['exposure']
+
+    @property
     def gain(self) -> float:
         return self._get_cv2_property(cv2.CAP_PROP_GAIN)
 
@@ -167,6 +184,10 @@ class WebcamCamera(AbstractCamera):
     def gain(self, value: float):
         self._set_cv2_property(cv2.CAP_PROP_GAIN, value)
         self._gain = self.gain
+
+    @property
+    def gain_range(self) -> Tuple[float, float]:
+        return _TYPICAL_RANGES['gain']
 
     @property
     def black_level(self) -> float:
@@ -179,23 +200,7 @@ class WebcamCamera(AbstractCamera):
 
     @property
     def black_level_range(self) -> Tuple[float, float]:
-        return 0.0, 0.0
-
-    @property
-    def exposure_range(self) -> Tuple[float, float]:
-        return 0.0, 0.0
-
-    @property
-    def framerate_range(self) -> Tuple[float, float]:
-        return 0.0, 0.0
-
-    @property
-    def gain_range(self) -> Tuple[float, float]:
-        return 0.0, 0.0
-
-    @property
-    def gamma_range(self) -> Tuple[float, float]:
-        return 0.0, 0.0
+        return _TYPICAL_RANGES['black_level']
 
     @property
     def gamma(self) -> float:
@@ -207,6 +212,10 @@ class WebcamCamera(AbstractCamera):
         self._gamma = self.gamma
 
     @property
+    def gamma_range(self) -> Tuple[float, float]:
+        return _TYPICAL_RANGES['gamma']
+
+    @property
     def framerate(self) -> float:
         return self._get_cv2_property(cv2.CAP_PROP_FPS)
 
@@ -214,6 +223,10 @@ class WebcamCamera(AbstractCamera):
     def framerate(self, value: float):
         self._set_cv2_property(cv2.CAP_PROP_FPS, value)
         self._framerate = self.framerate
+
+    @property
+    def framerate_range(self) -> Tuple[float, float]:
+        return _TYPICAL_RANGES['framerate']
 
     @property
     def roi(self) -> Tuple[int, int, int, int]:
