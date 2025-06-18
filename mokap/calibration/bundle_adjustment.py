@@ -7,13 +7,14 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 from functools import partial
 from mokap.utils import CallbackOutputStream
+from mokap.utils.datatypes import DistortionModel
 from alive_progress import alive_bar
 
 from mokap.utils.geometry.projective import project_object_views_batched
 from mokap.utils.geometry.transforms import invert_rtvecs
 
-DistortionModel = Literal['none', 'simple', 'standard', 'full']
-DIST_MODEL_MAP = {'none': 0, 'simple': 4, 'standard': 5, 'full': 8}  # TODO: we might want to support rational model too
+
+DIST_MODEL_MAP = {'none': 0, 'simple': 4, 'standard': 5, 'full': 8, 'rational': 8}
 
 
 def scale_params(x: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
@@ -416,11 +417,14 @@ def cost_function(
     Ks, Ds, cam_r, cam_t, board_r, board_t = _unpack_params(params, fixed_params, spec)
     r_w2c, t_w2c = invert_rtvecs(cam_r, cam_t)
 
+    distortion_model = spec['config']['distortion_model']
+
     reproj = project_object_views_batched(
         points3d_th_jnp,
         r_w2c, t_w2c,
         board_r, board_t,
-        Ks, Ds
+        Ks, Ds,
+        distortion_model=distortion_model
     )
 
     resid = reproj - points2d
