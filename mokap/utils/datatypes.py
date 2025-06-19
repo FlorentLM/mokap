@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from copy import deepcopy
 import cv2
 import numpy as np
-from numpy.typing import ArrayLike
+from jax.typing import ArrayLike
 from typing import Optional, Union, Literal
 from pathlib import Path
 from mokap.utils.fileio import generate_board_svg
@@ -134,13 +134,13 @@ class CharucoBoard(ChessBoard):
 @dataclass
 class ReprojectionPayload:
     """ Payload for reprojected points for visualization """
-    all_points_2d: np.ndarray       # Reprojection of all board points
-    detected_ids: np.ndarray        # IDs of currently detected points
+    all_points_2d: ArrayLike       # Reprojection of all board points
+    detected_ids: ArrayLike        # IDs of currently detected points
 
 @dataclass
 class CoveragePayload:
     """ Payload for general state information for UI text fields """
-    grid: np.ndarray  # The boolean cumulative grid (H, W)
+    grid: ArrayLike  # The boolean cumulative grid (H, W)
     coverage_percent: float
     nb_samples: int
     total_points: int
@@ -155,14 +155,14 @@ class DetectionPayload:
     Monocular detection of points 2D
     """
     frame: int
-    points2D: np.ndarray
-    pointsIDs: np.ndarray
+    points2D: ArrayLike
+    pointsIDs: ArrayLike
 
 @dataclass
 class IntrinsicsPayload:
 
-    camera_matrix: np.ndarray
-    dist_coeffs: np.ndarray
+    camera_matrix: ArrayLike
+    dist_coeffs: ArrayLike
     errors: Optional[ArrayLike] = None
 
     @classmethod
@@ -173,8 +173,8 @@ class IntrinsicsPayload:
 @dataclass
 class ExtrinsicsPayload:
 
-    rvec: np.ndarray
-    tvec: np.ndarray
+    rvec: ArrayLike
+    tvec: ArrayLike
     error: Optional[float] = None
 
     @classmethod

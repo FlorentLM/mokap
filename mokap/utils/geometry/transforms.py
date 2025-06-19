@@ -400,12 +400,10 @@ def rotate_rtvecs(
     return rvecs_rot, tvecs_rot
 
 
-@partial(jax.jit, static_argnames=['axis'])
-def rotate_extrinsics_matrix(
+def _rotate_extrinsics_matrix(
     E:              jnp.ndarray,
     angle_degrees:  float,
     axis:           Union[str, Iterable[float]] = 'y',
-    hom:            bool = False
 ) -> jnp.ndarray:
     """
     Args:
@@ -424,10 +422,15 @@ def rotate_extrinsics_matrix(
     t_new = Rg @ t
 
     E_rot = jnp.concatenate([R_new, t_new[..., None]], axis=1)  # (3, 4)
-    if hom:
-        bottom = jnp.array([[0.0, 0.0, 0.0, 1.0]], dtype=E_rot.dtype)
-        E_rot = jnp.vstack([E_rot, bottom])
+    bottom = jnp.array([[0.0, 0.0, 0.0, 1.0]], dtype=E_rot.dtype)
+    E_rot = jnp.vstack([E_rot, bottom]) # (4, 4)
+
     return E_rot
+
+rotate_extrinsics_matrix = jax.jit(_rotate_extrinsics_matrix, static_argnames=['axis'])
+
+# vmapped version to rotate multiple matrices by the same value, same axis
+rotate_extrinsics_matrices = jax.jit(jax.vmap(_rotate_extrinsics_matrix, in_axes=(0, None, None)), static_argnames=['axis'])
 
 
 def _axisangle_to_quaternion(rvec: jnp.ndarray) -> jnp.ndarray:

@@ -28,49 +28,32 @@ class CentralCalibrationWindow(Base):
 
         self.nb_cams = main_window_ref.nb_cams
         self.idx = self.nb_cams + 1
-
-        self._cameras_names = self._mainwindow.cameras_names    # Fixed cameras order
+        self._cameras_names = tuple(self._mainwindow.cameras_names)    # static order for cameras names
 
         self._cam_colours_rgba = {cam: np.array([*hex_to_rgb(col), 255], dtype=np.uint8)
                                   for cam, col in self._mainwindow.cams_colours.items()}
-        self._cam_colours_rgba_norm = {cam: col / 255
-                                       for cam, col in self._cam_colours_rgba.items()}
-        self._sources_shapes = self._mainwindow.sources_shapes
+        self._cam_colours_rgba_norm = {cam: col / 255 for cam, col in self._cam_colours_rgba.items()}
 
         self.is_editing_board = False
+        self._nb_object_points = self._mainwindow.board_params.object_points.shape[0]
 
-        # Data stores for dynamic points
-        self.max_board_points = self._mainwindow.board_params.object_points.shape[0]
-
-        # Faces as triangles
-        self._frustum_faces = np.array([[0, 1, 2], [0, 2, 3]])
-        self._volume_verts = np.array([
-            [-1., -1., -1.],
-            [ 1., -1., -1.],
-            [ 1.,  1., -1.],
-            [-1.,  1., -1.],
-            [-1., -1.,  1.],
-            [ 1., -1.,  1.],
-            [ 1.,  1.,  1.],
-            [-1.,  1.,  1.]
-        ], dtype=np.float32)
-        self._volume_faces = np.array([
-            [0, 1, 2], [0, 2, 3],  # Bottom
-            [4, 5, 6], [4, 6, 7],  # Top
-            [0, 1, 5], [0, 5, 4],  # Front
-            [1, 2, 6], [1, 6, 5],  # Right
-            [2, 3, 7], [2, 7, 6],  # Back
-            [3, 0, 4], [3, 4, 7]   # Left
-        ], dtype=np.int32)
+        self._frustum_faces = np.array([
+            [0, 1, 2],  # Apex, V1, V2
+            [0, 2, 3],  # Apex, V2, V3
+            [0, 3, 4],  # Apex, V3, V4
+            [0, 4, 1],  # Apex, V4, V1
+            # Add faces for the base to close the mesh
+            [1, 2, 3],  # V1, V2, V3
+            [1, 3, 4],  # V1, V3, V4
+        ])
 
         # References to displayed items
-        self._refreshable_items = []
         self._frustum_depth = 200
         self._gridsize = 100
         self._antialiasing = True
 
         # Dictionary to hold persistent GL items
-        self.camera_gl_items = {}
+        self._percamera_gl_items = {}
         self.global_gl_items = {}
 
         # Finish building the UI and initialise the 3D scene
@@ -78,13 +61,6 @@ class CentralCalibrationWindow(Base):
 
         # Create GL items after the UI exists
         self._create_gl_items()
-
-        # Add the grid now bc no need to update it later
-        self.grid = GLGridItem()
-        self.grid.setSize(self._gridsize * 2, self._gridsize * 2, self._gridsize * 2)
-        self.grid.setSpacing(self._gridsize * 0.1, self._gridsize * 0.1, self._gridsize * 0.1)
-        self.view.addItem(self.grid)
-        self.view.opts['distance'] = self._gridsize
 
     def _init_ui(self):
         self.view = GLViewWidget()
@@ -110,6 +86,7 @@ class CentralCalibrationWindow(Base):
         self.calibration_stage_combo = QComboBox()
         self.calibration_stage_combo.addItems(['Intrinsics', 'Extrinsics'])
         self.calibration_stage_combo.currentIndexChanged.connect(self._mainwindow.coordinator.set_stage)
+        self.calibration_stage_combo.currentIndexChanged.connect(self._on_stage_changed)
 
         controls_layout.addWidget(self.calibration_stage_combo, 0, 1)
         controls_layout.addWidget(QLabel("Origin Cam:"), 1, 0)
@@ -246,14 +223,6 @@ class CentralCalibrationWindow(Base):
         self.resize(w, h)
         self.show()
 
-    def update_scene_single_camera(self, cam_idx: int):
-        # simplified version of the scene update method to draw one camera
-        # (i.e. not a full back-projection of all cameras)
-
-        # TODO: implement this
-        # just call the full update for now
-        self.update_scene()
-
     def _create_board(self) -> Union[CharucoBoard, ChessBoard, None]:
         """ Reads UI widgets and returns a new board object, or None on failure """
 
@@ -279,6 +248,7 @@ class CentralCalibrationWindow(Base):
     @Slot()
     def _slot_refresh_board_ui(self):
         """ A small wrapper slot for calling _refresh_board_ui """
+
         if self.is_editing_board:
             board = self._create_board()
             if board:
@@ -357,8 +327,16 @@ class CentralCalibrationWindow(Base):
                 self._refresh_board_ui(self._mainwindow.board_params)
 
     @Slot()
+    def _on_stage_changed(self):
+        if self.calibration_stage_combo.currentIndex() == 1:
+            self.origin_camera_combo.setDisabled(True)
+        else:
+            self.origin_camera_combo.setDisabled(False)
+
+    @Slot()
     def _on_print_board(self):
         """ Opens a dialog to save the current board as a printable SVG file """
+
         board = self._mainwindow.board_params
 
         # Suggest a filename based on board parameters
@@ -386,182 +364,123 @@ class CentralCalibrationWindow(Base):
 
     def _create_gl_items(self):
 
-        # Create global items once
-        self.global_gl_items['board_3d'] = GLScatterPlotItem(
-            pos=np.zeros((self.max_board_points, 3)),
-            color=(1, 0, 1, 0.9), size=8, pxMode=True
-        )
-        self.global_gl_items['board_3d'].setVisible(False)
-        self.view.addItem(self.global_gl_items['board_3d'])
-        # TODO: Add volume of trust here
+        # Create per-camera items and set them initially hidden
 
         for i, cam_name in enumerate(self._cameras_names):
             color = self._cam_colours_rgba_norm[cam_name]
             color_translucent_80 = (*color[:3], color[3] * 0.8)
-            color_translucent_50 = (*color[:3], color[3] * 0.5)
+            color_translucent_30 = (*color[:3], color[3] * 0.3)
 
-            detections_scatter = GLScatterPlotItem(pos=np.zeros((self.max_board_points, 3)),
+            detections_scatter = GLScatterPlotItem(pos=np.zeros((self._nb_object_points, 3)),
                                                    color=color, size=7, pxMode=True)
-            detections_scatter.setVisible(False)    # initially hidden
+            detections_scatter.setVisible(False)
 
             # Create items with placeholder data
             center_scatter = GLScatterPlotItem(pos=np.zeros((1, 3)), color=color, size=10)
 
-            # 4 corners of frustum + camera center = 5 vertices. 4 lines from center to corners.
-            frustum_lines = GLLinePlotItem(pos=np.zeros((8, 3)), color=color, width=1, antialias=self._antialiasing,
-                                           mode='lines')
+            # frustum mesh expects 5 vertices (Apex + 4 corners)
+            frustum_mesh = GLMeshItem(
+                vertexes=np.zeros((5, 3)),
+                faces=self._frustum_faces,
+                smooth=self._antialiasing,
+                shader='shaded',
+                glOptions='translucent',
+                drawEdges=True,
+                edgeColor=color_translucent_80,
+                color=color_translucent_30
+            )
+            frustum_mesh.setVisible(False)
 
-            frustum_mesh = GLMeshItem(vertexes=np.zeros((4, 3)), faces=self._frustum_faces,
-                                      smooth=self._antialiasing, shader='shaded', glOptions='translucent',
-                                      drawEdges=True, edgeColor=color_translucent_80, color=color_translucent_50)
-
-            # Dashed lines for optical axis requires are slow
-            # TODO: custom shader for that
+            # Dashed lines would be better for optical axes but are slow. TODO: custom shader for that
             optical_axis_line = GLLinePlotItem(pos=np.zeros((2, 3)), color=color, width=2, antialias=self._antialiasing)
+            optical_axis_line.setVisible(False)
 
             # Store references to the items
-            self.camera_gl_items[cam_name] = {
+            self._percamera_gl_items[cam_name] = {
                 'center': center_scatter,
-                'frustum_lines': frustum_lines,
                 'frustum_mesh': frustum_mesh,
                 'optical_axis': optical_axis_line,
                 'detections': detections_scatter
             }
 
-            # Add items to the view
-            self.view.addItem(self.camera_gl_items[cam_name]['center'])
-            self.view.addItem(self.camera_gl_items[cam_name]['frustum_lines'])
-            self.view.addItem(self.camera_gl_items[cam_name]['frustum_mesh'])
-            self.view.addItem(self.camera_gl_items[cam_name]['optical_axis'])
-            self.view.addItem(self.camera_gl_items[cam_name]['detections'])
+            # Add items to the scene
+            self.view.addItem(self._percamera_gl_items[cam_name]['center'])
+            self.view.addItem(self._percamera_gl_items[cam_name]['frustum_mesh'])
+            self.view.addItem(self._percamera_gl_items[cam_name]['optical_axis'])
+            self.view.addItem(self._percamera_gl_items[cam_name]['detections'])
+
+        # Create global items
+        board_scatter = GLScatterPlotItem(
+            pos=np.zeros((self._nb_object_points, 3)),
+            color=(1, 0, 1, 0.9), size=8, pxMode=True
+        )
+        board_scatter.setVisible(False)
+
+        self.global_gl_items['board_3d'] = board_scatter
+
+        grid = GLGridItem()
+        grid.setSize(self._gridsize * 2, self._gridsize * 2, self._gridsize * 2)
+        grid.setSpacing(self._gridsize * 0.1, self._gridsize * 0.1, self._gridsize * 0.1)
+
+        self.global_gl_items['grid'] = grid
+
+        # Add global items to the scene
+        self.view.addItem(self.global_gl_items['board_3d'])
+        self.view.addItem(self.global_gl_items['grid'])
+
+        self.view.opts['distance'] = self._gridsize
 
     @Slot(dict)
     def on_scene_data_ready(self, scene_data: dict):
         """ Receives pre-computed 3D data from the worker and updates GL items """
 
-        all_E = scene_data['extrinsics']
-        all_frustums_3d = scene_data['frustums_3d']
-        all_centers_3d = scene_data['centers_3d']
-        all_detections_3d = scene_data['detections_3d']
+        board_3d = scene_data.get('board_3d')
+        frustums_3d = scene_data.get('frustums_3d')
+        detections_3d = scene_data.get('detections_3d')
+        optical_axes_3d = scene_data.get('optical_axes_3d')
 
         for i, cam_name in enumerate(self._cameras_names):
-            if not np.all(np.isfinite(all_frustums_3d[i])):
-                continue
-
-            self._update_camera_gl(
+            self._update_gl_items(
                 cam_name=cam_name,
-                extrinsics_mat=all_E[i],
-                frustum_points3d=all_frustums_3d[i],
-                center_point3d=all_centers_3d[i],
-                detection_points3d=all_detections_3d[i]
+                optical_axes_3d=optical_axes_3d[i],
+                frustum_points3d=frustums_3d[i],
+                detection_points3d=detections_3d[i]
             )
 
-    def _update_camera_gl(self, cam_name: str, extrinsics_mat: jnp.ndarray, frustum_points3d: jnp.ndarray, center_point3d: jnp.ndarray, detection_points3d: jnp.ndarray):
-        """ Only updates GL item data with pre-calculated 3D points
-        All points are rotated 180 degrees on Y for correct visualization """
+        # Update the global board points scatter plot
+        board_plot = self.global_gl_items.get('board_3d')
 
-        if not np.all(np.isfinite(frustum_points3d)):
-            return
-
-        gl_items = self.camera_gl_items[cam_name]
-
-        # Rotate all incoming points for visualization
-        E_rot = rotate_extrinsics_matrix(extrinsics_mat, 180, axis='y')
-        cam_center_pos_rot = E_rot[:3, 3].reshape(1, -1)
-        frustum_points3d_rot = rotate_points3d(frustum_points3d, 180, axis='y')
-        center_point3d_rot = rotate_points3d(center_point3d, 180, axis='y')
-        detection_points3d_rot = rotate_points3d(detection_points3d, 180, axis='y')
-
-        # Update GL Items with new data
-        gl_items['center'].setData(pos=cam_center_pos_rot)
-        gl_items['frustum_mesh'].setMeshData(vertexes=frustum_points3d_rot)
-        gl_items['optical_axis'].setData(pos=np.vstack([cam_center_pos_rot, center_point3d_rot]))
-        gl_items['detections'].setData(pos=detection_points3d_rot)
-        gl_items['detections'].setVisible(detection_points3d_rot.shape[0] > 0)
-
-        # Update frustum lines connecting center to corners
-        line_verts = np.empty((8, 3))
-        line_verts[0:2] = np.vstack([cam_center_pos_rot, frustum_points3d_rot[0]])
-        line_verts[2:4] = np.vstack([cam_center_pos_rot, frustum_points3d_rot[1]])
-        line_verts[4:6] = np.vstack([cam_center_pos_rot, frustum_points3d_rot[2]])
-        line_verts[6:8] = np.vstack([cam_center_pos_rot, frustum_points3d_rot[3]])
-
-        gl_items['frustum_lines'].setData(pos=line_verts)
-
-    # TODO: These should migrate to the Multiview Worker
-    def update_3d_points(self):
-        """ Updates the global 3D board points scatter plot """
-        board_plot = self.global_gl_items['board_3d']
-
-        # Get only the visible points
-        visible_points = self.board_points_3d[self.board_points_3d_vis]
-
-        if visible_points.shape[0] > 0:
-            points3d_rot = rotate_points3d(visible_points, 180, axis='y')
-            board_plot.setData(pos=points3d_rot)
+        if board_3d is not None and board_3d.shape[0] > 0:
+            board_plot.setData(pos=board_3d)
             board_plot.setVisible(True)
         else:
             board_plot.setVisible(False)
 
-    def add_cube(self, center: np.ndarray, size: float | np.ndarray, color=(1, 1, 1, 0.5)):
-        """
-        Add a cube centered at "center" with the given "size"
-        TODO: we prob want a rectangular cuboid or an ellipsoid instead
-        """
+    def _update_gl_items(self,
+                         cam_name: str,
+                         optical_axes_3d:        jnp.ndarray,
+                         frustum_points3d:       jnp.ndarray,
+                         detection_points3d:     jnp.ndarray):
 
-        color_translucent_50 = np.copy(color)
-        color_translucent_50[3] *= 0.5
+        gl_items = self._percamera_gl_items[cam_name]
 
-        color = tuple(color)
-        color_translucent_50 = tuple(color_translucent_50)
+        # Vertex 0 is the apex (camera center)
+        cam_centre_3d = frustum_points3d[0]
+        is_pose_valid = jnp.linalg.norm(cam_centre_3d) > 1e-6
 
-        hsize = np.asarray(size) * 0.5
-        if hsize.shape == ():
-            hsize = np.array([hsize, hsize, hsize])
-        if len(hsize) != 3:
-            raise AttributeError("Volume size must be a scalar or a vector 3!")
+        # Make all items for this camera visible or invisible based on pose validity
+        for item in gl_items.values():
+            item.setVisible(is_pose_valid)
 
-        vertices = (self._volume_verts * hsize) + np.asarray(center)
-        meshdata = MeshData(vertexes=vertices, faces=self._volume_faces)
-        cube = GLMeshItem(meshdata=meshdata,
-                             smooth=self._antialiasing,
-                             shader='shaded',
-                             glOptions='translucent',
-                             drawEdges=True,
-                             edgeColor=color,
-                             color=color_translucent_50)
-        self._refreshable_items.append(cube)
+        if not is_pose_valid:
+            return  # stop here if the pose is invalid
 
-    def add_focal_point(self, color=(1, 1, 1, 1)):
-        color = tuple(color)
-        focal_scatter = GLScatterPlotItem(pos=self.focal_point, color=color, size=5)
-        self._refreshable_items.append(focal_scatter)
+        # Update GL Items with new data
+        gl_items['center'].setData(pos=cam_centre_3d)
+        gl_items['frustum_mesh'].setMeshData(vertexes=frustum_points3d, faces=self._frustum_faces)
+        gl_items['optical_axis'].setData(pos=optical_axes_3d)
 
-    def add_dashed_line(self, start: np.ndarray, end: np.ndarray, dash_length=5.0, gap_length=5.0, color=(1, 1, 1, 1), width=1, antialias=True):
-
-        color = tuple(color)
-
-        start = np.asarray(start, dtype=float)
-        end = np.asarray(end, dtype=float)
-        vec = end - start
-        total_length = np.linalg.norm(vec)
-        if total_length == 0:
-            return
-        direction = vec / total_length
-        step = dash_length + gap_length
-
-        num_steps = int(total_length // step)
-
-        for i in range(num_steps + 1):
-            seg_start = start + i * step * direction
-            seg_end = seg_start + dash_length * direction
-
-            # clamp the segment end so it doesn't overshoot
-            if np.linalg.norm(seg_end - start) > total_length:
-                seg_end = end
-            line_seg = GLLinePlotItem(pos=np.array([seg_start, seg_end]),
-                                         color=color,
-                                         width=width,
-                                         antialias=antialias)
-            self._refreshable_items.append(line_seg)
-
+        # Only show detections if there are any
+        has_detections = detection_points3d.shape[0] > 0
+        gl_items['detections'].setData(pos=detection_points3d)
+        gl_items['detections'].setVisible(is_pose_valid and has_detections)

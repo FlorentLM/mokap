@@ -1,5 +1,6 @@
 import logging
 import numpy as np
+import jax.numpy as jnp
 from typing import List, Optional, Union, Dict
 from PySide6.QtCore import QTimer, Slot, Signal
 from numpy.typing import ArrayLike
@@ -8,7 +9,8 @@ from mokap.gui.workers.workers_base import CalibrationProcessingWorker
 from mokap.utils.datatypes import (CalibrationData, DetectionPayload, ExtrinsicsPayload, IntrinsicsPayload,
                                    ChessBoard, CharucoBoard)
 from mokap.utils.geometry.projective import back_projection_batched, back_projection
-from mokap.utils.geometry.transforms import extrinsics_matrix
+from mokap.utils.geometry.transforms import extrinsics_matrix, invert_rtvecs, rotate_extrinsics_matrix, rotate_points3d, \
+    rotate_extrinsics_matrices
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +22,7 @@ class MultiviewWorker(CalibrationProcessingWorker):
     def __init__(self,
                  cameras_names:     List[str],
                  origin_camera:     str,
-                 sources_shapes_wh: ArrayLike,
+                 sources_shapes_wh: Dict[str, ArrayLike],
                  calibration_board: Union[ChessBoard, CharucoBoard]):
         super().__init__(name='multiview')
 
@@ -33,6 +35,12 @@ class MultiviewWorker(CalibrationProcessingWorker):
 
         self._sources_shapes_wh = sources_shapes_wh  # Expects {cam_name: (w, h)}
         self.calibration_board = calibration_board
+
+        # Store board object points in homogenous coordinates for transforms
+        self._object_points_hom = np.hstack([
+            self.calibration_board.object_points,
+            np.ones((self.calibration_board.object_points.shape[0], 1))
+        ])
 
         self.multiview_tool: Optional[MultiviewCalibrationTool] = None
 
@@ -48,47 +56,60 @@ class MultiviewWorker(CalibrationProcessingWorker):
         self._rvecs_c2w[self._orig_cam_idx] = np.zeros(3)  # Origin is fixed at (0, 0, 0)
         self._tvecs_c2w[self._orig_cam_idx] = np.zeros(3)
 
+        # Define static 2D points for frustum visualization
+        img_points_2d = np.array([
+            # central point
+            [[w / 2, h / 2],
+            # image corners
+             [0, 0],
+             [w, 0],
+             [w, h],
+             [0, h]
+             ] for w, h in sources_shapes_wh.values()], dtype=np.float32)
+
+        self._img_points_2d = jnp.asarray(img_points_2d)  # (C, 5, 2)
+
         # Buffer for per-frame 2D detections for visualization
         self._points_2d: Dict[str, np.ndarray] = {name: np.zeros((0, 2)) for name in self._cameras_names}
+        self._points_ids: Dict[str, np.ndarray] = {name: np.array([]) for name in self._cameras_names}
 
         # Empty arrays to emit nodata when needed
         self._nopoints_2d = np.zeros((0, 2))
+        self._nopoints_ids = np.array([])
         self._nopoints_3d = np.zeros((0, 3))
 
         self._frustum_depth = 200.0 # TODO: compute this automatically
 
+        self._min_ba_samples = 100  # TODO: GUI access to these
+        self._max_ba_samples = 150
+
         # Timer for sending scene data to the 3D view
         self.update_timer = QTimer(self)
         self.update_timer.setInterval(33)  # ~ 30 Hz
-        self.update_timer.timeout.connect(self.process_and_emit_3d_data)
+        self.update_timer.timeout.connect(self.update_3d_scene)
+
+        self.update_timer.start()
 
     def _try_create_tool(self):
         """ Creates the MultiviewCalibrationTool once all intrinsics are available """
 
-        if self.multiview_tool is None and np.all(self._intrinsics_ready) :
-            logger.info(f"[{self.name.title()}] All intrinsics received. Creating Multiview tool.")
+        if self.multiview_tool is None and self._current_stage > 0 and np.all(self._intrinsics_ready):
+            logger.info(
+                f"[{self.name.title()}] All intrinsics received for Stage {self._current_stage}. Creating Multiview tool.")
 
-            image_sizes_wh = np.array([self._sources_shapes_wh[name] for name in self._cameras_names])
+            # Convert dict to ordered list for the tool
+            image_sizes_wh_list = [self._sources_shapes_wh[name] for name in self._cameras_names]
 
             self.multiview_tool = MultiviewCalibrationTool(
                 nb_cameras=self._C,
-                images_sizes_wh=image_sizes_wh,
+                images_sizes_wh=np.array(image_sizes_wh_list),
                 origin_idx=self._orig_cam_idx,
                 init_cam_matrices=self._cameras_matrices,
                 init_dist_coeffs=self._dist_coeffs,
                 object_points=self.calibration_board.object_points,
-                min_detections=50,  # TODO: Make configurable
-                max_detections=300
+                min_detections=self._min_ba_samples,
+                max_detections=self._max_ba_samples
             )
-            self.update_timer.start()  # Start emitting 3D scene data
-
-    @Slot(MultiviewCalibrationTool)
-    def initialize_tool(self, tool: MultiviewCalibrationTool):
-        """ Receives the fully configured tool from the Coordinator when calibration stage > 0 """
-        # TODO: Rename this, make it consistent with the monocular tool's names
-
-        self.multiview_tool = tool
-        logger.debug(f"[{self.name.title()}] Multiview tool initialized and ready.")
 
     @Slot(CalibrationData)
     def on_payload_received(self, data: CalibrationData):
@@ -97,70 +118,116 @@ class MultiviewWorker(CalibrationProcessingWorker):
         cam_idx = self._cameras_names.index(data.camera_name)
         payload = data.payload
 
+        # Intrinsics are always accepted because the Coordinator blocks unwanted live updates
+        # This allows refined/loaded intrinsics to always come through
         if isinstance(payload, IntrinsicsPayload):
-            # Update local state for this camera
             self._cameras_matrices[cam_idx] = payload.camera_matrix
+
             d_len = len(payload.dist_coeffs)
             self._dist_coeffs[cam_idx, :d_len] = payload.dist_coeffs
+
             self._intrinsics_ready[cam_idx] = True
 
-            # Check if all intrinsics are now ready to create the tool
             self._try_create_tool()
 
-        elif isinstance(payload, DetectionPayload) and self.multiview_tool:
-            # Pass detections directly to the tool
+        # Only process extrinsics during the initial seeding phase. After that, the tool takes over.
+        elif self._current_stage == 0 and isinstance(payload, ExtrinsicsPayload):
+
+            if payload.rvec is not None and payload.tvec is not None:
+                r_c2w, t_c2w = invert_rtvecs(payload.rvec, payload.tvec)
+                self._rvecs_c2w[cam_idx] = r_c2w
+                self._tvecs_c2w[cam_idx] = t_c2w
+
+        # Detection payloads are only processed in stage > 0 when the tool exists
+        elif self._current_stage > 0 and self.multiview_tool and isinstance(payload, DetectionPayload):
             self.multiview_tool.register(cam_idx, payload)
 
             # Also store the 2D points for visualization
             self._points_2d[data.camera_name] = payload.points2D if payload.points2D is not None else self._nopoints_2d
+            self._points_ids[data.camera_name] = payload.pointsIDs if payload.pointsIDs is not None else self._nopoints_ids
 
-    def process_and_emit_3d_data(self):
+    def update_3d_scene(self):
         """ Periodically calculates and emits all data needed for the 3D view """
 
-        # This state is updated by incoming payloads or after a successful BA
+        scene_data = {}
 
         # Determine which set of parameters to use for visualization
         if self.multiview_tool and self.multiview_tool.is_refined:
-            K, D = self.multiview_tool.refined_intrinsics
-            r, t = self.multiview_tool.refined_extrinsics
+            Ks, Ds = self.multiview_tool.refined_intrinsics
+            rs_c2w, ts_c2w = self.multiview_tool.refined_extrinsics
 
-        elif self.multiview_tool and self.multiview_tool._estimated:
-            K, D = self.multiview_tool.intrinsics
-            r, t = self.multiview_tool.extrinsics
+        elif self.multiview_tool and self.multiview_tool.is_estimated:
+            Ks, Ds = self.multiview_tool.intrinsics
+            rs_c2w, ts_c2w = self.multiview_tool.extrinsics
         else:
             # Before estimation, use the initial parameters stored in the worker
-            K, D, r, t = self._cameras_matrices, self._dist_coeffs, self._rvecs_c2w, self._tvecs_c2w
+            Ks, Ds, rs_c2w, ts_c2w = self._cameras_matrices, self._dist_coeffs, self._rvecs_c2w, self._tvecs_c2w
 
-        # Early exit if there's nothing to draw
-        if K is None or r is None:
+        if Ks is None or rs_c2w is None or ts_c2w is None:
+            # nothing to draw, early exit
             return
 
-        all_E = extrinsics_matrix(r, t) # TODO: This expects jax arrays - make we dont convert back and forth to numpy for no reason
+        # back_projection expects world-to-camera (w2c) poses. We store camera-to-world (c2w). Invert them first.
+        rs_w2c, ts_w2c = invert_rtvecs(rs_c2w, ts_c2w)
+        Es_w2c = extrinsics_matrix(rs_w2c, ts_w2c)
 
-        # Frustum visualization
-        # TODO: No need to initialise these arrays over and over - they need to be stored
-        frustums_pts = np.array([ [[0, 0], [w, 0], [w, h], [0, h]]
-            for w, h in self._sources_shapes_wh.values()], dtype=np.float32)
-        centers_pts = np.array([[w / 2, h / 2] for w, h in self._sources_shapes_wh.values()], dtype=np.float32)
+        frustum_3d = back_projection_batched(self._img_points_2d, self._frustum_depth, Ks, Es_w2c, Ds, 'full')
+        img_center_point3d = frustum_3d[:, 0, :]
 
-        # TODO: Why two calls to back_projection_batched? We could have one stacked array and one call, then slice it
-        all_frustums_3d = back_projection_batched(frustums_pts, self._frustum_depth, K, all_E, D)
-        all_centers_3d = back_projection_batched(centers_pts[:, np.newaxis, :], self._frustum_depth, K, all_E,
-                                                 D).squeeze(axis=1)
+        optical_axes = jnp.vstack([ts_w2c, img_center_point3d])
 
-        # Detections visualization
-        all_detections_3d = [
-            back_projection(self._points_2d[name], self._frustum_depth * 0.95, K[i], all_E[i], D[i])
-            if self._points_2d[name].shape[0] > 0 else self._nopoints_3d
-            for i, name in enumerate(self._cameras_names)
-        ]
+        # Detections and board visualisation
+        detections_3d = []
+        board_3d = None
 
-        self.scene_data_ready.emit({
-            'extrinsics': all_E,
-            'frustums_3d': all_frustums_3d,
-            'centers_3d': all_centers_3d,
-            'detections_3d': all_detections_3d
-        })
+        # Stage-dependent visualisation logic
+        if self._current_stage == 0:
+            # Stage 0: Board is at originand cameras "orbit" around it
+            # (detections are just back-projected)
+
+            scene_data['board_3d'] = self.calibration_board.object_points
+
+            for i, name in enumerate(self._cameras_names):
+                points2d = self._points_2d[name]
+                if points2d.shape[0] > 0:
+                    detections_3d.append(
+                        back_projection(points2d, self._frustum_depth * 0.95, Ks[i], Es_w2c[i], Ds[i])
+                    )
+                else:
+                    detections_3d.append(self._nopoints_3d)
+
+        elif self._current_stage > 0 and self.multiview_tool:
+            # Stage > 0: Cameras are static and the board moves
+            # (we show the 'triangulated' board)
+
+            latest_board_pose = self.multiview_tool.current_board_pose
+
+            if latest_board_pose is not None:
+                # Transform board points into world coordinates
+                board_3d = (latest_board_pose @ self._object_points_hom.T).T[:, :3]
+                scene_data['board_3d'] = board_3d
+
+            # For detections, we can show them on the 3D board
+            for i, name in enumerate(self._cameras_names):
+                ids = self._points_ids[name]
+
+                if ids.shape[0] > 0 and board_3d is not None:
+                    # Select the visible points from the full 3D board model
+                    detections_3d.append(board_3d[ids])
+                else:
+                    detections_3d.append(self._nopoints_3d)
+
+        # Rotate all 3D data by 180 degrees around Y axis to match OpenGL coordinate system
+        # scene_data['board_3d'] = rotate_points3d(scene_data.get('board_3d'), 180, axis='y')
+        # scene_data['frustums_3d'] = rotate_points3d(frustum_3d, 180, axis='y')
+        # scene_data['optical_axes_3d'] = rotate_points3d(optical_axes, 180, axis='y')
+        # scene_data['detections_3d'] = [rotate_points3d(d, 180, axis='y') for d in detections_3d]
+
+        scene_data['frustums_3d'] = frustum_3d
+        scene_data['optical_axes_3d'] = optical_axes
+        scene_data['detections_3d'] = detections_3d
+
+        self.scene_data_ready.emit(scene_data)
 
     @Slot()
     def trigger_refinement(self):
@@ -182,11 +249,6 @@ class MultiviewWorker(CalibrationProcessingWorker):
             K_opts, D_opts = self.multiview_tool.refined_intrinsics
             r_opts, t_opts = self.multiview_tool.refined_extrinsics
 
-            K_opts = np.asarray(K_opts)
-            D_opts = np.asarray(D_opts)
-            r_opts = np.asarray(r_opts)
-            t_opts = np.asarray(t_opts)
-
             # Update worker's internal state with the new best parameters
             self._cameras_matrices, self._dist_coeffs = K_opts, D_opts
             self._rvecs_c2w, self._tvecs_c2w = r_opts, t_opts
@@ -203,9 +265,12 @@ class MultiviewWorker(CalibrationProcessingWorker):
         """ Resets the worker to its initial state """
         super().reset()
 
-        self.update_timer.stop()
         self.multiview_tool = None
         self._intrinsics_ready.fill(False)
+
+        # Reset poses to default
+        self._rvecs_c2w = np.zeros((self._C, 3), dtype=np.float32)
+        self._tvecs_c2w = np.zeros((self._C, 3), dtype=np.float32)
 
         logger.debug(f"[{self.name.title()}] Worker has been reset.")
 
@@ -213,8 +278,10 @@ class MultiviewWorker(CalibrationProcessingWorker):
     def set_stage(self, stage: int):
         super().set_stage(stage)
 
-        # If we move back to stage 0, we must destroy the tool and stop the timer
-        if stage == 0 and self.multiview_tool is not None:
-            logger.debug(f"[{self.name.title()}] Resetting. Multiview tool destroyed.")
-            self.update_timer.stop()
-            self.multiview_tool = None
+        # When moving back to stage 0, we must perform a full reset.
+        if stage == 0:
+            self.reset()
+
+        else:
+            # Start the 3D view update timer when moving to an active stage
+            self._try_create_tool()

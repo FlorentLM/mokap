@@ -57,9 +57,9 @@ class CalibrationProcessingWorker(CalibrationWorker, ProcessingWorker):
 
         logger.debug(f"[{self.name.title()}] Received reset signal.")
 
-        self.set_stage(0) # default reset behavior is to go back to stage 0
-
     @Slot(int)
     def set_stage(self, stage: int):
+        if self._current_stage == stage:
+            return
         self._current_stage = stage
         logger.debug(f"[{self.name.title()}] Received calibration stage: {stage}")

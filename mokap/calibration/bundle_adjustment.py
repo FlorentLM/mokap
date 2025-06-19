@@ -215,7 +215,7 @@ def _unpack_params(
 
 def _get_bounds(
         spec: Dict,
-        images_sizes_wh: np.ndarray
+        images_sizes_wh: ArrayLike
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """
     Computes lower and upper bounds for the optimization variables based on the spec

@@ -883,12 +883,12 @@ class MainControls(QMainWindow, SnapMixin):
         # update the monitor display with live window positions
         self._update_monitors_buttons()
 
-        # Estimate the size of saved data
-        now = time.monotonic()
-        if now - self._tick >= 0.25:
-            bytes = get_size(self.manager.full_path)
-            self.frames_saved_label.setText(f'Saved: ({pretty_size(bytes)})')
-            self._tick = now
+        # # Estimate the size of saved data
+        # now = time.monotonic()
+        # if now - self._tick >= 0.25:
+        #     bytes = get_size(self.manager.full_path)
+        #     self.frames_saved_label.setText(f'Saved: ({pretty_size(bytes)})')
+        #     self._tick = now
 
         # Update memory pressure
         buffers_state = np.array(self.manager.buffered)

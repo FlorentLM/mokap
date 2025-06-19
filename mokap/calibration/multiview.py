@@ -28,39 +28,44 @@ class MultiviewCalibrationTool:
                  init_cam_matrices:     ArrayLike,
                  init_dist_coeffs:      ArrayLike,
                  object_points:         ArrayLike,
-                 min_detections:        int = 15,
+                 min_detections:        int = 100,
                  max_detections:        int = 100,
                  angular_thresh:        float = 10.0,   # in degrees
                  translational_thresh:  float = 10.0,   # in object_points' units
     ):
 
-        # TODO: Typing and optimising this class
-
         self.nb_cameras = nb_cameras
         self.origin_idx = origin_idx
 
         images_sizes_wh = np.asarray(images_sizes_wh)
-        assert images_sizes_wh.ndim == 2 and images_sizes_wh.shape[0] == self.nb_cameras
-        self._images_sizes_wh = images_sizes_wh[:, :2]
+        if images_sizes_wh.ndim == 2 and images_sizes_wh.shape[0] == self.nb_cameras:
+            self._images_sizes_wh = images_sizes_wh[:, :2]
+        elif images_sizes_wh.ndim == 1 and 2 <= images_sizes_wh.shape[0] <= 3:
+            logger.debug('Only one size passed, assuming identical image size for all cameras.')
+            self._images_sizes_wh = np.asarray([images_sizes_wh[:2]] * self.nb_cameras)
+        else:
+            raise AttributeError("Can't understand image size.")
 
         self._angular_thresh_rad: float = np.deg2rad(angular_thresh)
         self._translational_thresh: float = translational_thresh
 
         # Known 3D board model points (N, 3)
-        board_points = np.asarray(object_points, dtype=np.float32)
-        self._object_points = jnp.asarray(board_points)
-        self._board_pts_hom = jnp.asarray(np.hstack([board_points,
-                                                     np.ones((board_points.shape[0], 1), dtype=np.float32)]))
+        self._object_points = jnp.asarray(object_points, dtype=jnp.float32)
+        self._board_pts_hom = jnp.hstack([
+            self._object_points, jnp.ones((self._object_points.shape[0], 1), dtype=jnp.float32)
+        ])
 
         # buffers for incoming frames
         self._detection_buffer = [dict() for _ in range(nb_cameras)]
         self._last_frame = np.full(nb_cameras, -1, dtype=int)
 
-        # extrinsics state (camera-to-world)
-        self._has_ext: List[bool] = [False] * nb_cameras
+        # State for extrinsics (camera-to-world)
+        self._has_extrinsics = np.zeros(nb_cameras, dtype=bool)
         self._rvecs_c2w: jnp.ndarray = jnp.zeros((nb_cameras, 3), dtype=jnp.float32)
         self._tvecs_c2w: jnp.ndarray = jnp.zeros((nb_cameras, 3), dtype=jnp.float32)
-        self._estimated: bool = False
+
+        # State for board pose (world)
+        self._latest_board_pose_w: Optional[jnp.ndarray] = None
 
         # intrinsics state
         self._cam_matrices: jnp.ndarray = jnp.asarray(init_cam_matrices, dtype=jnp.float32)
@@ -120,13 +125,15 @@ class MultiviewCalibrationTool:
 
     def _process_frame(self, entries: List[Tuple[int, Any, Any, Any]]):
 
-        if not any(self._has_ext):
+        if not any(self._has_extrinsics):
+            # Reset latest board pose if no extrinsics are known
+            self._latest_board_pose_w = None
             return
 
         cam_indices, gt_points_padded, visibility_mask = self._gather_frame_data(entries)
 
         # Filter entries based on which cameras have known extrinsics
-        known_mask = jnp.array([self._has_ext[c] for c in cam_indices])
+        known_mask = jnp.array([self._has_extrinsics[c] for c in cam_indices])
         if not jnp.any(known_mask):
             return
 
@@ -151,16 +158,22 @@ class MultiviewCalibrationTool:
         if not success:
             logger.debug(f"[CONSENSUS_FAIL] Frame rejected. Could not find a consistent board pose among {rt_stack.shape[0]} views.")
             # (this happens for instance if the initial camera extrinsics are very inaccurate)
+
+            # Reset latest board pose on failure
+            self._latest_board_pose_w = None
             return
 
         E_b2w = extrinsics_matrix(quaternion_to_axisangle(q_avg), t_avg)
+
+        # Store the successful board pose
+        self._latest_board_pose_w = E_b2w
 
         # Calculate the potential new camera-to-world poses for ALL cameras in this frame
         E_c2b_all = invert_extrinsics_matrix(E_b2c_all)
         E_c2w_new = E_b2w @ E_c2b_all
         r_c2w_new, t_c2w_new = extmat_to_rtvecs(E_c2w_new)
 
-        # --- Quality Control using the NEW poses ---
+        # --- Quality Control using the new poses ---
         world_pts = (E_b2w @ self._board_pts_hom.T).T[:, :3]
 
         # Get world-to-camera transforms from the NEWLY CALCULATED camera poses
@@ -176,6 +189,9 @@ class MultiviewCalibrationTool:
         FRAME_ERROR_THRESHOLD = 5.0
         if mean_frame_error > FRAME_ERROR_THRESHOLD:
             logger.debug(f"[QUALITY_REJECT] Frame rejected. High reproj error: {mean_frame_error:.2f}px")
+
+            # Reset latest board pose on quality rejection
+            self._latest_board_pose_w = None
             return
 
         logger.debug(f"[ACCEPTED] Frame mean: {mean_frame_error:.2f} px.")
@@ -189,9 +205,7 @@ class MultiviewCalibrationTool:
                 self._tvecs_c2w = self._tvecs_c2w.at[cam_idx].set(t_c2w_new[i])
 
             # of course we still mark all the cameras including the origin as having extrinsics
-            self._has_ext[cam_idx] = True
-
-        self._estimated = True
+            self._has_extrinsics[cam_idx] = True
 
         # Buffer data for final BA and intrinsics refinement
         self.ba_samples.append(entries)
@@ -224,8 +238,8 @@ class MultiviewCalibrationTool:
         E_b2c = extrinsics_matrix(jnp.asarray(rvec), jnp.asarray(tvec))
         self._detection_buffer[cam_idx][f] = (E_b2c, detection.points2D, detection.pointsIDs)
 
-        if cam_idx == self.origin_idx and not self._has_ext[cam_idx]:
-            self._has_ext[cam_idx] = True
+        if cam_idx == self.origin_idx and not self._has_extrinsics[cam_idx]:
+            self._has_extrinsics[cam_idx] = True
             # The pose is already (0, 0, 0) we can continue
 
         self._flush_frames()
@@ -240,7 +254,7 @@ class MultiviewCalibrationTool:
         - Stage 3: Performs a full refinement with all parameters (including distortion)
         """
 
-        if not self._estimated:
+        if not all(self._has_extrinsics):
             logger.error("[BA] Initial extrinsics have not been estimated yet.")
             return False
 
@@ -411,7 +425,7 @@ class MultiviewCalibrationTool:
                 ba_succeeded = True
                 final_results = final_results_attempt
 
-                self._points2d, self._visibility_mask = np.asarray(pts2d_buf), np.asarray(vis_buf) # store points from successful run
+                self._points2d, self._visibility_mask = pts2d_buf, vis_buf # store points from successful run
                 break # Exit the while loop
 
             except MemoryError:
@@ -456,12 +470,21 @@ class MultiviewCalibrationTool:
             return False
 
     @property
-    def intrinsics(self) -> Tuple[np.ndarray, np.ndarray]:
-        return np.array(self._cam_matrices), np.array(self._dist_coeffs)
+    def intrinsics(self) -> Tuple[jnp.ndarray, jnp.ndarray]:
+        return self._cam_matrices, self._dist_coeffs
 
     @property
-    def extrinsics(self) -> Tuple[np.ndarray, np.ndarray]:
-        return np.array(self._rvecs_c2w), np.array(self._tvecs_c2w)
+    def extrinsics(self) -> Tuple[jnp.ndarray, jnp.ndarray]:
+        # TODO: mask these using self._has_extrinsics to only return the non-zero ones (well and the origin which is 0)
+        return self._rvecs_c2w, self._tvecs_c2w
+
+    @property
+    def is_estimated(self) -> bool:
+        return all(self._has_extrinsics)
+
+    @property
+    def current_board_pose(self) -> Optional[jnp.ndarray]:
+        return self._latest_board_pose_w
 
     @property
     def refined_intrinsics(self) -> Tuple[jnp.ndarray, jnp.ndarray]:
