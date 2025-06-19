@@ -63,12 +63,12 @@ class MultiCam:
         self._initialize_trigger()
 
         ## --- Threading Resources ---
-        buffer_size = self.config.get('frame_buffer_size', 200)
+        self.buffer_size = self.config.get('frame_buffer_size', 200)
 
         # shared state for the most recent frame protected by a lock
         self._latest_frames: List[Optional[Tuple[np.ndarray, Dict]]] = [None] * self.nb_cameras
         self._latest_frame_locks: List[Lock] = [Lock() for _ in self.cameras]
-        self._writer_queues: List[Queue] = [Queue(maxsize=buffer_size) for _ in self.cameras]
+        self._writer_queues: List[Queue] = [Queue(maxsize=self.buffer_size) for _ in self.cameras]
 
         # Keep track of writer instances and their parameters to build final metadata
         self._writers: List[Optional[FrameWriter]] = [None] * self.nb_cameras
@@ -760,9 +760,15 @@ class MultiCam:
         return self._trigger_instance is not None and self._trigger_instance.connected
 
     @property
-    def saved(self) -> int:
-        """ Provides a real-time sum of frames saved in the current session """
-        return sum(self._session_frame_counts)
+    def saved(self) -> Tuple[int, ...]:
+        """ count of frames saved in the current session, per camera """
+        return tuple(self._session_frame_counts)
+
+    @property
+    def buffered(self) -> Tuple[int, ...]:
+        """ Rough count of how many frames are currently in the buffers """
+        # TODO: this should have negligible performance impact, but would be good to test thouroughly
+        return tuple(q.qsize() for q in self._writer_queues)
 
     @property
     def colours(self) -> Dict[str, str]:

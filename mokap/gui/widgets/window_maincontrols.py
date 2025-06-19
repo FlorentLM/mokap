@@ -2,12 +2,15 @@ import logging
 import os
 import sys
 import subprocess
+import time
 from functools import partial
 from typing import Tuple
+
+import numpy as np
 import psutil
 import screeninfo
-from PySide6.QtCore import QTimer, Qt, Slot, QRect, QThread, QSize
-from PySide6.QtGui import QFont, QGuiApplication, QCursor, QBrush, QColor, QPen
+from PySide6.QtCore import QTimer, Qt, Slot, QRect, QThread
+from PySide6.QtGui import QFont, QGuiApplication, QCursor, QBrush, QColor, QPen, QIcon
 from PySide6.QtWidgets import (QMainWindow, QVBoxLayout, QWidget, QFrame, QHBoxLayout, QLabel,
                                QComboBox, QPushButton, QSizePolicy, QGroupBox, QLineEdit, QScrollArea,
                                QCheckBox, QGraphicsView, QGraphicsScene, QTextEdit, QStatusBar,
@@ -22,6 +25,7 @@ from mokap.gui.workers.coordinator import CalibrationCoordinator
 from mokap.gui.workers.worker_multiview import MultiviewWorker
 from mokap.utils import hex_to_hls, pretty_size
 from mokap.utils.datatypes import CalibrationData, IntrinsicsPayload, ExtrinsicsPayload
+from mokap.utils.system import get_size
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +77,7 @@ class MainControls(QMainWindow, SnapMixin):
         self.video_windows = []
 
         # Other things to init
-        self._current_buffers = None
-        self._mem_pressure = 0.0
+        self._tick = time.monotonic()
 
         # Build the gui
         self.init_gui()
@@ -129,7 +132,6 @@ class MainControls(QMainWindow, SnapMixin):
         top_layout.setSpacing(5)
         top_container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
-        # FIX: Make bottom_container a member variable 'self.bottom_container'
         self.bottom_container = QWidget()
         bottom_layout = QVBoxLayout(self.bottom_container)
         bottom_layout.setContentsMargins(0, 0, 0, 0)
@@ -223,8 +225,12 @@ class MainControls(QMainWindow, SnapMixin):
         f_buttons_layout = QVBoxLayout(f_buttons)
         f_buttons_layout.setContentsMargins(3, 0, 3, 0)
 
+        btns_h = 60
+
         self.button_acquisition = QPushButton("Acquisition off")
         self.button_acquisition.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.button_acquisition.setMinimumHeight(btns_h)
+        self.button_acquisition.setIcon(QIcon(icon_capture_bw))
         self.button_acquisition.setCheckable(True)
         self.button_acquisition.clicked.connect(self._toggle_acquisition)
 
@@ -232,17 +238,19 @@ class MainControls(QMainWindow, SnapMixin):
 
         self.button_snapshot = QPushButton("Snapshot")
         self.button_snapshot.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.button_snapshot.setMinimumHeight(btns_h)
         self.button_snapshot.clicked.connect(self._take_snapshot)
-        self.button_snapshot.setIcon(icon_snapshot_bw)
+        self.button_snapshot.setIcon(QIcon(icon_snapshot_bw))
         self.button_snapshot.setDisabled(True)
 
         f_buttons_layout.addWidget(self.button_snapshot, 1)
 
         self.button_recpause = QPushButton("Not recording (Space to toggle)")
         self.button_recpause.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.button_recpause.setMinimumHeight(btns_h)
         self.button_recpause.setCheckable(True)
         self.button_recpause.clicked.connect(self._toggle_recording)
-        self.button_recpause.setIcon(icon_rec_bw)
+        self.button_recpause.setIcon(QIcon(icon_rec_bw))
         self.button_recpause.setDisabled(True)
 
         f_buttons_layout.addWidget(self.button_recpause, 1)
@@ -251,11 +259,13 @@ class MainControls(QMainWindow, SnapMixin):
         maincontent_layout.addWidget(left_pane, 4)
 
         # Right pane (Display)
-        right_pane = QGroupBox("Display")
+        # right_pane = QGroupBox("Display")
+        right_pane = QWidget()
+        right_pane.setContentsMargins(0, 0, 0, 0)
         right_pane.setMinimumWidth(300)
         right_pane_layout = QVBoxLayout(right_pane)
 
-        live_previews = QGroupBox('Live previews')
+        live_previews = QGroupBox('Secondary windows')
         live_previews_layout = QVBoxLayout(live_previews)
 
         windows_list_frame = QScrollArea()
@@ -267,7 +277,7 @@ class MainControls(QMainWindow, SnapMixin):
         windows_list_frame.setStyleSheet('border: none; background-color: #00000000;')
         windows_list_frame.setWidget(windows_list_widget)
         windows_list_frame.setWidgetResizable(True)
-
+        windows_list_frame.setMaximumHeight(150)
         live_previews_layout.addWidget(windows_list_frame)
 
         right_pane_layout.addWidget(live_previews)
@@ -278,6 +288,7 @@ class MainControls(QMainWindow, SnapMixin):
             vis_checkbox.setChecked(True)
             vis_checkbox.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             vis_checkbox.setMinimumHeight(25)
+            vis_checkbox.setMaximumHeight(40)
             windows_list_layout.addWidget(vis_checkbox)
             self.secondary_windows_visibility_buttons.append(vis_checkbox)
 
@@ -520,7 +531,7 @@ class MainControls(QMainWindow, SnapMixin):
             self.save_dir_current.setText(f'{self.manager.full_path.resolve()}')
 
             self.button_acquisition.setText("Acquiring")
-            self.button_acquisition.setIcon(icon_capture)
+            self.button_acquisition.setIcon(QIcon(icon_capture))
             self.button_snapshot.setDisabled(False)
             self.acq_name_edit_btn.setDisabled(True)  # disable name editing
 
@@ -539,7 +550,7 @@ class MainControls(QMainWindow, SnapMixin):
             self.save_dir_current.setText('')
 
             self.button_acquisition.setText("Acquisition off")
-            self.button_acquisition.setIcon(icon_capture_bw)
+            self.button_acquisition.setIcon(QIcon(icon_capture_bw))
             self.button_snapshot.setDisabled(True)
             self.button_recpause.setDisabled(True)
             self.acq_name_edit_btn.setDisabled(False)  # re-enable name editing
@@ -558,14 +569,14 @@ class MainControls(QMainWindow, SnapMixin):
         if checked:
             self.manager.record()
             self.button_recpause.setText("Recording... (Space to toggle)")
-            self.button_recpause.setIcon(icon_rec_on)
+            self.button_recpause.setIcon(QIcon(icon_rec_on))
             self.is_recording = True
         else:
             if self.manager.recording:  # only pause if we are actually recording
                 self.manager.pause()
 
             self.button_recpause.setText("Not recording (Space to toggle)")
-            self.button_recpause.setIcon(icon_rec_bw)
+            self.button_recpause.setIcon(QIcon(icon_rec_bw))
             self.is_recording = False
 
     def _take_snapshot(self):
@@ -877,19 +888,14 @@ class MainControls(QMainWindow, SnapMixin):
         # update the monitor display with live window positions
         self._update_monitors_buttons()
 
-        # # get an estimation of the saved data size
-        # try:
-        #     # This works for both image sequences and video files
-        #     if self.manager.full_path.exists():
-        #         size = sum(f.stat().st_size for f in self.manager.full_path.glob('**/*') if f.is_file())
-        #         self.frames_saved_label.setText(f'Saved: ({pretty_size(size)})')
-        #     else:
-        #         self.frames_saved_label.setText(f'Saved: (0 bytes)')
-        #
-        # except FileNotFoundError:
-        #     # This can happen if the folder doesn't exist yet
-        #     self.frames_saved_label.setText(f'Saved: (0 bytes)')
+        # Estimate the size of saved data
+        now = time.monotonic()
+        if now - self._tick >= 0.25:
+            bytes = get_size(self.manager.full_path)
+            self.frames_saved_label.setText(f'Saved: ({pretty_size(bytes)})')
+            self._tick = now
 
-        # # Update memory pressure estimation
-        # current_mem_percent = psutil.virtual_memory().percent
-        # self._mem_pressure_bar.setValue(int(round(current_mem_percent)))
+        # Update memory pressure
+        buffers_state = np.array(self.manager.buffered)
+        pressure = np.mean(buffers_state / self.manager.buffer_size) * 100
+        self._mem_pressure_bar.setValue(int(pressure))

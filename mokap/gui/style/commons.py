@@ -1,6 +1,5 @@
 import platform
 from pathlib import Path
-from PySide6.QtGui import QIcon
 from mokap.utils import hex_to_rgb
 
 
@@ -20,15 +19,16 @@ VIDEO_PANEL_MINSIZE_H = 50
 WINDOW_MIN_W = 630
 
 # Icons
-resources_path = Path('./gui/style/icons')
 
-icon_capture = QIcon((resources_path / 'capture.png').as_posix())
-icon_capture_bw = QIcon((resources_path / 'capture_bw.png').as_posix())
-icon_snapshot = QIcon((resources_path / 'snapshot.png').as_posix())
-icon_snapshot_bw = QIcon((resources_path / 'snapshot_bw.png').as_posix())
-icon_rec_on = QIcon((resources_path / 'rec.png').as_posix())
-icon_rec_bw = QIcon((resources_path / 'srec_bw.png').as_posix())
-icon_move_bw = QIcon((resources_path / 'move.png').as_posix())     # TODO make an icon - this is a temp one
+cwd = Path(__file__).parent
+
+icon_capture = (cwd / 'icons' / 'capture.png').as_posix()
+icon_capture_bw = (cwd / 'icons' / 'capture_bw.png').as_posix()
+icon_snapshot = (cwd / 'icons' / 'snapshot.png').as_posix()
+icon_snapshot_bw = (cwd / 'icons' / 'snapshot_bw.png').as_posix()
+icon_rec_on = (cwd / 'icons' / 'rec.png').as_posix()
+icon_rec_bw = (cwd / 'icons' / 'srec_bw.png').as_posix()
+icon_move_bw =(cwd / 'icons' / 'move.png').as_posix()     # TODO make an icon - this is a temp one
 
 # Colours
 col_white = "#ffffff"

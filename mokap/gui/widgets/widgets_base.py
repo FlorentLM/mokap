@@ -6,7 +6,7 @@ from typing import Optional, Tuple
 import numpy as np
 import cv2
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, QSize, Slot, QPoint, QRectF
-from PySide6.QtGui import QImage
+from PySide6.QtGui import QImage, QIcon
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGroupBox, QStatusBar, QToolButton, \
     QGraphicsObject, QSizePolicy
 import pyqtgraph as pg
@@ -357,7 +357,7 @@ class LiveViewBase(Base):
         statusbar = QStatusBar()
 
         self.snap_button = QToolButton()
-        self.snap_button.setIcon(icon_move_bw)
+        self.snap_button.setIcon(QIcon(icon_move_bw))
         self.snap_button.setIconSize(QSize(16, 16))
         self.snap_button.setToolTip("Move current window to a position")
         self.snap_button.setPopupMode(QToolButton.InstantPopup)

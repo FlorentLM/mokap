@@ -1,3 +1,7 @@
+import subprocess
+from pathlib import Path
+from typing import Union
+
 import numpy as np
 from subprocess import  check_output
 import os
@@ -126,6 +130,7 @@ def is_locked(path: str) -> bool:
                 return True
             raise
 
+
 def wait_until_unlocked(path: str, timeout: float = 5.0, poll: float = 0.1) -> bool:
     start = time.time()
     while time.time() - start < timeout:
@@ -133,6 +138,7 @@ def wait_until_unlocked(path: str, timeout: float = 5.0, poll: float = 0.1) -> b
             return True
         time.sleep(poll)
     return False
+
 
 def wait_for_size_stable(path: str, checks: int = 3, pause: float = 0.2) -> bool:
     try:
@@ -149,6 +155,7 @@ def wait_for_size_stable(path: str, checks: int = 3, pause: float = 0.2) -> bool
             prev = curr
             return False
     return True
+
 
 def safe_replace(src: str, dst: str, *,
                  lock_timeout: float = 5.0,
@@ -177,3 +184,22 @@ def safe_replace(src: str, dst: str, *,
             if time.time() - start > replace_timeout:
                 return False
             time.sleep(0.1)
+
+
+def get_size(path: Union[Path, str]) -> int:
+    if os.path.isfile(path):
+        return os.stat(path).st_size    # single file: one stat call
+
+    # directory: recursive call
+    total = 0
+    with os.scandir(path) as it:
+        for entry in it:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    total += get_size(entry.path)
+                else:
+                    # DirEntry.stat() is cached, no extra syscall if already fetched
+                    total += entry.stat(follow_symlinks=False).st_size
+            except:
+                pass
+    return total
