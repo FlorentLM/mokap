@@ -51,7 +51,7 @@ def solve_pnp_robust(
     if cam_mat_np.shape != (3, 3):
         raise ValueError(f"Camera matrix must have shape (3, 3), but got {cam_mat_np.shape}")
 
-    best_rvec, best_tvec = None, None
+    best_rvec, best_tvec, best_error = None, None, None
 
     # Strategy 1: Try IPPE
     if hasattr(cv2, 'SOLVEPNP_IPPE'):
