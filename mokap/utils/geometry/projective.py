@@ -101,7 +101,7 @@ def _project_points(
     z_safe = jnp.maximum(z, _eps)
     x, y = Xc[..., 0] / z_safe, Xc[..., 1] / z_safe
 
-    radial, dx, dy = distortion(x, y, dist_coeffs)
+    radial, dx, dy = distortion(x, y, dist_coeffs, distortion_model=distortion_model)
     x_d = x * radial + dx
     y_d = y * radial + dy
 
@@ -184,56 +184,6 @@ project_object_views_batched = jax.jit(
     # dist_coeffs: (C, D)
     static_argnames=['distortion_model']
 )
-
-
-@partial(jax.jit, static_argnames=['distortion_model'])
-def reproject_and_compute_error(
-    world_points:       jnp.ndarray,    # (P, N, 3) or (N, 3)
-    camera_matrices:    jnp.ndarray,    # (C, 3, 3)
-    dist_coeffs:        jnp.ndarray,    # (C, D)
-    cams_rc2w:          jnp.ndarray,    # (C, 3)
-    cams_tc2w:          jnp.ndarray,    # (C, 3)
-    observed_pts2d:     jnp.ndarray,    # (C, P, N, 2)
-    visibility_mask:    jnp.ndarray,    # (C, P, N)
-    distortion_model:   str = 'standard'
-) -> jnp.ndarray:
-    """
-    Reprojects 3D world points into multiple cameras and computes the pixel error
-
-    This is a general-purpose function that works with any set of 3D world points
-
-    Args:
-        world_points: 3D points in the world coordinate system.
-                      Can be a single set (N, 3) or multiple sets (P, N, 3)
-        camera_matrices: Camera intrinsic matrices for C cameras
-        dist_coeffs: Distortion coefficients for C cameras
-        cams_rc2w: Camera-to-world rotation vectors for C cameras
-        cams_tc2w: Camera-to-world translation vectors for C cameras
-        observed_pts2d: The observed 2D points in each camera's image plane
-        visibility_mask: A boolean mask indicating if a point was observed
-
-    Returns:
-        errors: An array of shape (C, P, N) with reprojection errors in pixels
-                Non-visible points are marked with NaN
-    """
-
-    # Ensure world_points has a "pose" dimension for broadcasting
-    if world_points.ndim == 2:
-        world_points = world_points[None, ...] # (1, N, 3)
-        observed_pts2d = observed_pts2d[:, None, ...] if observed_pts2d.ndim == 3 else observed_pts2d
-        visibility_mask = visibility_mask[:, None, ...] if visibility_mask.ndim == 2 else visibility_mask
-
-    # get world -> camera transforms
-    r_w2c, t_w2c = invert_rtvecs(cams_rc2w, cams_tc2w)
-
-    # massive projection: all world points, from all poses, into all cameras
-    reprojected_pts = project_multiple_to_multiple(world_points,
-                                                   r_w2c, t_w2c,
-                                                   camera_matrices, dist_coeffs,
-                                                   distortion_model) # (C, P, N, 2)
-
-    errors = jnp.linalg.norm(observed_pts2d - reprojected_pts, axis=-1)
-    return jnp.where(visibility_mask, errors, jnp.nan)
 
 
 def _undistort_points(

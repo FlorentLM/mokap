@@ -10,7 +10,7 @@ from mokap.calibration import bundle_adjustment
 from mokap.calibration.common import solve_pnp_robust
 from mokap.utils.datatypes import DetectionPayload
 from mokap.utils.geometry.projective import project_to_multiple_cameras, reproject_and_compute_error, \
-    reprojection_errors
+    reprojection_errors, project_multiple_to_multiple
 from mokap.utils.geometry.fitting import quaternion_average, filter_rt_samples, reliability_bounds_3d, \
     reliability_bounds_3d_iqr
 from mokap.utils.geometry.transforms import (extrinsics_matrix, extmat_to_rtvecs,
@@ -485,17 +485,30 @@ class MultiviewCalibrationTool:
     ) -> Optional[Dict[str, Tuple[float, float]]]:
 
         if self._refined:
+
             # calculate the 3D world coordinates of all point instances using the refined poses
             E_b2w_all_opt = extrinsics_matrix(*self._refined_board_poses)
             world_pts_all_instances = jnp.einsum('pij,nj->pni', E_b2w_all_opt, self._board_pts_hom)[:, :, :3]
 
-            # reproject these world points and get errors
-            all_errors = reproject_and_compute_error(
+            # Reprojection and error calculation
+
+            # Get all necessary parameters for projection
+            observed_pts2d, visibility_mask = self.image_points
+
+            # Invert camera-to-world poses to get world-to-camera poses for projection
+            r_w2c, t_w2c = invert_rtvecs(*self._refined_extrinsics)
+
+            # Project all 3D points into all cameras
+            reprojected_pts = project_multiple_to_multiple(
                 world_pts_all_instances,
+                r_w2c, t_w2c,
                 *self._refined_intrinsics,
-                *self._refined_extrinsics,
-                *self.image_points
+                distortion_model='full'
             )
+
+            # Compute the raw, per-point Euclidean distance errors
+            raw_errors = jnp.linalg.norm(observed_pts2d - reprojected_pts, axis=-1)
+            all_errors = jnp.where(visibility_mask, raw_errors, jnp.nan)    # And mark non-observed points as nan
 
             # And compute the reliable bounding box using the world points and their errors
             volume_of_trust = reliability_bounds_3d_iqr(

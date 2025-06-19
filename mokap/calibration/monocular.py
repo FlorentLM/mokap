@@ -349,7 +349,7 @@ class MonocularCalibrationTool:
         current_camera_matrix, current_dist_coeffs = np.asarray(self._camera_matrix), np.asarray(self._dist_coeffs)
 
         calib_results = calibrate_camera_robust(
-            calibration_board=self.calibration_board,
+            board=self.calibration_board,
             image_points_stack=self.stack_points2d,
             image_ids_stack=self.stack_points_ids,
             image_size_wh=(self._img_w, self._img_h),

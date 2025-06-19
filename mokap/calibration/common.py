@@ -127,7 +127,12 @@ def solve_pnp_robust(
                         best_error = errors2
 
         if best_rvec is None or best_tvec is None:
+            # all methods failed to produce a valid pose
             return False, None, None, None
+
+    # If we got here from IPPE, we haven't calculated the error dict yet
+    # If we got here from manual disambiguation, best_error is already set
+    needs_error_recalc = best_error is None
 
     # Optionally refine
     if refine_method and refine_method.lower() != 'none':
@@ -139,17 +144,26 @@ def solve_pnp_robust(
                 objectPoints=obj_pts_np, imagePoints=img_pts_np, cameraMatrix=cam_mat_np,
                 distCoeffs=dist_np, rvec=best_rvec, tvec=best_tvec
             )
+            # After refinement, the already-calculated error is invalid and must be recalculated
+            needs_error_recalc = True
         except (cv2.error, AttributeError, KeyError):
             pass
 
-    final_reproj = project_points(obj_pts_np, best_rvec, best_tvec, cam_mat_np, dist_np)
-    final_errors = reprojection_errors(img_pts_np, final_reproj)
+    best_rvec = best_rvec.squeeze()
+    best_tvec = best_tvec.squeeze()
 
-    return True, best_rvec.squeeze(), best_tvec.squeeze(), final_errors
+    if needs_error_recalc:
+        final_reproj = project_points(obj_pts_np, best_rvec, best_tvec, cam_mat_np, dist_np)
+        final_errors = reprojection_errors(img_pts_np, final_reproj)
+    else:
+        # otherwise, the one we stored is the correct one
+        final_errors = best_error
+
+    return True, best_rvec, best_tvec, final_errors
 
 
 def calibrate_camera_robust(
-    calibration_board:      Union[ChessBoard, CharucoBoard],
+    board:                  Union[ChessBoard, CharucoBoard],
     image_points_stack:     Sequence[np.ndarray],
     image_ids_stack:        Sequence[np.ndarray],
     image_size_wh:          Sequence[int],
@@ -185,27 +199,30 @@ def calibrate_camera_robust(
     # when the corresponding CALIB_FIX_K* flags are not set
 
     try:
-        if calibration_board.type == 'charuco':
+
+        if board.type == 'charuco':
 
             # calib_flags |= cv2.CALIB_USE_LU   # TODO: Should we use LU or QR? How 'worse' are they?
 
             (rms, K_new, D_new, rvecs, tvecs,
-             std_intr, _, pve) = cv2.aruco.calibrateCameraCharucoExtended(
+             std_intr, _, pve_opencv) = cv2.aruco.calibrateCameraCharucoExtended(
                 charucoCorners=image_points_stack,
                 charucoIds=image_ids_stack,
-                board=calibration_board.to_opencv(),
+                board=board.to_opencv(),
                 imageSize=image_size_wh,
                 cameraMatrix=initial_K.copy() if initial_K is not None else None,
                 distCoeffs=initial_D.copy() if initial_D is not None else None,
                 flags=calib_flags
             )
 
-        elif calibration_board.type == 'chessboard':
-            obj_pts = [calibration_board.object_points.astype(np.float32)] * len(image_points_stack)
+        elif board.type == 'chessboard':
+
+            # For chessboard, it's always all points, so we repeat
+            object_points_stack = [board.object_points] * len(image_points_stack)
 
             (rms, K_new, D_new, rvecs, tvecs,
-             std_intr, _, pve) = cv2.calibrateCameraExtended(
-                objectPoints=obj_pts,
+             std_intr, _, pve_opencv) = cv2.calibrateCameraExtended(
+                objectPoints=object_points_stack,
                 imagePoints=image_points_stack,
                 imageSize=image_size_wh,
                 cameraMatrix=initial_K.copy() if initial_K is not None else None,
@@ -213,7 +230,7 @@ def calibrate_camera_robust(
                 flags=calib_flags
             )
         else:
-            return CalibrateCameraResult(success=False, error_message=f"Unsupported board type '{calibration_board.type}'.")
+            return CalibrateCameraResult(success=False, error_message=f"Unsupported board type '{board.type}'.")
 
         # Check for invalid results
         invalid_vals = not (np.isfinite(K_new).all() and np.isfinite(D_new).all())
@@ -251,35 +268,37 @@ def calibrate_camera_robust(
             error_message = f"Calibration resulted in invalid distortion: {reason}. Values: {D_new.round(4)}"
             return CalibrateCameraResult(success=False, error_message=error_message)
 
-        # Package into the result dataclass
-        return CalibrateCameraResult(
-            success=True,
-            rms_error=rms,
-            K_new=K_new,
-            D_new=D_new.squeeze(),
-            rvecs=np.array(rvecs).squeeze(),
-            tvecs=np.array(tvecs).squeeze(),
-            std_devs_intrinsics=std_intr,
-            per_view_errors=pve.squeeze()
-        )
-
-        # Note:     # and TODO: The multiview class should take this thing into account when computing the errors!!!
+        # Note:
         # -----
         #
         # The per-view reprojection errors as returned by calibrateCamera() is:
         #   the square root of the sum of the 2 means in x and y of the squared diff
         #       np.sqrt(np.sum(np.mean(sq_diff, axis=0)))
         #
-        # These are NOT the same as the per-view reprojection errors as returned by solvePnP():
+        # These are NOT the same as the per-view RMS errors typically computed after solvePnP():
         #   this one is the square root of the mean of the squared diff over both x and y
         #        np.sqrt(np.mean(sq_diff, axis=(0, 1)))
         #
-        # ...in other words, the first one is larger by a factor sqrt(2)
+        # In other words, the first one is larger by a factor √(2)
         #
-        # ----------------------------------------------
-        #
-        # The global RMS error in calibrateCamera() is:
+        # In addition, the global RMS error returned by calibrateCamera() is:
         #       np.sqrt(np.sum([sq_diff for view in stack]) / np.sum([len(view) for view in stack]))
+        #
+
+        # ...so we just divide it by √2 and we're consistent with the rest of mokap
+        pve_rms = pve_opencv.squeeze() / np.sqrt(2.0)
+
+        # Package into the result dataclass
+        return CalibrateCameraResult(
+            success=True,
+            rms_error=rms,
+            K_new=K_new.squeeze(),
+            D_new=D_new.squeeze(),
+            rvecs=np.array(rvecs).squeeze(),
+            tvecs=np.array(tvecs).squeeze(),
+            std_devs_intrinsics=std_intr,
+            per_view_errors=pve_rms
+        )
 
     except cv2.error as e:
         error_msg = f"OpenCV Error in calibrateCamera: {e}"
