@@ -64,7 +64,11 @@ class MonocularCalibrationTool:
         self.stack_points_ids: deque = deque(maxlen=self._max_stack)
 
         # Error metrics
-        self._intrinsics_errors: ArrayLike = np.array([np.inf])
+        # The raw OpenCV errors for comparing future calibrations
+        self._intrinsics_errors_opencv: ArrayLike = np.array([np.inf])
+        # Also store the true RMS for comparison with other parts of the app
+        self._intrinsics_errors_rms: ArrayLike = np.array([np.inf])
+
         self._pose_error: float = np.nan
 
         # Where to store the intrinsics
@@ -187,7 +191,7 @@ class MonocularCalibrationTool:
 
     @property
     def intrinsics_errors(self) -> ArrayLike:
-        return self._intrinsics_errors
+        return self._intrinsics_errors_rms
 
     @property
     def focal(self) -> float:
@@ -204,18 +208,26 @@ class MonocularCalibrationTool:
         self._dist_coeffs = jax.device_put(jnp.pad(dist_coeffs, (0, max(0, 8 - len(dist_coeffs))), 'constant', constant_values=0.0))
 
         if errors is not None:
-            self._intrinsics_errors = np.asarray(errors)
+            # Store the raw OpenCV errors for internal comparison
+            self._intrinsics_errors_opencv = np.asarray(errors)
+            # Store the standardized RMS error for external reporting
+            self._intrinsics_errors_rms = self._intrinsics_errors_opencv / np.sqrt(2)
         else:
-            self._intrinsics_errors = np.array([np.inf])
+            self._intrinsics_errors_opencv = np.array([np.inf])
+            self._intrinsics_errors_rms = np.array([np.inf])
 
     def clear_intrinsics(self):
+
         if self._theoretical_cam_mat is not None:
             self._camera_matrix = jax.device_put(self._theoretical_cam_mat)
             self._dist_coeffs = jax.device_put(self._zero_coeffs)
+
         else:
             self._camera_matrix = None
             self._dist_coeffs = None
-        self._intrinsics_errors = np.array([np.inf])
+
+        self._intrinsics_errors_opencv = np.array([np.inf])
+        self._intrinsics_errors_rms = np.array([np.inf])
 
     @staticmethod
     def _check_new_errors(errors_new: ArrayLike, errors_prev: ArrayLike, p_val=0.05, confidence_lvl=0.95):
@@ -350,18 +362,17 @@ class MonocularCalibrationTool:
         if not calib_results.success:
             return False
 
-        per_view_errors_norm = calib_results.per_view_errors / self._err_norm  # normalize
+        # Get the raw per-view errors from OpenCV
+        pve_opencv = calib_results.per_view_errors
 
         # We don't have intrinsics yet
-        if not self.has_intrinsics or np.inf in self._intrinsics_errors:
-            self.set_intrinsics(calib_results.K_new, calib_results.D_new, per_view_errors_norm)
-
+        if not self.has_intrinsics or np.inf in self._intrinsics_errors_opencv:
+            self.set_intrinsics(calib_results.K_new, calib_results.D_new, pve_opencv)
             logger.info(f"[MonocularCalibrationTool] Computed intrinsics.")
 
-        # Decide whether to accept the new intrinsics or not
-        elif self._check_new_errors(per_view_errors_norm, self._intrinsics_errors):
-            self.set_intrinsics(calib_results.K_new, calib_results.D_new, per_view_errors_norm)
-
+        # Decide whether to accept the new intrinsics or not by comparing the raw OpenCV errors
+        elif self._check_new_errors(pve_opencv, self._intrinsics_errors_opencv):
+            self.set_intrinsics(calib_results.K_new, calib_results.D_new, pve_opencv)
             logger.info(f"[MonocularCalibrationTool] Updated intrinsics.")
 
         # Default to clear on success only, unless asked not to
@@ -369,7 +380,6 @@ class MonocularCalibrationTool:
             self.clear_stacks()
 
         # if failure, keep stacks by default
-
         return True
 
     def compute_extrinsics(self, refine: bool = True) -> bool:
@@ -392,7 +402,7 @@ class MonocularCalibrationTool:
 
         object_points_subset = self.calibration_board.object_points[self._points_ids_np]
 
-        success, rvec_b2c, tvec_b2c = solve_pnp_robust(
+        success, rvec_b2c, tvec_b2c, pose_errors = solve_pnp_robust(
             object_points=object_points_subset,
             image_points=self._points2d_np,
             camera_matrix=np.asarray(self._camera_matrix),
@@ -408,6 +418,8 @@ class MonocularCalibrationTool:
         # if all good, push to GPU and store
         self._curr_rvec_b2c = jax.device_put(rvec_b2c.squeeze())
         self._curr_tvec_b2c = jax.device_put(tvec_b2c.squeeze())
+        # and store the standard RMS error
+        self._pose_error = pose_errors['rms']
 
         return True
 

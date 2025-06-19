@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Tuple, Union, Optional
+from typing import Tuple, Union, Optional, Dict
 import jax
 from jax import numpy as jnp
 from mokap.utils.geometry.transforms import rodrigues, extrinsics_matrix, invert_extrinsics_matrix, projection_matrix, \
@@ -374,6 +374,65 @@ back_projection_batched = jax.jit(
     ),
     static_argnames=['distortion_model']
 )
+
+
+@partial(jax.jit, static_argnames=['return_per_point_errors'])
+def reprojection_errors(
+        points_2d_observed:         jnp.ndarray,
+        points_2d_reprojected:      jnp.ndarray,
+        visibility_mask:            Optional[jnp.ndarray] = None,
+        return_per_point_errors:    bool = False
+) -> Dict[str, Union[float, jnp.ndarray]]:
+    """
+    Calculates various reprojection error metrics from observed and reprojected points
+
+    Args:
+        points_2d_observed: Ground truth 2D points. Shape (..., N, 2)
+        points_2d_reprojected: Reprojected 2D points. Shape (..., N, 2)
+        visibility_mask: Boolean mask of visible points. Shape (..., N)
+                         (if None, all points are assumed visible)
+        return_per_point_errors: If True, the 'mre_per_point' key will be added to the output
+
+    Returns:
+        A dictionary containing scalar error metrics: 'rms', 'mre', 'opencv_rms'
+        and optionally 'mre_per_point' with shape (..., N)
+    """
+    if points_2d_observed.shape[-2] == 0:
+        return {'rms': jnp.inf, 'mre': jnp.inf, 'opencv_rms': jnp.inf}
+
+    sq_diff = jnp.square(points_2d_observed - points_2d_reprojected)  # (..., N, 2)
+
+    if visibility_mask is not None:
+        # Use where to avoid nans in gradients if they were to be used
+        sq_diff_masked = jnp.where(visibility_mask[..., None], sq_diff, 0.0)
+        num_visible_points = jnp.sum(visibility_mask)
+        if num_visible_points == 0:
+            return {'rms': 0.0, 'mre': 0.0, 'opencv_rms': 0.0}
+    else:
+        sq_diff_masked = sq_diff
+        num_visible_points = jnp.prod(jnp.array(points_2d_observed.shape[:-1]))
+
+    # --- Metric Calculations ---
+    # True RMS Error (of all 2*N coordinates)
+    total_sum_sq_err = jnp.sum(sq_diff_masked)
+    rms_error = jnp.sqrt(total_sum_sq_err / jnp.maximum(2 * num_visible_points, 1))
+
+    # Mean Reprojection Error (MRE - mean of per-point distances)
+    distances = jnp.sqrt(jnp.sum(sq_diff, axis=-1))  # Unmasked distances for per-point analysis
+    distances_masked = jnp.where(visibility_mask, distances, 0.0) if visibility_mask is not None else distances
+    mre_error = jnp.sum(distances_masked) / jnp.maximum(num_visible_points, 1)
+
+    # OpenCV 'calibrateCamera' style RMS
+    mean_sq_per_coord = jnp.sum(sq_diff_masked, axis=-2) / jnp.maximum(num_visible_points, 1)
+    opencv_rms_error = jnp.sqrt(jnp.sum(mean_sq_per_coord))
+
+    results = {'rms': rms_error, 'mre': mre_error, 'opencv_rms': opencv_rms_error}
+
+    if return_per_point_errors:
+        # Return per-point distances, with non-visible points as nan
+        results['mre_per_point'] = jnp.where(visibility_mask, distances, jnp.nan) if visibility_mask is not None else distances
+
+    return results
 
 
 @jax.jit

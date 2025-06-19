@@ -9,7 +9,8 @@ from jax.typing import ArrayLike
 from mokap.calibration import bundle_adjustment
 from mokap.calibration.common import solve_pnp_robust
 from mokap.utils.datatypes import DetectionPayload
-from mokap.utils.geometry.projective import project_to_multiple_cameras, reproject_and_compute_error
+from mokap.utils.geometry.projective import project_to_multiple_cameras, reproject_and_compute_error, \
+    reprojection_errors
 from mokap.utils.geometry.fitting import quaternion_average, filter_rt_samples, reliability_bounds_3d, \
     reliability_bounds_3d_iqr
 from mokap.utils.geometry.transforms import (extrinsics_matrix, extmat_to_rtvecs,
@@ -169,16 +170,15 @@ class MultiviewCalibrationTool:
 
         reproj_pts = project_to_multiple_cameras(world_pts, r_w2c_new, t_w2c_new, K_batch, D_batch)
 
-        # Compute error only on visible points
-        errors = jnp.linalg.norm(reproj_pts - gt_points_padded, axis=-1)
-        visible_errors_sum = jnp.sum(jnp.where(visibility_mask, errors, 0.0))
-        total_visible_points = jnp.sum(visibility_mask)
-        mean_frame_error = jnp.where(total_visible_points > 0, visible_errors_sum / total_visible_points, jnp.inf)
+        errors_dict = reprojection_errors(gt_points_padded, reproj_pts, visibility_mask)
+        mean_frame_error = errors_dict['rms']
 
         FRAME_ERROR_THRESHOLD = 5.0
         if mean_frame_error > FRAME_ERROR_THRESHOLD:
             logger.debug(f"[QUALITY_REJECT] Frame rejected. High reproj error: {mean_frame_error:.2f}px")
             return
+
+        logger.debug(f"[ACCEPTED] Frame mean: {mean_frame_error:.2f} px.")
 
         # --- Update camera extrinsics and buffer data ---
         # if the quality check passed we store the new poses to the class state
@@ -193,14 +193,6 @@ class MultiviewCalibrationTool:
 
         self._estimated = True
 
-        # DEBUG START
-        per_cam_vis_pts = jnp.sum(visibility_mask, axis=1)
-        per_cam_err_sum = jnp.sum(jnp.where(visibility_mask, errors, 0.0), axis=1)
-        per_cam_mean_err = jnp.where(per_cam_vis_pts > 0, per_cam_err_sum / per_cam_vis_pts, 0.0)
-        logger.debug(f"[REPROJ_ERR] Frame mean: {mean_frame_error:.2f}px. Per-cam: " +
-              ", ".join([f"{c}:{e:.2f}px" for c, e in zip(cam_indices, per_cam_mean_err)]))
-        # DEBUG END
-
         # Buffer data for final BA and intrinsics refinement
         self.ba_samples.append(entries)
 
@@ -213,7 +205,7 @@ class MultiviewCalibrationTool:
             return
 
         # Reestimate the board-to-camera pose and validate it
-        success, rvec, tvec = solve_pnp_robust(
+        success, rvec, tvec, pose_errors = solve_pnp_robust(
             object_points=np.asarray(self._object_points[detection.pointsIDs]),
             image_points=detection.points2D,
             camera_matrix=np.asarray(self._cam_matrices[cam_idx]),

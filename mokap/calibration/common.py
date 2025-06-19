@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 from jax import numpy as jnp
 from typing import Tuple, Optional, Literal, Union, Sequence
-from mokap.utils.geometry.projective import project_points
+from mokap.utils.geometry.projective import project_points, reprojection_errors
 from mokap.utils.geometry.fitting import generate_ambiguous_pose
 from mokap.utils.datatypes import ChessBoard, CharucoBoard, CalibrateCameraResult, DistortionModel
 
@@ -16,7 +16,7 @@ def solve_pnp_robust(
         camera_matrix:  np.ndarray,
         dist_coeffs:    np.ndarray,
         refine_method:  Optional[Literal['VVS', 'LM', 'none']] = None
-) -> Tuple[bool, Optional[np.ndarray], Optional[np.ndarray]]:
+) -> Tuple[bool, Optional[np.ndarray], Optional[np.ndarray], Optional[dict]]:
     """
     A robust wrapper for solvePnP that handles the ambiguity of planar targets
     It returns a single, physically plausible pose with the lowest reprojection error
@@ -29,15 +29,10 @@ def solve_pnp_robust(
         Optionally refines the final pose
     """
 
-    try:
-        obj_pts_np = np.asarray(object_points, dtype=np.float32)
-        img_pts_np = np.asarray(image_points, dtype=np.float32)
-        cam_mat_np = np.asarray(camera_matrix, dtype=np.float32)
-        dist_np = np.asarray(dist_coeffs if dist_coeffs is not None else np.zeros(5), dtype=np.float32)
-
-    except (ValueError, TypeError) as e:
-        logger.error(f"PnP input conversion failed: {e}")
-        return False, None, None
+    obj_pts_np = np.asarray(object_points, dtype=np.float32)
+    img_pts_np = np.asarray(image_points, dtype=np.float32)
+    cam_mat_np = np.asarray(camera_matrix, dtype=np.float32)
+    dist_np = np.asarray(dist_coeffs if dist_coeffs is not None else np.zeros(5), dtype=np.float32)
 
     # Shape validation
     if obj_pts_np.ndim != 2 or obj_pts_np.shape[1] != 3:
@@ -51,7 +46,7 @@ def solve_pnp_robust(
 
     if obj_pts_np.shape[0] < 4:
         # most PnP methods require at least 4 points
-        return False, None, None
+        return False, None, None, None
 
     if cam_mat_np.shape != (3, 3):
         raise ValueError(f"Camera matrix must have shape (3, 3), but got {cam_mat_np.shape}")
@@ -117,20 +112,22 @@ def solve_pnp_robust(
                     best_rvec, best_tvec = rvec1, tvec1
                 else:
                     # if both are valid, compare their errors
-                    err1 = jnp.mean(
-                        jnp.linalg.norm(img_pts_j - project_points(obj_pts_j, rvec1_j, tvec1_j, cam_mat_j, dist_j),
-                                        axis=-1))
-                    err2 = jnp.mean(
-                        jnp.linalg.norm(img_pts_j - project_points(obj_pts_j, rvec2_j, tvec2_j, cam_mat_j, dist_j),
-                                        axis=-1))
+                    reproj1 = project_points(obj_pts_j, rvec1_j, tvec1_j, cam_mat_j, dist_j)
+                    reproj2 = project_points(obj_pts_j, rvec2_j, tvec2_j, cam_mat_j, dist_j)
 
-                    if err1 <= err2:
+                    errors1 = reprojection_errors(img_pts_j, reproj1)
+                    errors2 = reprojection_errors(img_pts_j, reproj2)
+
+                    # Compare using the standard RMS error
+                    if errors1['rms'] <= errors2['rms']:
                         best_rvec, best_tvec = rvec1, tvec1
+                        best_error = errors1
                     else:
                         best_rvec, best_tvec = np.asarray(rvec2_j).reshape(3, 1), np.asarray(tvec2_j).reshape(3, 1)
+                        best_error = errors2
 
         if best_rvec is None or best_tvec is None:
-            return False, None, None
+            return False, None, None, None
 
     # Optionally refine
     if refine_method and refine_method.lower() != 'none':
@@ -145,7 +142,10 @@ def solve_pnp_robust(
         except (cv2.error, AttributeError, KeyError):
             pass
 
-    return True, best_rvec.squeeze(), best_tvec.squeeze()
+    final_reproj = project_points(obj_pts_np, best_rvec, best_tvec, cam_mat_np, dist_np)
+    final_errors = reprojection_errors(img_pts_np, final_reproj)
+
+    return True, best_rvec.squeeze(), best_tvec.squeeze(), final_errors
 
 
 def calibrate_camera_robust(
@@ -279,7 +279,7 @@ def calibrate_camera_robust(
         # ----------------------------------------------
         #
         # The global RMS error in calibrateCamera() is:
-        #       np.sqrt(np.sum([sq_diff for view in stack])) / np.sum([len(view) for view in stack]))
+        #       np.sqrt(np.sum([sq_diff for view in stack]) / np.sum([len(view) for view in stack]))
 
     except cv2.error as e:
         error_msg = f"OpenCV Error in calibrateCamera: {e}"

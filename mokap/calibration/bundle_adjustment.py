@@ -10,7 +10,7 @@ from mokap.utils import CallbackOutputStream
 from mokap.utils.datatypes import DistortionModel
 from alive_progress import alive_bar
 
-from mokap.utils.geometry.projective import project_object_views_batched
+from mokap.utils.geometry.projective import project_object_views_batched, reprojection_errors
 from mokap.utils.geometry.transforms import invert_rtvecs
 
 
@@ -428,12 +428,12 @@ def cost_function(
     )
 
     resid = reproj - points2d
-    weighted_resid = jnp.where(visibility_mask[..., None], resid * points_weights[..., None], 0.0)
 
+    errors = reprojection_errors(points2d, reproj, visibility_mask)
     # jax.debug.print works inside jit?? woah
-    visible_error_magnitudes = jnp.where(visibility_mask, jnp.linalg.norm(resid, axis=-1), jnp.nan)
-    mean_reprojection_error_px = jnp.nanmean(visible_error_magnitudes)
-    jax.debug.print("Mean Reprojection Error: {x:.2f}px", x=mean_reprojection_error_px)
+    jax.debug.print("Mean Reprojection Error (RMS): {x:.3f}px", x=errors['rms'])
+
+    weighted_resid = jnp.where(visibility_mask[..., None], resid * points_weights[..., None], 0.0)
 
     all_residuals = [weighted_resid.ravel()]
     if prior_weight > 0.0 and 'extrinsics' in spec['blocks']:
