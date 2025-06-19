@@ -9,10 +9,10 @@ from jax.typing import ArrayLike
 from mokap.calibration import bundle_adjustment
 from mokap.calibration.common import solve_pnp_robust
 from mokap.utils.datatypes import DetectionPayload
-from mokap.utils.geometry.projective import project_to_multiple_cameras, reproject_and_compute_error, \
-    reprojection_errors, project_multiple_to_multiple
-from mokap.utils.geometry.fitting import quaternion_average, filter_rt_samples, reliability_bounds_3d, \
-    reliability_bounds_3d_iqr
+from mokap.utils.geometry.projective import (project_to_multiple_cameras, reprojection_errors,
+                                             project_multiple_to_multiple)
+from mokap.utils.geometry.fitting import (quaternion_average, filter_rt_samples,
+                                          reliability_bounds_3d, reliability_bounds_3d_iqr)
 from mokap.utils.geometry.transforms import (extrinsics_matrix, extmat_to_rtvecs,
                                              axisangle_to_quaternion_batched, quaternion_to_axisangle,
                                              invert_extrinsics_matrix, invert_rtvecs)
