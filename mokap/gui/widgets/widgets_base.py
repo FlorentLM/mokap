@@ -135,7 +135,6 @@ class Base(QWidget, SnapMixin):
 
         # References for easier access
         self._mainwindow = main_window_ref
-        self._coordinator = self._mainwindow.coordinator
 
         self.worker = None
         self.worker_thread = None
@@ -180,12 +179,11 @@ class LiveViewBase(Base):
         self.setWindowTitle(f'{self._camera.name.title()} camera')
 
         # All these properties come directly from the camera object
-        self._source_framerate = self._camera.framerate
         self._cam_colour = self._mainwindow.cams_colours[self._cam_name]
         self._secondary_colour = self._mainwindow.secondary_colours[self._cam_name]
         self._fmt = self._camera.pixel_format
 
-        img_x, img_y, img_w, img_h = self._camera.roi
+        _, _, img_w, img_h = self._camera.roi
         self._source_height = img_h
         self._source_width = img_w
 
@@ -639,10 +637,6 @@ class LiveViewBase(Base):
     def _resume_worker(self):
         self.worker.set_paused(False)
 
-    def _stop_worker(self):
-        self.worker_thread.quit()
-        self.worker_thread.wait()
-
     #  ============= Some signals =============
 
     @Slot(str, object)
@@ -660,8 +654,6 @@ class LiveViewBase(Base):
         # called in the main thread when worker finishes processing and emits its 'annotation'
         # Needs to be defined in each subclass because the result is not necessarily the same thing
         pass
-
-
 
     @Slot()
     def on_worker_finished(self):

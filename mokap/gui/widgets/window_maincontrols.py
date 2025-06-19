@@ -68,7 +68,6 @@ class MainControls(QMainWindow, SnapMixin):
         self.set_monitor()
 
         # States
-        self.is_editing = False
         self.is_calibrating = False
         self.is_recording = False
 
@@ -92,8 +91,6 @@ class MainControls(QMainWindow, SnapMixin):
         self.timer_slow = QTimer(self)
         self.timer_slow.timeout.connect(self._update_main)
         self.timer_slow.start(int(SLOW_UPDATE_INTERVAL * 1000))
-
-        self._mem_baseline = psutil.virtual_memory().percent
 
     @property
     def cameras_names(self):
@@ -515,13 +512,12 @@ class MainControls(QMainWindow, SnapMixin):
             self.acq_name_textbox.setDisabled(False)
             self.acq_name_edit_btn.setText('Set')
             self.acq_name_textbox.setFocus()
-            self.is_editing = True
+
         else:
             self.acq_name_textbox.setDisabled(True)
             self.acq_name_edit_btn.setText('Edit')
             self.manager.session_name = self.acq_name_textbox.text()
             self.save_dir_current.setText(f'{self.manager.full_path.resolve()}')
-            self.is_editing = False
 
     def _toggle_acquisition(self, checked: bool):
 
@@ -673,9 +669,8 @@ class MainControls(QMainWindow, SnapMixin):
                 pass
 
             ogl_frame = self.central_calib_window.frameGeometry()
-            ogl_w, ogl_h = ogl_frame.width(), ogl_frame.height()
             x_ogl = x_main + main_w + SPACING
-            y_ogl = ay + ah - ogl_h
+            y_ogl = ay + ah - ogl_frame.height()
 
             self.central_calib_window.move(x_ogl, y_ogl)
 

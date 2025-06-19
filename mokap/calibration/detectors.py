@@ -3,25 +3,20 @@ from typing import Tuple, Union, Optional
 import cv2
 import numpy as np
 from numpy.typing import ArrayLike
-from mokap.utils.datatypes import CharucoBoard
+from mokap.utils.datatypes import CharucoBoard, ChessBoard
 
 logger = logging.getLogger(__name__)
 
 
 class ChessboardDetector:
-    """
-    Detects a standard chessboard
-    """
+    """ Detects a standard chessboard """
 
-    def __init__(self, board: CharucoBoard, downsample_size: int = 480):
+    def __init__(self, board: ChessBoard, downsample_size: int = 480):
 
-        # Create 3D coordinates for board corners (in board-centric coordinates)
-        self._board_points_3d = board.object_points
-        self._board_corners_3d = board.corner_points
+        self._board = board
 
         # Maximum number of board points and distances
-        self._total_points: int = len(self._board_points_3d)
-        self._total_distances: int = int((self._total_points * (self._total_points - 1)) / 2.0)
+        self._nb_points = board.nb_points
 
         # OpenCV expects this tuple
         self._n_inner_size: Tuple[int, int] = (board.cols - 1, board.rows - 1)
@@ -46,20 +41,6 @@ class ChessboardDetector:
             20,  # max iterations
             0.1  # epsilon is the minimum allowed movement (in pixels) of a point from one iteration to the next
         )
-
-    @property
-    def points3d(self) -> ArrayLike:
-        """ Returns the (board-centric) coordinates of the chessboard points in 3D """
-        return self._board_points_3d
-
-    @property
-    def corners3d(self) -> ArrayLike:
-        """ Returns the (board-centric) coordinates of the chessboard outer corners in 3D """
-        return self._board_corners_3d
-
-    @property
-    def nb_points(self) -> int:
-        return self._total_points
 
     def detect(self,
                frame: ArrayLike,
@@ -108,20 +89,27 @@ class ChessboardDetector:
 
         return points2d_coords, self._points2d_ids
 
+    @property
+    def board(self) -> ChessBoard:
+        return self._board
+
 
 class CharucoDetector(ChessboardDetector):
     """
     Detects a Charuco board
     """
 
-    def __init__(self, board_params: CharucoBoard):
-        super().__init__(board_params)
+    def __init__(self, board: CharucoBoard):
+        super().__init__(board)
+
+        self._board = board
+        self._board_opencv = board.to_opencv()
 
         # we need to keep references to the OpenCV board object and detector parameters
-        self.board = board_params.to_opencv()
         self._detector_parameters = cv2.aruco.DetectorParameters()
         self._detector_parameters.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
-        self._detector = cv2.aruco.ArucoDetector(self.board.getDictionary(), detectorParams=self._detector_parameters)
+        self._detector = cv2.aruco.ArucoDetector(self._board_opencv.getDictionary(),
+                                                 detectorParams=self._detector_parameters)
 
         # Criteria for subpixel refinement
         self._win_size: Tuple[int, int] = (11, 11)
@@ -152,10 +140,10 @@ class CharucoDetector(ChessboardDetector):
         if refine_markers:
             markers_coords, marker_ids, rejected, recovered = cv2.aruco.refineDetectedMarkers(
                 image=frame,
-                board=self.board,
-                detectedCorners=markers_coords,  # Input/Output /!\
-                detectedIds=marker_ids,  # Input/Output /!\
-                rejectedCorners=rejected,  # Input/Output /!\
+                board=self._board_opencv,
+                detectedCorners=markers_coords,     # Input/Output /!\
+                detectedIds=marker_ids,             # Input/Output /!\
+                rejectedCorners=rejected,           # Input/Output /!\
                 parameters=self._detector_parameters,
                 # Known bug with refineDetectedMarkers, fixed in OpenCV 4.9: https://github.com/opencv/opencv/pull/24139
                 cameraMatrix=camera_matrix if cv2.getVersionMajor() >= 4 and cv2.getVersionMinor() >= 9 else None,
@@ -169,7 +157,7 @@ class CharucoDetector(ChessboardDetector):
             markerCorners=markers_coords,
             markerIds=marker_ids,
             image=frame,
-            board=self.board,
+            board=self._board_opencv,
             cameraMatrix=camera_matrix,
             distCoeffs=dist_coeffs,
             minMarkers=1)
@@ -189,3 +177,7 @@ class CharucoDetector(ChessboardDetector):
                 logger.error(e)
 
         return chessboard_points[:, 0, :], chessboard_points_ids[:, 0]
+
+    @property
+    def board(self) -> ChessBoard:
+        return self._board

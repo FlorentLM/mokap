@@ -75,7 +75,6 @@ class MultiCam:
 
         self._session_frame_counts: List[int] = [0] * self.nb_cameras
         self._session_encoding_params: List[Dict] = [{} for _ in self.cameras]
-        self._session_actual_fps: List[float] = [0.0] * self.nb_cameras
 
         self._finished_saving_events: List[Event] = [Event() for _ in self.cameras]
         for event in self._finished_saving_events:
@@ -345,7 +344,6 @@ class MultiCam:
 
         # Reset the frame counters for the new session
         self._session_frame_counts = [0] * self.nb_cameras
-        self._session_actual_fps = [0.0] * self.nb_cameras
 
         # signal that writers can start
         self._recording.set()

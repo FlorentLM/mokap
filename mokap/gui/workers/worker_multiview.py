@@ -139,9 +139,8 @@ class MultiviewWorker(CalibrationProcessingWorker):
 
         # Frustum visualization
         # TODO: No need to initialise these arrays over and over - they need to be stored
-        frustums_pts = np.array([
-            [[0, 0], [w, 0], [w, h], [0, h]] for w, h in self._sources_shapes_wh.values()
-        ], dtype=np.float32)
+        frustums_pts = np.array([ [[0, 0], [w, 0], [w, h], [0, h]]
+            for w, h in self._sources_shapes_wh.values()], dtype=np.float32)
         centers_pts = np.array([[w / 2, h / 2] for w, h in self._sources_shapes_wh.values()], dtype=np.float32)
 
         # TODO: Why two calls to back_projection_batched? We could have one stacked array and one call, then slice it

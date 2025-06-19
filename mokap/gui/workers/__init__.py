@@ -1,2 +1,0 @@
-DEBUG_SIGNALS_FLOW = False
-VERBOSE = True

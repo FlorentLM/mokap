@@ -14,21 +14,6 @@ if TYPE_CHECKING:
 
 ##
 
-COMPRESSED = {'codec': 'libx265',
-              'params': '-crf 12 -preset veryfast',
-              'ftype': 'mp4'}
-
-LOSSLESS_1 = {'codec': 'ffv1',
-              'params': '-level 3',
-              'ftype': 'avi'}
-
-LOSSLESS_2 = {'codec': 'libx265',
-              'params': '-x265-params lossless=1 -preset veryfast',
-              'ftype': 'mp4'}
-
-ENCODE_FORMAT = COMPRESSED
-
-
 def exists_check(path):
     """
     Checks if a file or folder of the given name exists. If so, create a suffixed version of the name

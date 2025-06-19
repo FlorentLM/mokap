@@ -42,24 +42,32 @@ class ChessBoard:
         self.cols = cols
         self.square_length = square_length
 
-    @property
-    def object_points(self) -> np.ndarray:
-        """
-        Returns the theoretical 3D locations (X, Y, Z=0) of the inner chessboard corners
-        """
+        # Cache object points in 3D
         xs = np.arange(1, self.cols) * self.square_length
         ys = np.arange(1, self.rows) * self.square_length
-
         xx, yy = np.meshgrid(xs, ys)
+        self._object_points = np.stack((xx, yy, np.zeros_like(xx)), axis=-1).reshape(-1, 3).astype(np.float32)
 
-        return np.stack((xx, yy, np.zeros_like(xx)), axis=-1).reshape(-1, 3).astype(np.float32)
+        self._N = self._object_points.shape[0]
+
+        # Cache board outer corners in 3D
+        self._corners = np.array([
+            [0, 0, 0], [0, 1, 0], [1, 1, 0], [1, 0, 0]
+        ], dtype=np.float32) * [self.cols, self.rows, 0] * self.square_length
+
+    @property
+    def object_points(self) -> np.ndarray:
+        """ Returns the theoretical 3D locations (X, Y, Z=0) of the inner points """
+        return self._object_points
 
     @property
     def corner_points(self) -> np.ndarray:
-        corners = np.array([
-            [0, 0, 0], [0, 1, 0], [1, 1, 0], [1, 0, 0]
-        ], dtype=np.float32) * [self.cols, self.rows, 0] * self.square_length
-        return corners
+        """ Returns the theoretical 3D locations (X, Y, Z=0) of the outer corners """
+        return self._corners
+
+    @property
+    def nb_points(self) -> int:
+        return self._N
 
     def to_opencv(self):
         raise NotImplementedError()

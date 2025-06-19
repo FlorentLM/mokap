@@ -336,6 +336,7 @@ class RecordingLiveView(LiveViewBase):
         # for all other events, pass them on to the base class
         return super().eventFilter(watched_obj, event)
 
+    # TODO: reactivate these
     def set_recording_indicator(self, is_recording):
         """ Shows or hides the recording text """
         self.recording_text.setVisible(is_recording)
@@ -524,12 +525,10 @@ class CalibrationLiveView(LiveViewBase):
         self.latest_detected_points = np.zeros((0, 2))
         self.latest_reprojected_points = np.zeros((0, 2))
         self.latest_detected_ids = np.array([])
-        self.coverage_grid_rgba = np.zeros((1, 1, 4), dtype=np.uint8)
 
         # Registration is handled by MainControls
         self._setup_worker(MonocularWorker(
-            board_params=board_params,
-            cam_idx=self.idx,
+            board=board_params,
             cam_name=self.name,
             img_width=self._source_width,
             img_height=self._source_height

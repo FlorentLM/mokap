@@ -30,7 +30,6 @@ class CentralCalibrationWindow(Base):
         self.idx = self.nb_cams + 1
 
         self._cameras_names = self._mainwindow.cameras_names    # Fixed cameras order
-        self._origin_camera = self._cameras_names[0]    # default to first one
 
         self._cam_colours_rgba = {cam: np.array([*hex_to_rgb(col), 255], dtype=np.uint8)
                                   for cam, col in self._mainwindow.cams_colours.items()}
@@ -42,29 +41,6 @@ class CentralCalibrationWindow(Base):
 
         # Data stores for dynamic points
         self.max_board_points = self._mainwindow.board_params.object_points.shape[0]
-
-        # self.board_points_3d = np.zeros((self.max_board_points, 3))  # Placeholder for global 3D points
-        # self.board_points_3d_vis = np.zeros(self.max_board_points, dtype=bool)  # Visibility mask
-
-        # # Per-camera 2D detections
-        # self.points_2d = {cam_name: np.zeros((self.max_board_points, 2)) for cam_name in self._cameras_names}
-        # self.points_2d_ids = {cam_name: np.array([], dtype=int) for cam_name in self._cameras_names}
-
-        # These are aliases to the (rotated for display) rvec and tvec (filled using the fixed camera order)
-        self.optical_axes = np.zeros((self.nb_cams, 3), dtype=np.float32)
-        self.cam_positions = np.zeros((self.nb_cams, 3), dtype=np.int32)
-
-        # And a reference to the shared focal point
-        self.focal_point = np.zeros((1, 3), dtype=np.float32)
-
-        # Define some constants
-        # Points in 2D (as arrays, and using the fixed cameras order)
-        self._frustums_points2d = np.stack([np.array([[0, 0],
-                                             [self._sources_shapes[cam][1], 0],
-                                             [self._sources_shapes[cam][1], self._sources_shapes[cam][0]],
-                                             [0, self._sources_shapes[cam][0]]], dtype=np.int32)
-                                   for cam in self._cameras_names])
-        self._centres_points2d = self._frustums_points2d[:, 2, :] / 2.0
 
         # Faces as triangles
         self._frustum_faces = np.array([[0, 1, 2], [0, 2, 3]])
@@ -88,7 +64,6 @@ class CentralCalibrationWindow(Base):
         ], dtype=np.int32)
 
         # References to displayed items
-        self._static_items = []
         self._refreshable_items = []
         self._frustum_depth = 200
         self._gridsize = 100

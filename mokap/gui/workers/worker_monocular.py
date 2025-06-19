@@ -14,14 +14,12 @@ logger = logging.getLogger(__name__)
 class MonocularWorker(CalibrationProcessingWorker):
 
     def __init__(self,
-                 board_params: Union[ChessBoard, CharucoBoard],
-                 cam_idx: int,
+                 board: Union[ChessBoard, CharucoBoard],
                  cam_name: str,
                  img_width: int,
                  img_height: int):
         super().__init__(name=cam_name)
 
-        self.camera_idx = cam_idx
         self.cam_name = cam_name
         self.img_w = img_width
         self.img_h = img_height
@@ -33,8 +31,8 @@ class MonocularWorker(CalibrationProcessingWorker):
 
         # Policy settings for auto-calibration
         # TODO: These need to be configurable from the GUI
-        self._auto_sample_enabled = True
-        self._auto_compute_enabled = True
+        self._auto_sample = True
+        self._auto_compute = True
         self._fix_aspect_ratio = False
         self._distortion_model: DistortionModel = 'standard'
         self._coverage_threshold = 75.0
@@ -42,9 +40,7 @@ class MonocularWorker(CalibrationProcessingWorker):
         self._min_stack_for_calib = 20
 
         # Tool initialization
-        self.monocular_tool: Optional[MonocularCalibrationTool] = None
-        self.board_object_points: Optional[np.ndarray] = None
-        self._create_tool(board_params)
+        self.monocular_tool: MonocularCalibrationTool = self._create_tool(board)
 
         # A flag to avoid looping over failures
         self._last_calib_failed = False
@@ -53,15 +49,13 @@ class MonocularWorker(CalibrationProcessingWorker):
         self.empty_detection = DetectionPayload(-1, np.zeros((0, 2)), np.array([]))
         self.empty_reprojection = ReprojectionPayload(np.zeros((0, 2)), np.array([]))
 
-    def _create_tool(self, board_params: Union[ChessBoard, CharucoBoard]):
+    def _create_tool(self, board: Union[ChessBoard, CharucoBoard]):
         """ Creates and configures a new MonocularCalibrationTool """
 
         logger.debug(f"[{self.name.title()}] Creating new calibration tool.")
 
-        self.board_object_points = board_params.object_points
-
-        self.monocular_tool = MonocularCalibrationTool(
-            calibration_board=board_params,
+        return MonocularCalibrationTool(
+            calibration_board=board,
             imsize_hw=(self.img_h, self.img_w),
             min_stack=self._min_stack_for_calib,
             focal_mm=self._cam_th_focal,
@@ -69,13 +63,13 @@ class MonocularWorker(CalibrationProcessingWorker):
         )
 
     @Slot(object)
-    def configure_new_board(self, board_params: Union[ChessBoard, CharucoBoard]):
+    def configure_new_board(self, board: Union[ChessBoard, CharucoBoard]):
         """ Slot to handle a full reset when board parameters change """
 
         logger.debug(f"[{self.name.title()}] Received new board parameters. Recreating tool.")
 
         # Re-create the tool with the new parameters
-        self._create_tool(board_params)
+        self.monocular_tool = self._create_tool(board)
 
     @Slot()
     def reset(self):
@@ -96,7 +90,7 @@ class MonocularWorker(CalibrationProcessingWorker):
                 CalibrationData(self.cam_name, CoveragePayload(grid=np.zeros((1, 1), dtype=bool),
                                                                coverage_percent=0.0,
                                                                nb_samples=0,
-                                                               total_points=self.monocular_tool.detector.nb_points))
+                                                               total_points=self.monocular_tool.detector.board.nb_points))
             )
 
     @Slot(int)
@@ -133,7 +127,7 @@ class MonocularWorker(CalibrationProcessingWorker):
         # --- Stage 0: Intrinsic Calibration policy ---
         if self._current_stage == 0:
             # Policy for auto-sampling
-            if self._auto_sample_enabled:
+            if self._auto_sample:
                 # The worker decides to try registering, the tool just executes
                 if self.monocular_tool.register_sample(min_new_area=self._area_threshold):
 
@@ -143,7 +137,7 @@ class MonocularWorker(CalibrationProcessingWorker):
                     self.send_coverage_update()
 
             # Policy for auto-computation
-            if self._auto_compute_enabled and not self._last_calib_failed:
+            if self._auto_compute and not self._last_calib_failed:
                 is_ready = (self.monocular_tool.pct_coverage >= self._coverage_threshold and
                             self.monocular_tool.curr_nb_samples >= self._min_stack_for_calib)
 
@@ -170,21 +164,23 @@ class MonocularWorker(CalibrationProcessingWorker):
 
         # --- Pose and reprojection (for all stages) ---
 
-        # The tool's `detect` method already called `compute_extrinsics` so we just need to read the results
-
         if self.monocular_tool.has_intrinsics:
-            # Send extrinsics payload (will be None if pose failed)
 
-            rvec, tvec = self.monocular_tool.extrinsics
-            pose_error = self.monocular_tool.pose_error
-
-            self.send_payload.emit(
-                CalibrationData(self.cam_name, ExtrinsicsPayload(rvec=rvec, tvec=tvec, error=pose_error))
-            )
+            self.monocular_tool.compute_extrinsics()
 
             # Send reprojection payload for visualization
             if self.monocular_tool.has_extrinsics:
-                # The tool's `compute_extrinsics` already called `reproject`
+
+                # Send extrinsics payload (will be None if pose failed)
+                rvec, tvec = self.monocular_tool.extrinsics
+                pose_error = self.monocular_tool.pose_error
+
+                self.send_payload.emit(
+                    CalibrationData(self.cam_name, ExtrinsicsPayload(rvec=rvec, tvec=tvec, error=pose_error))
+                )
+
+                # Reproject points
+                self.monocular_tool.reproject()
 
                 reproj_payload = ReprojectionPayload(
                     all_points_2d=self.monocular_tool.reprojected_points2d,
@@ -209,7 +205,7 @@ class MonocularWorker(CalibrationProcessingWorker):
                 grid=self.monocular_tool.grid,
                 coverage_percent=self.monocular_tool.pct_coverage,
                 nb_samples=self.monocular_tool.curr_nb_samples,
-                total_points=self.monocular_tool.detector.nb_points
+                total_points=self.monocular_tool.detector.board.nb_points
             )
             self.send_payload.emit(CalibrationData(self.cam_name, payload))
 
@@ -242,7 +238,7 @@ class MonocularWorker(CalibrationProcessingWorker):
                 grid=self.monocular_tool.grid,
                 coverage_percent=self.monocular_tool.pct_coverage,
                 nb_samples=self.monocular_tool.curr_nb_samples,
-                total_points=self.monocular_tool.detector.nb_points
+                total_points=self.monocular_tool.detector.board.nb_points
             ))
         )
 
