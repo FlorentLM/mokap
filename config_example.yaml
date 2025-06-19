@@ -55,13 +55,16 @@ ffmpeg:
   # --- Encoder-specific parameters ---
   # The writer will automatically pick the correct one based on OS and the 'gpu' flag
   params:
-    cpu: '-c:v libx265 -preset ultrafast -tune zerolatency -crf 23 -pix_fmt yuv420p'
+#    cpu: '-c:v libx265 -preset ultrafast -tune zerolatency -crf 23 -pix_fmt yuv420p'
+    cpu: '-c:v libx265 -preset veryfast -tune zerolatency -crf 20 -pix_fmt yuv420p10le'
 
     # NVIDIA NVENC for Windows/Linux
-    gpu_nvenc: '-c:v hevc_nvenc -preset fast -tune ll -zerolatency true -rc cbr -b:v 30M -pix_fmt yuv420p'
+#    gpu_nvenc: '-c:v hevc_nvenc -preset fast -tune ll -zerolatency true -rc cbr -b:v 30M -pix_fmt yuv420p'
+    gpu_nvenc: '-c:v hevc_nvenc -preset fast -tune ll -rc:v vbr_hq -cq 23 -pix_fmt yuv420p10le'
 
     # Apple VideoToolbox for macOS
-    gpu_videotoolbox: '-c:v hevc_videotoolbox -realtime true -q:v 65 -pix_fmt yuv420p'
+#    gpu_videotoolbox: '-c:v hevc_videotoolbox -realtime true -q:v 65 -pix_fmt yuv420p'
+    gpu_videotoolbox: '-c:v hevc_videotoolbox -realtime true -q:v 50 -pix_fmt yuv420p10le'
 
 # --- Camera-Specific Definitions ---
 
