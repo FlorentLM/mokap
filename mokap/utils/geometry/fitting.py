@@ -230,8 +230,8 @@ def filter_rt_samples(
         return ID_QUAT, ZERO_T, False
 
     def success_case():
-        quats = rt_stack[:, :4]
-        trans = rt_stack[:, 4:]
+        quats = rt_stack_clean[:, :4]
+        trans = rt_stack_clean[:, 4:]
 
         # Initial guess
         q_curr = quaternion_average(quats)
