@@ -259,7 +259,7 @@ def plot_points2d_3d(
                     c = pts_scatter.to_rgba(errors[p]) if np.isfinite(errors[p]) else colors[n]
                 else:
                     c = colors[n]
-                ax.text(xs[p], xs[p], zs[p], f"  {name}", c=c, alpha=0.8, fontweight='bold')
+                ax.text(xs[p], ys[p], zs[p], f"  {name}", c=c, alpha=0.8, fontweight='bold')
 
     ax.set_aspect('equal')
     ax.set_xlabel('X')
