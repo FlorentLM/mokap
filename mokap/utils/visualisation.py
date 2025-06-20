@@ -37,13 +37,13 @@ def plot_volume_3d(
     v = (coords - 0.5) * np.array(size) + np.array(centre)
 
     faces_idx = np.array([
-        [0, 1, 5, 4],  # Front
-        [1, 2, 6, 5],  # Right
-        [2, 3, 7, 6],  # Back
-        [3, 0, 4, 7],  # Left
-        [0, 1, 2, 3],  # Bottom
-        [4, 5, 6, 7],  # Top
-    ], dtype=int)
+        [0, 1, 3, 2],   # bottom
+        [4, 5, 7, 6],   # top
+        [0, 1, 5, 4],   # back
+        [2, 3, 7, 6],   # front
+        [0, 2, 6, 4],   # left
+        [1, 3, 7, 5],   # right
+    ])
     faces = v[faces_idx]
 
     ax.add_collection3d(Poly3DCollection(faces, facecolors=color, linewidths=0.1, edgecolors=color, alpha=alpha))
@@ -105,13 +105,12 @@ def plot_cameras_3d(
     ax.set_zlabel('Z')
 
     E_c2w = extrinsics_matrix(rvecs_c2w, tvecs_c2w)
-    E_w2c = invert_extrinsics_matrix(E_c2w)
 
     frustums_3d = back_projection_batched(
         frustums_2d,
         depth,
         camera_matrices,
-        E_w2c,
+        E_c2w,
         dist_coeffs,
         distortion_model='full'
     )
@@ -180,14 +179,16 @@ def plot_points_3d(
         fig = plt.figure(figsize=(12, 12))
         ax = fig.add_subplot(111, projection='3d')
 
+    xs, ys, zs = points3d.T
+
     if errors is not None:
         colormap = truncate_colormap(plt.cm.brg, 0.45, 1.0).reversed()
         normalize = matplotlib.colors.Normalize(vmin=0, vmax=5)
-        pts_scatter = ax.scatter(*points3d.T,
+        pts_scatter = ax.scatter(xs, ys, zs,
                                  c=errors, cmap=colormap, norm=normalize,
                                  marker='o', label='3D points', alpha=0.5)
     else:
-        pts_scatter = ax.scatter(*points3d.T,
+        pts_scatter = ax.scatter(xs, ys, zs,
                                  c=color,
                                  marker='o', label='3D points', alpha=0.5)
 
@@ -196,7 +197,7 @@ def plot_points_3d(
             c = pts_scatter.to_rgba(errors[p]) if np.isfinite(errors[p]) else color
         else:
             c = color
-        ax.text(*points3d[p], f"  {name}", c=c, alpha=0.8, fontweight='bold')
+        ax.text(xs[p], ys[p], zs[p], f"  {name}", c=c, alpha=0.8, fontweight='bold')
 
     ax.legend()
 
@@ -234,31 +235,31 @@ def plot_points2d_3d(
         colors = CUSTOM_COLORS
 
     E_c2w = extrinsics_matrix(rvecs_c2w, tvecs_c2w)
-    E_w2c = invert_extrinsics_matrix(E_c2w)
-    points2d_3d = back_projection_batched(points2d, depth, camera_matrices, E_w2c, dist_coeffs)
+    points2d_3d = back_projection_batched(points2d, depth, camera_matrices, E_c2w, dist_coeffs, distortion_model='full')
 
     for n in range(C):
+
+        xs, ys, zs = points2d_3d[n].T
+
         if errors is not None:
             colormap = truncate_colormap(plt.cm.brg, 0.45, 1.0).reversed()
             normalize = matplotlib.colors.Normalize(vmin=0, vmax=5)
 
-            pts_scatter = ax.scatter(*points2d_3d[n].T, s=5,
+            pts_scatter = ax.scatter(xs, ys, zs, s=10,
                                      c=errors[n], cmap=colormap, norm=normalize,
                                      marker='.', label='3D points', alpha=0.5)
         else:
-            pts_scatter = ax.scatter(*points2d_3d.T, s=5,
+            pts_scatter = ax.scatter(xs, ys, zs, s=10,
                                      c=colors[n],
                                      marker='.', label='3D points', alpha=0.5)
 
         if points_names is not None:
             for p, name in enumerate(points_names):
-                point = points2d_3d[n][p]
-                if np.isfinite(point).all():
-                    if errors is not None:
-                        c = pts_scatter.to_rgba(errors[p]) if np.isfinite(errors[p]) else colors[n]
-                    else:
-                        c = colors[n]
-                    ax.text(*point, f"  {name}", c=c, alpha=0.8, fontweight='bold')
+                if errors is not None:
+                    c = pts_scatter.to_rgba(errors[p]) if np.isfinite(errors[p]) else colors[n]
+                else:
+                    c = colors[n]
+                ax.text(xs[p], xs[p], zs[p], f"  {name}", c=c, alpha=0.8, fontweight='bold')
 
     ax.set_aspect('equal')
     ax.set_xlabel('X')

@@ -94,20 +94,27 @@ def inverse_rodrigues(Rmat: jnp.ndarray) -> jnp.ndarray:
         Rmat[..., 1, 0] - Rmat[..., 0, 1]
     ], axis=-1)
 
-    # there's an issue when theta is close to 0 or pi
-    # sin(theta) is in the denominator
-    sintheta = jnp.sin(theta)
+    # Condition for using approximation (theta is near 0)
+    # The case theta ~ pi is more complex and not fully handled here (TODO)
+    is_near_zero = theta < _eps
 
-    # Condition for using approximation (theta ~ 0 or theta ~ pi)
-    is_singular = (sintheta ** 2) < _eps
+    # For the general case, the scale is theta / (2 * sin(theta))
+    scale_normal = theta / (2 * jnp.sin(theta) + _eps)
 
-    # Normal angle
-    scale = jnp.where(is_singular, 1.0, 0.5 * theta / sintheta)
-    rvec_normal = rv_unscaled * scale[..., None] # (..., 3)
+    # For small angles, R ~ I + skew(rvec), so R - R.T ~ 2*skew(rvec),
+    # which means rv_unscaled ~ 2*rvec
+    # Therefore, rvec ~ 0.5 * rv_unscaled
+    rvec_small_angle = 0.5 * rv_unscaled
+    rvec_normal_angle = rv_unscaled * scale_normal[..., None]
 
-    # TODO: Singular angle (theta is near 0 or pi)
+    # and we choose the appropriate implementation based on the angle
+    rvec = jnp.where(
+        is_near_zero[..., None],
+        rvec_small_angle,
+        rvec_normal_angle
+    )
 
-    return rvec_normal
+    return rvec
 
 
 @jax.jit
@@ -267,59 +274,47 @@ batched_fundamental_matrices = jax.vmap(
 
 
 @jax.jit
-def invert_rtvecs(
-        rvec: jnp.ndarray,
-        tvec: jnp.ndarray
-) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    """ Inverts extrinsics vectors (rvec, tvec) -> (rvec_inv, tvec_inv) """
-    R_mat = rodrigues(rvec)
-    R_inv = jnp.swapaxes(R_mat, -1, -2)
+def invert_extrinsics_matrix(E: jnp.ndarray) -> jnp.ndarray:
+    """
+    Inverts extrinsics matrix (camera-space -> world space or vice versa).
+    This version is robust and handles 3x4 or 4x4 matrices.
+    """
 
-    # Ensure tvec has a trailing dimension for matmul, even if it's a single vector
-    tvec_exp = tvec[..., None]
+    # Ensure E is a 4x4 matrix for inversion
+    if E.shape[-2:] == (3, 4):
+        bottom = jnp.array([0., 0., 0., 1.], dtype=E.dtype)
 
-    # The matmul will correctly handle batched R_inv and batched/unbatched tvec_exp
-    tvec_inv_exp = -R_inv @ tvec_exp
+        # Broadcast bottom row to match any batch dimensions
+        bottom = jnp.broadcast_to(bottom, E.shape[:-2] + (1, 4))
+        E_4x4 = jnp.concatenate([E, bottom], axis=-2)
 
-    # remove the trailing dimension we added
-    tvec_inv = tvec_inv_exp[..., 0]
+    elif E.shape[-2:] == (4, 4):
+        E_4x4 = E
 
-    rvec_inv = inverse_rodrigues(R_inv)
-    return rvec_inv, tvec_inv
+    else:
+        # This path should not be taken in JIT-compiled code with static shapes but is good practice
+        raise ValueError(f"Input must be of shape (..., 3, 4) or (..., 4, 4), got {E.shape}")
+
+    return jnp.linalg.inv(E_4x4)
 
 
 @jax.jit
-def invert_extrinsics_matrix(
-    E:  jnp.ndarray
-) -> jnp.ndarray:
+def invert_rtvecs(rvec: jnp.ndarray, tvec: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """
-    Inverts extrinsics matrix (camera-space -> world space or vice versa)
-    E -> inv_E
-
-    Args:
-        E: extrinsics matrix (or matrices) (..., 3, 4) or (..., 4, 4)
-
-    Returns:
-        inv_E: inverted extrinsics matrix (or matrices)  (..., 4, 4)
+    Inverts extrinsics vectors (rvec, tvec) -> (rvec_inv, tvec_inv)
+    by converting to a 4x4 matrix, inverting it, and converting back
     """
 
-    # Since E.shape is known when we trace the function, we can use plain Python if/else on E.shape[-2:]
+    # Convert (rvec, tvec) to a 4x4 extrinsics matrix
+    E = extrinsics_matrix(rvec, tvec)
 
-    last2 = (E.shape[-2], E.shape[-1])
-    if last2 == (3, 4):
-        bottom = jnp.array([0., 0., 0., 1.], dtype=E.dtype)
-        bottom = bottom.reshape((1, 4))
-        # broadcast to match leading dims
-        bottom = jnp.broadcast_to(bottom, E.shape[:-2] + (1, 4))
-        E4 = jnp.concatenate([E, bottom], axis=-2)  # (..., 4, 4)
-        return jnp.linalg.inv(E4)
+    # Invert the 4x4 matrix
+    E_inv = invert_extrinsics_matrix(E)
 
-    elif last2 == (4, 4):
-        return jnp.linalg.inv(E)
+    # Convert the inverted matrix back to (rvec, tvec)
+    rvec_inv, tvec_inv = extmat_to_rtvecs(E_inv)
 
-    else:
-        # catching bad shapes early
-        raise ValueError(f"Expected shape (..., 3, 4) or (..., 4, 4), got {last2}")
+    return rvec_inv, tvec_inv
 
 
 @partial(jax.jit, static_argnums=(1,))

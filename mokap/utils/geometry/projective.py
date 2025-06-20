@@ -277,7 +277,7 @@ def back_projection(
         points2d:           jnp.ndarray,
         depth:              Union[float, jnp.ndarray],
         camera_matrix:      jnp.ndarray,
-        E_w2c:              jnp.ndarray,
+        E_c2w:              jnp.ndarray,
         dist_coeffs:        Optional[jnp.ndarray] = None,
         distortion_model:   str = 'standard'
 ) -> jnp.ndarray:
@@ -311,9 +311,6 @@ def back_projection(
     depth_arr = jnp.asarray(depth)
     cam_pts = cam_dirs * depth_arr[..., None]
 
-    # camera -> world
-    E_c2w = invert_extrinsics_matrix(E_w2c)  # (..., 4, 4)
-
     # build homogeneous cam_pts [Xc, 1]
     ones4 = jnp.ones((cam_pts.shape[0], 1), dtype=cam_pts.dtype)
     hom_cam = jnp.concatenate([cam_pts, ones4], axis=1)  # (N, 4)
@@ -325,12 +322,12 @@ def back_projection(
     return world_pts
 
 # back-project (the same number of) points to multiple cameras
-def back_projection_batched(points2d, depth, camera_matrix, E_w2c, dist_coeffs, distortion_model='standard'):
+def back_projection_batched(points2d, depth, camera_matrix, E_c2w, dist_coeffs, distortion_model='standard'):
     back_project_fn = partial(back_projection, distortion_model=distortion_model)
     return jax.vmap(
         back_project_fn,
         in_axes=(0, None, 0, 0, 0)
-    )(points2d, depth, camera_matrix, E_w2c, dist_coeffs)
+    )(points2d, depth, camera_matrix, E_c2w, dist_coeffs)
 
 
 @partial(jax.jit, static_argnames=['per_point_errors'])
@@ -437,7 +434,12 @@ def triangulate_points_from_projections(
     r1 = (u_exp * P2 - P0) * w_exp
     r2 = (v_exp * P2 - P1) * w_exp
 
-    A = jnp.concatenate([r1, r2], axis=0).transpose(1, 0, 2)  # (N, 2*C, 4)
+    # Stack the two equations along a new axis
+    A_stacked = jnp.stack([r1, r2], axis=1) # (C, 2, N, 4)
+    # Transpose to group by point
+    A_transposed = A_stacked.transpose(2, 0, 1, 3) # (N, C, 2, 4)
+    # Reshape to get the final (N, 2*C, 4) matrix for SVD
+    A = A_transposed.reshape((points2d.shape[1], -1, 4))
 
     if lambda_reg != 0.0:
         # build A^T A + lambda I for each point
@@ -500,9 +502,9 @@ def triangulate(
     weights = weights.astype(jnp.float32)
 
     # Recover camera-centric extrinsics matrices and compute the projection matrices
-    E_all = extrinsics_matrix(rvecs_w2c, tvecs_w2c)
-    P_all = projection_matrix(camera_matrices, E_all)
+    E_mats_w2c = extrinsics_matrix(rvecs_w2c, tvecs_w2c)
+    P_mats = projection_matrix(camera_matrices, E_mats_w2c)
 
     # Call the core, batched triangulation function
-    pts3d = triangulate_points_from_projections(pts2d_ud, P_all, weights=weights)
+    pts3d = triangulate_points_from_projections(pts2d_ud, P_mats, weights=weights)
     return pts3d

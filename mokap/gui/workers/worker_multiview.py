@@ -167,14 +167,9 @@ class MultiviewWorker(CalibrationProcessingWorker):
             # nothing to draw, early exit
             return
 
-        # back_projection expects world-to-camera (w2c) poses. We store camera-to-world (c2w). Invert them first.
-        rs_w2c, ts_w2c = invert_rtvecs(rs_c2w, ts_c2w)
-        Es_w2c = extrinsics_matrix(rs_w2c, ts_w2c)
+        Es_c2w = extrinsics_matrix(rs_c2w, ts_c2w)
 
-        frustum_3d = back_projection_batched(self._img_points_2d, self._frustum_depth, Ks, Es_w2c, Ds, distortion_model='full')
-        img_center_point3d = frustum_3d[:, 0, :]
-
-        optical_axes = jnp.vstack([ts_w2c, img_center_point3d])
+        frustum_3d = back_projection_batched(self._img_points_2d, self._frustum_depth, Ks, Es_c2w, Ds, distortion_model='full')
 
         # Detections and board visualisation
         detections_3d = []
@@ -191,7 +186,7 @@ class MultiviewWorker(CalibrationProcessingWorker):
                 points2d = self._points_2d[name]
                 if points2d.shape[0] > 0:
                     detections_3d.append(
-                        back_projection(points2d, self._frustum_depth * 0.95, Ks[i], Es_w2c[i], Ds[i])
+                        back_projection(points2d, self._frustum_depth * 0.95, Ks[i], Es_c2w[i], Ds[i])
                     )
                 else:
                     detections_3d.append(self._nopoints_3d)
@@ -220,11 +215,9 @@ class MultiviewWorker(CalibrationProcessingWorker):
         # Rotate all 3D data by 180 degrees around Y axis to match OpenGL coordinate system
         # scene_data['board_3d'] = rotate_points3d(scene_data.get('board_3d'), 180, axis='y')
         # scene_data['frustums_3d'] = rotate_points3d(frustum_3d, 180, axis='y')
-        # scene_data['optical_axes_3d'] = rotate_points3d(optical_axes, 180, axis='y')
         # scene_data['detections_3d'] = [rotate_points3d(d, 180, axis='y') for d in detections_3d]
 
         scene_data['frustums_3d'] = frustum_3d
-        scene_data['optical_axes_3d'] = optical_axes
         scene_data['detections_3d'] = detections_3d
 
         self.scene_data_ready.emit(scene_data)
