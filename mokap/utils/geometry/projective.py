@@ -30,11 +30,16 @@ def distortion(
         dy: tangential distortion in y
     """
 
-    current_len = dist_coeffs.shape[0]
+    # Pad along the last axis only, accommodating any leading batch dimensions
+    current_len = dist_coeffs.shape[-1]
     padding_needed = max(0, 8 - current_len)
-    dist_coeffs_padded = jnp.pad(dist_coeffs, (0, padding_needed))
+    # Create padding configuration for the last axis
+    padding_config = [(0, 0)] * (dist_coeffs.ndim - 1) + [(0, padding_needed)]
+    dist_coeffs_padded = jnp.pad(dist_coeffs, padding_config)
 
-    k1, k2, p1, p2, k3, k4, k5, k6 = dist_coeffs_padded[:8]
+    # Unpack along the last axis
+    k1, k2, p1, p2, k3, k4, k5, k6 = [dist_coeffs_padded[..., i] for i in range(8)]
+
     r2 = x * x + y * y
     r4 = r2 * r2
     r6 = r4 * r2
@@ -43,7 +48,9 @@ def distortion(
         # Rational model
         numerator = 1 + k1 * r2 + k2 * r4 + k3 * r6
         denominator = 1 + k4 * r2 + k5 * r4 + k6 * r6
-        radial = numerator / (denominator + _eps)
+        # Clip the denominator to be strictly positive to avoid division by zero/negative
+        safe_denominator = jnp.maximum(denominator, _eps)
+        radial = numerator / safe_denominator
     elif distortion_model == 'full':
         # 8-parameter polynomial model
         radial = 1 + k1 * r2 + k2 * r4 + k3 * r6 + k4 * r2 * r6 + k5 * r4 * r6 + k6 * r6 * r6
