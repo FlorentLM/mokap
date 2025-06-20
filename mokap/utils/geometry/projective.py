@@ -2,8 +2,8 @@ from functools import partial
 from typing import Tuple, Union, Optional, Dict
 import jax
 from jax import numpy as jnp
-from mokap.utils.geometry.transforms import rodrigues, extrinsics_matrix, invert_extrinsics_matrix, projection_matrix, \
-    extmat_to_rtvecs, invert_rtvecs
+from mokap.utils.geometry.transforms import (rodrigues, extrinsics_matrix, invert_extrinsics_matrix,
+                                             projection_matrix, extmat_to_rtvecs)
 
 
 _eps = 1e-8
@@ -66,7 +66,8 @@ def distortion(
     return radial, dx, dy
 
 
-def _project_points(
+@partial(jax.jit, static_argnames=['distortion_model'])
+def project_points(
     object_points:    jnp.ndarray,
     rvec:             jnp.ndarray,
     tvec:             jnp.ndarray,
@@ -110,40 +111,56 @@ def _project_points(
     return jnp.stack([fx * x_d + cx, fy * y_d + cy], axis=-1)
 
 
-project_points = jax.jit(_project_points, static_argnames=['distortion_model'])
-
 # batched version for projecting a single set of 3D world points using multiple different poses (rvecs, tvecs)
-project_multiple_poses = jax.jit(
-    jax.vmap(_project_points, in_axes=(None, 0, 0, None, None, None)),
-    static_argnames=['distortion_model']
-)
+def project_multiple_poses(object_points, rvec, tvec, camera_matrix, dist_coeffs, distortion_model='standard'):
+    project_fn = partial(project_points, distortion_model=distortion_model)
+    return jax.vmap(
+        project_fn,
+        in_axes=(None, 0, 0, None, None) # (object_points, rvec, tvec, camera_matrix, dist_coeffs)
+    )(object_points, rvec, tvec, camera_matrix, dist_coeffs)
+
 
 # batched version for projecting a single set of 3D world points into multiple cameras (using multiple poses)
-_project_to_multiple_cameras = jax.vmap(
-        _project_points,
-        in_axes=(None, 0, 0, 0, 0, None) # map over camera params, dist model is static
-)
-project_to_multiple_cameras = jax.jit(_project_to_multiple_cameras, static_argnames=['distortion_model'])
+def project_to_multiple_cameras(object_points, rvec, tvec, camera_matrix, dist_coeffs, distortion_model='standard'):
+    # Create a new function with distortion_model baked in
+    project_fn = partial(project_points, distortion_model=distortion_model)
+    # Vmap over the new function, which now only has 5 arguments
+    return jax.vmap(
+        project_fn,
+        in_axes=(None, 0, 0, 0, 0) # (object_points, rvec, tvec, camera_matrix, dist_coeffs)
+    )(object_points, rvec, tvec, camera_matrix, dist_coeffs)
+
 
 # projects multiple sets of 3D world points into multiple cameras
-project_multiple_to_multiple = jax.jit(
-    jax.vmap( # vmap over different sets of points (e.g., from different poses P)
-        _project_to_multiple_cameras,
-        in_axes=(0, None, None, None, None, None), # map over points, keep camera params the same
+@partial(jax.jit, static_argnames=['distortion_model'])
+def project_multiple_to_multiple(
+    object_points:    jnp.ndarray,
+    rvecs:            jnp.ndarray,
+    tvecs:            jnp.ndarray,
+    Ks:               jnp.ndarray,
+    Ds:               jnp.ndarray,
+    distortion_model: str = 'standard'
+):
+    # This function vmaps over the *pose* axis (P) of the object points
+    # The inner function projects one set of object points to all cameras
+    project_one_set_fn = partial(project_to_multiple_cameras, distortion_model=distortion_model)
+
+    return jax.vmap(
+        project_one_set_fn,
+        in_axes=(0, None, None, None, None), # Vmap over object_points
         out_axes=1 # put the new mapped axis (P) after the camera axis (C)
-    ),
-    static_argnames=['distortion_model']
-)
+    )(object_points, rvecs, tvecs, Ks, Ds)
 
 
-def _project_object_to_camera(
+@partial(jax.jit, static_argnames=['distortion_model'])
+def project_object_to_camera(
     object_points:    jnp.ndarray,  # (N, 3) in local object frame
     r_w2c:            jnp.ndarray,  # (3,) world-to-camera rotation
     t_w2c:            jnp.ndarray,  # (3,) world-to-camera translation
     r_o2w:            jnp.ndarray,  # (3,) object-to-world rotation
     t_o2w:            jnp.ndarray,  # (3,) object-to-world translation
     camera_matrix:    jnp.ndarray,  # (3, 3)
-    dist_coeffs:      jnp.ndarray,   # (D,)
+    dist_coeffs:      jnp.ndarray,  # (D,)
     distortion_model: str = 'standard'
 ) -> jnp.ndarray:
     """
@@ -161,38 +178,42 @@ def _project_object_to_camera(
 
     return project_points(object_points, r_o2c, t_o2c, camera_matrix, dist_coeffs, distortion_model)
 
-project_object_to_camera = jax.jit(_project_object_to_camera, static_argnames=['distortion_model'])
-
 # double-vmap for projecting N points from P poses into C cameras
-project_object_views_batched = jax.jit(
-    jax.vmap(       # vmap over cameras (C)
-        jax.vmap(   # vmap over object poses (P)
-            _project_object_to_camera,
-            # vmap over object-to-world poses (r_o2w, t_o2w)
-            in_axes=(None, None, None, 0, 0, None, None, None)
-        ),
-        # vmap over camera parameters (r_w2c, t_w2c, K, D)
-        in_axes=(None, 0, 0, None, None, 0, 0, None)
-    ),
-    # Expected inputs for a (C, P, N, 2) output:
-    # object_points: (N, 3)
-    # r_w2c: (C, 3)
-    # t_w2c: (C, 3)
-    # r_o2w: (P, 3)
-    # t_o2w: (P, 3)
-    # camera_matrix: (C, 3, 3)
-    # dist_coeffs: (C, D)
-    static_argnames=['distortion_model']
-)
+def project_object_views_batched(
+    object_points:    jnp.ndarray,
+    r_w2c:            jnp.ndarray,
+    t_w2c:            jnp.ndarray,
+    r_o2w:            jnp.ndarray,
+    t_o2w:            jnp.ndarray,
+    camera_matrices:  jnp.ndarray,
+    dist_coeffs:      jnp.ndarray,
+    distortion_model: str = 'standard'
+):
+    # Create a function with distortion_model baked in.
+    # This function has 7 arguments.
+    project_fn = partial(project_object_to_camera, distortion_model=distortion_model)
+
+    # Vmap over poses (P)
+    vmapped_over_poses = jax.vmap(
+        project_fn,
+        in_axes=(None, None, None, 0, 0, None, None) # map over r_o2w, t_o2w
+    )
+    # Vmap over cameras (C)
+    vmapped_over_cams_and_poses = jax.vmap(
+        vmapped_over_poses,
+        in_axes=(None, 0, 0, None, None, 0, 0) # map over r_w2c, t_w2c, K, D
+    )
+    return vmapped_over_cams_and_poses(object_points, r_w2c, t_w2c, r_o2w, t_o2w, camera_matrices, dist_coeffs)
 
 
-def _undistort_points(
+@partial(jax.jit, static_argnames=['distortion_model'])
+def undistort_points(
     points2d:         jnp.ndarray,
     camera_matrix:    jnp.ndarray,
     dist_coeffs:      jnp.ndarray,
-    distortion_model: str = 'standard',
     R:                Optional[jnp.ndarray] = None,
     P:                Optional[jnp.ndarray] = None,
+    distortion_model: str = 'standard',
     max_iter:         int = 5
 ) -> jnp.ndarray:
     """
@@ -242,26 +263,17 @@ def _undistort_points(
     unsistorted_points = pts_p[..., :2]       # (..., 2)
     return unsistorted_points
 
-
-undistort_points = jax.jit(_undistort_points, static_argnames=['max_iter', 'distortion_model'])
-
 # undistort a set of points in multiple cameras
-undistort_multiple = jax.jit(
-    jax.vmap(_undistort_points,
-             in_axes=(
-                0,      # each camera has its own points2d
-                0,      # its own camera_matrix
-                0,      # its own dist_coeffs
-                None,
-                None,
-                None,
-                None),
-             out_axes=0),
-    static_argnames=['max_iter', 'distortion_model']
-)
+def undistort_multiple(points2d, camera_matrix, dist_coeffs, R=None, P=None, distortion_model='standard', max_iter=5):
+    undistort_fn = partial(undistort_points, R=R, P=P, distortion_model=distortion_model, max_iter=max_iter)
+    return jax.vmap(
+        undistort_fn,
+        in_axes=(0, 0, 0)
+    )(points2d, camera_matrix, dist_coeffs)
 
 
-def _back_projection(
+@partial(jax.jit, static_argnames=['distortion_model'])
+def back_projection(
         points2d:           jnp.ndarray,
         depth:              Union[float, jnp.ndarray],
         camera_matrix:      jnp.ndarray,
@@ -312,26 +324,21 @@ def _back_projection(
 
     return world_pts
 
-
-back_projection = jax.jit(_back_projection, static_argnames=['distortion_model'])
-
 # back-project (the same number of) points to multiple cameras
-back_projection_batched = jax.jit(
-    jax.vmap(
-        _back_projection,
-        in_axes=(0, None, 0, 0, 0, None),
-        out_axes=0
-    ),
-    static_argnames=['distortion_model']
-)
+def back_projection_batched(points2d, depth, camera_matrix, E_w2c, dist_coeffs, distortion_model='standard'):
+    back_project_fn = partial(back_projection, distortion_model=distortion_model)
+    return jax.vmap(
+        back_project_fn,
+        in_axes=(0, None, 0, 0, 0)
+    )(points2d, depth, camera_matrix, E_w2c, dist_coeffs)
 
 
-@partial(jax.jit, static_argnames=['return_per_point_errors'])
+@partial(jax.jit, static_argnames=['per_point_errors'])
 def reprojection_errors(
         points_2d_observed:         jnp.ndarray,
         points_2d_reprojected:      jnp.ndarray,
         visibility_mask:            Optional[jnp.ndarray] = None,
-        return_per_point_errors:    bool = False
+        per_point_errors:           bool = False
 ) -> Dict[str, Union[float, jnp.ndarray]]:
     """
     Calculates various reprojection error metrics from observed and reprojected points
@@ -341,7 +348,7 @@ def reprojection_errors(
         points_2d_reprojected: Reprojected 2D points. Shape (..., N, 2)
         visibility_mask: Boolean mask of visible points. Shape (..., N)
                          (if None, all points are assumed visible)
-        return_per_point_errors: If True, the 'mre_per_point' key will be added to the output
+        per_point_errors: If True, the 'mre_per_point' key will be added to the output
 
     Returns:
         A dictionary containing scalar error metrics: 'rms', 'mre', 'opencv_rms'
@@ -355,9 +362,7 @@ def reprojection_errors(
     if visibility_mask is not None:
         # Use where to avoid nans in gradients if they were to be used
         sq_diff_masked = jnp.where(visibility_mask[..., None], sq_diff, 0.0)
-        num_visible_points = jnp.sum(visibility_mask)
-        if num_visible_points == 0:
-            return {'rms': 0.0, 'mre': 0.0, 'opencv_rms': 0.0}
+        num_visible_points = jnp.sum(visibility_mask.astype(jnp.float32))
     else:
         sq_diff_masked = sq_diff
         num_visible_points = jnp.prod(jnp.array(points_2d_observed.shape[:-1]))
@@ -378,7 +383,7 @@ def reprojection_errors(
 
     results = {'rms': rms_error, 'mre': mre_error, 'opencv_rms': opencv_rms_error}
 
-    if return_per_point_errors:
+    if per_point_errors:
         # Return per-point distances, with non-visible points as nan
         results['mre_per_point'] = jnp.where(visibility_mask, distances, jnp.nan) if visibility_mask is not None else distances
 
@@ -478,8 +483,14 @@ def triangulate(
         points3d: N 3D coordinates (N, 3)
     """
 
-    # Undistort points first
-    pts2d_ud = undistort_multiple(points2d, camera_matrices, dist_coeffs, distortion_model)
+    pts2d_ud = undistort_multiple(
+        points2d,
+        camera_matrices,
+        dist_coeffs,
+        R=None,
+        P=None,
+        distortion_model=distortion_model
+    )
 
     # if no mask is provided, infer it
     if weights is None:
@@ -495,4 +506,3 @@ def triangulate(
     # Call the core, batched triangulation function
     pts3d = triangulate_points_from_projections(pts2d_ud, P_all, weights=weights)
     return pts3d
-

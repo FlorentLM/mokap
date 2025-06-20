@@ -171,7 +171,7 @@ class MultiviewWorker(CalibrationProcessingWorker):
         rs_w2c, ts_w2c = invert_rtvecs(rs_c2w, ts_c2w)
         Es_w2c = extrinsics_matrix(rs_w2c, ts_w2c)
 
-        frustum_3d = back_projection_batched(self._img_points_2d, self._frustum_depth, Ks, Es_w2c, Ds, 'full')
+        frustum_3d = back_projection_batched(self._img_points_2d, self._frustum_depth, Ks, Es_w2c, Ds, distortion_model='full')
         img_center_point3d = frustum_3d[:, 0, :]
 
         optical_axes = jnp.vstack([ts_w2c, img_center_point3d])

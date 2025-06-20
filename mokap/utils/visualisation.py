@@ -106,7 +106,15 @@ def plot_cameras_3d(
 
     E_c2w = extrinsics_matrix(rvecs_c2w, tvecs_c2w)
     E_w2c = invert_extrinsics_matrix(E_c2w)
-    frustums_3d = back_projection_batched(frustums_2d, depth, camera_matrices, E_w2c, dist_coeffs)
+
+    frustums_3d = back_projection_batched(
+        frustums_2d,
+        depth,
+        camera_matrices,
+        E_w2c,
+        dist_coeffs,
+        distortion_model='full'
+    )
 
     directions = frustums_3d[:, -1] - tvecs_c2w
     # directions_normalised = directions / np.linalg.norm(directions, axis=1)[:, None]

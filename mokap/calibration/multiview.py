@@ -11,8 +11,7 @@ from mokap.calibration.common import solve_pnp_robust
 from mokap.utils.datatypes import DetectionPayload
 from mokap.utils.geometry.projective import (project_to_multiple_cameras, reprojection_errors,
                                              project_multiple_to_multiple)
-from mokap.utils.geometry.fitting import (quaternion_average, filter_rt_samples,
-                                          reliability_bounds_3d, reliability_bounds_3d_iqr)
+from mokap.utils.geometry.fitting import (quaternion_average, filter_rt_samples, reliability_bounds_3d_iqr)
 from mokap.utils.geometry.transforms import (extrinsics_matrix, extmat_to_rtvecs,
                                              axisangle_to_quaternion_batched, quaternion_to_axisangle,
                                              invert_extrinsics_matrix, invert_rtvecs)
@@ -68,8 +67,27 @@ class MultiviewCalibrationTool:
         self._latest_board_pose_w: Optional[jnp.ndarray] = None
 
         # intrinsics state
-        self._cam_matrices: jnp.ndarray = jnp.asarray(init_cam_matrices, dtype=jnp.float32)
-        self._dist_coeffs: jnp.ndarray = jnp.asarray(init_dist_coeffs, dtype=jnp.float32)
+
+        init_cam_matrices_np = np.asarray(init_cam_matrices)
+        if init_cam_matrices_np.ndim == 2:
+            logger.debug("A single camera matrix was provided. Broadcasting to all cameras.")
+            self._cam_matrices = jnp.asarray([init_cam_matrices_np] * self.nb_cameras, dtype=jnp.float32)
+        else:
+            self._cam_matrices = jnp.asarray(init_cam_matrices_np, dtype=jnp.float32)
+
+        init_dist_coeffs_np = np.asarray(init_dist_coeffs)
+        if init_dist_coeffs_np.ndim == 1:
+            logger.debug("A single set of distortion coeffs was provided. Broadcasting to all cameras.")
+            self._dist_coeffs = jnp.asarray([init_dist_coeffs_np] * self.nb_cameras, dtype=jnp.float32)
+        else:
+            self._dist_coeffs = jnp.asarray(init_dist_coeffs_np, dtype=jnp.float32)
+
+        if self._cam_matrices.shape != (self.nb_cameras, 3, 3):
+            raise ValueError(
+                f"Shape mismatch for init_cam_matrices. Expected ({self.nb_cameras}, 3, 3), got {self._cam_matrices.shape}")
+        if self._dist_coeffs.shape[0] != self.nb_cameras:
+            raise ValueError(
+                f"Shape mismatch for init_dist_coeffs. Expected ({self.nb_cameras}, D), got {self._dist_coeffs.shape}")
 
         # triangulation & BA buffers
         self.ba_samples = deque(maxlen=max_detections)
@@ -181,7 +199,14 @@ class MultiviewCalibrationTool:
         K_batch = self._cam_matrices[cam_indices]
         D_batch = self._dist_coeffs[cam_indices]
 
-        reproj_pts = project_to_multiple_cameras(world_pts, r_w2c_new, t_w2c_new, K_batch, D_batch)
+        reproj_pts = project_to_multiple_cameras(
+            world_pts,
+            r_w2c_new,
+            t_w2c_new,
+            K_batch,
+            D_batch,
+            distortion_model='full'
+        )
 
         errors_dict = reprojection_errors(gt_points_padded, reproj_pts, visibility_mask)
         mean_frame_error = errors_dict['rms']
@@ -325,6 +350,8 @@ class MultiviewCalibrationTool:
                 pts2d_buf = jnp.asarray(pts2d_buf)
                 vis_buf = jnp.asarray(vis_buf)
 
+                self._points2d, self._visibility_mask = pts2d_buf, vis_buf  # store points for this run
+
                 # STAGE 1: Ideal pinhole world (shared intrinsics, no distortion)   (wellllll maybe better with simple dist)
                 # ---------------------------------------------------------------
                 logger.debug(f"[BA] >>> STAGE 1: Consolidating cameras position with {current_P} frames...")
@@ -425,8 +452,7 @@ class MultiviewCalibrationTool:
                 ba_succeeded = True
                 final_results = final_results_attempt
 
-                self._points2d, self._visibility_mask = pts2d_buf, vis_buf # store points from successful run
-                break # Exit the while loop
+                break
 
             except MemoryError:
                 gc.collect()  # Force garbage collection
