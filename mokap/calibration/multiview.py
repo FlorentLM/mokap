@@ -199,7 +199,7 @@ class MultiviewCalibrationTool:
         K_batch = self._cam_matrices[cam_indices]
         D_batch = self._dist_coeffs[cam_indices]
 
-        reproj_pts = project_to_multiple_cameras(
+        reproj_pts, reproj_mask = project_to_multiple_cameras(
             world_pts,
             r_w2c_new,
             t_w2c_new,
@@ -208,7 +208,9 @@ class MultiviewCalibrationTool:
             distortion_model='full'
         )
 
-        errors_dict = reprojection_errors(gt_points_padded, reproj_pts, visibility_mask)
+        effective_visibility = visibility_mask * reproj_mask
+
+        errors_dict = reprojection_errors(gt_points_padded, reproj_pts, effective_visibility)
         mean_frame_error = errors_dict['rms']
 
         FRAME_ERROR_THRESHOLD = 5.0
@@ -369,11 +371,13 @@ class MultiviewCalibrationTool:
 
                     shared_intrinsics=True,
                     fix_aspect_ratio=True,
-                    distortion_model='none',        # Fixes distortion params to zero
-                    # distortion_model='simple',
+                    # distortion_model='none',        # Fixes distortion params to zero
+
+                    distortion_model='simple',  # Use a simple model (k1, k2, p1, p2)
+                    fix_distortion=False,  # ALLOW the optimizer to solve for these params
 
                     fix_focal_principal=False,
-                    fix_distortion=True,
+                    # fix_distortion=True,
                     fix_extrinsics=False,
                     fix_board_poses=False,
 
@@ -404,9 +408,13 @@ class MultiviewCalibrationTool:
 
                     shared_intrinsics=False,    # Now we optimize per-camera
                     fix_aspect_ratio=False,     # we allow fx and fy to differ
-                    distortion_model='simple',
+                    # distortion_model='simple',
+
+                    distortion_model='standard',  # Use a more complex model for calculation...
+                    fix_distortion=True,  # ...but KEEP the distortion fixed from Stage 1's result
+
                     fix_focal_principal=False,
-                    fix_distortion=True,
+                    # fix_distortion=True,
                     fix_extrinsics=False,
                     fix_board_poses=False,
 
@@ -551,16 +559,18 @@ class MultiviewCalibrationTool:
             r_w2c, t_w2c = invert_rtvecs(*self._refined_extrinsics)
 
             # Project all 3D points into all cameras
-            reprojected_pts = project_multiple_to_multiple(
+            reprojected_pts, valid_depth_mask = project_multiple_to_multiple(
                 world_pts_all_instances,
                 r_w2c, t_w2c,
                 *self._refined_intrinsics,
                 distortion_model='full'
             )
 
+            effective_visibility = visibility_mask * valid_depth_mask
+
             # Compute the raw, per-point Euclidean distance errors
             raw_errors = jnp.linalg.norm(observed_pts2d - reprojected_pts, axis=-1)
-            all_errors = jnp.where(visibility_mask, raw_errors, jnp.nan)    # And mark non-observed points as nan
+            all_errors = jnp.where(effective_visibility, raw_errors, jnp.nan)    # And mark non-observed points as nan
 
             # And compute the reliable bounding box using the world points and their errors
             volume_of_trust = reliability_bounds_3d_iqr(

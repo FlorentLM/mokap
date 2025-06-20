@@ -10,9 +10,8 @@ from mokap.utils import CallbackOutputStream
 from mokap.utils.datatypes import DistortionModel
 from alive_progress import alive_bar
 
-from mokap.utils.geometry.projective import project_object_views_batched, reprojection_errors
-from mokap.utils.geometry.transforms import invert_rtvecs
-
+from mokap.utils.geometry.projective import project_object_views_batched, reprojection_errors, distortion
+from mokap.utils.geometry.transforms import invert_rtvecs, extrinsics_matrix
 
 DIST_MODEL_MAP = {'none': 0, 'simple': 4, 'standard': 5, 'full': 8, 'rational': 8}
 
@@ -288,11 +287,18 @@ def _get_bounds(
                 n_d = cfg['n_d']
                 offset = info['offset'] + i * n_d
 
+                # Define bounds for all 8 potential coefficients
                 k_lo, k_hi = -1.5, 1.5
                 p_lo, p_hi = -0.5, 0.5
+                k_higher_order_lo, k_higher_order_hi = -0.5, 0.5  # Tighter bounds for higher order
+
                 dist_bounds_map = [
-                    (k_lo, k_hi), (k_lo, k_hi), (p_lo, p_hi), (p_lo, p_hi),  # k1, k2, p1, p2
-                    (k_lo, k_hi), (k_lo, k_hi), (k_lo, k_hi), (k_lo, k_hi)   # k3, k4, k5, k6
+                    (k_lo, k_hi), (k_lo, k_hi),         # k1, k2
+                    (p_lo, p_hi), (p_lo, p_hi),         # p1, p2
+                    (k_lo, k_hi),                       # k3
+                    (k_higher_order_lo, k_higher_order_hi),     # k4
+                    (k_higher_order_lo, k_higher_order_hi),     # k5
+                    (k_higher_order_lo, k_higher_order_hi)      # k6
                 ]
 
                 lb_dist = [b[0] for b in dist_bounds_map[:n_d]]
@@ -457,16 +463,26 @@ def cost_function(
     # Reprojection residuals
     r_w2c, t_w2c = invert_rtvecs(cam_r, cam_t)
 
-    reproj = project_object_views_batched(
+    reproj, valid_depth_mask = project_object_views_batched(
         points3d_th_jnp, r_w2c, t_w2c, board_r, board_t,
         Ks, Ds, distortion_model=distortion_model
     )
 
     resid = reproj - points2d
-    errors = reprojection_errors(points2d, reproj, visibility_mask)
+
+    # Combine the pre-computed weights with the dynamic depth-validity weight
+    effective_weights = points_weights * valid_depth_mask
+
+    # Apply the combined weights to the residual
+    # The jnp.where is no longer needed because a weight of 0 achieves the same goal.
+    weighted_reproj_resid = resid * effective_weights[..., None]
+
+    num_weighted_points = jnp.sum(effective_weights > 0)
+    total_sum_sq_err = jnp.sum(jnp.square(weighted_reproj_resid))
+
     # jax prints work in there?? woah
-    jax.debug.print("Mean Reprojection Error (RMS): {x:.3f}px", x=errors['rms'])
-    weighted_reproj_resid = jnp.where(visibility_mask[..., None], resid * points_weights[..., None], 0.0)
+    rms_error = jnp.sqrt(total_sum_sq_err / jnp.maximum(1, 2 * num_weighted_points))
+    jax.debug.print("Mean Reprojection Error (RMS): {x:.3f}px", x=rms_error)
 
     # Prior residuals
     rvecs_cam_init = fixed_params['cam_r']

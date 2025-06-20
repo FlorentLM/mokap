@@ -166,7 +166,7 @@ def main():
 
     # Project the 3D points into each camera to get the 2D observations
     project_vmapped = jax.vmap(project_points, in_axes=(None, 0, 0, 0, 0))
-    points_2d_observed = project_vmapped(
+    points_2d_observed, validity_mask = project_vmapped(
         scene['points_3d_gt'],
         scene['rvecs_w2c'],
         scene['tvecs_w2c'],

@@ -112,8 +112,8 @@ def solve_pnp_robust(
                     best_rvec, best_tvec = rvec1, tvec1
                 else:
                     # if both are valid, compare their errors
-                    reproj1 = project_points(obj_pts_j, rvec1_j, tvec1_j, cam_mat_j, dist_j)
-                    reproj2 = project_points(obj_pts_j, rvec2_j, tvec2_j, cam_mat_j, dist_j)
+                    reproj1, _ = project_points(obj_pts_j, rvec1_j, tvec1_j, cam_mat_j, dist_j)
+                    reproj2, _ = project_points(obj_pts_j, rvec2_j, tvec2_j, cam_mat_j, dist_j)
 
                     errors1 = reprojection_errors(img_pts_j, reproj1)
                     errors2 = reprojection_errors(img_pts_j, reproj2)
@@ -153,7 +153,7 @@ def solve_pnp_robust(
     best_tvec = best_tvec.squeeze()
 
     if needs_error_recalc:
-        final_reproj = project_points(obj_pts_np, best_rvec, best_tvec, cam_mat_np, dist_np)
+        final_reproj, _ = project_points(obj_pts_np, best_rvec, best_tvec, cam_mat_np, dist_np)
         final_errors = reprojection_errors(img_pts_np, final_reproj)
     else:
         # otherwise, the one we stored is the correct one

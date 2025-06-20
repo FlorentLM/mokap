@@ -81,7 +81,7 @@ def project_points(
     camera_matrix:    jnp.ndarray,
     dist_coeffs:      jnp.ndarray,
     distortion_model: str = 'standard'
-) -> jnp.ndarray:
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """
     Replacement for cv2.projectPoints
 
@@ -99,6 +99,7 @@ def project_points(
 
     Returns:
         image_points: Projected 2D points in the image plane (..., 2)
+        valid_mask: Boolean mask indicating points in front of the camera (...,)
     """
 
     R = rodrigues(rvec)
@@ -106,8 +107,13 @@ def project_points(
     Xc = jnp.einsum('ij,...j->...i', R, object_points) + tvec
 
     z = Xc[..., 2]
-    z_safe = jnp.maximum(z, _eps)
-    x, y = Xc[..., 0] / z_safe, Xc[..., 1] / z_safe
+
+    valid_mask = (z > 1e-4).astype(jnp.float32)  # small positive threshold for safety
+
+    # We project invalid points to (0, 0) but their mask will be False
+    z_safe = jnp.where(valid_mask, z, _eps)
+    x = Xc[..., 0] / z_safe
+    y = Xc[..., 1] / z_safe
 
     radial, dx, dy = distortion(x, y, dist_coeffs, distortion_model=distortion_model)
     x_d = x * radial + dx
@@ -115,7 +121,9 @@ def project_points(
 
     fx, fy = camera_matrix[0, 0], camera_matrix[1, 1]
     cx, cy = camera_matrix[0, 2], camera_matrix[1, 2]
-    return jnp.stack([fx * x_d + cx, fy * y_d + cy], axis=-1)
+    image_points = jnp.stack([fx * x_d + cx, fy * y_d + cy], axis=-1)
+
+    return image_points, valid_mask
 
 
 # batched version for projecting a single set of 3D world points using multiple different poses (rvecs, tvecs)
@@ -123,41 +131,40 @@ def project_multiple_poses(object_points, rvec, tvec, camera_matrix, dist_coeffs
     project_fn = partial(project_points, distortion_model=distortion_model)
     return jax.vmap(
         project_fn,
-        in_axes=(None, 0, 0, None, None) # (object_points, rvec, tvec, camera_matrix, dist_coeffs)
+        in_axes=(None, 0, 0, None, None)
     )(object_points, rvec, tvec, camera_matrix, dist_coeffs)
 
 
 # batched version for projecting a single set of 3D world points into multiple cameras (using multiple poses)
 def project_to_multiple_cameras(object_points, rvec, tvec, camera_matrix, dist_coeffs, distortion_model='standard'):
-    # Create a new function with distortion_model baked in
     project_fn = partial(project_points, distortion_model=distortion_model)
-    # Vmap over the new function, which now only has 5 arguments
     return jax.vmap(
         project_fn,
-        in_axes=(None, 0, 0, 0, 0) # (object_points, rvec, tvec, camera_matrix, dist_coeffs)
+        in_axes=(None, 0, 0, 0, 0)
     )(object_points, rvec, tvec, camera_matrix, dist_coeffs)
 
 
 # projects multiple sets of 3D world points into multiple cameras
-@partial(jax.jit, static_argnames=['distortion_model'])
 def project_multiple_to_multiple(
-    object_points:    jnp.ndarray,
-    rvecs:            jnp.ndarray,
-    tvecs:            jnp.ndarray,
-    Ks:               jnp.ndarray,
-    Ds:               jnp.ndarray,
-    distortion_model: str = 'standard'
-):
+        object_points: jnp.ndarray,
+        rvecs: jnp.ndarray,
+        tvecs: jnp.ndarray,
+        Ks: jnp.ndarray,
+        Ds: jnp.ndarray,
+        distortion_model: str = 'standard'
+) -> Tuple[jnp.ndarray, jnp.ndarray]:  # <-- Return type changed
     # This function vmaps over the *pose* axis (P) of the object points
     # The inner function projects one set of object points to all cameras
+
     project_one_set_fn = partial(project_to_multiple_cameras, distortion_model=distortion_model)
 
-    return jax.vmap(
+    reprojected_pts, valid_masks = jax.vmap(
         project_one_set_fn,
-        in_axes=(0, None, None, None, None), # Vmap over object_points
-        out_axes=1 # put the new mapped axis (P) after the camera axis (C)
+        in_axes=(0, None, None, None, None),
+        out_axes=1
     )(object_points, rvecs, tvecs, Ks, Ds)
 
+    return reprojected_pts, valid_masks
 
 @partial(jax.jit, static_argnames=['distortion_model'])
 def project_object_to_camera(
@@ -169,7 +176,7 @@ def project_object_to_camera(
     camera_matrix:    jnp.ndarray,  # (3, 3)
     dist_coeffs:      jnp.ndarray,  # (D,)
     distortion_model: str = 'standard'
-) -> jnp.ndarray:
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """
     Projects 3D points from an object's local frame into a camera view by
     composing object-to-world and world-to-camera poses
