@@ -457,7 +457,6 @@ def triangulate_points_from_projections(
     return jnp.where(reliable, points3d, jnp.nan)
 
 
-@jax.jit
 def triangulate(
         points2d:           jnp.ndarray,  # (C, N, 2)
         camera_matrices:    jnp.ndarray,  # (C, 3, 3)
@@ -497,7 +496,7 @@ def triangulate(
     # if no mask is provided, infer it
     if weights is None:
         # undistortion might also introduce NaNs, so using the original points2d allows to be exhaustive
-        weights = jnp.isfinite(points2d[..., 0])
+        weights = jnp.isfinite(points2d[..., 0]).astype(points2d.dtype)
 
     weights = weights.astype(jnp.float32)
 
