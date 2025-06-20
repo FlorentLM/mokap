@@ -363,6 +363,7 @@ class MultiviewCalibrationTool:
 
                     self._object_points,
                     self._images_sizes_wh,
+                    origin_idx=self.origin_idx,
 
                     max_frames=current_P,
 
@@ -397,6 +398,7 @@ class MultiviewCalibrationTool:
 
                     self._object_points,
                     self._images_sizes_wh,
+                    origin_idx=self.origin_idx,
 
                     max_frames=current_P,
 
@@ -430,6 +432,7 @@ class MultiviewCalibrationTool:
 
                     self._object_points,
                     self._images_sizes_wh,
+                    origin_idx=self.origin_idx,
 
                     max_frames=current_P,
 
