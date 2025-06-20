@@ -3,8 +3,8 @@ from pypylon import genicam
 import matplotlib.pyplot as plt
 import numpy as np
 from enum import Enum, unique
-from mokap.hardware import SSHTrigger
 from mokap import utils
+from mokap.core.triggers import RaspberryTrigger
 
 ##
 
@@ -15,7 +15,7 @@ cam = py.InstantCamera(tlf.CreateFirstDevice())
 cam.GrabCameraEvents = True
 cam.Open()
 
-trigger = SSHTrigger()
+trigger = RaspberryTrigger()
 
 ##
 

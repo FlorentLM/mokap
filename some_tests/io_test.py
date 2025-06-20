@@ -3,7 +3,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import itertools
 import time
-from mokap.hardware import SSHTrigger
+
+from mokap.core.triggers import RaspberryTrigger
 
 ##
 
@@ -13,7 +14,7 @@ cam = py.InstantCamera(tlf.CreateFirstDevice())
 cam.Open()
 
 
-trigger = SSHTrigger()
+trigger = RaspberryTrigger()
 
 ##
 
