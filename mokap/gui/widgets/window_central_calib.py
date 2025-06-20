@@ -431,18 +431,16 @@ class CentralCalibrationWindow(Base):
         self.view.opts['distance'] = self._gridsize
 
     @Slot(dict)
-    def on_scene_data_ready(self, scene_data: dict):
+    def update_3d_scene(self, scene_data: dict):
         """ Receives pre-computed 3D data from the worker and updates GL items """
 
         board_3d = scene_data.get('board_3d')
         frustums_3d = scene_data.get('frustums_3d')
         detections_3d = scene_data.get('detections_3d')
-        optical_axes_3d = scene_data.get('optical_axes_3d')
 
         for i, cam_name in enumerate(self._cameras_names):
             self._update_gl_items(
                 cam_name=cam_name,
-                optical_axes_3d=optical_axes_3d[i],
                 frustum_points3d=frustums_3d[i],
                 detection_points3d=detections_3d[i]
             )
@@ -458,7 +456,6 @@ class CentralCalibrationWindow(Base):
 
     def _update_gl_items(self,
                          cam_name: str,
-                         optical_axes_3d:        jnp.ndarray,
                          frustum_points3d:       jnp.ndarray,
                          detection_points3d:     jnp.ndarray):
 
@@ -478,7 +475,6 @@ class CentralCalibrationWindow(Base):
         # Update GL Items with new data
         gl_items['center'].setData(pos=cam_centre_3d)
         gl_items['frustum_mesh'].setMeshData(vertexes=frustum_points3d, faces=self._frustum_faces)
-        gl_items['optical_axis'].setData(pos=optical_axes_3d)
 
         # Only show detections if there are any
         has_detections = detection_points3d.shape[0] > 0

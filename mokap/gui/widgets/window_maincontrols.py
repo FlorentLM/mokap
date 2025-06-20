@@ -830,7 +830,7 @@ class MainControls(QMainWindow, SnapMixin):
             )
             self.multiview_worker.moveToThread(self.multiview_thread)
 
-            self.multiview_worker.scene_data_ready.connect(self.central_calib_window.on_scene_data_ready)
+            self.multiview_worker.scene_data_ready.connect(self.central_calib_window.update_3d_scene)
             self.central_calib_window.run_ba_button.clicked.connect(self.multiview_worker.trigger_refinement)
 
             self.multiview_thread.start()

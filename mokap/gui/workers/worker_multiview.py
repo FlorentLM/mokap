@@ -86,7 +86,7 @@ class MultiviewWorker(CalibrationProcessingWorker):
         # Timer for sending scene data to the 3D view
         self.update_timer = QTimer(self)
         self.update_timer.setInterval(33)  # ~ 30 Hz
-        self.update_timer.timeout.connect(self.update_3d_scene)
+        self.update_timer.timeout.connect(self._compute_3d_scene)
 
         self.update_timer.start()
 
@@ -146,7 +146,7 @@ class MultiviewWorker(CalibrationProcessingWorker):
             self._points_2d[data.camera_name] = payload.points2D if payload.points2D is not None else self._nopoints_2d
             self._points_ids[data.camera_name] = payload.pointsIDs if payload.pointsIDs is not None else self._nopoints_ids
 
-    def update_3d_scene(self):
+    def _compute_3d_scene(self):
         """ Periodically calculates and emits all data needed for the 3D view """
 
         scene_data = {}
