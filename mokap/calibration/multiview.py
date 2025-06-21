@@ -390,7 +390,7 @@ class MultiviewCalibrationTool:
                 # STAGE 1: Ideal pinhole world (shared intrinsics, no distortion)   (wellllll maybe better with simple dist)
                 # ---------------------------------------------------------------
                 logger.debug(f"[BA] >>> STAGE 1: Consolidating cameras position with {current_P} frames...")
-                success_s1, results_s1 = run_bundle_adjustment(
+                success_s1, results_s1 = bundle_adjustment.run_bundle_adjustment(
 
                     K_online, D_online, cam_r_online, cam_t_online, board_r_online, board_t_online,
 
@@ -513,8 +513,7 @@ class MultiviewCalibrationTool:
 
             except RuntimeError as e:
                 logger.error(f"[BA] {e}. Could not converge even with {current_P} samples. Aborting.")
-                # return False
-                break
+                return False
 
         if ba_succeeded and final_results is not None:
             logger.info(f"Bundle adjustment complete using {current_P} samples. Storing refined parameters.")
