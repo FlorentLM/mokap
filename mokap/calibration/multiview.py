@@ -1,6 +1,8 @@
 import logging
 from collections import deque
 from typing import Tuple, Dict, Optional, List, Any
+
+import jax
 import numpy as np
 import gc
 import psutil
@@ -11,10 +13,12 @@ from mokap.calibration.common import solve_pnp_robust
 from mokap.utils.datatypes import DetectionPayload
 from mokap.utils.geometry.projective import (project_to_multiple_cameras, reprojection_errors,
                                              project_multiple_to_multiple)
-from mokap.utils.geometry.fitting import (quaternion_average, filter_rt_samples, reliability_bounds_3d_iqr)
+from mokap.utils.geometry.fitting import (quaternion_average, filter_rt_samples, reliability_bounds_3d_iqr,
+                                          generate_ambiguous_pose)
 from mokap.utils.geometry.transforms import (extrinsics_matrix, extmat_to_rtvecs,
                                              axisangle_to_quaternion_batched, quaternion_to_axisangle,
-                                             invert_extrinsics_matrix, invert_rtvecs)
+                                             invert_extrinsics_matrix, invert_rtvecs, quaternions_angular_distance,
+                                             axisangle_to_quaternion)
 
 logger = logging.getLogger(__name__)
 
@@ -144,25 +148,77 @@ class MultiviewCalibrationTool:
     def _process_frame(self, entries: List[Tuple[int, Any, Any, Any]]):
 
         if not any(self._has_extrinsics):
-            # Reset latest board pose if no extrinsics are known
             self._latest_board_pose_w = None
             return
 
         cam_indices, gt_points_padded, visibility_mask = self._gather_frame_data(entries)
 
-        # Filter entries based on which cameras have known extrinsics
         known_mask = jnp.array([self._has_extrinsics[c] for c in cam_indices])
         if not jnp.any(known_mask):
             return
 
+        # --- Initial Board Pose Estimation (as before) ---
         E_b2c_all = jnp.stack([entry[1] for entry in entries])
-
-        # Estimate board-to-world pose (E_b2w) by averaging poses from known cameras
         E_c2w_known = extrinsics_matrix(self._rvecs_c2w[cam_indices[known_mask]],
                                         self._tvecs_c2w[cam_indices[known_mask]])
         E_b2c_known = E_b2c_all[known_mask]
+
+        # This is our initial vote for the board's pose, based on currently known cameras
         E_b2w_votes = E_c2w_known @ E_b2c_known
 
+        # --- Temporal Consistency Check and Disentanglement ---
+        # Convert votes to quaternions for easier comparison
+        r_votes, t_votes = extmat_to_rtvecs(E_b2w_votes)
+        q_votes = axisangle_to_quaternion_batched(r_votes)
+
+        # If we have a board pose from the previous frame, check for consistency
+        if self._latest_board_pose_w is not None:
+            # Get the previous board pose as a reference quaternion
+            r_prev, _ = extmat_to_rtvecs(self._latest_board_pose_w)
+            q_prev = axisangle_to_quaternion(r_prev)
+
+            # Check each new vote against the previous pose. A large angular distance suggests a flip
+            # A 180-degree flip will be ~ pi
+            FLIP_THRESHOLD_RAD = jnp.deg2rad(25.0)   # mmmm 25 degrees? why not
+            angular_distances = jax.vmap(lambda q: quaternions_angular_distance(q, q_prev))(q_votes)
+
+            is_flipped = angular_distances > FLIP_THRESHOLD_RAD
+
+            # If any of the votes are flipped we need to try to correct them
+            if jnp.any(is_flipped):
+                logger.debug(
+                    f"[FLIP_DETECTED] Found {jnp.sum(is_flipped)} inconsistent PnP result(s). Attempting to fix...")
+
+                # We now try to generate the ambiguous pose for each flipped detection and see if it brings the board pose back to consistency
+
+                # Get the rvecs for the board-to-camera poses that resulted in flipped votes
+                r_b2c_known, t_b2c_known = extmat_to_rtvecs(E_b2c_known)
+
+                # Generate the alternative (180-degree rotated) poses
+                r_b2c_alt, t_b2c_alt = generate_ambiguous_pose(r_b2c_known, t_b2c_known)
+                E_b2c_alt = extrinsics_matrix(r_b2c_alt, t_b2c_alt)
+
+                # Re-calculate the board pose votes using the alternative poses *only where a flip was detected*
+                E_b2c_corrected = jnp.where(is_flipped[:, None, None], E_b2c_alt, E_b2c_known)
+                E_b2w_votes_corrected = E_c2w_known @ E_b2c_corrected
+
+                # Check if the corrected votes are now consistent.
+                r_votes_corr, t_votes_corr = extmat_to_rtvecs(E_b2w_votes_corrected)
+                q_votes_corr = axisangle_to_quaternion_batched(r_votes_corr)
+                angular_distances_corr = jax.vmap(lambda q: quaternions_angular_distance(q, q_prev))(q_votes_corr)
+
+                is_still_flipped = angular_distances_corr > FLIP_THRESHOLD_RAD
+
+                # If we successfully corrected the poses (fewer or no flips remain), we use the corrected votes
+                if jnp.sum(is_still_flipped) < jnp.sum(is_flipped):
+                    logger.debug(f"[FLIP_SUCCESS] Corrected {jnp.sum(is_flipped) - jnp.sum(is_still_flipped)} poses.")
+                    E_b2w_votes = E_b2w_votes_corrected
+                else:
+                    logger.warning(f"[FLIP_FAIL] Could not fix inconsistent PnP results for this frame. Skipping.")
+                    self._latest_board_pose_w = None  # Invalidate pose to prevent bad propagation
+                    return
+
+        # --- Averaging and Quality Control ---
         r_stack, t_stack = extmat_to_rtvecs(E_b2w_votes)
         q_stack = axisangle_to_quaternion_batched(r_stack)
         rt_stack = jnp.concatenate([q_stack, t_stack], axis=1)
@@ -174,27 +230,20 @@ class MultiviewCalibrationTool:
         )
 
         if not success:
-            logger.debug(f"[CONSENSUS_FAIL] Frame rejected. Could not find a consistent board pose among {rt_stack.shape[0]} views.")
-            # (this happens for instance if the initial camera extrinsics are very inaccurate)
-
-            # Reset latest board pose on failure
+            logger.debug(
+                f"[CONSENSUS_FAIL] Frame rejected. Could not find a consistent board pose among {rt_stack.shape[0]} views.")
             self._latest_board_pose_w = None
             return
 
         E_b2w = extrinsics_matrix(quaternion_to_axisangle(q_avg), t_avg)
-
-        # Store the successful board pose
         self._latest_board_pose_w = E_b2w
 
-        # Calculate the potential new camera-to-world poses for ALL cameras in this frame
         E_c2b_all = invert_extrinsics_matrix(E_b2c_all)
         E_c2w_new = E_b2w @ E_c2b_all
         r_c2w_new, t_c2w_new = extmat_to_rtvecs(E_c2w_new)
 
-        # --- Quality Control using the new poses ---
         world_pts = (E_b2w @ self._board_pts_hom.T).T[:, :3]
 
-        # Get world-to-camera transforms from the NEWLY CALCULATED camera poses
         r_w2c_new, t_w2c_new = invert_rtvecs(r_c2w_new, t_c2w_new)
         K_batch = self._cam_matrices[cam_indices]
         D_batch = self._dist_coeffs[cam_indices]
@@ -216,25 +265,17 @@ class MultiviewCalibrationTool:
         FRAME_ERROR_THRESHOLD = 5.0
         if mean_frame_error > FRAME_ERROR_THRESHOLD:
             logger.debug(f"[QUALITY_REJECT] Frame rejected. High reproj error: {mean_frame_error:.2f}px")
-
-            # Reset latest board pose on quality rejection
             self._latest_board_pose_w = None
             return
 
         logger.debug(f"[ACCEPTED] Frame mean: {mean_frame_error:.2f} px.")
 
-        # --- Update camera extrinsics and buffer data ---
-        # if the quality check passed we store the new poses to the class state
         for i, cam_idx in enumerate(cam_indices):
-            # We update all cameras except the origin
             if cam_idx != self.origin_idx:
                 self._rvecs_c2w = self._rvecs_c2w.at[cam_idx].set(r_c2w_new[i])
                 self._tvecs_c2w = self._tvecs_c2w.at[cam_idx].set(t_c2w_new[i])
-
-            # of course we still mark all the cameras including the origin as having extrinsics
             self._has_extrinsics[cam_idx] = True
 
-        # Buffer data for final BA and intrinsics refinement
         self.ba_samples.append(entries)
 
     def register(self, cam_idx: int, detection: DetectionPayload):
