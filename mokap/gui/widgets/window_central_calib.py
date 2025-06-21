@@ -37,14 +37,17 @@ class CentralCalibrationWindow(Base):
         self.is_editing_board = False
         self._nb_object_points = self._mainwindow.board_params.object_points.shape[0]
 
+        # Vertex 0: Apex (camera center)
+        # Vertex 1: Projected principal point (used for optical axis line, ignored by mesh)
+        # Vertices 2, 3, 4, 5: TL, TR, BR, BL corners
         self._frustum_faces = np.array([
-            [0, 1, 2],  # Apex, V1, V2
-            [0, 2, 3],  # Apex, V2, V3
-            [0, 3, 4],  # Apex, V3, V4
-            [0, 4, 1],  # Apex, V4, V1
-            # Add faces for the base to close the mesh
-            [1, 2, 3],  # V1, V2, V3
-            [1, 3, 4],  # V1, V3, V4
+            [0, 2, 3],  # Apex, TL, TR
+            [0, 3, 4],  # Apex, TR, BR
+            [0, 4, 5],  # Apex, BR, BL
+            [0, 5, 2],  # Apex, BL, TL
+            # Base of the frustum
+            [2, 3, 4],  # TL, TR, BR
+            [2, 4, 5],  # TL, BR, BL
         ])
 
         # References to displayed items
@@ -378,9 +381,9 @@ class CentralCalibrationWindow(Base):
             # Create items with placeholder data
             center_scatter = GLScatterPlotItem(pos=np.zeros((1, 3)), color=color, size=10)
 
-            # frustum mesh expects 5 vertices (Apex + 4 corners)
+            # frustum mesh expects 6 vertices (Apex + central point + 4 corners)
             frustum_mesh = GLMeshItem(
-                vertexes=np.zeros((5, 3)),
+                vertexes=np.zeros((6, 3)),
                 faces=self._frustum_faces,
                 smooth=self._antialiasing,
                 shader='shaded',
@@ -437,11 +440,14 @@ class CentralCalibrationWindow(Base):
         board_3d = scene_data.get('board_3d')
         frustums_3d = scene_data.get('frustums_3d')
         detections_3d = scene_data.get('detections_3d')
+        optical_axes_3d = scene_data.get('optical_axes_3d')
 
+        # Update the per-camera thingies
         for i, cam_name in enumerate(self._cameras_names):
             self._update_gl_items(
                 cam_name=cam_name,
                 frustum_points3d=frustums_3d[i],
+                optical_axis3d=optical_axes_3d[i],
                 detection_points3d=detections_3d[i]
             )
 
@@ -456,25 +462,28 @@ class CentralCalibrationWindow(Base):
 
     def _update_gl_items(self,
                          cam_name: str,
-                         frustum_points3d:       jnp.ndarray,
-                         detection_points3d:     jnp.ndarray):
+                         frustum_points3d:      jnp.ndarray,
+                         optical_axis3d:        jnp.ndarray,
+                         detection_points3d:    jnp.ndarray):
 
         gl_items = self._percamera_gl_items[cam_name]
 
-        # Vertex 0 is the apex (camera center)
-        cam_centre_3d = frustum_points3d[0]
+        cam_centre_3d = optical_axis3d[0]
         is_pose_valid = jnp.linalg.norm(cam_centre_3d) > 1e-6
 
-        # Make all items for this camera visible or invisible based on pose validity
         for item in gl_items.values():
             item.setVisible(is_pose_valid)
 
         if not is_pose_valid:
-            return  # stop here if the pose is invalid
+            return
 
         # Update GL Items with new data
-        gl_items['center'].setData(pos=cam_centre_3d)
+        gl_items['center'].setData(pos=cam_centre_3d[None, :])
         gl_items['frustum_mesh'].setMeshData(vertexes=frustum_points3d, faces=self._frustum_faces)
+
+        # The optical axis is a line from the camera center to the projected principal point
+        gl_items['optical_axis'].setData(pos=optical_axis3d)
+        gl_items['optical_axis'].setVisible(True)
 
         # Only show detections if there are any
         has_detections = detection_points3d.shape[0] > 0

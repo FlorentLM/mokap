@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 class MultiviewWorker(CalibrationProcessingWorker):
 
-    scene_data_ready = Signal(dict)
+    scene_data_ready = Signal(Dict[str, ArrayLike])
 
     def __init__(self,
                  cameras_names:     List[str],
@@ -58,13 +58,11 @@ class MultiviewWorker(CalibrationProcessingWorker):
 
         # Define static 2D points for frustum visualization
         img_points_2d = np.array([
-            # central point
-            [[w / 2, h / 2],
-            # image corners
-             [0, 0],
-             [w, 0],
-             [w, h],
-             [0, h]
+            [[w / 2, h / 2],    # Principal point (for optical axis)
+             [0, 0],            # Top-left corner
+             [w, 0],            # Top-right corner
+             [w, h],            # Bottom-right corner
+             [0, h]             # Bottom-left corner
              ] for w, h in sources_shapes_wh.values()], dtype=np.float32)
 
         self._img_points_2d = jnp.asarray(img_points_2d)  # (C, 5, 2)
@@ -168,8 +166,25 @@ class MultiviewWorker(CalibrationProcessingWorker):
             return
 
         Es_c2w = extrinsics_matrix(rs_c2w, ts_c2w)
+        Es_c2w_gl = rotate_extrinsics_matrices(Es_c2w, 180, axis='x')
 
-        frustum_3d = back_projection_batched(self._img_points_2d, self._frustum_depth, Ks, Es_c2w, Ds, distortion_model='full')
+        # Back-project the 5 points (principal + 4 corners) into 3D space
+        frustums_points_3d = back_projection_batched(self._img_points_2d,
+                                                    self._frustum_depth,
+                                                    Ks, Es_c2w_gl, Ds,
+                                                    distortion_model='full')
+
+        # Extract the camera centers (the apex of the frustum) from the GL-corrected extrinsics
+        cam_centers_gl = Es_c2w_gl[:, :3, 3]
+
+        # Create the final frustum data packet with 6 points: [center, P, TL, TR, BR, BL]
+        frustums_3d = jnp.concatenate((cam_centers_gl[:, None, :], frustums_points_3d), axis=1)
+
+        # Extract the projected principal points from the frustum data (at index 1)
+        principal_points_3d = frustums_3d[:, 1, :]
+
+        # Stack the *original* camera centers with the principal points to create the axis lines
+        optical_axes_3d = jnp.stack([cam_centers_gl, principal_points_3d], axis=1)
 
         # Detections and board visualisation
         detections_3d = []
@@ -180,46 +195,37 @@ class MultiviewWorker(CalibrationProcessingWorker):
             # Stage 0: Board is at originand cameras "orbit" around it
             # (detections are just back-projected)
 
-            scene_data['board_3d'] = self.calibration_board.object_points
+            board_3d = rotate_points3d(self.calibration_board.object_points, 180, axis='x')
 
-            for i, name in enumerate(self._cameras_names):
-                points2d = self._points_2d[name]
+            for i in range(self._C):
+                points2d = self._points_2d[self._cameras_names[i]]
+
                 if points2d.shape[0] > 0:
                     detections_3d.append(
-                        back_projection(points2d, self._frustum_depth * 0.95, Ks[i], Es_c2w[i], Ds[i])
-                    )
+                        back_projection(points2d, self._frustum_depth * 0.95, Ks[i], Es_c2w_gl[i], Ds[i]))
                 else:
                     detections_3d.append(self._nopoints_3d)
 
-        elif self._current_stage > 0 and self.multiview_tool:
+        elif self._current_stage > 0 and self.multiview_tool and self.multiview_tool.current_board_pose is not None:
             # Stage > 0: Cameras are static and the board moves
             # (we show the 'triangulated' board)
 
-            latest_board_pose = self.multiview_tool.current_board_pose
+            board_pose = self.multiview_tool.current_board_pose
 
-            if latest_board_pose is not None:
-                # Transform board points into world coordinates
-                board_3d = (latest_board_pose @ self._object_points_hom.T).T[:, :3]
-                scene_data['board_3d'] = board_3d
+            board_3d = rotate_points3d((board_pose @ self._object_points_hom.T).T[:, :3], 180, 'x')
 
-            # For detections, we can show them on the 3D board
-            for i, name in enumerate(self._cameras_names):
-                ids = self._points_ids[name]
-
+            for i in range(self._C):
+                ids = self._points_ids[self._cameras_names[i]]
                 if ids.shape[0] > 0 and board_3d is not None:
-                    # Select the visible points from the full 3D board model
                     detections_3d.append(board_3d[ids])
                 else:
                     detections_3d.append(self._nopoints_3d)
 
-        # Rotate all 3D data by 180 degrees around Y axis to match OpenGL coordinate system
-        # scene_data['board_3d'] = rotate_points3d(scene_data.get('board_3d'), 180, axis='y')
-        # scene_data['frustums_3d'] = rotate_points3d(frustum_3d, 180, axis='y')
-        # scene_data['detections_3d'] = [rotate_points3d(d, 180, axis='y') for d in detections_3d]
-
-        scene_data['frustums_3d'] = frustum_3d
+        # Prepare data for emitting (converting to numpy for the signal)
+        scene_data['board_3d'] = board_3d
+        scene_data['frustums_3d'] = frustums_3d
+        scene_data['optical_axes_3d'] = optical_axes_3d
         scene_data['detections_3d'] = detections_3d
-
         self.scene_data_ready.emit(scene_data)
 
     @Slot()
