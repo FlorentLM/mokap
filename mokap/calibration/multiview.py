@@ -69,6 +69,7 @@ class MultiviewCalibrationTool:
 
         # State for board pose (world)
         self._latest_board_pose_w: Optional[jnp.ndarray] = None
+        self._board_pose_history = deque(maxlen=10)
 
         # intrinsics state
 
@@ -157,66 +158,52 @@ class MultiviewCalibrationTool:
         if not jnp.any(known_mask):
             return
 
-        # --- Initial Board Pose Estimation (as before) ---
+        # --- Initial Board Pose Estimation ---
         E_b2c_all = jnp.stack([entry[1] for entry in entries])
         E_c2w_known = extrinsics_matrix(self._rvecs_c2w[cam_indices[known_mask]],
                                         self._tvecs_c2w[cam_indices[known_mask]])
         E_b2c_known = E_b2c_all[known_mask]
 
-        # This is our initial vote for the board's pose, based on currently known cameras
+        # Initial vote for the board's pose based on currently known cameras
         E_b2w_votes = E_c2w_known @ E_b2c_known
 
-        # --- Temporal Consistency Check and Disentanglement ---
-        # Convert votes to quaternions for easier comparison
-        r_votes, t_votes = extmat_to_rtvecs(E_b2w_votes)
-        q_votes = axisangle_to_quaternion_batched(r_votes)
+        # --- Temporal disambiguation using a stable ref pose ---
+        if len(self._board_pose_history) > 0:
 
-        # If we have a board pose from the previous frame, check for consistency
-        if self._latest_board_pose_w is not None:
-            # Get the previous board pose as a reference quaternion
-            r_prev, _ = extmat_to_rtvecs(self._latest_board_pose_w)
-            q_prev = axisangle_to_quaternion(r_prev)
+            history_r, history_t = extmat_to_rtvecs(jnp.stack(list(self._board_pose_history)))
+            history_q = axisangle_to_quaternion_batched(history_r)
 
-            # Check each new vote against the previous pose. A large angular distance suggests a flip
-            # A 180-degree flip will be ~ pi
-            FLIP_THRESHOLD_RAD = jnp.deg2rad(25.0)   # mmmm 25 degrees? why not
-            angular_distances = jax.vmap(lambda q: quaternions_angular_distance(q, q_prev))(q_votes)
+            # We average the rotation (via quaternions) and translation separately
+            q_ref = quaternion_average(history_q)
+            # t_ref = jnp.mean(history_t, axis=0)   # these are not super useful, the quaternion is the most important
+            # r_ref = quaternion_to_axisangle(q_ref)
 
-            is_flipped = angular_distances > FLIP_THRESHOLD_RAD
+            # Get the alternative PnP solutions (180-degree flip)
+            r_b2c_known, t_b2c_known = extmat_to_rtvecs(E_b2c_known)
+            r_b2c_alt, t_b2c_alt = generate_ambiguous_pose(r_b2c_known, t_b2c_known)
+            E_b2c_alt = extrinsics_matrix(r_b2c_alt, t_b2c_alt)
 
-            # If any of the votes are flipped we need to try to correct them
-            if jnp.any(is_flipped):
-                logger.debug(
-                    f"[FLIP_DETECTED] Found {jnp.sum(is_flipped)} inconsistent PnP result(s). Attempting to fix...")
+            # Calculate world poses for both the original and the alternative PnP result
+            E_b2w_votes_alt = E_c2w_known @ E_b2c_alt
 
-                # We now try to generate the ambiguous pose for each flipped detection and see if it brings the board pose back to consistency
+            # For each vote determine which (original or alternative) is closer to the stable ref
+            r_votes, _ = extmat_to_rtvecs(E_b2w_votes)
+            q_votes = axisangle_to_quaternion_batched(r_votes)
 
-                # Get the rvecs for the board-to-camera poses that resulted in flipped votes
-                r_b2c_known, t_b2c_known = extmat_to_rtvecs(E_b2c_known)
+            r_votes_alt, _ = extmat_to_rtvecs(E_b2w_votes_alt)
+            q_votes_alt = axisangle_to_quaternion_batched(r_votes_alt)
 
-                # Generate the alternative (180-degree rotated) poses
-                r_b2c_alt, t_b2c_alt = generate_ambiguous_pose(r_b2c_known, t_b2c_known)
-                E_b2c_alt = extrinsics_matrix(r_b2c_alt, t_b2c_alt)
+            # Calculate angular distance to the reference for both sets of poses
+            dist_original = jax.vmap(lambda q: quaternions_angular_distance(q, q_ref))(q_votes)
+            dist_alt = jax.vmap(lambda q: quaternions_angular_distance(q, q_ref))(q_votes_alt)
 
-                # Re-calculate the board pose votes using the alternative poses *only where a flip was detected*
-                E_b2c_corrected = jnp.where(is_flipped[:, None, None], E_b2c_alt, E_b2c_known)
-                E_b2w_votes_corrected = E_c2w_known @ E_b2c_corrected
+            # Choose the best pose for each camera view
+            use_alt_mask = dist_alt < dist_original
+            E_b2w_votes = jnp.where(use_alt_mask[:, None, None], E_b2w_votes_alt, E_b2w_votes)
 
-                # Check if the corrected votes are now consistent.
-                r_votes_corr, t_votes_corr = extmat_to_rtvecs(E_b2w_votes_corrected)
-                q_votes_corr = axisangle_to_quaternion_batched(r_votes_corr)
-                angular_distances_corr = jax.vmap(lambda q: quaternions_angular_distance(q, q_prev))(q_votes_corr)
-
-                is_still_flipped = angular_distances_corr > FLIP_THRESHOLD_RAD
-
-                # If we successfully corrected the poses (fewer or no flips remain), we use the corrected votes
-                if jnp.sum(is_still_flipped) < jnp.sum(is_flipped):
-                    logger.debug(f"[FLIP_SUCCESS] Corrected {jnp.sum(is_flipped) - jnp.sum(is_still_flipped)} poses.")
-                    E_b2w_votes = E_b2w_votes_corrected
-                else:
-                    logger.warning(f"[FLIP_FAIL] Could not fix inconsistent PnP results for this frame. Skipping.")
-                    self._latest_board_pose_w = None  # Invalidate pose to prevent bad propagation
-                    return
+            num_corrected = jnp.sum(use_alt_mask)
+            if num_corrected > 0:
+                logger.debug(f"[FLIP_CORRECTED] Corrected {num_corrected} PnP results using stable reference.")
 
         # --- Averaging and Quality Control ---
         r_stack, t_stack = extmat_to_rtvecs(E_b2w_votes)
@@ -232,11 +219,13 @@ class MultiviewCalibrationTool:
         if not success:
             logger.debug(
                 f"[CONSENSUS_FAIL] Frame rejected. Could not find a consistent board pose among {rt_stack.shape[0]} views.")
-            self._latest_board_pose_w = None
+            self._latest_board_pose_w = None  # invalidate the single-frame pose
             return
 
+        # --- Update state with the new good pose ---
         E_b2w = extrinsics_matrix(quaternion_to_axisangle(q_avg), t_avg)
         self._latest_board_pose_w = E_b2w
+        self._board_pose_history.append(E_b2w)
 
         E_c2b_all = invert_extrinsics_matrix(E_b2c_all)
         E_c2w_new = E_b2w @ E_c2b_all
@@ -265,6 +254,9 @@ class MultiviewCalibrationTool:
         FRAME_ERROR_THRESHOLD = 5.0
         if mean_frame_error > FRAME_ERROR_THRESHOLD:
             logger.debug(f"[QUALITY_REJECT] Frame rejected. High reproj error: {mean_frame_error:.2f}px")
+            # if the frame is bad, we should not have added it to the history. So we dump it. TODO: that's a bit suboptimal but that'll do for now
+            if len(self._board_pose_history) > 0 and jnp.all(self._board_pose_history[-1] == E_b2w):
+                self._board_pose_history.pop()
             self._latest_board_pose_w = None
             return
 
@@ -398,7 +390,7 @@ class MultiviewCalibrationTool:
                 # STAGE 1: Ideal pinhole world (shared intrinsics, no distortion)   (wellllll maybe better with simple dist)
                 # ---------------------------------------------------------------
                 logger.debug(f"[BA] >>> STAGE 1: Consolidating cameras position with {current_P} frames...")
-                success_s1, results_s1 = bundle_adjustment.run_bundle_adjustment(
+                success_s1, results_s1 = run_bundle_adjustment(
 
                     K_online, D_online, cam_r_online, cam_t_online, board_r_online, board_t_online,
 
@@ -521,7 +513,8 @@ class MultiviewCalibrationTool:
 
             except RuntimeError as e:
                 logger.error(f"[BA] {e}. Could not converge even with {current_P} samples. Aborting.")
-                return False
+                # return False
+                break
 
         if ba_succeeded and final_results is not None:
             logger.info(f"Bundle adjustment complete using {current_P} samples. Storing refined parameters.")
