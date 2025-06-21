@@ -222,13 +222,13 @@ def project_object_views_batched(
 
 @partial(jax.jit, static_argnames=['distortion_model'])
 def undistort_points(
-    points2d:         jnp.ndarray,
-    camera_matrix:    jnp.ndarray,
-    dist_coeffs:      jnp.ndarray,
-    R:                Optional[jnp.ndarray] = None,
-    P:                Optional[jnp.ndarray] = None,
-    distortion_model: str = 'standard',
-    max_iter:         int = 5
+        points2d: jnp.ndarray,
+        camera_matrix: jnp.ndarray,
+        dist_coeffs: jnp.ndarray,
+        R: Optional[jnp.ndarray] = None,
+        P: Optional[jnp.ndarray] = None,
+        distortion_model: str = 'standard',
+        max_iter: int = 5
 ) -> jnp.ndarray:
     """
     Invert distortion & reprojection for a single camera (i.e. replacement for cv2.undistortPoints)
@@ -237,45 +237,68 @@ def undistort_points(
         points2d: any leading batch dims but last dim 2 (..., 2)
         camera_matrix: camera matrix (3, 3)
         dist_coeffs: distortion coefficients (≤8,)
-        R: rectification (usually identity matrix) (3, 3)
-        P: new projection (usually camera matrix) (3, 3)
+        R: Optional rectification matrix (3, 3). If provided, points are transformed by it.
+        P: Optional new camera matrix (3, 3). If provided, points are projected using it.
+           If R and P are None, returns undistorted points in the original camera's pixel space.
         max_iter: maximum number of iterations, default 5 (same as OpenCV) is typically enough
 
     Returns:
         undistorted_points: same leading dims as points2d but last dim 2 (..., 2)
     """
 
-    # fallback to default R and P (runs in host code)   # TODO: ummmmm????
-    if R is None:
-        R = jnp.eye(3, dtype=camera_matrix.dtype)
-    if P is None:
-        P = camera_matrix
-
     fx, fy = camera_matrix[0, 0], camera_matrix[1, 1]
     cx, cy = camera_matrix[0, 2], camera_matrix[1, 2]
 
-    #normalize
+    # Normalize distorted points
     x_d = (points2d[..., 0] - cx) / fx
     y_d = (points2d[..., 1] - cy) / fy
+
+    # Initial guess for undistorted points is the distorted points themselves
     x_u, y_u = x_d, y_d
 
-    # Newton iteration to invert distortion
+    # Newton-Raphson iteration to find the undistorted normalized coordinates
     def newton(i, uv):
         x, y = uv
         radial, dx, dy = distortion(x, y, dist_coeffs, distortion_model)
+        # We are solving for x, y in the equation:
+        # x_d = x * radial(x,y) + dx(x,y)
+        # y_d = y * radial(x,y) + dy(x,y)
+        # A simple fixed-point iteration is more stable than Newton's method here and is what OpenCV uses.
         return ((x_d - dx) / (radial + _eps),
                 (y_d - dy) / (radial + _eps))
 
     x_u, y_u = jax.lax.fori_loop(0, max_iter, newton, (x_u, y_u))
 
-    # reproject through R and P
+    # At this point, (x_u, y_u) are the undistorted, normalized coordinates (on the z=1 plane)
+    # Homogeneous coordinates
     ones = jnp.ones_like(x_u)
-    pts_h = jnp.stack([x_u, y_u, ones], axis=-1)    # (..., 3)
-    pts_r = pts_h @ R.T         # (..., 3)
-    pts_p = pts_r @ P.T         # (..., 3)
+    pts_h = jnp.stack([x_u, y_u, ones], axis=-1)  # (..., 3)
 
-    unsistorted_points = pts_p[..., :2]       # (..., 2)
-    return unsistorted_points
+    # --- Optional Rectification and Reprojection ---
+    # This block mimics cv2.undistortPoints' R and P arguments
+    # If R is provided, apply rectification rotation
+    if R is not None:
+        pts_rectified = pts_h @ R.T
+    else:
+        pts_rectified = pts_h
+
+    # If P is provided, project using the new camera matrix
+    # Otherwise, use the original camera matrix to return to pixel coordinates
+    if P is not None:
+        new_fx, new_fy = P[0, 0], P[1, 1]
+        new_cx, new_cy = P[0, 2], P[1, 2]
+    else:
+        new_fx, new_fy = fx, fy
+        new_cx, new_cy = cx, cy
+
+    # Project to pixel coordinates
+    # Note: We use the components of the rectified point
+    u_new = pts_rectified[..., 0] * new_fx + new_cx
+    v_new = pts_rectified[..., 1] * new_fy + new_cy
+
+    undistorted_points = jnp.stack([u_new, v_new], axis=-1)
+
+    return undistorted_points
 
 # undistort a set of points in multiple cameras
 def undistort_multiple(points2d, camera_matrix, dist_coeffs, R=None, P=None, distortion_model='standard', max_iter=5):

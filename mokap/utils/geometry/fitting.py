@@ -291,15 +291,17 @@ def rays_intersection_3d(
         intersection_point: The point of closest intersection (3,)
     """
 
-    D = ray_directions[..., :, None]
-    A = jnp.eye(3)[None, ...] - D @ D.transpose(0, 2, 1)
+    # Per-ray projection matrix onto the plane orthogonal to the direction
+    I = jnp.eye(3)
+    P_i = I - jnp.einsum('ci,cj->cij', ray_directions, ray_directions)  # (C, 3, 3)
 
-    C = ray_origins[..., :, None]
-    b = (A @ C)[..., 0]
+    # Sum of A = sum(P_i) and b = sum(P_i @ origin_i)
+    A = jnp.sum(P_i, axis=0)  # (3, 3)
+    b = jnp.einsum('cij,cj->ci', P_i, ray_origins)  # (C, 3)
+    b = jnp.sum(b, axis=0)  # (3,)
 
-    A_stack = A.reshape(-1, 3)
-    b_stack = b.reshape(-1)
-    intersection_point, *_ = jnp.linalg.lstsq(A_stack, b_stack, rcond=None)
+    # Solve the small 3x3 system A @ x = b
+    intersection_point, *_ = jnp.linalg.lstsq(A, b, rcond=None)
     return intersection_point
 
 
