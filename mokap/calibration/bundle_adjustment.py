@@ -86,6 +86,78 @@ def _get_parameter_spec(
     return spec
 
 
+def _get_parameter_scales(
+        spec: Dict,
+        initial_params: Dict,
+        images_sizes_wh: ArrayLike
+) -> np.ndarray:
+    """ Computes characteristic scales for each optimization variable """
+
+    cfg = spec['config']
+    C = cfg['nb_cams']
+    P = cfg['nb_frames']
+    is_shared = cfg['shared_intrinsics'] and C > 1
+    num_intr_sets = 1 if is_shared else C
+
+    scales = np.ones(spec['total_size'], dtype=np.float64)
+
+    # --- Intrinsics Scales ---
+    if 'focal_principal' in spec['blocks']:
+        info = spec['blocks']['focal_principal']
+        size_per_set = info['size'] // num_intr_sets
+        for i in range(num_intr_sets):
+            cam_idx = 0 if is_shared else i
+            w, h = images_sizes_wh[cam_idx]
+            offset = info['offset'] + i * size_per_set
+
+            if cfg['fix_aspect_ratio']:
+                # params are [f, cx, cy]
+                scales[offset:offset + 3] = [1000.0, w, h]
+            else:
+                # params are [fx, fy, cx, cy]
+                scales[offset:offset + 4] = [1000.0, 1000.0, w, h]
+
+    if 'distortion' in spec['blocks']:
+        info = spec['blocks']['distortion']
+        # For distortion params a scale of 1.0 is a good default
+        scales[info['offset']:info['offset'] + info['size']] = 1.0
+
+    # --- Extrinsics Scales ---
+    if 'extrinsics' in spec['blocks']:
+        info = spec['blocks']['extrinsics']
+        num_optim_cams = C - 1
+
+        # Scale for rotation vectors (radians)
+        r_scales = np.full(3 * num_optim_cams, 1.0)
+
+        # For translation vectors, the std of their initial values is a good heuristic
+        origin_idx = cfg.get('origin_idx', 0)
+        cam_mask = np.arange(C) != origin_idx
+        tvecs_to_optim = np.asarray(initial_params['cam_tvecs'][cam_mask])
+        t_std = np.std(tvecs_to_optim, axis=0)
+        t_std[t_std < 1e-6] = 1.0
+        t_scales = np.tile(t_std, num_optim_cams)
+
+        scales[info['offset']:info['offset'] + info['size']] = np.concatenate([r_scales, t_scales])
+
+    # --- Board Pose Scales ---
+    if 'board_poses' in spec['blocks']:
+        info = spec['blocks']['board_poses']
+
+        # Scale for rotation vectors
+        r_scales = np.full(3 * P, 1.0)
+
+        # Scale for translation vectors
+        tvecs_to_optim = np.asarray(initial_params['board_tvecs'])
+        t_mean = np.mean(np.linalg.norm(tvecs_to_optim, axis=1))
+        t_mean = 1.0 if t_mean < 1e-6 else t_mean
+        t_scales = np.full(3 * P, t_mean)
+
+        scales[info['offset']:info['offset'] + info['size']] = np.concatenate([r_scales, t_scales])
+
+    return scales
+
+
 def _pack_params(
         camera_matrices: jnp.ndarray,
         dist_coeffs:     jnp.ndarray,
@@ -555,12 +627,17 @@ def run_bundle_adjustment(
     # --- Bounds and Scaling ---
     lb, ub = _get_bounds(spec, images_sizes_wh)
     x0 = jnp.clip(x0, lb, ub)
-    x0_scaled, mean, scale = scale_params(x0)
-    lb_scaled, ub_scaled = scale_bounds(lb, ub, mean, scale)
+
+    # Generate per-parameter scales for the optimizer
+    initial_params_for_scaling = {
+        'cam_tvecs': cam_tvecs,
+        'board_tvecs': board_tvecs
+    }
+    x_scales_np = _get_parameter_scales(spec, initial_params_for_scaling, images_sizes_wh)
 
     # --- Prepare for scipy: Convert to numpy ---
-    x0_scaled_np = np.asarray(x0_scaled)
-    lb_scaled_np, ub_scaled_np = np.asarray(lb_scaled), np.asarray(ub_scaled)
+    x0_np = np.asarray(x0)
+    lb_np, ub_np = np.asarray(lb), np.asarray(ub)
 
     jac_sparsity = make_jacobian_sparsity(spec, use_priors=priors_weight > 0.0)
 
@@ -588,31 +665,26 @@ def run_bundle_adjustment(
     jitted_cost_func = jax.jit(residuals_fn_partial)
     jitted_jac_func = jax.jit(jax.jacfwd(residuals_fn_partial))
 
-    # --- Create Wrappers for SciPy ---
-    def scipy_cost_wrapper(params_scaled_np):
-        params_unscaled = unscale_params(jnp.asarray(params_scaled_np), mean, scale)
-        residuals = jitted_cost_func(params_unscaled)
-        return np.asarray(residuals).copy() # copy is necessary becasuse JAX returns a view otherwise
+    # --- Create wrappers for SciPy ---
+    def scipy_cost_wrapper(params_np):
+        residuals = jitted_cost_func(jnp.asarray(params_np))
+        return np.asarray(residuals).copy()
 
-    def scipy_jac_wrapper(params_scaled_np):
-        params_unscaled = unscale_params(jnp.asarray(params_scaled_np), mean, scale)
-        jac_unscaled = jitted_jac_func(params_unscaled)
-
-        # Jacobian of f(g(x)) is J(f)(g(x)) * J(g)(x)
-        # ... and Jacobian of g(x) is just the scale
-        jac_scaled = jac_unscaled * scale  # chain rule
-        return np.asarray(jac_scaled).copy()  # copy necessaruy here too
+    def scipy_jac_wrapper(params_np):
+        jac = jitted_jac_func(jnp.asarray(params_np))
+        return np.asarray(jac).copy()
 
     # --- Call the scipy solver ---
     # with alive_bar(title='Bundle adjustment...', length=20, force_tty=True) as bar:
     #     with CallbackOutputStream(bar, keep_stdout=False):
     result = least_squares(
         scipy_cost_wrapper,
-        x0_scaled_np,
+        x0_np,
         verbose=2,
-        bounds=(lb_scaled_np, ub_scaled_np),
+        bounds=(lb_np, ub_np),
         jac=scipy_jac_wrapper,
         jac_sparsity=jac_sparsity,
+        x_scale=x_scales_np,
         method='trf',
         loss='cauchy', f_scale=2.5,
         ftol=1e-8, xtol=1e-8, gtol=1e-8,
@@ -620,7 +692,7 @@ def run_bundle_adjustment(
     )
 
     # --- Unscale and unpack results ---
-    x_final_unscaled = unscale_params(jnp.asarray(result.x), mean, scale)
+    x_final_unscaled = jnp.asarray(result.x)
 
     K_opt, D_opt, cam_r_opt, cam_t_opt, board_r_opt, board_t_opt = _unpack_params(
         x_final_unscaled, fixed_params, spec
