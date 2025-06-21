@@ -53,7 +53,8 @@ Mokap is an easy to use multi-camera acquisition software developed for animal b
 * Cross platform (Linux, Windows, macOS)
 * Supports Basler and FLIR cameras (they can be used at the same time, yes 🙂)
 * Supports hardware-synchronisation of cameras (using a Raspberry Pi, an Aduino, a USB-to-TTL adapter, or one of your cameras itself)
-* Many encoding options (with or without GPU acceleration)
+* Supports Hardware-accelerated encoding (Nvidia, AMD, Intel Arc, Apple silicon, etc)
+* Completely tunable encoding parameters (but mokap will automatically select one for you)
 * Live multi-camera calibration and pose estimation
 * Supports classic USB (and internal) Webcams, but their features are limited (no hardware sync, etc.)
 * Generate printable calibration boards in 1 click
@@ -191,19 +192,43 @@ trigger:
 
 # --- Video encoding parameters ---
 ffmpeg:
-  path: 'ffmpeg'   # Path to the ffmpeg executable
-  gpu: true        # Master switch to enable GPU encoding if available
+  path: 'ffmpeg'
+  gpu: true
 
-  # --- Encoder-specific parameters ---
-  # The writer will automatically pick the correct one based on OS and the 'gpu' flag
   params:
-    cpu: '-c:v libx265 -preset ultrafast -tune zerolatency -crf 23 -pix_fmt yuv420p'
+    # --- CPU Profiles ---
+    # H.265
+    cpu_h265: >-
+      -c:v libx265 -preset superfast -tune zerolatency -crf 20 -x265-params "vbv-maxrate=60000k:vbv-bufsize=120000k:keyint=100:min-keyint=100"
+    # H.264
+    cpu_h264: >-
+      -c:v libx264 -preset superfast -tune zerolatency -crf 21
 
-    # NVIDIA NVENC for Windows/Linux
-    gpu_nvenc: '-c:v hevc_nvenc -preset fast -tune ll -zerolatency true -rc cbr -b:v 30M -pix_fmt yuv420p'
+    # --- NVIDIA Profiles ---
+    # H.265
+    gpu_nvenc_h265: >-
+      -c:v hevc_nvenc -preset slow -tune ll -rc constqp -qp 19 -g 100 -bf 0
+    # H.264
+    gpu_nvenc_h264: >-
+      -c:v h264_nvenc -preset slow -tune ll -rc constqp -qp 20 -g 100 -bf 0
 
-    # Apple VideoToolbox for macOS
-    gpu_videotoolbox: '-c:v hevc_videotoolbox -realtime true -q:v 65 -pix_fmt yuv420p'
+    # --- AMD profile (Windows) ---
+    gpu_amf: >-
+      -c:v hevc_amf -preset quality -low_latency 1 -rc vbr_hq -quality 20 -g 100 -bf 0
+
+    # --- AMD profile (Linux) ---
+    gpu_vaapi: >-
+      -vaapi_device /dev/dri/renderD128 -c:v hevc_vaapi -qp 21 -g 100 -bf 0
+
+    # --- Apple profiles ---
+    gpu_videotoolbox: >-
+      -c:v hevc_videotoolbox -realtime true -q:v 80 -allow_sw 1 -g 100
+
+    # --- Intel QSV profiles (for Intel Arc GPUs, or Intel CPUs with QSV) ---
+    gpu_arc_av1: >-
+      -c:v av1_qsv -preset veryfast -global_quality 23 -low_power 0 -g 100 -bf 0
+    gpu_arc_hevc: >-
+      -c:v hevc_qsv -preset veryfast -global_quality 21 -low_power 0 -g 100 -bf 0
 
 # --- Camera-Specific Definitions ---
 
