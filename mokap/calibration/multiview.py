@@ -404,12 +404,12 @@ class MultiviewCalibrationTool:
 
                     shared_intrinsics=True,
                     fix_aspect_ratio=True,
-                    # distortion_model='none',        # Fixes distortion params to zero
+                    distortion_model='none',        # Fixes distortion params to zero
 
-                    distortion_model='simple',  # Use a simple model (k1, k2, p1, p2)
-                    fix_distortion=False,  # ALLOW the optimizer to solve for these params
+                    # distortion_model='simple',  # Use a simple model (k1, k2, p1, p2)
+                    fix_distortion=True,
 
-                    fix_focal_principal=False,
+                    fix_camera_matrix=False,
                     # fix_distortion=True,
                     fix_extrinsics=False,
                     fix_board_poses=False,
@@ -441,12 +441,12 @@ class MultiviewCalibrationTool:
 
                     shared_intrinsics=False,    # Now we optimize per-camera
                     fix_aspect_ratio=False,     # we allow fx and fy to differ
-                    # distortion_model='simple',
+                    distortion_model='simple',
 
-                    distortion_model='standard',  # Use a more complex model for calculation...
-                    fix_distortion=True,  # ...but KEEP the distortion fixed from Stage 1's result
+                    # distortion_model='standard',
+                    fix_distortion=True,
 
-                    fix_focal_principal=False,
+                    fix_camera_matrix=False,
                     # fix_distortion=True,
                     fix_extrinsics=False,
                     fix_board_poses=False,
@@ -479,10 +479,10 @@ class MultiviewCalibrationTool:
 
                     shared_intrinsics=False,
                     fix_aspect_ratio=False,
-                    distortion_model='standard',  # Use the 5-parameter model
-                    # distortion_model='full',  # Use the 8-parameter model
+                    # distortion_model='standard',  # Use the 5-parameter model
+                    distortion_model='full',  # Use the 8-parameter model
 
-                    fix_focal_principal=False,
+                    fix_camera_matrix=False,
                     fix_distortion=False,
                     fix_extrinsics=False,
                     fix_board_poses=False,

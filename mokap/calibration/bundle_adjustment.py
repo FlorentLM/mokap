@@ -16,28 +16,9 @@ from mokap.utils.geometry.transforms import invert_rtvecs, extrinsics_matrix
 DIST_MODEL_MAP = {'none': 0, 'simple': 4, 'standard': 5, 'full': 8, 'rational': 8}
 
 
-def scale_params(x: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """ Calculate scaling factors from x and apply the transform """
-    mean = jnp.mean(x)
-    scale = jnp.std(x)
-    scale = jnp.where(scale < 1e-8, 1.0, scale)
-    x_scaled = (x - mean) / scale
-    return x_scaled, mean, scale
-
-def unscale_params(x_scaled: jnp.ndarray, mean: jnp.ndarray, scale: jnp.ndarray) -> jnp.ndarray:
-    """ Apply the inverse transform using given mean and scale """
-    return x_scaled * scale + mean
-
-def scale_bounds(lb, ub, mean, scale):
-    """ Scales the bounds using given mean and scale """
-    lb_scaled = (lb - mean) / scale
-    ub_scaled = (ub - mean) / scale
-    return lb_scaled, ub_scaled
-
-
 def _get_parameter_spec(
         nb_cams: int, nb_frames: int, origin_idx: int,
-        fix_focal_principal: bool, fix_distortion: bool,
+        fix_camera_matrix: bool, fix_distortion: bool,
         fix_extrinsics: bool, fix_board_poses: bool,
         fix_aspect_ratio: bool, shared_intrinsics: bool,
         distortion_model: DistortionModel
@@ -54,10 +35,10 @@ def _get_parameter_spec(
     num_intr_sets = 1 if is_shared else nb_cams
 
     # --- Focal Length and Principal Point ---
-    if not fix_focal_principal:
+    if not fix_camera_matrix:
         size_per_set = 3 if fix_aspect_ratio else 4
         size = size_per_set * num_intr_sets
-        spec['blocks']['focal_principal'] = {'offset': current_offset, 'size': size}
+        spec['blocks']['cam_mat'] = {'offset': current_offset, 'size': size}
         current_offset += size
 
     # --- Distortion coefficients ---
@@ -85,7 +66,6 @@ def _get_parameter_spec(
     spec['total_size'] = current_offset
     return spec
 
-
 def _get_parameter_scales(
         spec: Dict,
         initial_params: Dict,
@@ -102,8 +82,8 @@ def _get_parameter_scales(
     scales = np.ones(spec['total_size'], dtype=np.float64)
 
     # --- Intrinsics Scales ---
-    if 'focal_principal' in spec['blocks']:
-        info = spec['blocks']['focal_principal']
+    if 'cam_mat' in spec['blocks']:
+        info = spec['blocks']['cam_mat']
         size_per_set = info['size'] // num_intr_sets
         for i in range(num_intr_sets):
             cam_idx = 0 if is_shared else i
@@ -158,160 +138,6 @@ def _get_parameter_scales(
     return scales
 
 
-def _pack_params(
-        camera_matrices: jnp.ndarray,
-        dist_coeffs:     jnp.ndarray,
-        cam_rvecs:       jnp.ndarray,
-        cam_tvecs:       jnp.ndarray,
-        board_rvecs:     jnp.ndarray,
-        board_tvecs:     jnp.ndarray,
-        spec: Dict
-) -> Tuple[jnp.ndarray, Dict[str, jnp.ndarray]]:
-    """ Packs parameters into an optimization vector X and a fixed_params dict """
-
-    optim_parts = []
-    fixed_params = {}
-    cfg = spec['config']
-    is_shared = cfg['shared_intrinsics'] and cfg['nb_cams'] > 1
-
-    # --- Intrinsics ---
-    # Camera matrix  packing
-    if 'focal_principal' in spec['blocks']:
-        if cfg['fix_aspect_ratio']:
-            f = (camera_matrices[:, 0, 0] + camera_matrices[:, 1, 1]) * 0.5
-            fp_block = jnp.column_stack([f, camera_matrices[:, 0, 2], camera_matrices[:, 1, 2]])
-        else:
-            fp_block = jnp.column_stack([camera_matrices[:, 0, 0], camera_matrices[:, 1, 1], camera_matrices[:, 0, 2],
-                                         camera_matrices[:, 1, 2]])
-        optim_parts.append(jnp.mean(fp_block, axis=0) if is_shared else fp_block.ravel())
-    else:
-        fixed_params['K'] = camera_matrices
-
-    # distortion packing
-    if 'distortion' in spec['blocks']:
-        n_d = cfg['n_d']
-        d_block = dist_coeffs[:, :n_d]
-        optim_parts.append(jnp.mean(d_block, axis=0) if is_shared else d_block.ravel())
-    else:
-        fixed_params['D'] = dist_coeffs
-
-    # --- Extrinsics ---
-    # Always store the full initial arrays in fixed_params so _unpack_params always has a reference for shape and fixed values
-    fixed_params['cam_r'] = cam_rvecs
-    fixed_params['cam_t'] = cam_tvecs
-
-    if 'extrinsics' in spec['blocks']:
-        # If we are optimizing, we add the relevant parts to the optim_parts list.
-        origin_idx = spec['config'].get('origin_idx', 0)
-        cam_mask = jnp.arange(cfg['nb_cams']) != origin_idx
-
-        optim_parts.append(cam_rvecs[cam_mask].ravel())
-        optim_parts.append(cam_tvecs[cam_mask].ravel())
-
-        # Also store the fixed origin pose separately for convenience in unpacking
-        fixed_params['origin_r'] = cam_rvecs[origin_idx]
-        fixed_params['origin_t'] = cam_tvecs[origin_idx]
-    # if fix_extrinsics=True the full arrays remain in fixed_params, all good
-
-    # --- Board Poses ---
-    if 'board_poses' in spec['blocks']:
-        optim_parts.append(board_rvecs.ravel())
-        optim_parts.append(board_tvecs.ravel())
-    else:
-        fixed_params['board_r'] = board_rvecs
-        fixed_params['board_t'] = board_tvecs
-
-    x0 = jnp.concatenate(optim_parts) if optim_parts else jnp.array([])
-    return x0, fixed_params
-
-
-def _unpack_params(
-        x:              jnp.ndarray,
-        fixed_params:   Dict[str, jnp.ndarray],
-        spec: Dict
-) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """ Reconstructs all parameters from the optimization vector X and fixed_params """
-
-    cfg = spec['config']
-    C, P = cfg['nb_cams'], cfg['nb_frames']
-    is_shared = cfg['shared_intrinsics'] and C > 1
-
-    # --- Intrinsics ---
-    K_out = fixed_params.get('K', jnp.zeros((C, 3, 3), dtype=x.dtype))
-
-    if 'focal_principal' in spec['blocks']:
-        info = spec['blocks']['focal_principal']
-        fp_flat = x[info['offset']: info['offset'] + info['size']]
-
-        size_per_set = 3 if cfg['fix_aspect_ratio'] else 4
-        fp_block = fp_flat.reshape(-1, size_per_set)
-        if is_shared:
-            fp_block = jnp.tile(fp_block, (C, 1))
-
-        if cfg['fix_aspect_ratio']:
-            K_out = K_out.at[:, 0, 0].set(fp_block[:, 0])
-            K_out = K_out.at[:, 1, 1].set(fp_block[:, 0])
-            K_out = K_out.at[:, 0, 2].set(fp_block[:, 1])
-            K_out = K_out.at[:, 1, 2].set(fp_block[:, 2])
-        else:
-            K_out = K_out.at[:, 0, 0].set(fp_block[:, 0])
-            K_out = K_out.at[:, 1, 1].set(fp_block[:, 1])
-            K_out = K_out.at[:, 0, 2].set(fp_block[:, 2])
-            K_out = K_out.at[:, 1, 2].set(fp_block[:, 3])
-        K_out = K_out.at[:, 2, 2].set(1.0)
-
-    if 'distortion' in spec['blocks']:
-        info = spec['blocks']['distortion']
-        n_d = cfg['n_d']
-        d_flat = x[info['offset']: info['offset'] + info['size']]
-        d_block = d_flat.reshape(-1, n_d)
-        if is_shared:
-            d_block = jnp.tile(d_block, (C, 1))
-
-        D_out = jnp.zeros((C, 8), dtype=x.dtype)
-        D_out = D_out.at[:, :n_d].set(d_block)
-    else:
-        D_out = fixed_params.get('D', jnp.zeros((C, 8), dtype=x.dtype))
-
-    # --- Extrinsics ---
-    if 'extrinsics' in spec['blocks']:
-        origin_idx = cfg.get('origin_idx', 0)
-        info = spec['blocks']['extrinsics']
-        num_optim_cams = C - 1
-
-        extr_flat = x[info['offset']: info['offset'] + info['size']]
-        r_optim = extr_flat[:3 * num_optim_cams].reshape(num_optim_cams, 3)
-        t_optim = extr_flat[3 * num_optim_cams:].reshape(num_optim_cams, 3)
-
-        # Create placeholders for the full arrays
-        cam_r_out = jnp.zeros_like(fixed_params['cam_r'])
-        cam_t_out = jnp.zeros_like(fixed_params['cam_t'])
-
-        # Insert the optimized parameters for cameras before the origin_idx
-        cam_r_out = cam_r_out.at[:origin_idx].set(r_optim[:origin_idx])
-        cam_t_out = cam_t_out.at[:origin_idx].set(t_optim[:origin_idx])
-
-        # Insert the fixed origin pose
-        cam_r_out = cam_r_out.at[origin_idx].set(fixed_params['origin_r'])
-        cam_t_out = cam_t_out.at[origin_idx].set(fixed_params['origin_t'])
-
-        # Insert the optimized parameters for cameras AFTER the origin_idx
-        cam_r_out = cam_r_out.at[origin_idx + 1:].set(r_optim[origin_idx:])
-        cam_t_out = cam_t_out.at[origin_idx + 1:].set(t_optim[origin_idx:])
-
-    # --- Board Poses ---
-    if 'board_poses' in spec['blocks']:
-        info = spec['blocks']['board_poses']
-        board_flat = x[info['offset']: info['offset'] + info['size']]
-        board_r_out = board_flat[:3 * P].reshape(P, 3)
-        board_t_out = board_flat[3 * P:].reshape(P, 3)
-    else:
-        board_r_out = fixed_params['board_r']
-        board_t_out = fixed_params['board_t']
-
-    return K_out, D_out, cam_r_out, cam_t_out, board_r_out, board_t_out
-
-
 def _get_bounds(
         spec: Dict,
         images_sizes_wh: ArrayLike
@@ -329,20 +155,21 @@ def _get_bounds(
     upper_bounds = np.full(spec['total_size'], np.inf, dtype=np.float64)
 
     # --- Set bounds for Intrinsics ---
-    if 'focal_principal' in spec['blocks'] or 'distortion' in spec['blocks']:
+    if 'cam_mat' in spec['blocks'] or 'distortion' in spec['blocks']:
         for i in range(num_intr_sets):
             cam_idx = 0 if is_shared else i
             w, h = images_sizes_wh[cam_idx]
 
             # --- Focal Length and Principal Point ---
-            if 'focal_principal' in spec['blocks']:
-                info = spec['blocks']['focal_principal']
+            if 'cam_mat' in spec['blocks']:
+                info = spec['blocks']['cam_mat']
                 size_per_set = info['size'] // num_intr_sets
                 offset = info['offset'] + i * size_per_set
 
                 f_lo, f_hi = 100.0, 100000.0
-                cx_lo, cx_hi = w / 2.0 - w * 0.2, w / 2.0 + w * 0.2
-                cy_lo, cy_hi = h / 2.0 - h * 0.2, h / 2.0 + h * 0.2
+
+                cx_lo, cx_hi = 0.0, w
+                cy_lo, cy_hi = 0.0, h
 
                 if cfg['fix_aspect_ratio']:
                     # params are [f, cx, cy]
@@ -382,6 +209,161 @@ def _get_bounds(
     # Extrinsics and board poses are left unbounded
     return jnp.array(lower_bounds), jnp.array(upper_bounds)
 
+def _pack_params(
+        camera_matrices: jnp.ndarray,
+        dist_coeffs:     jnp.ndarray,
+        cam_rvecs:       jnp.ndarray,
+        cam_tvecs:       jnp.ndarray,
+        board_rvecs:     jnp.ndarray,
+        board_tvecs:     jnp.ndarray,
+        spec: Dict
+) -> Tuple[jnp.ndarray, Dict[str, jnp.ndarray]]:
+    """ Packs parameters into an optimization vector X and a fixed_params dict """
+
+    optim_parts = []
+    fixed_params = {}
+    cfg = spec['config']
+    is_shared = cfg['shared_intrinsics'] and cfg['nb_cams'] > 1
+
+    # Always store initial intrinsics for priors
+    fixed_params['K_init'] = camera_matrices
+    fixed_params['D_init'] = dist_coeffs
+
+    # --- Intrinsics ---
+    # Camera matrix  packing
+    if 'cam_mat' in spec['blocks']:
+        if cfg['fix_aspect_ratio']:
+            f = (camera_matrices[:, 0, 0] + camera_matrices[:, 1, 1]) * 0.5
+            fp_block = jnp.column_stack([f, camera_matrices[:, 0, 2], camera_matrices[:, 1, 2]])
+        else:
+            fp_block = jnp.column_stack([camera_matrices[:, 0, 0], camera_matrices[:, 1, 1], camera_matrices[:, 0, 2],
+                                         camera_matrices[:, 1, 2]])
+        optim_parts.append(jnp.mean(fp_block, axis=0) if is_shared else fp_block.ravel())
+    else:
+        fixed_params['K'] = camera_matrices
+
+    # distortion packing
+    if 'distortion' in spec['blocks']:
+        n_d = cfg['n_d']
+        d_block = dist_coeffs[:, :n_d]
+        optim_parts.append(jnp.mean(d_block, axis=0) if is_shared else d_block.ravel())
+    else:
+        fixed_params['D'] = dist_coeffs
+
+    # --- Extrinsics ---
+
+    # Store initial extrinsics for priors
+    fixed_params['cam_r_init'] = cam_rvecs
+    fixed_params['cam_t_init'] = cam_tvecs
+
+    # Always store the full initial arrays in fixed_params so _unpack_params always has a reference for shape and fixed values
+    fixed_params['cam_r'] = cam_rvecs
+    fixed_params['cam_t'] = cam_tvecs
+
+    if 'extrinsics' in spec['blocks']:
+        # If we are optimizing, we add the relevant parts to the optim_parts list.
+        origin_idx = spec['config'].get('origin_idx', 0)
+        cam_mask = jnp.arange(cfg['nb_cams']) != origin_idx
+
+        optim_parts.append(cam_rvecs[cam_mask].ravel())
+        optim_parts.append(cam_tvecs[cam_mask].ravel())
+
+        # Also store the fixed origin pose separately for convenience in unpacking
+        fixed_params['origin_r'] = cam_rvecs[origin_idx]
+        fixed_params['origin_t'] = cam_tvecs[origin_idx]
+    # if fix_extrinsics=True the full arrays remain in fixed_params, all good
+
+    # --- Board Poses ---
+    if 'board_poses' in spec['blocks']:
+        optim_parts.append(board_rvecs.ravel())
+        optim_parts.append(board_tvecs.ravel())
+    else:
+        fixed_params['board_r'] = board_rvecs
+        fixed_params['board_t'] = board_tvecs
+
+    x0 = jnp.concatenate(optim_parts) if optim_parts else jnp.array([])
+    return x0, fixed_params
+
+
+def _unpack_params(
+        x: jnp.ndarray,
+        fixed_params: Dict[str, jnp.ndarray],
+        spec: Dict
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """ Reconstructs all parameters from the optimization vector X and fixed_params """
+
+    cfg = spec['config']
+    C, P = cfg['nb_cams'], cfg['nb_frames']
+    is_shared = cfg['shared_intrinsics'] and C > 1
+
+    # --- Intrinsics ---
+    K_out = fixed_params.get('K', jnp.zeros((C, 3, 3), dtype=x.dtype))
+
+    if 'cam_mat' in spec['blocks']:
+        info = spec['blocks']['cam_mat']
+        fp_flat = x[info['offset']: info['offset'] + info['size']]
+
+        size_per_set = 3 if cfg['fix_aspect_ratio'] else 4
+        fp_block = fp_flat.reshape(-1, size_per_set)
+        if is_shared:
+            fp_block = jnp.tile(fp_block, (C, 1))
+
+        if cfg['fix_aspect_ratio']:
+            K_out = K_out.at[:, 0, 0].set(fp_block[:, 0])
+            K_out = K_out.at[:, 1, 1].set(fp_block[:, 0])
+            K_out = K_out.at[:, 0, 2].set(fp_block[:, 1])
+            K_out = K_out.at[:, 1, 2].set(fp_block[:, 2])
+        else:
+            K_out = K_out.at[:, 0, 0].set(fp_block[:, 0])
+            K_out = K_out.at[:, 1, 1].set(fp_block[:, 1])
+            K_out = K_out.at[:, 0, 2].set(fp_block[:, 2])
+            K_out = K_out.at[:, 1, 2].set(fp_block[:, 3])
+        K_out = K_out.at[:, 2, 2].set(1.0)
+
+    if 'distortion' in spec['blocks']:
+        info = spec['blocks']['distortion']
+        n_d = cfg['n_d']
+        d_flat = x[info['offset']: info['offset'] + info['size']]
+        d_block = d_flat.reshape(-1, n_d)
+        if is_shared:
+            d_block = jnp.tile(d_block, (C, 1))
+
+        D_out = jnp.zeros((C, 8), dtype=x.dtype)
+        D_out = D_out.at[:, :n_d].set(d_block)
+    else:
+        D_out = fixed_params.get('D', jnp.zeros((C, 8), dtype=x.dtype))
+
+    # --- Extrinsics ---
+
+    cam_r_out = fixed_params['cam_r']
+    cam_t_out = fixed_params['cam_t']
+
+    if 'extrinsics' in spec['blocks']:
+        origin_idx = cfg.get('origin_idx', 0)
+        info = spec['blocks']['extrinsics']
+        num_optim_cams = C - 1
+
+        extr_flat = x[info['offset']: info['offset'] + info['size']]
+        r_optim = extr_flat[:3 * num_optim_cams].reshape(num_optim_cams, 3)
+        t_optim = extr_flat[3 * num_optim_cams:].reshape(num_optim_cams, 3)
+
+        cam_mask = jnp.arange(C) != origin_idx
+        cam_r_out = cam_r_out.at[cam_mask].set(r_optim)
+        cam_t_out = cam_t_out.at[cam_mask].set(t_optim)
+        cam_r_out = cam_r_out.at[origin_idx].set(fixed_params['origin_r'])
+        cam_t_out = cam_t_out.at[origin_idx].set(fixed_params['origin_t'])
+
+    # --- Board Poses ---
+    if 'board_poses' in spec['blocks']:
+        info = spec['blocks']['board_poses']
+        board_flat = x[info['offset']: info['offset'] + info['size']]
+        board_r_out = board_flat[:3 * P].reshape(P, 3)
+        board_t_out = board_flat[3 * P:].reshape(P, 3)
+    else:
+        board_r_out = fixed_params['board_r']
+        board_t_out = fixed_params['board_t']
+
+    return K_out, D_out, cam_r_out, cam_t_out, board_r_out, board_t_out
 
 def residual_weights(
         pts2d:                      jnp.ndarray,  # (C, P, N, 2)
@@ -436,8 +418,9 @@ def residual_weights(
 
 
 def make_jacobian_sparsity(
-        spec:       Dict,
-        use_priors: bool
+        spec: Dict,
+        use_extrinsics_prior: bool,
+        use_intrinsics_prior: bool
 ) -> csr_matrix:
     """
     Creates the Jacobian sparsity matrix based on the optimization parameter specification
@@ -445,75 +428,105 @@ def make_jacobian_sparsity(
 
     cfg = spec['config']
     C, P, N = cfg['nb_cams'], cfg['nb_frames'], cfg['nb_points']
-    origin_idx = cfg.get('origin_idx', 0)  # Get the origin_idx
+    origin_idx = cfg.get('origin_idx', 0)
 
     num_residuals = 2 * P * C * N
-    if use_priors and 'extrinsics' in spec['blocks']:
-        num_residuals += 6 * C
-
     num_params = spec['total_size']
-    S = lil_matrix((num_residuals, num_params), dtype=bool)     # awww lil matrix
+    S = lil_matrix((num_residuals, num_params), dtype=bool)
 
     is_shared = cfg['shared_intrinsics'] and C > 1
     num_intr_sets = 1 if is_shared else C
 
-    # --- Reprojection Error ---
-
-    # Each observation (p, c, n) depends on
-    # intrinsics of camera c
-    # extrinsics of camera c
-    # pose of board p
-
-    # Create a mapping from camera index to its position in the optimization vector
+    # --- Reprojection Error Dependencies ---
     optim_cam_indices = np.delete(np.arange(C), origin_idx)
     cam_idx_to_optim_pos = {cam_idx: pos for pos, cam_idx in enumerate(optim_cam_indices)}
 
     for p in range(P):
         for c in range(C):
-            for n in range(N):
-                # row index for the residual of point n in frame p, camera c
-                base_row = (p * C * N + c * N + n) * 2
+            # Each observation (p, c, n) depends on:
+            # - intrinsics of camera c
+            # - extrinsics of camera c
+            # - pose of board p
+            base_row_start = (p * C * N + c * N) * 2
+            base_row_end = base_row_start + 2 * N
 
-                intr_set_idx = 0 if is_shared else c
-                if 'focal_principal' in spec['blocks']:
-                    info = spec['blocks']['focal_principal']
-                    size_per_set = info['size'] // num_intr_sets
-                    col_offset = info['offset'] + intr_set_idx * size_per_set
-                    S[base_row:base_row + 2, col_offset: col_offset + size_per_set] = 1
+            intr_set_idx = 0 if is_shared else c
+            if 'cam_mat' in spec['blocks']:
+                info = spec['blocks']['cam_mat']
+                size_per_set = info['size'] // num_intr_sets
+                col_offset = info['offset'] + intr_set_idx * size_per_set
+                S[base_row_start:base_row_end, col_offset: col_offset + size_per_set] = 1
 
-                if 'distortion' in spec['blocks']:
-                    info = spec['blocks']['distortion']
-                    n_d = cfg['n_d']
-                    size_per_set = info['size'] // num_intr_sets
-                    col_offset = info['offset'] + intr_set_idx * size_per_set
-                    S[base_row:base_row + 2, col_offset: col_offset + n_d] = 1
+            if 'distortion' in spec['blocks']:
+                info = spec['blocks']['distortion']
+                size_per_set = info['size'] // num_intr_sets
+                col_offset = info['offset'] + intr_set_idx * size_per_set
+                S[base_row_start:base_row_end, col_offset: col_offset + info['size'] // num_intr_sets] = 1
 
-                if 'extrinsics' in spec['blocks']:
-                    # Check if the current camera 'c' is the origin
-                    if c != origin_idx:
-                        # If not the origin, it's an optimizable parameter. Find its column.
-                        optim_pos = cam_idx_to_optim_pos[c]
-                        info = spec['blocks']['extrinsics']
-                        col_offset = info['offset'] + optim_pos * 6
-                        S[base_row:base_row + 2, col_offset: col_offset + 6] = 1
-                    # If c is the origin, its parameters are fixed and not in the Jacobian so leaving that part of the row as zero
-
-                if 'board_poses' in spec['blocks']:
-                    info = spec['blocks']['board_poses']
-                    col_offset = info['offset'] + p * 6
-                    S[base_row:base_row + 2, col_offset: col_offset + 6] = 1
-
-    # --- Priors ---
-    # The prior residuals depend only on the camera extrinsics
-    if use_priors and 'extrinsics' in spec['blocks']:
-        base_row = 2 * P * C * N
-        extr_info = spec['blocks']['extrinsics']
-        for c in range(C):
-            if c != origin_idx:  # Only for optimizable cameras
-                row_start = base_row + c * 6
+            if 'extrinsics' in spec['blocks'] and c != origin_idx:
                 optim_pos = cam_idx_to_optim_pos[c]
-                col_start = extr_info['offset'] + optim_pos * 6
-                S[row_start:row_start + 6, col_start:col_start + 6] = 1
+                info = spec['blocks']['extrinsics']
+                num_optim_cams = C - 1
+                # rvecs and tvecs are in separate blocks in the optimization vector
+                r_col_offset = info['offset'] + optim_pos * 3
+                t_col_offset = info['offset'] + (num_optim_cams * 3) + optim_pos * 3
+                S[base_row_start:base_row_end, r_col_offset:r_col_offset + 3] = 1
+                S[base_row_start:base_row_end, t_col_offset:t_col_offset + 3] = 1
+
+            if 'board_poses' in spec['blocks']:
+                info = spec['blocks']['board_poses']
+                # rvecs and tvecs are in separate blocks in the optimization vector
+                r_col_offset = info['offset'] + p * 3
+                t_col_offset = info['offset'] + (P * 3) + p * 3
+                S[base_row_start:base_row_end, r_col_offset:r_col_offset + 3] = 1
+                S[base_row_start:base_row_end, t_col_offset:t_col_offset + 3] = 1
+
+    # Add sparsity for all priors
+    num_prior_residuals = 0
+    if use_extrinsics_prior and 'extrinsics' in spec['blocks']:
+        num_prior_residuals += 6 * (C - 1)  # only for optimizable cameras
+
+    if use_intrinsics_prior:
+        if 'cam_mat' in spec['blocks']:
+            num_prior_residuals += spec['blocks']['cam_mat']['size']
+        if 'distortion' in spec['blocks']:
+            num_prior_residuals += spec['blocks']['distortion']['size']
+
+    if num_prior_residuals > 0:
+        S_new = lil_matrix((num_residuals + num_prior_residuals, num_params), dtype=bool)
+        S_new[:num_residuals, :] = S
+        S = S_new
+
+    current_prior_row = num_residuals
+
+    # --- Extrinsics Priors ---
+    if use_extrinsics_prior and 'extrinsics' in spec['blocks']:
+        info = spec['blocks']['extrinsics']
+        num_optim_cams = C - 1
+        for i, cam_idx in enumerate(optim_cam_indices):
+            # Rotation prior for camera i
+            row_start_r = current_prior_row + i * 3
+            col_start_r = info['offset'] + i * 3
+            S[row_start_r:row_start_r + 3, col_start_r:col_start_r + 3] = np.eye(3, dtype=bool)
+
+            # Translation prior for camera i
+            row_start_t = current_prior_row + num_optim_cams * 3 + i * 3
+            col_start_t = info['offset'] + num_optim_cams * 3 + i * 3
+            S[row_start_t:row_start_t + 3, col_start_t:col_start_t + 3] = np.eye(3, dtype=bool)
+        current_prior_row += 6 * num_optim_cams
+
+    # --- Intrinsics Priors ---
+    if use_intrinsics_prior:
+        if 'cam_mat' in spec['blocks']:
+            info = spec['blocks']['cam_mat']
+            S[current_prior_row:current_prior_row + info['size'],
+            info['offset']:info['offset'] + info['size']] = np.eye(info['size'], dtype=bool)
+            current_prior_row += info['size']
+        if 'distortion' in spec['blocks']:
+            info = spec['blocks']['distortion']
+            S[current_prior_row:current_prior_row + info['size'],
+            info['offset']:info['offset'] + info['size']] = np.eye(info['size'], dtype=bool)
+            current_prior_row += info['size']
 
     return S.tocsr()
 
@@ -523,11 +536,15 @@ def cost_function(
         fixed_params:       Dict,
         spec:               Dict,
         points2d:           jnp.ndarray,
-        visibility_mask:    jnp.ndarray,
         points3d_th_jnp:    jnp.ndarray,
         points_weights:     jnp.ndarray,
         priors_weight:      float,
         distortion_model:   DistortionModel,
+        prior_weight_r:     float,
+        prior_weight_t:     float,
+        prior_weight_f:     float,
+        prior_weight_c:     float,
+        prior_weight_d:     float
 ) -> jnp.ndarray:
 
     Ks, Ds, cam_r, cam_t, board_r, board_t = _unpack_params(params, fixed_params, spec)
@@ -540,6 +557,7 @@ def cost_function(
         Ks, Ds, distortion_model=distortion_model
     )
 
+    reproj = jnp.nan_to_num(reproj)
     resid = reproj - points2d
 
     # Combine the pre-computed weights with the dynamic depth-validity weight
@@ -557,13 +575,56 @@ def cost_function(
     jax.debug.print("Mean Reprojection Error (RMS): {x:.3f}px", x=rms_error)
 
     # Prior residuals
-    rvecs_cam_init = fixed_params['cam_r']
-    tvecs_cam_init = fixed_params['cam_t']
-    rvec_resid = cam_r - rvecs_cam_init
-    tvec_resid = cam_t - tvecs_cam_init
-    weighted_prior_resid = jnp.concatenate([rvec_resid.ravel(), tvec_resid.ravel()]) * priors_weight
+    all_residuals = [weighted_reproj_resid.ravel()]
 
-    return jnp.concatenate([weighted_reproj_resid.ravel(), weighted_prior_resid])
+    # --- Extrinsics Priors ---
+    if prior_weight_r > 0.0 or prior_weight_t > 0.0:
+        cam_r_init = fixed_params['cam_r_init']
+        cam_t_init = fixed_params['cam_t_init']
+        # Only penalize deviation for cameras that are being optimized
+        origin_idx = spec['config']['origin_idx']
+        cam_mask = jnp.arange(spec['config']['nb_cams']) != origin_idx
+
+        rvec_resid = (cam_r[cam_mask] - cam_r_init[cam_mask]).ravel() * prior_weight_r
+        tvec_resid = (cam_t[cam_mask] - cam_t_init[cam_mask]).ravel() * prior_weight_t
+        all_residuals.extend([rvec_resid, tvec_resid])
+
+    # --- Intrinsics Priors ---
+    is_shared = spec['config']['shared_intrinsics'] and spec['config']['nb_cams'] > 1
+
+    # Get initial values (mean if shared)
+    K_init = fixed_params['K_init']
+    D_init = fixed_params['D_init']
+    K_init_maybe_shared = jnp.mean(K_init, axis=0, keepdims=True) if is_shared else K_init
+    D_init_maybe_shared = jnp.mean(D_init, axis=0, keepdims=True) if is_shared else D_init
+
+    # Get optimized values (broadcast if shared)
+    Ks_maybe_shared = jnp.mean(Ks, axis=0, keepdims=True) if is_shared else Ks
+    Ds_maybe_shared = jnp.mean(Ds, axis=0, keepdims=True) if is_shared else Ds
+
+    if prior_weight_f > 0.0:
+        f_init_x = K_init_maybe_shared[:, 0, 0]
+        f_init_y = K_init_maybe_shared[:, 1, 1]
+        f_opt_x = Ks_maybe_shared[:, 0, 0]
+        f_opt_y = Ks_maybe_shared[:, 1, 1]
+        f_resid = jnp.concatenate([(f_opt_x - f_init_x), (f_opt_y - f_init_y)]) * prior_weight_f
+        all_residuals.append(f_resid)
+
+    if prior_weight_c > 0.0:
+        pp_init = K_init_maybe_shared[:, :2, 2]
+        pp_opt = Ks_maybe_shared[:, :2, 2]
+        pp_resid = (pp_opt - pp_init).ravel() * prior_weight_c
+        all_residuals.append(pp_resid)
+
+    if prior_weight_d > 0.0 and 'distortion' in spec['blocks']:
+        n_d = spec['config']['n_d']
+        dist_init = D_init_maybe_shared[:, :n_d]
+        dist_opt = Ds_maybe_shared[:, :n_d]
+        dist_resid = (dist_opt - dist_init).ravel() * prior_weight_d
+        all_residuals.append(dist_resid)
+
+    return jnp.concatenate(all_residuals)
+
 
 def run_bundle_adjustment(
         camera_matrices:        jnp.ndarray,
@@ -577,16 +638,18 @@ def run_bundle_adjustment(
         object_points3d:        jnp.ndarray,
         images_sizes_wh:        ArrayLike,
         origin_idx:             int = 0,
-        priors_weight:          float = 0.0,
+        priors:                 Optional[Dict] = None,
         radial_penalty:         float = 2.0,
-        fix_focal_principal:    bool = False,
+        fix_camera_matrix:      bool = False,
         fix_distortion:         bool = False,
         fix_extrinsics:         bool = False,
         fix_board_poses:        bool = False,
         fix_aspect_ratio:       bool = False,
         shared_intrinsics:      bool = False,
         distortion_model:       DistortionModel = 'standard',
-        max_frames:             Optional[int] = None
+        max_frames:             Optional[int] = None,
+        tolerance:              float = 1e-8,
+        max_nfev:               int = 500
 ) -> Tuple[bool, Dict]:
 
     C, P_full, N = visibility_mask.shape
@@ -598,13 +661,27 @@ def run_bundle_adjustment(
 
     spec = _get_parameter_spec(
         nb_cams=C, nb_frames=P, origin_idx=origin_idx,
-        fix_focal_principal=fix_focal_principal, fix_distortion=fix_distortion,
+        fix_camera_matrix=fix_camera_matrix, fix_distortion=fix_distortion,
         fix_extrinsics=fix_extrinsics, fix_board_poses=fix_board_poses,
         fix_aspect_ratio=fix_aspect_ratio, shared_intrinsics=shared_intrinsics,
         distortion_model=distortion_model
     )
     # Add nb_points to spec for jacobian sparsity calculation
     spec['config']['nb_points'] = N
+
+    # Unpack priors dictionary into floats for jax
+    priors = priors if priors is not None else {}
+    intr_priors = priors.get('intrinsics', {})
+    extr_priors = priors.get('extrinsics', {})
+
+    prior_weight_f = float(intr_priors.get('focal_length', 0.0))
+    prior_weight_c = float(intr_priors.get('principal_point', 0.0))
+    prior_weight_d = float(intr_priors.get('distortion', 0.0))
+    prior_weight_r = float(extr_priors.get('rotation', 0.0))
+    prior_weight_t = float(extr_priors.get('translation', 0.0))
+
+    use_extrinsics_prior = prior_weight_r > 0.0 or prior_weight_t > 0.0
+    use_intrinsics_prior = prior_weight_f > 0.0 or prior_weight_c > 0.0 or prior_weight_d > 0.0
 
     # Prepare and pad distortion coefficients if necessary
     if 'distortion' in spec['blocks']:
@@ -639,7 +716,8 @@ def run_bundle_adjustment(
     x0_np = np.asarray(x0)
     lb_np, ub_np = np.asarray(lb), np.asarray(ub)
 
-    jac_sparsity = make_jacobian_sparsity(spec, use_priors=priors_weight > 0.0)
+    # Pass prior flags to sparsity function
+    jac_sparsity = make_jacobian_sparsity(spec, use_extrinsics_prior, use_intrinsics_prior)
 
     # --- Setup static arguments for the residual function ---
     points_weights = residual_weights(
@@ -654,12 +732,15 @@ def run_bundle_adjustment(
         cost_function,
         fixed_params=fixed_params,
         spec=spec,
-        points2d=image_points2d,
-        visibility_mask=visibility_mask,
+        points2d=image_points2d[:, :P],
         points3d_th_jnp=object_points3d,
         points_weights=points_weights,
-        priors_weight=priors_weight,
-        distortion_model=distortion_model
+        distortion_model=distortion_model,
+        prior_weight_r=prior_weight_r,
+        prior_weight_t=prior_weight_t,
+        prior_weight_f=prior_weight_f,
+        prior_weight_c=prior_weight_c,
+        prior_weight_d=prior_weight_d
     )
 
     jitted_cost_func = jax.jit(residuals_fn_partial)
@@ -687,8 +768,8 @@ def run_bundle_adjustment(
         x_scale=x_scales_np,
         method='trf',
         loss='cauchy', f_scale=2.5,
-        ftol=1e-8, xtol=1e-8, gtol=1e-8,
-        max_nfev=500
+        ftol=tolerance, xtol=tolerance, gtol=tolerance,
+        max_nfev=max_nfev
     )
 
     # --- Unscale and unpack results ---
