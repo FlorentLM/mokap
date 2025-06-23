@@ -64,10 +64,10 @@ ffmpeg:
     # --- NVIDIA Profiles ---
     # H.265
     gpu_nvenc_h265: >-
-      -c:v hevc_nvenc -preset slow -tune ll -rc constqp -qp 19 -g 100 -bf 0
+      -c:v hevc_nvenc -preset fast -tune ll -rc constqp -qp 19 -g 100 -bf 0
     # H.264
     gpu_nvenc_h264: >-
-      -c:v h264_nvenc -preset slow -tune ll -rc constqp -qp 20 -g 100 -bf 0
+      -c:v h264_nvenc -preset fast -tune ll -rc constqp -qp 20 -g 100 -bf 0
 
     # --- AMD profile (Windows) ---
     gpu_amf: >-
