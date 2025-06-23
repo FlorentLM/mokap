@@ -316,6 +316,44 @@ class MultiviewCalibrationTool:
         - Stage 3: Performs a full refinement with all parameters (including distortion)
         """
 
+        # <<< START: ADD DEBUG LOGGING HELPERS >>>
+        def _log_params(stage_name, results_dict, initial_K, initial_D):
+            """Helper to log key parameters and their deviation from initial values."""
+            K_opt, D_opt = results_dict['K_opt'], results_dict['D_opt']
+
+            # Calculate average focal length and principal point
+            fx_avg = jnp.mean(K_opt[:, 0, 0])
+            fy_avg = jnp.mean(K_opt[:, 1, 1])
+            cx_avg = jnp.mean(K_opt[:, 0, 2])
+            cy_avg = jnp.mean(K_opt[:, 1, 2])
+
+            # Calculate max absolute distortion coefficients across all cameras
+            # Only check the coeffs relevant to the current model to avoid noise from unused params
+            # This assumes your BA stages correctly zero-out or handle unused coeffs
+            n_d = D_opt.shape[1]  # Let's just check all available
+            max_dist_coeffs = jnp.max(jnp.abs(D_opt[:, :n_d]), axis=0)
+
+            # Calculate deviation from initial parameters
+            K_init_avg_f = (jnp.mean(initial_K[:, 0, 0]) + jnp.mean(initial_K[:, 1, 1])) / 2.0
+            K_opt_avg_f = (fx_avg + fy_avg) / 2.0
+            f_drift_percent = 100 * (K_opt_avg_f - K_init_avg_f) / K_init_avg_f
+
+            D_init_max_abs = jnp.max(jnp.abs(initial_D), axis=0)
+            D_drift = max_dist_coeffs - D_init_max_abs
+
+            # Using logger.info for high visibility during debugging
+            logger.info(f"--- [BA] End of {stage_name} ---")
+            logger.info(f"  Avg Focal Length (fx, fy): ({fx_avg:.2f}, {fy_avg:.2f}) px")
+            logger.info(f"  Focal Length Drift: {f_drift_percent:+.2f}% from initial guess")
+            logger.info(f"  Avg Principal Point (cx, cy): ({cx_avg:.2f}, {cy_avg:.2f}) px")
+            logger.info(f"  Max Distortion Coeffs (abs): {np.array2string(np.asarray(max_dist_coeffs), precision=4)}")
+            logger.info(
+                f"  Distortion Drift (max abs):   {np.array2string(np.asarray(D_drift), precision=4, sign='+')}")
+            # Note: Scipy's 'cost' is 0.5 * sum(resid^2). RMS is sqrt(2 * cost / N).
+            # The RMS is already printed inside your cost function, which is great.
+
+        # <<< END: ADD DEBUG LOGGING HELPERS >>>
+
         if not all(self._has_extrinsics):
             logger.error("[BA] Initial extrinsics have not been estimated yet.")
             return False
@@ -337,7 +375,7 @@ class MultiviewCalibrationTool:
         priors_stage1 = {
             'intrinsics': {
                 'focal_length': 0.1,    # weak, just to prevent the *average* focal length from drifting into nonsense
-                'principal_point': 0.0, # all other priors are off
+                'principal_point': 5.0, # This can be quite strong, most modern lenses have it very close to the centre
                 'distortion': 0.0
             },
             'extrinsics': {
@@ -462,6 +500,8 @@ class MultiviewCalibrationTool:
                 if not success_s1:
                     raise RuntimeError("BA Stage 1 failed.")
 
+                _log_params("Stage 1 (Shared Pinhole)", results_s1, K_online, D_online)
+
                 # STAGE 2: Per-camera pinhole world (shared intrinsics, simple distortion)
                 # ------------------------------------------------------------------------
                 # Here we relax the shared model and start refining the per-camera details, but we use priors
@@ -502,6 +542,7 @@ class MultiviewCalibrationTool:
                 if not success_s2:
                     raise RuntimeError("BA Stage 2 failed.")
 
+                _log_params("Stage 2 (Per-Cam Pinhole)", results_s2, K_online, D_online)
 
                 # STAGE 3: Real world (Full extrinsics + intrinsics refinement with distortion)
                 # -----------------------------------------------------------------------------
@@ -542,6 +583,8 @@ class MultiviewCalibrationTool:
                 )
                 if not success_s3:
                     raise RuntimeError("BA Stage 3 failed.")
+
+                _log_params("Stage 3 (Full Model)", final_results_attempt, K_online, D_online)
 
                 # If we reach here, all stages were successful
                 ba_succeeded = True
