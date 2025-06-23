@@ -46,6 +46,8 @@ class ProcessingWorker(QObject):
 class CalibrationProcessingWorker(CalibrationWorker, ProcessingWorker):
     """ Base class for calibration processing workers (i.e. MonocularWorker and MultiviewWorker) """
 
+    stage_changed = Signal(int)
+
     def __init__(self, name: str, *args, **kwargs):
         super().__init__(name=name, *args, **kwargs)
         self._current_stage = 0
@@ -63,3 +65,4 @@ class CalibrationProcessingWorker(CalibrationWorker, ProcessingWorker):
             return
         self._current_stage = stage
         logger.debug(f"[{self.name.title()}] Received calibration stage: {stage}")
+        self.stage_changed.emit(stage)

@@ -1,4 +1,6 @@
 import logging
+
+import jax
 import numpy as np
 import jax.numpy as jnp
 from typing import List, Optional, Union, Dict
@@ -10,7 +12,7 @@ from mokap.utils.datatypes import (CalibrationData, DetectionPayload, Extrinsics
                                    ChessBoard, CharucoBoard)
 from mokap.utils.geometry.projective import back_projection_batched, back_projection
 from mokap.utils.geometry.transforms import extrinsics_matrix, invert_rtvecs, rotate_extrinsics_matrix, rotate_points3d, \
-    rotate_extrinsics_matrices, Rmat_from_angle
+    rotate_extrinsics_matrices, Rmat_from_angle, invert_extrinsics_matrix, rotate_points3d_sets, rodrigues
 
 logger = logging.getLogger(__name__)
 
@@ -116,16 +118,18 @@ class MultiviewWorker(CalibrationProcessingWorker):
         cam_idx = self._cameras_names.index(data.camera_name)
         payload = data.payload
 
-        # Intrinsics are always accepted because the Coordinator blocks unwanted live updates
-        # This allows refined/loaded intrinsics to always come through
+        # Set the 'ready' flag as soon as intrinsics arrive
         if isinstance(payload, IntrinsicsPayload):
             self._cameras_matrices[cam_idx] = payload.camera_matrix
 
             d_len = len(payload.dist_coeffs)
             self._dist_coeffs[cam_idx, :d_len] = payload.dist_coeffs
 
+            # Mark this camera as ready for rendering
             self._intrinsics_ready[cam_idx] = True
 
+            # If we are already in stage 1, we might need to create the tool
+            # (if intrinsics were loaded from a file after switching)
             self._try_create_tool()
 
         # Only process extrinsics during the initial seeding phase. After that, the tool takes over.
@@ -136,101 +140,124 @@ class MultiviewWorker(CalibrationProcessingWorker):
                 self._rvecs_c2w[cam_idx] = r_c2w
                 self._tvecs_c2w[cam_idx] = t_c2w
 
-        # Detection payloads are only processed in stage > 0 when the tool exists
-        elif self._current_stage > 0 and self.multiview_tool and isinstance(payload, DetectionPayload):
-            self.multiview_tool.register(cam_idx, payload)
+        # Accept detection payloads in any stage (for visualization)
+        elif isinstance(payload, DetectionPayload):
+            # In stage > 0, also register the detection with the BA tool
+            if self._current_stage > 0 and self.multiview_tool:
+                self.multiview_tool.register(cam_idx, payload)
 
-            # Also store the 2D points for visualization
+            # Always store the 2D points for visualization, regardless of stage
             self._points_2d[data.camera_name] = payload.points2D if payload.points2D is not None else self._nopoints_2d
             self._points_ids[data.camera_name] = payload.pointsIDs if payload.pointsIDs is not None else self._nopoints_ids
 
     def _compute_3d_scene(self):
         """ Periodically calculates and emits all data needed for the 3D view """
 
-        scene_data = {}
-
         # Determine which set of parameters to use for visualization
         if self.multiview_tool and self.multiview_tool.is_refined:
             Ks, Ds = self.multiview_tool.refined_intrinsics
             rs_c2w, ts_c2w = self.multiview_tool.refined_extrinsics
+            # In this case, all intrinsics are guaranteed to be valid
+            ready_mask = np.ones(self._C, dtype=bool)
 
         elif self.multiview_tool and self.multiview_tool.is_estimated:
             Ks, Ds = self.multiview_tool.intrinsics
             rs_c2w, ts_c2w = self.multiview_tool.extrinsics
+            # In this case, all intrinsics are guaranteed to be valid
+            ready_mask = np.ones(self._C, dtype=bool)
+
         else:
             # Before estimation, use the initial parameters stored in the worker
             Ks, Ds, rs_c2w, ts_c2w = self._cameras_matrices, self._dist_coeffs, self._rvecs_c2w, self._tvecs_c2w
+            # Here, we must rely on the live-updated ready flag
+            ready_mask = self._intrinsics_ready.astype(bool)
 
         if Ks is None or rs_c2w is None or ts_c2w is None:
             # nothing to draw, early exit
             return
 
         Es_c2w = extrinsics_matrix(rs_c2w, ts_c2w)
-        # Es_c2w_gl = rotate_extrinsics_matrices(Es_c2w, 180, axis='x')     # TODO: This is broken!!
-        Es_c2w_gl = Es_c2w
+        cam_centres = Es_c2w[:, :3, 3]
 
         # Back-project the 5 points (principal + 4 corners) into 3D space
-        frustums_points_all  = back_projection_batched(self._img_points_2d,
-                                                          self._frustum_depth,
-                                                          Ks, Es_c2w_gl, Ds,
-                                                          distortion_model='full')
+        frustums_points_all = back_projection_batched(self._img_points_2d,
+                                                      40,
+                                                      Ks, Es_c2w, jnp.zeros_like(Ds),   # TODO: No need to create this at each call
+                                                      distortion_model='full')
 
-        # Extract points
-        principal_points = frustums_points_all[:, 0, :]
-        frustum_corners = frustums_points_all[:, 1:, :]
-        cam_centres = Es_c2w_gl[:, :3, 3]
+        # Safety Check
+        # Mask out frustums for cameras whose intrinsics haven't arrived yet
+        # This prevents rendering a valid pose with an invalid (identity) K matrix
+        masked_frustums = jnp.where(
+            ready_mask[:, None, None],
+            frustums_points_all,
+            cam_centres[:, None, :]  # Collapse the frustum to a single point if not ready
+        )
 
-        # assemble the 5 vertices for the frustum meshes (Apex + 4 corners)
-        frustums_points_3d = jnp.concatenate([
-            cam_centres[:, None, :],
-            frustum_corners
-        ], axis=1)
+        # Proceed with the rest of the rendering using the safe, masked data
+        principal_points = masked_frustums[:, 0, :]
+        frustum_corners = masked_frustums[:, 1:, :]
 
-        # assemble the optical axis lines (Apex -> Principal Point)
+        frustums_points_3d = jnp.concatenate([cam_centres[:, None, :], frustum_corners], axis=1)
         optical_axes_3d = jnp.stack([cam_centres, principal_points], axis=1)
 
-        # Detections and board visualisation
-        detections_3d = []
+        # --- Stage-dependent visualisation logic ---
         board_3d = None
+        detections_3d = [self._nopoints_3d] * self._C
 
-        # Stage-dependent visualisation logic
+        # Stage 0: Board is at origin, cameras "orbit" around it
         if self._current_stage == 0:
-            # Stage 0: Board is at originand cameras "orbit" around it
-            # (detections are just back-projected)
-
-            # board_3d = rotate_points3d(self.calibration_board.object_points, 180, axis='x')
             board_3d = self.calibration_board.object_points
 
-            for i in range(self._C):
-                points2d = self._points_2d[self._cameras_names[i]]
-
-                if points2d.shape[0] > 0:
-                    detections_3d.append(
-                        back_projection(points2d, self._frustum_depth * 0.95, Ks[i], Es_c2w_gl[i], Ds[i]))
-                else:
-                    detections_3d.append(self._nopoints_3d)
-
-        elif self._current_stage > 0 and self.multiview_tool and self.multiview_tool.current_board_pose is not None:
-            # Stage > 0: Cameras are static and the board moves
-            # (we show the 'triangulated' board)
-
-            board_pose = self.multiview_tool.current_board_pose
-
-            # board_3d = rotate_points3d((board_pose @ self._object_points_hom.T).T[:, :3], 180, 'x')
-            board_3d = (board_pose @ self._object_points_hom.T).T[:, :3]
-
+            # Detections are points on the board so their 3D coords are known from their IDs
+            temp_detections = []
             for i in range(self._C):
                 ids = self._points_ids[self._cameras_names[i]]
                 if ids.shape[0] > 0 and board_3d is not None:
-                    detections_3d.append(board_3d[ids])
+                    # Select the corresponding 3D points from the master list
+                    temp_detections.append(board_3d[ids])
                 else:
-                    detections_3d.append(self._nopoints_3d)
+                    temp_detections.append(self._nopoints_3d)
+            detections_3d = temp_detections
+
+        # Stage > 0: Cameras are static, the board moves
+        elif self._current_stage > 0:
+
+            if self.multiview_tool and self.multiview_tool.current_board_pose is not None:
+                # If we have a valid board pose, transform the board object points
+                board_pose = self.multiview_tool.current_board_pose
+                board_3d = (board_pose @ self._object_points_hom.T).T[:, :3]
+
+                # Detections are the specific points from the transformed board
+                temp_detections = []
+                for i in range(self._C):
+                    ids = self._points_ids[self._cameras_names[i]]
+                    if ids.shape[0] > 0 and board_3d is not None:
+                        temp_detections.append(board_3d[ids])
+                    else:
+                        temp_detections.append(self._nopoints_3d)
+                detections_3d = temp_detections
+            # else:
+            # In Stage > 0 but without a board pose yet, board_3d remains None
+            # and detections_3d remains a list of empty arrays. This is fine,
+            # as it will correctly show just the static cameras until a board is detected
+
+        def to_gl(points):
+            if points is None or points.shape[0] == 0:
+                return points
+            return rotate_points3d(points, 180, 'x')
+
+        def to_gl_batch(points_batch):
+            if points_batch is None or points_batch.shape[0] == 0:
+                return points_batch
+            return rotate_points3d_sets(points_batch, 180, 'x')
 
         scene_data = {
-            'board_3d': board_3d,
-            'frustums_points_3d': frustums_points_3d,
-            'optical_axes_3d': optical_axes_3d,
-            'detections_3d': detections_3d
+            'ready_mask': ready_mask,
+            'board_3d': to_gl(board_3d),
+            'frustums_points_3d': to_gl_batch(frustums_points_3d),
+            'optical_axes_3d': to_gl(optical_axes_3d),
+            'detections_3d': [to_gl(d) for d in detections_3d]
         }
         self.scene_data_ready.emit(scene_data)
 
@@ -277,16 +304,21 @@ class MultiviewWorker(CalibrationProcessingWorker):
         self._rvecs_c2w = np.zeros((self._C, 3), dtype=np.float32)
         self._tvecs_c2w = np.zeros((self._C, 3), dtype=np.float32)
 
+        # Ensure origin camera is correctly initialized after reset
+        self._rvecs_c2w[self._orig_cam_idx] = np.zeros(3)
+        self._tvecs_c2w[self._orig_cam_idx] = np.zeros(3)
+
         logger.debug(f"[{self.name.title()}] Worker has been reset.")
 
     @Slot(int)
     def set_stage(self, stage: int):
         super().set_stage(stage)
 
-        # When moving back to stage 0, we must perform a full reset.
+        # When moving back to stage 0, we must perform a full reset
         if stage == 0:
             self.reset()
 
+        # When moving to stage 1, try to create the tool
+        # This will use the final intrinsics gathered during stage 0
         else:
-            # Start the 3D view update timer when moving to an active stage
             self._try_create_tool()

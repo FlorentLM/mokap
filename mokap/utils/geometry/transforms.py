@@ -369,6 +369,15 @@ def rotate_points3d(
     points3d_rot = jnp.einsum('ij,...j->...i', R, points3d)     # (..., 3)
     return points3d_rot
 
+# vmapped version to rotate multiple sets of points by the same angle/axis
+def rotate_points3d_sets(
+        points3d_batch: jnp.ndarray,
+        angle_degrees: float,
+        axis: Union[str, Iterable[float]] = 'y'
+) -> jnp.ndarray:
+    rotate_fn = partial(rotate_points3d, angle_degrees=angle_degrees, axis=axis)
+    return jax.vmap(rotate_fn)(points3d_batch)
+
 
 @partial(jax.jit, static_argnames=['axis'])
 def rotate_rtvecs(

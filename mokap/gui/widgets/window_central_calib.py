@@ -1,6 +1,7 @@
 import logging
 from typing import Union
 import cv2
+from pathlib import Path
 from PySide6.QtCore import Signal, Qt, Slot
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QHBoxLayout, QFrame, QVBoxLayout, QGroupBox, QGridLayout, QLabel, QComboBox, QPushButton, \
@@ -64,6 +65,9 @@ class CentralCalibrationWindow(Base):
         # Create GL items after the UI exists
         self._create_gl_items()
 
+        # Connect to the coordinator's stage broadcast to handle UI state changes
+        self._mainwindow.coordinator.broadcast_stage.connect(self._on_stage_change)
+
     def _init_ui(self):
         self.view = GLViewWidget()
         self.view.setWindowTitle('3D viewer')
@@ -88,7 +92,7 @@ class CentralCalibrationWindow(Base):
         self.calibration_stage_combo = QComboBox()
         self.calibration_stage_combo.addItems(['Intrinsics', 'Extrinsics'])
         self.calibration_stage_combo.currentIndexChanged.connect(self._mainwindow.coordinator.set_stage)
-        self.calibration_stage_combo.currentIndexChanged.connect(self._on_stage_changed)
+        self.calibration_stage_combo.currentIndexChanged.connect(self._on_stage_change)
 
         controls_layout.addWidget(self.calibration_stage_combo, 0, 1)
         controls_layout.addWidget(QLabel("Origin Cam:"), 1, 0)
@@ -328,12 +332,18 @@ class CentralCalibrationWindow(Base):
                 logger.error("Could not apply board settings. Reverting UI.")
                 self._refresh_board_ui(self._mainwindow.board_params)
 
-    @Slot()
-    def _on_stage_changed(self):
-        if self.calibration_stage_combo.currentIndex() == 1:
-            self.origin_camera_combo.setDisabled(True)
-        else:
-            self.origin_camera_combo.setDisabled(False)
+    @Slot(int)
+    def _on_stage_change(self, stage: int):
+        """ Handles UI changes when the global calibration stage changes """
+
+        # Update local UI widget state
+        is_extrinsics_stage = (stage == 1)
+        self.origin_camera_combo.setDisabled(is_extrinsics_stage)
+
+        # hide the board to prevent visual artifacts when switching stages
+        # It will be made visible again by update_3d_scene when new data arrives
+        if 'board_3d' in self.global_gl_items:
+            self.global_gl_items['board_3d'].setVisible(False)
 
     @Slot()
     def _on_print_board(self):
@@ -440,6 +450,7 @@ class CentralCalibrationWindow(Base):
         frustum_points_3d = scene_data.get('frustums_points_3d')
         detections_3d = scene_data.get('detections_3d')
         optical_axes_3d = scene_data.get('optical_axes_3d')
+        ready_mask = scene_data.get('ready_mask')
 
         if frustum_points_3d is None or optical_axes_3d is None:
             return
@@ -450,7 +461,8 @@ class CentralCalibrationWindow(Base):
                 cam_name=cam_name,
                 frustum_points=frustum_points_3d[i],
                 optical_axis=optical_axes_3d[i],
-                detection_points=detections_3d[i]
+                detection_points=detections_3d[i],
+                is_ready=ready_mask[i]
             )
 
         # Update the global board points scatter plot
@@ -466,18 +478,31 @@ class CentralCalibrationWindow(Base):
                          cam_name:          str,
                          frustum_points:    jnp.ndarray,
                          optical_axis:      jnp.ndarray,
-                         detection_points:  jnp.ndarray):
+                         detection_points:  jnp.ndarray,
+                         is_ready:          bool):
 
         gl_items = self._percamera_gl_items[cam_name]
 
-        # The camera center is the start of the optical axis line
+        # First, check if the camera's pose itself is valid (not at origin)
         cam_centre = optical_axis[0]
         is_pose_valid = np.linalg.norm(cam_centre) > 1e-6
 
-        for item in gl_items.values():
-            item.setVisible(is_pose_valid)
+        # An item is visible only if its pose *and* its intrinsics are ready
+        should_be_visible = is_pose_valid and is_ready
 
-        if not is_pose_valid:
+        # Apply visibility to all items for this camera
+        gl_items['frustum_mesh'].setVisible(should_be_visible)
+        gl_items['optical_axis'].setVisible(should_be_visible)
+
+        # The camera center dot can be visible if the pose is valid, even if intrinsics are not ready yet
+        gl_items['center'].setVisible(is_pose_valid)
+        if is_pose_valid:
+            gl_items['center'].setData(pos=cam_centre[None, :])
+
+        # If the camera is not fully ready to be drawn, stop here
+        if not should_be_visible:
+            # Also ensure detections are hidden
+            gl_items['detections'].setVisible(False)
             return
 
         # Update GL Items with new data

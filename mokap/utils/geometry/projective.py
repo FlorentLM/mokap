@@ -359,12 +359,12 @@ def back_projection(
     return world_pts
 
 # back-project (the same number of) points to multiple cameras
-def back_projection_batched(points2d, depth, camera_matrix, E_c2w, dist_coeffs, distortion_model='standard'):
+def back_projection_batched(points2d, depth, camera_matrices, Es_c2w, dist_coeffs, distortion_model='standard'):
     back_project_fn = partial(back_projection, distortion_model=distortion_model)
     return jax.vmap(
         back_project_fn,
         in_axes=(0, None, 0, 0, 0)
-    )(points2d, depth, camera_matrix, E_c2w, dist_coeffs)
+    )(points2d, depth, camera_matrices, Es_c2w, dist_coeffs)
 
 
 @partial(jax.jit, static_argnames=['per_point_errors'])

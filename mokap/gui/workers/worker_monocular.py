@@ -44,6 +44,9 @@ class MonocularWorker(CalibrationProcessingWorker):
 
         # A flag to avoid looping over failures
         self._last_calib_failed = False
+        # flags to prevent sending redundant empty payloads
+        self._was_detecting = False
+        self._was_reprojecting = False
 
         # Payloads for empty/failed cases
         self.empty_detection = DetectionPayload(-1, np.zeros((0, 2)), np.array([]))
@@ -77,6 +80,8 @@ class MonocularWorker(CalibrationProcessingWorker):
         super().reset()
 
         self._last_calib_failed = False
+        self._was_detecting = False
+        self._was_reprojecting = False
 
         if self.monocular_tool:
             self.monocular_tool.clear_stacks()
@@ -117,12 +122,18 @@ class MonocularWorker(CalibrationProcessingWorker):
         # --- Detection ---
         self.monocular_tool.detect(frame)
 
-        # Always send detection payload for UI feedback
-        if self.monocular_tool.has_detection:
+        is_detecting_now = self.monocular_tool.has_detection
+        if is_detecting_now:
+            # Always send payload when we have a new detection
             det_payload = DetectionPayload(frame_idx, *self.monocular_tool.detection)
-        else:
-            det_payload = self.empty_detection
-        self.send_payload.emit(CalibrationData(self.cam_name, det_payload))
+            self.send_payload.emit(CalibrationData(self.cam_name, det_payload))
+
+        elif self._was_detecting:
+            # if we are NOT detecting now, but were last frame, send one empty payload to clear UI
+            self.send_payload.emit(CalibrationData(self.cam_name, self.empty_detection))
+
+        # Update state for next frame
+        self._was_detecting = is_detecting_now
 
         # --- Stage 0: Intrinsic Calibration policy ---
         if self._current_stage == 0:
@@ -164,12 +175,15 @@ class MonocularWorker(CalibrationProcessingWorker):
 
         # --- Pose and reprojection (for all stages) ---
 
+        is_reprojecting_now = False  # assume false by default
         if self.monocular_tool.has_intrinsics:
 
             self.monocular_tool.compute_extrinsics()
 
             # Send reprojection payload for visualization
             if self.monocular_tool.has_extrinsics:
+
+                is_reprojecting_now = True
 
                 # Send extrinsics payload (will be None if pose failed)
                 rvec, tvec = self.monocular_tool.extrinsics
@@ -188,11 +202,13 @@ class MonocularWorker(CalibrationProcessingWorker):
                 )
                 self.send_payload.emit(CalibrationData(self.cam_name, reproj_payload))
 
-            else:
+            # check if the reprojection state has changed
+            if not is_reprojecting_now and self._was_reprojecting:
+                # if we are not reprojecting now, but were last frame, send one empty payload to clear UI
                 self.send_payload.emit(CalibrationData(self.cam_name, self.empty_reprojection))
 
-        else:
-            self.send_payload.emit(CalibrationData(self.cam_name, self.empty_reprojection))
+            # Update state for next frame
+            self._was_reprojecting = is_reprojecting_now
 
         self.finished.emit()
 
@@ -271,6 +287,12 @@ class MonocularWorker(CalibrationProcessingWorker):
     @Slot(str)
     def load_intrinsics(self, file_path: str):
         intrinsics = IntrinsicsPayload.from_file(file_path, self.cam_name)
+
+        # Disable auto modes and clear existing samples/coverage
+        self.auto_sample(False)
+        self.auto_compute(False)
+        self.clear_samples()
+
         # Set the intrinsics in the tool
         self.monocular_tool.set_intrinsics(intrinsics.camera_matrix, intrinsics.dist_coeffs, intrinsics.errors)
         # And forward to the coordinator (it will route to the Multiview and UI)

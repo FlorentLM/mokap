@@ -14,7 +14,7 @@ from mokap.utils.datatypes import DetectionPayload
 from mokap.utils.geometry.projective import (project_to_multiple_cameras, reprojection_errors,
                                              project_multiple_to_multiple)
 from mokap.utils.geometry.fitting import (quaternion_average, filter_rt_samples, reliability_bounds_3d_iqr,
-                                          generate_ambiguous_pose)
+                                          generate_ambiguous_pose, generate_multiple_ambiguous_poses)
 from mokap.utils.geometry.transforms import (extrinsics_matrix, extmat_to_rtvecs,
                                              axisangle_to_quaternion_batched, quaternion_to_axisangle,
                                              invert_extrinsics_matrix, invert_rtvecs, quaternions_angular_distance,
@@ -180,7 +180,7 @@ class MultiviewCalibrationTool:
 
             # Get the alternative PnP solutions (180-degree flip)
             r_b2c_known, t_b2c_known = extmat_to_rtvecs(E_b2c_known)
-            r_b2c_alt, t_b2c_alt = generate_ambiguous_pose(r_b2c_known, t_b2c_known)
+            r_b2c_alt, t_b2c_alt = generate_multiple_ambiguous_poses(r_b2c_known, t_b2c_known)
             E_b2c_alt = extrinsics_matrix(r_b2c_alt, t_b2c_alt)
 
             # Calculate world poses for both the original and the alternative PnP result
@@ -194,7 +194,7 @@ class MultiviewCalibrationTool:
             q_votes_alt = axisangle_to_quaternion_batched(r_votes_alt)
 
             # Calculate angular distance to the reference for both sets of poses
-            dist_original = jax.vmap(lambda q: quaternions_angular_distance(q, q_ref))(q_votes)
+            dist_original = jax.vmap(lambda q: quaternions_angular_distance(q, q_ref))(q_votes) # TODO: move the vmaps to the geometry module
             dist_alt = jax.vmap(lambda q: quaternions_angular_distance(q, q_ref))(q_votes_alt)
 
             # Choose the best pose for each camera view
@@ -262,8 +262,9 @@ class MultiviewCalibrationTool:
 
         logger.debug(f"[ACCEPTED] Frame mean: {mean_frame_error:.2f} px.")
 
+        # Commit the new extrinsics to the main state for all cameras in this frame
         for i, cam_idx in enumerate(cam_indices):
-            if cam_idx != self.origin_idx:
+            if cam_idx != self.origin_idx:  # Never update the origin camera
                 self._rvecs_c2w = self._rvecs_c2w.at[cam_idx].set(r_c2w_new[i])
                 self._tvecs_c2w = self._tvecs_c2w.at[cam_idx].set(t_c2w_new[i])
             self._has_extrinsics[cam_idx] = True
@@ -298,9 +299,10 @@ class MultiviewCalibrationTool:
         E_b2c = extrinsics_matrix(jnp.asarray(rvec), jnp.asarray(tvec))
         self._detection_buffer[cam_idx][f] = (E_b2c, detection.points2D, detection.pointsIDs)
 
-        if cam_idx == self.origin_idx and not self._has_extrinsics[cam_idx]:
-            self._has_extrinsics[cam_idx] = True
-            # The pose is already (0, 0, 0) we can continue
+        # The origin camera's extrinsics are fixed at identity, so its flag is always true
+        # This only needs to be set once
+        if not self._has_extrinsics[self.origin_idx]:
+            self._has_extrinsics[self.origin_idx] = True
 
         self._flush_frames()
 

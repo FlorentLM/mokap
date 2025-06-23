@@ -549,6 +549,8 @@ class CalibrationLiveView(LiveViewBase):
         self.request_load.connect(worker_object.load_intrinsics)
         self.request_save.connect(worker_object.save_intrinsics)
 
+        self.worker.stage_changed.connect(self.on_stage_changed)
+
     def _init_specific_ui(self):
         """ This constructor creates the UI elements specific to Calib mode """
 
@@ -806,7 +808,29 @@ class CalibrationLiveView(LiveViewBase):
 
         elif isinstance(payload, IntrinsicsPayload):
             # received whenever intrinsics are updated (loading a file, new monocular calculation, or after refinement)
-            self.load_save_message.setText(f"Intrinsics updated from {data.camera_name}.")
+            self.load_save_message.setText(f"Intrinsics updated for {data.camera_name}.")
+
+            # When intrinsics are loaded or refined elsewhere, turn off auto-computation
+            self.auto_sample_check.setChecked(False)
+            self.auto_compute_check.setChecked(False)
+
+    @Slot(int)
+    def on_stage_changed(self, stage: int):
+        is_intrinsics_stage = (stage == 0)
+
+        # Enable/disable checkboxes
+        self.auto_sample_check.setEnabled(is_intrinsics_stage)
+        self.auto_compute_check.setEnabled(is_intrinsics_stage)
+
+        # Enable/disable buttons
+        self.sample_button.setEnabled(is_intrinsics_stage)
+        self.clear_samples_button.setEnabled(is_intrinsics_stage)
+        self.compute_intrinsics_button.setEnabled(is_intrinsics_stage)
+
+        # When moving to extrinsics stage, ensure auto-sample is off in the UI
+        if not is_intrinsics_stage:
+            self.auto_sample_check.setChecked(False)
+            self.auto_compute_check.setChecked(False)
 
     def on_save_parameters(self):
         file_path, _ = QFileDialog.getSaveFileName(
