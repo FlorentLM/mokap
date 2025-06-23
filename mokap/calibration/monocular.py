@@ -429,7 +429,8 @@ class MonocularCalibrationTool:
         if not self.has_intrinsics or not self.has_extrinsics:
             return None
 
-        self._reprojected_points = project_points(
+        # TODO: store the validity mask maybe?
+        self._reprojected_points, _ = project_points(
             self._object_points_3d, self._curr_rvec_b2c, self._curr_tvec_b2c, self._camera_matrix, self._dist_coeffs)
 
     def clear_grid(self):

@@ -3,8 +3,7 @@ from typing import Dict, List, Union, Optional
 from PySide6.QtCore import QObject, Signal, Slot
 from mokap.gui.workers.workers_base import CalibrationProcessingWorker
 from mokap.gui.workers.worker_monocular import MonocularWorker
-from mokap.utils.datatypes import ChessBoard, CharucoBoard, CalibrationData, IntrinsicsPayload
-
+from mokap.utils.datatypes import ChessBoard, CharucoBoard, CalibrationData, IntrinsicsPayload, DetectionPayload
 
 logger = logging.getLogger(__name__)
 

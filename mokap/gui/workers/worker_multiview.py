@@ -10,14 +10,14 @@ from mokap.utils.datatypes import (CalibrationData, DetectionPayload, Extrinsics
                                    ChessBoard, CharucoBoard)
 from mokap.utils.geometry.projective import back_projection_batched, back_projection
 from mokap.utils.geometry.transforms import extrinsics_matrix, invert_rtvecs, rotate_extrinsics_matrix, rotate_points3d, \
-    rotate_extrinsics_matrices
+    rotate_extrinsics_matrices, Rmat_from_angle
 
 logger = logging.getLogger(__name__)
 
 
 class MultiviewWorker(CalibrationProcessingWorker):
 
-    scene_data_ready = Signal(Dict[str, ArrayLike])
+    scene_data_ready = Signal(dict)
 
     def __init__(self,
                  cameras_names:     List[str],
@@ -166,25 +166,28 @@ class MultiviewWorker(CalibrationProcessingWorker):
             return
 
         Es_c2w = extrinsics_matrix(rs_c2w, ts_c2w)
-        Es_c2w_gl = rotate_extrinsics_matrices(Es_c2w, 180, axis='x')
+        # Es_c2w_gl = rotate_extrinsics_matrices(Es_c2w, 180, axis='x')     # TODO: This is broken!!
+        Es_c2w_gl = Es_c2w
 
         # Back-project the 5 points (principal + 4 corners) into 3D space
-        frustums_points_3d = back_projection_batched(self._img_points_2d,
-                                                    self._frustum_depth,
-                                                    Ks, Es_c2w_gl, Ds,
-                                                    distortion_model='full')
+        frustums_points_all  = back_projection_batched(self._img_points_2d,
+                                                          self._frustum_depth,
+                                                          Ks, Es_c2w_gl, Ds,
+                                                          distortion_model='full')
 
-        # Extract the camera centers (the apex of the frustum) from the GL-corrected extrinsics
-        cam_centers_gl = Es_c2w_gl[:, :3, 3]
+        # Extract points
+        principal_points = frustums_points_all[:, 0, :]
+        frustum_corners = frustums_points_all[:, 1:, :]
+        cam_centres = Es_c2w_gl[:, :3, 3]
 
-        # Create the final frustum data packet with 6 points: [center, P, TL, TR, BR, BL]
-        frustums_3d = jnp.concatenate((cam_centers_gl[:, None, :], frustums_points_3d), axis=1)
+        # assemble the 5 vertices for the frustum meshes (Apex + 4 corners)
+        frustums_points_3d = jnp.concatenate([
+            cam_centres[:, None, :],
+            frustum_corners
+        ], axis=1)
 
-        # Extract the projected principal points from the frustum data (at index 1)
-        principal_points_3d = frustums_3d[:, 1, :]
-
-        # Stack the *original* camera centers with the principal points to create the axis lines
-        optical_axes_3d = jnp.stack([cam_centers_gl, principal_points_3d], axis=1)
+        # assemble the optical axis lines (Apex -> Principal Point)
+        optical_axes_3d = jnp.stack([cam_centres, principal_points], axis=1)
 
         # Detections and board visualisation
         detections_3d = []
@@ -195,7 +198,8 @@ class MultiviewWorker(CalibrationProcessingWorker):
             # Stage 0: Board is at originand cameras "orbit" around it
             # (detections are just back-projected)
 
-            board_3d = rotate_points3d(self.calibration_board.object_points, 180, axis='x')
+            # board_3d = rotate_points3d(self.calibration_board.object_points, 180, axis='x')
+            board_3d = self.calibration_board.object_points
 
             for i in range(self._C):
                 points2d = self._points_2d[self._cameras_names[i]]
@@ -212,7 +216,8 @@ class MultiviewWorker(CalibrationProcessingWorker):
 
             board_pose = self.multiview_tool.current_board_pose
 
-            board_3d = rotate_points3d((board_pose @ self._object_points_hom.T).T[:, :3], 180, 'x')
+            # board_3d = rotate_points3d((board_pose @ self._object_points_hom.T).T[:, :3], 180, 'x')
+            board_3d = (board_pose @ self._object_points_hom.T).T[:, :3]
 
             for i in range(self._C):
                 ids = self._points_ids[self._cameras_names[i]]
@@ -221,11 +226,12 @@ class MultiviewWorker(CalibrationProcessingWorker):
                 else:
                     detections_3d.append(self._nopoints_3d)
 
-        # Prepare data for emitting (converting to numpy for the signal)
-        scene_data['board_3d'] = board_3d
-        scene_data['frustums_3d'] = frustums_3d
-        scene_data['optical_axes_3d'] = optical_axes_3d
-        scene_data['detections_3d'] = detections_3d
+        scene_data = {
+            'board_3d': board_3d,
+            'frustums_points_3d': frustums_points_3d,
+            'optical_axes_3d': optical_axes_3d,
+            'detections_3d': detections_3d
+        }
         self.scene_data_ready.emit(scene_data)
 
     @Slot()

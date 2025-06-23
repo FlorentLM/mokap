@@ -722,7 +722,7 @@ class CalibrationLiveView(LiveViewBase):
             self.detection_points_item.clear()
 
         if self.latest_reprojected_points.shape[0] > 0:
-            all_points = np.array(self.latest_reprojected_points)
+            all_points = self.latest_reprojected_points
 
             # inner points (not corners) (white)
             self.reprojection_points_item.setData(pos=all_points[:-4])
