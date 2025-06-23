@@ -15,6 +15,8 @@ from mokap.utils.geometry.transforms import invert_rtvecs, extrinsics_matrix
 
 DIST_MODEL_MAP = {'none': 0, 'simple': 4, 'standard': 5, 'full': 8, 'rational': 8}
 
+# TODO: Kinda want to test Deepmind's Optax solvers here instead of scipy...
+
 
 def _get_parameter_spec(
         nb_cams: int, nb_frames: int, origin_idx: int,
@@ -347,9 +349,12 @@ def _unpack_params(
         r_optim = extr_flat[:3 * num_optim_cams].reshape(num_optim_cams, 3)
         t_optim = extr_flat[3 * num_optim_cams:].reshape(num_optim_cams, 3)
 
-        cam_mask = jnp.arange(C) != origin_idx
-        cam_r_out = cam_r_out.at[cam_mask].set(r_optim)
-        cam_t_out = cam_t_out.at[cam_mask].set(t_optim)
+        # Get all camera indices except the origin camera
+        optim_cam_indices = jnp.delete(jnp.arange(C), origin_idx)
+        cam_r_out = cam_r_out.at[optim_cam_indices].set(r_optim)
+        cam_t_out = cam_t_out.at[optim_cam_indices].set(t_optim)
+
+        # The origin camera is still set from fixed_params
         cam_r_out = cam_r_out.at[origin_idx].set(fixed_params['origin_r'])
         cam_t_out = cam_t_out.at[origin_idx].set(fixed_params['origin_t'])
 
@@ -536,9 +541,8 @@ def cost_function(
         fixed_params:       Dict,
         spec:               Dict,
         points2d:           jnp.ndarray,
-        points3d_th_jnp:    jnp.ndarray,
+        object_points:      jnp.ndarray,
         points_weights:     jnp.ndarray,
-        priors_weight:      float,
         distortion_model:   DistortionModel,
         prior_weight_r:     float,
         prior_weight_t:     float,
@@ -553,7 +557,7 @@ def cost_function(
     r_w2c, t_w2c = invert_rtvecs(cam_r, cam_t)
 
     reproj, valid_depth_mask = project_object_views_batched(
-        points3d_th_jnp, r_w2c, t_w2c, board_r, board_t,
+        object_points, r_w2c, t_w2c, board_r, board_t,
         Ks, Ds, distortion_model=distortion_model
     )
 
@@ -585,8 +589,17 @@ def cost_function(
         origin_idx = spec['config']['origin_idx']
         cam_mask = jnp.arange(spec['config']['nb_cams']) != origin_idx
 
-        rvec_resid = (cam_r[cam_mask] - cam_r_init[cam_mask]).ravel() * prior_weight_r
-        tvec_resid = (cam_t[cam_mask] - cam_t_init[cam_mask]).ravel() * prior_weight_t
+        # Calculate difference for all cameras
+        rvec_diff = cam_r - cam_r_init
+        tvec_diff = cam_t - cam_t_init
+
+        # we need to use jnp.where to zero-out the residual for the origin camera instead of removing it (otherwise JAX wouldn't like it)
+        masked_rvec_diff = jnp.where(cam_mask[:, None], rvec_diff, 0.0)
+        masked_tvec_diff = jnp.where(cam_mask[:, None], tvec_diff, 0.0)
+        # final residual has a static shape, and the zeroed-out rows have no effect on the optimization
+        rvec_resid = masked_rvec_diff.ravel() * prior_weight_r
+        tvec_resid = masked_tvec_diff.ravel() * prior_weight_t
+
         all_residuals.extend([rvec_resid, tvec_resid])
 
     # --- Intrinsics Priors ---
@@ -670,6 +683,7 @@ def run_bundle_adjustment(
     spec['config']['nb_points'] = N
 
     # Unpack priors dictionary into floats for jax
+    # TODO: maybe a dual API with simple and advanced control for the priors would be cool?
     priors = priors if priors is not None else {}
     intr_priors = priors.get('intrinsics', {})
     extr_priors = priors.get('extrinsics', {})
@@ -733,7 +747,7 @@ def run_bundle_adjustment(
         fixed_params=fixed_params,
         spec=spec,
         points2d=image_points2d[:, :P],
-        points3d_th_jnp=object_points3d,
+        object_points=object_points3d,
         points_weights=points_weights,
         distortion_model=distortion_model,
         prior_weight_r=prior_weight_r,

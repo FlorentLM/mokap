@@ -328,13 +328,52 @@ class MultiviewCalibrationTool:
         C = self.nb_cameras
         N = self._object_points.shape[0]
 
-        # Little safeguard to avoid filling up the RAM because of the jacobian
-        # (it grows quadratically with the nb of samples)
-
-        current_P = self.ba_sample_count
         ba_succeeded = False
         final_results = None
 
+        # Priors weights to prevent the BA from overfittign
+        priors_stage1 = {
+            'intrinsics': {
+                'focal_length': 0.1,    # weak, just to prevent the *average* focal length from drifting into nonsense
+                'principal_point': 0.0, # all other priors are off
+                'distortion': 0.0
+            },
+            'extrinsics': {
+                'rotation': 0.0,
+                'translation': 0.0
+            }
+        }
+        priors_stage2 = {
+            'intrinsics': {
+                'focal_length': 1.0,    # quite strong. Keeps each camera's focal length from deviating from the average found in Stage 1
+                'principal_point': 0.1, # weak, but still here to keep the principal point near the image center
+                'distortion': 0.5       # medium, keeps the initial distortion terms small and well-behaved
+            },
+            'extrinsics': {             # extrinsics priors off
+                'rotation': 0.0,
+                'translation': 0.0
+            }
+        }
+        priors_stage3 = {
+            'intrinsics': {
+                'focal_length': 1.0,    # still strong. This is critical to avoid overfitting. TODO: Could be stronger maybe?
+                'principal_point': 0.1, # same as in stage 2. Modern cameras with modern lenses should be pretty centered...
+                'distortion': 0.1       # Relaxed from stage 2. We want to refine these a bit more.
+            },
+            'extrinsics': { # We assume by then the geometry is pretty good, so we set priors on the extrinsics
+                            # This prevents a single camera with poor visibility in some frames from drifting
+
+                # A weight of ~ 700 on radians is comparable to a weight of 0.1 on mm for a target tolerance of 0.5 deg / 1.0 mm
+                # This keeps camera poses very stable, allowing only tiny final adjustments
+                # TODO: Maybe we want to do this scaling inside the bundle_adjustment module and only expose normalised weights here?
+                'rotation': 700,
+                'translation': 0.1
+            }
+        }
+
+        # The try except loop is a little safeguard to avoid filling up the RAM because of the jacobian
+        # (it grows quadratically with the nb of samples)
+        current_P = self.ba_sample_count
         while current_P >= self._min_detections:
             try:
                 logger.info(f"[BA] Attempting Bundle Adjustment with {current_P} samples.")
@@ -367,10 +406,10 @@ class MultiviewCalibrationTool:
                     r_stack, t_stack = extmat_to_rtvecs(E_b2w_votes)
                     q_stack = axisangle_to_quaternion_batched(r_stack)
 
-                    #  here we use the simple, lenient average for BA initialization
-                    #  (Because the spread of this cluster is a direct result of the accumulated errors
-                    #  during online camera pose estimates - which are unavoidable!!
-                    #  The hardcore filter used online would likely jusyt eliminate everyone here)
+                    # here we use the simple, lenient average for BA initialization
+                    # (Because the spread of this cluster is a direct result of the accumulated errors
+                    # during online camera pose estimates - which are unavoidable!!
+                    # The hardcore filter used online would likely jusyt eliminate everyone here)
                     r_board_w_list.append(quaternion_to_axisangle(quaternion_average(q_stack)))
                     t_board_w_list.append(jnp.median(t_stack, axis=0))
 
@@ -387,8 +426,10 @@ class MultiviewCalibrationTool:
 
                 self._points2d, self._visibility_mask = pts2d_buf, vis_buf  # store points for this run
 
-                # STAGE 1: Ideal pinhole world (shared intrinsics, no distortion)   (wellllll maybe better with simple dist)
+                # STAGE 1: Ideal pinhole world (shared intrinsics, no distortion)
                 # ---------------------------------------------------------------
+                # Here we care only about the overall camera layout and the average 3D structure of the scene
+                #
                 logger.debug(f"[BA] >>> STAGE 1: Consolidating cameras position with {current_P} frames...")
                 success_s1, results_s1 = bundle_adjustment.run_bundle_adjustment(
 
@@ -402,25 +443,28 @@ class MultiviewCalibrationTool:
 
                     max_frames=current_P,
 
-                    shared_intrinsics=True,
-                    fix_aspect_ratio=True,
-                    distortion_model='none',        # Fixes distortion params to zero
+                    priors=priors_stage1,
 
-                    # distortion_model='simple',  # Use a simple model (k1, k2, p1, p2)
-                    fix_distortion=True,
+                    shared_intrinsics=True,         # This is critical: Forces a single camera model for all views
+                    fix_aspect_ratio=True,          # this is a simplification: it assumes fx = fy
+                    distortion_model='simple',      # we use a simple model...
+                    fix_distortion=True,            # ...but don;t optimize it. it's frozen it at 0
 
+                    # Free parameters we want to solve for
                     fix_camera_matrix=False,
-                    # fix_distortion=True,
                     fix_extrinsics=False,
                     fix_board_poses=False,
 
-                    radial_penalty=0.0      # for fisrst stage we want to consider all points
+                    radial_penalty=0.0      # for fisrst stage we want to consider all points, even at the edge
                 )
                 if not success_s1:
                     raise RuntimeError("BA Stage 1 failed.")
 
                 # STAGE 2: Per-camera pinhole world (shared intrinsics, simple distortion)
                 # ------------------------------------------------------------------------
+                # Here we relax the shared model and start refining the per-camera details, but we use priors
+                # to keep them from deviating wildly from the stable average we found in Stage 1
+                #
                 logger.debug(f"[BA] >>> STAGE 2: Consolidating per-camera intrinsics with {current_P} frames...")
 
                 K_s2_init, D_s2_init = results_s1['K_opt'], results_s1['D_opt']
@@ -439,15 +483,15 @@ class MultiviewCalibrationTool:
 
                     max_frames=current_P,
 
-                    shared_intrinsics=False,    # Now we optimize per-camera
-                    fix_aspect_ratio=False,     # we allow fx and fy to differ
-                    distortion_model='simple',
+                    priors=priors_stage2,
 
-                    # distortion_model='standard',
-                    fix_distortion=True,
+                    shared_intrinsics=False,    # Critical: we now optimize per-camera intrinsics
+                    fix_aspect_ratio=False,     # We relax the aspect ratio constraint
+                    distortion_model='simple',  # we use a simple 4-parameter model...
+                    fix_distortion=False,       # ... and start optimizing for it
 
+                    # Free parameters we want to solve for
                     fix_camera_matrix=False,
-                    # fix_distortion=True,
                     fix_extrinsics=False,
                     fix_board_poses=False,
 
@@ -459,6 +503,9 @@ class MultiviewCalibrationTool:
 
                 # STAGE 3: Real world (Full extrinsics + intrinsics refinement with distortion)
                 # -----------------------------------------------------------------------------
+                # Everything should be close to the correct solution. We enable the most complex distortion models
+                # (like full or rational) and let all parameters adjust simultaneously for the final polish
+                #
                 logger.debug(f"[BA] >>> STAGE 3: Full refinement with {current_P} frames...")
 
                 K_s3_init, D_s3_init = results_s2['K_opt'], results_s2['D_opt']
@@ -477,13 +524,15 @@ class MultiviewCalibrationTool:
 
                     max_frames=current_P,
 
-                    shared_intrinsics=False,
-                    fix_aspect_ratio=False,
-                    # distortion_model='standard',  # Use the 5-parameter model
-                    distortion_model='full',  # Use the 8-parameter model
+                    priors=priors_stage3,       # Priors are mega important at this stage
 
+                    shared_intrinsics=False,    # Still optimising for this independently
+                    fix_aspect_ratio=False,     # Still letting fx and fy be independent
+                    distortion_model='full',    # Now we use a more elaborate model...
+                    fix_distortion=False,       # ...and of course we let it be optimised
+
+                    # These ones are ofc still optimised
                     fix_camera_matrix=False,
-                    fix_distortion=False,
                     fix_extrinsics=False,
                     fix_board_poses=False,
 
