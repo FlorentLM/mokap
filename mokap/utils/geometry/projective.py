@@ -363,7 +363,7 @@ def back_projection_batched(points2d, depth, camera_matrices, Es_c2w, dist_coeff
     back_project_fn = partial(back_projection, distortion_model=distortion_model)
     return jax.vmap(
         back_project_fn,
-        in_axes=(0, None, 0, 0, 0)
+        in_axes=(0, 0, 0, 0, 0)
     )(points2d, depth, camera_matrices, Es_c2w, dist_coeffs)
 
 
