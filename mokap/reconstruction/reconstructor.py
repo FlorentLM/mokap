@@ -1,4 +1,5 @@
 import logging
+import pickle
 from pathlib import Path
 import jax.numpy as jnp
 from jax.typing import ArrayLike
@@ -12,7 +13,7 @@ from scipy.sparse import csr_matrix
 from functools import lru_cache
 from sklearn.cluster import DBSCAN
 import pandas as pd
-
+from alive_progress import alive_bar
 from mokap.utils import fileio
 from mokap.utils.geometry.fitting import bundle_intersection_AABB
 from mokap.utils.geometry.projective import (
@@ -602,38 +603,42 @@ if __name__ == '__main__':
         config=reconstructor_config
     )
 
-    # Run on a specific frame
-    df_frame = df.loc[pd.IndexSlice[:, :, DEBUG_FRAME], :]
-
-    reconstructed_3d = reconstructor.reconstruct_frame(
-        df_frame=df_frame,
-        keypoint_names=keypoints
-    )
-
-    print("\nFinal Reconstruction Results")
-    total_points = sum(points.shape[0] for points, confs in reconstructed_3d.values())
-    for name, (points, confs) in reconstructed_3d.items():
-        if points.shape[0] > 0:
-            print(f"  {name}: {points.shape[0]} points reconstructed")
-
-    # all_reconstructed_points = []
-    # total_frames = df.index.get_level_values('frame').max()
+    # # Run on a specific frame
+    # df_frame = df.loc[pd.IndexSlice[:, :, DEBUG_FRAME], :]
     #
-    # for frame_idx in tqdm(range(total_frames + 1)):
-    #     try:
-    #         df_frame = df.loc[pd.IndexSlice[:, :, frame_idx], :]
-    #     except KeyError:
-    #         # No data for this frame
-    #         continue
+    # reconstructed_3d = reconstructor.reconstruct_frame(
+    #     df_frame=df_frame,
+    #     keypoint_names=keypoints
+    # )
     #
-    #     # Reconstruct all points for the frame
-    #     reconstructed_3d = reconstructor.reconstruct_frame(
-    #         df_frame=df_frame,
-    #         keypoint_names=keypoints
-    #     )
-    #
-    #     frame_data = {
-    #         "frame_idx": frame_idx,
-    #         "points": reconstructed_3d
-    #     }
-    #     all_reconstructed_points.append(frame_data)
+    # print("\nFinal Reconstruction Results")
+    # total_points = sum(points.shape[0] for points, confs in reconstructed_3d.values())
+    # for name, (points, confs) in reconstructed_3d.items():
+    #     if points.shape[0] > 0:
+    #         print(f"  {name}: {points.shape[0]} points reconstructed")
+
+    all_reconstructed_points = []
+    all_frames = df.index.get_level_values('frame').unique()
+
+    with alive_bar(title='Reconstruction...', total=len(all_frames), length=20, force_tty=True) as bar:
+        for frame_idx in all_frames:
+            try:
+                df_frame = df.loc[pd.IndexSlice[:, :, frame_idx], :]
+            except KeyError:
+                # No data for this frame
+                continue
+
+            # Reconstruct all points for the frame
+            reconstructed_3d = reconstructor.reconstruct_frame(
+                df_frame=df_frame,
+                keypoint_names=keypoints
+            )
+
+            frame_data = {
+                "frame_idx": frame_idx,
+                "points": reconstructed_3d
+            }
+            all_reconstructed_points.append(frame_data)
+            bar()
+
+    pickle.dump(all_reconstructed_points, open('reconstructed_points.pkl', 'wb'))

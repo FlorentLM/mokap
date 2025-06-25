@@ -10,8 +10,8 @@ from mokap.utils import CallbackOutputStream
 from mokap.utils.datatypes import DistortionModel
 from alive_progress import alive_bar
 
-from mokap.utils.geometry.projective import project_object_views_batched, reprojection_errors, distortion
-from mokap.utils.geometry.transforms import invert_rtvecs, extrinsics_matrix
+from mokap.utils.geometry.projective import project_object_views_batched
+from mokap.utils.geometry.transforms import invert_rtvecs
 
 DIST_MODEL_MAP = {'none': 0, 'simple': 4, 'standard': 5, 'full': 8, 'rational': 8}
 
