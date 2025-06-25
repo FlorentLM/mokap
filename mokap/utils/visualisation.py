@@ -257,7 +257,7 @@ def plot_points_3d(
                                  marker='o', label=label, alpha=0.5)
     else:
         pts_scatter = ax.scatter(xs, ys, zs,
-                                 c=color,
+                                 color=color,
                                  marker='o', label=label, alpha=0.5)
 
     for p, name in enumerate(points_names):

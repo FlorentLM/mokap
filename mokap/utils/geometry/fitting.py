@@ -305,6 +305,51 @@ def rays_intersection_3d(
     return intersection_point
 
 
+@jax.jit
+def ray_intersection_AABB(
+        ray_origin: jnp.ndarray,
+        ray_dir:    jnp.ndarray,
+        aabb_min:   jnp.ndarray,
+        aabb_max:   jnp.ndarray
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """
+    Computes the intersection of a ray with an Axis-Aligned Bounding Box
+
+    Args:
+        ray_origin: Ray origin (3,)
+        ray_dir: Ray direction (3,)
+        aabb_min: Array [x_min, y_min, z_min] of the AABB (3,)
+        aabb_max: Array [x_max, y_max, z_max] of the AABB (3,)
+
+    Returns:
+        p_near: The nearest intersection (3,)
+        p_far: The far intersection (3,)
+        has_intersection: True if the ray has intersection
+    """
+
+    dir_inv = 1.0 / (ray_dir + 1e-6)
+    t1 = (aabb_min - ray_origin) * dir_inv
+    t2 = (aabb_max - ray_origin) * dir_inv
+    t_min = jnp.max(jnp.minimum(t1, t2))
+    t_max = jnp.min(jnp.maximum(t1, t2))
+
+    has_intersection = t_min < t_max
+
+    # Compute points
+    p_near = ray_origin + t_min * ray_dir
+    p_far = ray_origin + t_max * ray_dir
+
+    # Optionally mask outputs for non-intersecting rays
+    # This avoids invalid values leaking downstream
+    p_near = jnp.where(has_intersection, p_near, jnp.full_like(p_near, jnp.nan))
+    p_far = jnp.where(has_intersection, p_far, jnp.full_like(p_far, jnp.nan))
+
+    return p_near, p_far, has_intersection
+
+# vmapped version on the *direction only* to compute the intersection of a bundle of rays from one camera with one AABB
+bundle_intersection_AABB = jax.vmap(ray_intersection_AABB, in_axes=(None, 0, None, None))
+
+
 @partial(jax.jit, static_argnames=['error_threshold_px', 'percentile'])
 def reliability_bounds_3d(
     world_points:               jnp.ndarray,
@@ -467,3 +512,29 @@ def generate_ambiguous_pose(
 generate_multiple_ambiguous_poses = jax.vmap(generate_ambiguous_pose, in_axes=(0, 0), out_axes=(0, 0))
 
 
+@jax.jit
+def point_to_segment_distance(p, a, b):
+    """
+    Calculates the minimum distance from a point p to a line segment (a, b) in 2D or 3D
+
+    Args:
+        p: The point (2, or 3,)
+        a: The segment origin (2, or 3,)
+        b: The segment end (2, or 3,)
+
+    Returns:
+        A tuple (rvec_alt, tvec_alt) representing the alternative pose
+    """
+    ab = b - a
+    ap = p - a
+
+    # Project ap onto ab
+    t = jnp.dot(ap, ab) / (jnp.dot(ab, ab) + 1e-6)
+    # Clamp t to the segment [0, 1]
+    t_clamped = jnp.clip(t, 0.0, 1.0)
+    # Find the closest point on the segment
+    closest_point = a + t_clamped * ab
+    return jnp.linalg.norm(p - closest_point)
+
+# batched version to get the distance of N points to a single segment
+points_to_segment_distance = jax.vmap(point_to_segment_distance, in_axes=(0, None, None))
