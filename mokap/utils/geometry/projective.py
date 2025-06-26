@@ -152,7 +152,7 @@ def project_multiple_to_multiple(
         Ks: jnp.ndarray,
         Ds: jnp.ndarray,
         distortion_model: str = 'standard'
-) -> Tuple[jnp.ndarray, jnp.ndarray]:  # <-- Return type changed
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
     # This function vmaps over the *pose* axis (P) of the object points
     # The inner function projects one set of object points to all cameras
 

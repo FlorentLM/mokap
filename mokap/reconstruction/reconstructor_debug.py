@@ -314,7 +314,7 @@ if __name__ == '__main__':
     ax = fig.add_subplot(111, projection='3d')
     ax = plot_cameras_3d(reconstructor.rvecs_c2w, reconstructor.tvecs_c2w, reconstructor.all_K, reconstructor.all_D,
                          cameras_names=cameras_names,
-                         trust_volume=volume_bounds,
+                         # trust_volume=volume_bounds,
                          ax=ax)
 
     viz.plot_reconstructed_skeletons(reconstructed_3d, bones, ax=ax)

@@ -580,7 +580,7 @@ if __name__ == '__main__':
     folder = Path().home() / 'Desktop' / '3d_ant_data'
     prefix = '240905-1616'
     session = 22
-    DEBUG_FRAME = 926
+    # DEBUG_FRAME = 926
 
     df = fileio.load_session(folder / prefix / 'inputs' / 'tracking', session=session)
     df = df.reorder_levels(['camera', 'track', 'frame']).sort_index()
