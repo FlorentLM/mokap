@@ -153,6 +153,14 @@ def extrinsics_matrix(
     E = jnp.concatenate([E_upper, bottom], axis=-2)  # (..., 4, 4)
     return E
 
+# batched version for generating multiple extrinsic matrices from rvec and tvec
+def extrinsics_matrix_batched(rvec: jnp.ndarray, tvec: jnp.ndarray) -> jnp.ndarray:
+    project_fn = partial(extrinsics_matrix)
+    return jax.vmap(
+        project_fn,
+        in_axes=(0, 0)
+    )(rvec, tvec)
+
 
 @jax.jit
 def extmat_to_rtvecs(
@@ -315,6 +323,14 @@ def invert_rtvecs(rvec: jnp.ndarray, tvec: jnp.ndarray) -> Tuple[jnp.ndarray, jn
     rvec_inv, tvec_inv = extmat_to_rtvecs(E_inv)
 
     return rvec_inv, tvec_inv
+
+# batched version for inverting a stack of rvec, tvec into rvec_inv, tvec_inv
+def invert_rtvecs_batched(rvec: jnp.ndarray, tvec: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    project_fn = partial(invert_rtvecs)
+    return jax.vmap(
+        project_fn,
+        in_axes=(0, 0)
+    )(rvec, tvec)
 
 
 @partial(jax.jit, static_argnums=(1,))
