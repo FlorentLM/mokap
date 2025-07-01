@@ -5,7 +5,7 @@ description = "An easy to use but powerful multi-camera acquisition software"
 readme = "README.md"
 requires-python = "==3.10.*"
 dependencies = [
-    "numpy==1.26.4",
+    "numpy",
     "paramiko",
     "pillow",
     "psutil",
