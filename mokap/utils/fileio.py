@@ -1,12 +1,12 @@
 import re
 from pathlib import Path
-from typing import Union
+from typing import Union, List, Any
 import cv2
 import yaml
 import toml
 import numpy as np
 import pandas as pd
-
+import polars as pl
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -184,7 +184,7 @@ def read_parameters(filepath, camera_name=None):
         return data
 
 
-def load_skeleton_SLEAP(slp_path, indices=False):
+def load_skeleton_SLEAP(slp_path, symmetry=False, indices=False):
     import sleap_io
 
     slp_path = Path(slp_path)
@@ -194,13 +194,18 @@ def load_skeleton_SLEAP(slp_path, indices=False):
     else:
         slp_content = sleap_io.load_file(slp_path)
 
-    if indices:
-        return slp_content.skeleton.node_names, slp_content.skeleton.edge_inds
+    keypoints = slp_content.skeleton.node_names
+    bones = slp_content.skeleton.edge_inds if indices else slp_content.skeleton.edge_names
+    symmetry_names = slp_content.skeleton.symmetry_names
+
+    # TODO: this is for backward-compatibility, but we prob want to always return symmetry
+    if symmetry:
+        return keypoints, bones, symmetry_names
     else:
-        return slp_content.skeleton.node_names, slp_content.skeleton.edge_names
+        return keypoints, bones
 
 
-def SLP_to_df(slp_content, camera_name=None, session=None):
+def SLP_to_pandas(slp_content, camera_name=None, session=None):
     def instance_to_row(instance, is_manual):
 
         original_track = instance.track.name if instance.track else ''
@@ -254,8 +259,87 @@ def SLP_to_df(slp_content, camera_name=None, session=None):
 
     return df
 
+def SLP_to_polars(slp_content, camera_name: str, session: str) -> pl.DataFrame:
 
-def read_SLEAP(slp_path):
+    keypoint_names = slp_content.skeleton.node_names
+    rows = []
+
+    for frame_content in slp_content.labeled_frames:
+        source_video = Path(frame_content.video.filename)
+        if camera_name not in source_video.stem or str(session) not in source_video.stem:
+            continue
+
+        frame_idx = frame_content.frame_idx
+        for i, instance in enumerate(frame_content.instances):
+
+            is_manual = instance in frame_content.user_instances
+            track_name = instance.track.name if instance.track else f'instance_{i}'
+
+            for kp_idx, node in enumerate(instance.skeleton.nodes):
+                point_data = instance.points[kp_idx]
+
+                x, y = np.nan, np.nan
+
+                # check point visibility
+                if not 'visible' in point_data.dtype.names or not point_data['visible']:
+                    score = 0.0
+                else:
+                    # point visible, get coordinates
+                    if 'xy' in point_data.dtype.names:
+                        x, y = point_data['xy']
+
+                    # score presence and manual annotation status
+                    if 'score' in point_data.dtype.names:
+                        score = point_data['score']
+                    else:
+                        # if score is missing, its value depends on whether it's a manual annotation or not
+                        score = 1.0 if is_manual else 0.0
+
+                rows.append({
+                    "camera": camera_name,
+                    "frame": frame_idx,
+                    "track_id": track_name,
+                    "keypoint": keypoint_names[kp_idx],
+                    "x": float(x),
+                    "y": float(y),
+                    "score": float(score)
+                })
+
+    if not rows:
+        return pl.DataFrame()
+
+    return pl.from_dicts(rows)
+
+
+def SLP_to_csv(slp_path, output_csv_path=None):
+    """ Convert a SLEAP prediction .slp file to a .csv file """
+
+    slp_path = Path(slp_path)
+
+    if output_csv_path is None:
+        output_csv_path = slp_path.parent / (slp_path.stem + '.csv')
+    else:
+        output_csv_path = Path(output_csv_path)
+
+    if output_csv_path.exists():
+        print(f"\n{output_csv_path} exists, skipping.")
+        return
+
+    try:
+        df = read_SLEAP(slp_path, to_polars=False)
+        df.to_csv(output_csv_path, index=False)
+        if output_csv_path.exists():
+            print(f"\nCSV file saved to: {output_csv_path}")
+        else:
+            print(f"\nError writing {output_csv_path}")
+
+    except FileNotFoundError as e:
+        print(f"\nFile not found: {e}")
+    except Exception as e:
+        print(f"\nUnexpected error processing {slp_path}: {e}")
+
+
+def read_SLEAP(slp_path, to_polars=True):
     import sleap_io
 
     slp_path = Path(slp_path)
@@ -269,42 +353,21 @@ def read_SLEAP(slp_path):
 
     for session in sessions:
         for cam_name in cameras_names:
-            df = SLP_to_df(slp_content, cam_name, session)  # This particular camera / session might not exist, so
-            if not df.empty:  # in that case the df is empty, we just skip it
+            if to_polars:
+                df = SLP_to_polars(slp_content, cam_name, session)
+            else:
+                df = SLP_to_pandas(slp_content, cam_name,
+                                   session)  # This particular camera / session might not exist, so
+            if not len(df) == 0:  # in that case the df is empty, we just skip it
                 list_of_dfs.append(df)
-    return merge_multiview_df(list_of_dfs)
 
-
-def SLEAP_to_csv(slp_path, output_csv_path=None):
-    """
-        Convert a SLEAP prediction .slp file to a .csv file
-    """
-    slp_path = Path(slp_path)
-
-    if output_csv_path is None:
-        output_csv_path = slp_path.parent / (slp_path.stem + '.csv')
+    if to_polars:
+        return pl.concat(list_of_dfs) if list_of_dfs else pl.DataFrame()
     else:
-        output_csv_path = Path(output_csv_path)
-
-    if output_csv_path.exists():
-        print(f"\n{output_csv_path} exists, skipping.")
-        return
-
-    try:
-        df = read_SLEAP(slp_path)
-        df.to_csv(output_csv_path, index=False)
-        if output_csv_path.exists():
-            print(f"\nCSV file saved to: {output_csv_path}")
-        else:
-            print(f"\nError writing {output_csv_path}")
-
-    except FileNotFoundError as e:
-        print(f"\nFile not found: {e}")
-    except Exception as e:
-        print(f"\nUnexpected error processing {slp_path}: {e}")
+        return merge_pandas_dfs(list_of_dfs)
 
 
-def load_session(path, session=''):
+def load_session(path, session='', use_polars=True):
     path = Path(path)
 
     if not path.exists():
@@ -316,21 +379,34 @@ def load_session(path, session=''):
     else:
         parent_folder = path
 
-    files_match = sorted(parent_folder.glob(f'*{session}.*'))
-    if len(files_match) == 0:
-        raise FileNotFoundError(f"Can't find any tracking result files in {parent_folder}!")
+    # Check if the cached parquet file exists
+    if use_polars:
+        parquet_cache_file = parent_folder / f"session{session}_tracking.parquet"
+        if parquet_cache_file.exists():
+            print(f"Loading cached data from: {parquet_cache_file.name}")
+            return pl.read_parquet(parquet_cache_file)
+
+    files_match = sorted(
+        p.resolve() for p in parent_folder.glob(f'**/*session{session}*') if p.suffix in {'.csv', '.slp'})
+    if not files_match:
+        raise FileNotFoundError(f"Can't find any tracking result files for session '{session}' in {parent_folder}!")
 
     dfs = []
-    loaded_slp = 0
-    loaded_csv = 0
+    loaded_slp, loaded_csv = 0, 0
+
     for f in files_match:
-        parts = f.name.split('.')
-        if 'slp' in parts and 'predictions' in parts:
-            dfs.append(read_SLEAP(f))
+
+        if f.suffix == '.slp' and 'predictions' in f.stem:
+            dfs.append(read_SLEAP(f, to_polars=use_polars))
             loaded_slp += 1
-        elif 'csv' in parts and 'predictions' in parts:
-            dfs.append(pd.read_csv(f, sep=','))
+
+        if f.suffix == '.csv' and 'predictions' in f.stem:
+            if use_polars:
+                dfs.append(pl.read_csv(f, separator=','))
+            else:
+                dfs.append(pd.read_csv(f, sep=','))
             loaded_csv += 1
+
         # TODO - Add loaders for DLC files
 
     if loaded_slp + loaded_csv == 0:
@@ -341,12 +417,21 @@ def load_session(path, session=''):
         and_txt = ' and ' if (loaded_slp > 0 and loaded_csv > 0) else ''
         print(f'Loaded {slp_txt}{and_txt}{csv_txt} files.')
 
-    merged_df = merge_multiview_df(dfs)
+    if use_polars:
+        merged_df = merge_polars_dfs(dfs, reset_tracks=True)
+
+        # Save the processed data to the Parquet cache for the next time
+        if not merged_df.is_empty():
+            print(f"Saving processed data to cache for future use: {parquet_cache_file.name}")
+            merged_df.write_parquet(parquet_cache_file)
+
+    else:
+        merged_df = merge_pandas_dfs(dfs, reset_tracks=True)
 
     return merged_df
 
 
-def merge_multiview_df(list_of_dfs, reset_tracks=True):
+def merge_pandas_dfs(list_of_dfs, reset_tracks=True):
     list_of_dfs = list_of_dfs.copy()
 
     if reset_tracks:
@@ -376,6 +461,25 @@ def merge_multiview_df(list_of_dfs, reset_tracks=True):
     multiview_df = multiview_df.sort_index()
 
     return multiview_df
+
+
+def merge_polars_dfs(list_of_dfs: List[pl.DataFrame], reset_tracks: bool = True) -> pl.DataFrame:
+    """ Merges a list of Polars DataFrames into a single one and finalizes it """
+
+    if not list_of_dfs:
+        return pl.DataFrame()
+
+    multiview_df = pl.concat(list_of_dfs)
+
+    if reset_tracks:
+        # unique track ID by combining the camera name and the original track name from SLEAP
+        print("Creating globally unique track IDs...")
+        multiview_df = multiview_df.with_columns(
+            pl.concat_str(['camera', 'track_id']).alias('global_track_id')
+        )
+
+    final_cols = ['camera', 'frame', 'global_track_id', 'keypoint', 'x', 'y', 'score']
+    return multiview_df.select(final_cols).sort(['camera', 'frame', 'global_track_id'])
 
 
 def sort_multiview_df(in_df, cameras_order=None, keypoints_order=None):

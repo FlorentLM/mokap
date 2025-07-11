@@ -181,7 +181,7 @@ class MultiviewWorker(CalibrationProcessingWorker):
 
         # Back-project the 5 points (principal + 4 corners) into 3D space
         frustums_points_all = back_projection_batched(self._img_points_2d,
-                                                      40,
+                                                      jnp.asarray([40] * Ks.shape[0]),
                                                       Ks, Es_c2w, jnp.zeros_like(Ds),   # TODO: No need to create this at each call
                                                       distortion_model='full')
 

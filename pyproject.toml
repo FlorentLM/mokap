@@ -24,6 +24,7 @@ dependencies = [
     "alive_progress",
     "jax>=0.6.1",
     "pyserial>=3.5",
+    "polars>=1.31.0",
 ]
 [tool.setuptools]
 py-modules = ['mokap']

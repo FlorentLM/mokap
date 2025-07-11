@@ -260,7 +260,7 @@ def fundamental_matrix(
     # TODO: Maybe would be good to take the Essential matrix computation out in a dedicated function?
 
     # Fundamental matrix F = K2^-T * E * K1^-1
-    F = jnp.linalg.inv(K2).T @ E @ jnp.linalg.inv(K1)
+    F = invert_intrinsics_matrix(K2).T @ E @ invert_intrinsics_matrix(K1)
 
     # Enforce rank-2 constraint (Longuet-Higgins constraint)
     U, S, Vt = jnp.linalg.svd(F)
@@ -282,28 +282,48 @@ batched_fundamental_matrices = jax.vmap(
 
 
 @jax.jit
+def invert_intrinsics_matrix(K: jnp.ndarray) -> jnp.ndarray:
+    """
+    Analytic inverse for a 3x3 camera intrinsics matrix K
+    K = [[fx,  0, cx],
+         [ 0, fy, cy],
+         [ 0,  0,  1]]
+    """
+    fx, fy = K[0, 0], K[1, 1]
+    cx, cy = K[0, 2], K[1, 2]
+
+    invK = jnp.array([
+        [1.0 / fx,      0.0,       -cx / fx],
+        [0.0,       1.0 / fy,      -cy / fy],
+        [0.0,           0.0,           1.0]
+    ], dtype=K.dtype)
+
+    return invK
+
+
+@jax.jit
 def invert_extrinsics_matrix(E: jnp.ndarray) -> jnp.ndarray:
     """
-    Inverts extrinsics matrix (camera-space -> world space or vice versa).
-    This version is robust and handles 3x4 or 4x4 matrices.
+    Inverts extrinsics matrix (camera-space -> world space or vice versa)
     """
 
-    # Ensure E is a 4x4 matrix for inversion
     if E.shape[-2:] == (3, 4):
         bottom = jnp.array([0., 0., 0., 1.], dtype=E.dtype)
-
-        # Broadcast bottom row to match any batch dimensions
         bottom = jnp.broadcast_to(bottom, E.shape[:-2] + (1, 4))
-        E_4x4 = jnp.concatenate([E, bottom], axis=-2)
+        E = jnp.concatenate([E, bottom], axis=-2)
 
-    elif E.shape[-2:] == (4, 4):
-        E_4x4 = E
+    R = E[..., :3, :3]
+    t = E[..., :3, 3]
 
-    else:
-        # This path should not be taken in JIT-compiled code with static shapes but is good practice
-        raise ValueError(f"Input must be of shape (..., 3, 4) or (..., 4, 4), got {E.shape}")
+    R_inv = jnp.swapaxes(R, -1, -2)
+    t_inv = -jnp.einsum('...ij,...j->...i', R_inv, t)
 
-    return jnp.linalg.inv(E_4x4)
+    E_inv = jnp.concatenate([
+        jnp.concatenate([R_inv, t_inv[..., None]], axis=-1),
+        jnp.broadcast_to(jnp.array([0., 0., 0., 1.], dtype=E.dtype), E.shape[:-2] + (1, 4))
+    ], axis=-2)
+
+    return E_inv
 
 
 @jax.jit

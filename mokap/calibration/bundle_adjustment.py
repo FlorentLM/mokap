@@ -10,8 +10,8 @@ from mokap.utils import CallbackOutputStream
 from mokap.utils.datatypes import DistortionModel
 from alive_progress import alive_bar
 
-from mokap.utils.geometry.projective import project_object_views_batched, reprojection_errors, distortion
-from mokap.utils.geometry.transforms import invert_rtvecs, extrinsics_matrix
+from mokap.utils.geometry.projective import project_object_views_batched
+from mokap.utils.geometry.transforms import invert_rtvecs
 
 DIST_MODEL_MAP = {'none': 0, 'simple': 4, 'standard': 5, 'full': 8, 'rational': 8}
 
@@ -189,9 +189,13 @@ def _get_bounds(
                 offset = info['offset'] + i * n_d
 
                 # Define bounds for all 8 potential coefficients
-                k_lo, k_hi = -1.5, 1.5
-                p_lo, p_hi = -0.5, 0.5
-                k_higher_order_lo, k_higher_order_hi = -0.5, 0.5  # Tighter bounds for higher order
+                # k_lo, k_hi = -1.5, 1.5
+                # p_lo, p_hi = -0.5, 0.5
+                # k_higher_order_lo, k_higher_order_hi = -0.5, 0.5  # Tighter bounds for higher order
+                # TODO: Bounds dict passed from the outside with lens types presets!!!!!
+                k_lo, k_hi = -0.1, 0.1
+                p_lo, p_hi = -0.005, 0.005
+                k_higher_order_lo, k_higher_order_hi = -0.05, 0.05
 
                 dist_bounds_map = [
                     (k_lo, k_hi), (k_lo, k_hi),         # k1, k2

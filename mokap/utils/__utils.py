@@ -311,3 +311,26 @@ def pol_to_hsv(quad_0:   ArrayLike,
     V = (S0 - S0.min()) / np.ptp(S0)
 
     return np.dstack((H, S, V)).astype(np.float32)
+
+
+def common_prefix_suffix(s1: str, s2: str) -> Tuple[str, str]:
+    """ Finds the longest common prefix and suffix between two strings """
+
+    # common prefix
+    prefix = ''
+    for char1, char2 in zip(s1, s2):
+        if char1 == char2:
+            prefix += char1
+        else:
+            break
+
+    # common suffix
+    suffix = ''
+    for char1, char2 in zip(s1[::-1], s2[::-1]):
+        if char1 == char2:
+            suffix += char1
+        else:
+            break
+    suffix = suffix[::-1]
+
+    return prefix, suffix
