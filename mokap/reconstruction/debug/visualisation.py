@@ -10,7 +10,7 @@ from lucida.geometry.backend import xp
 from lucida.geometry import undistort, unproject, project
 from lucida.geometry import compose_transform_matrix, decompose_transform_matrix
 from lucida.geometry import intersect_aabb
-from lucida.visualisation import CUSTOM_COLORS
+from lucida.visualisation import draw_cameras, CUSTOM_COLORS
 
 
 class ReconstructorVisualizer:
@@ -24,8 +24,7 @@ class ReconstructorVisualizer:
 
         fig = plt.figure(figsize=(12, 12))
         ax = fig.add_subplot(111, projection='3d')
-        plot_cameras_3d(self.r.rvecs_c2w, self.r.tvecs_c2w, self.r.K, self.r.D,
-                        cameras_names=self.r.camera_names, trust_volume=self.r.volume_bounds, ax=ax)
+        draw_cameras(self.r.rig, depths = 1, ax=ax)
 
         E_c2w = compose_transform_matrix(self.r.rvecs_c2w, self.r.tvecs_c2w)
 
@@ -52,7 +51,7 @@ class ReconstructorVisualizer:
             return
 
         h, w = img_j.shape[:2]
-        K_j, D_j = self.r.K[cam_idx_j], self.r.D[cam_idx_j]
+        K_j, D_j = self.r.rig.K[cam_idx_j], self.r.rig.D[cam_idx_j]
 
         # Undistort image
         new_K_j, _ = cv2.getOptimalNewCameraMatrix(np.asarray(K_j), np.asarray(D_j), (w, h), 1, (w, h))
@@ -65,11 +64,11 @@ class ReconstructorVisualizer:
             udets_j = undistort(dets_j, K_j, D_j, P=new_K_j)
 
         # Backproject rays from i -> project to j
-        udets_i = undistort(dets_i, self.r.K[cam_idx_i], self.r.D[cam_idx_i])
-        E_c2w_i = xp.linalg.inv(self.r.T_w2c[cam_idx_i])
+        udets_i = undistort(dets_i, self.r.rig.K[cam_idx_i], self.r.rig.D[cam_idx_i])
+        E_c2w_i = xp.linalg.inv(self.r.rig.T_w2c[cam_idx_i])
         cam_center_i = E_c2w_i[:3, 3]
 
-        p_3d_ray = unproject(udets_i, 1.0, self.r.K[cam_idx_i], E_c2w_i, D=None)
+        p_3d_ray = unproject(udets_i, 1.0, self.r.rig.K[cam_idx_i], E_c2w_i, D=None)
         ray_dirs = p_3d_ray - cam_center_i
         ray_dirs /= xp.linalg.norm(ray_dirs, axis=-1, keepdims=True)
 
@@ -77,14 +76,14 @@ class ReconstructorVisualizer:
         p_near, p_far, hit = intersect_aabb(cam_center_i, ray_dirs, self.r.aabb_min, self.r.aabb_max)
 
         # Project segments to cam j
-        rvec_j, tvec_j = decompose_transform_matrix(self.r.T_w2c[cam_idx_j])
+        T_w2c_j = self.r.rig.T_w2c[cam_idx_j]
         segments_3d = xp.vstack([p_near, p_far])
-        segments_2d, _ = project(segments_3d, rvec_j, tvec_j, new_K_j, D=xp.zeros_like(D_j))
+        segments_2d, _ = project(segments_3d, T_w2c_j, new_K_j, D=xp.zeros_like(D_j))
 
         # Plot
         plt.figure(figsize=(12, 9))
         plt.imshow(ud_img_j)
-        plt.title(f"Epipolar Segments: {self.r.camera_names[cam_idx_i]} -> {self.r.camera_names[cam_idx_j]}")
+        plt.title(f"Epipolar Segments: {self.r.rig[cam_idx_i].name} -> {self.r.rig[cam_idx_j].name}")
 
         # Draw segments (projected rays from camera i)
         n = len(dets_i)
@@ -150,8 +149,7 @@ class ReconstructorVisualizer:
             fig = plt.figure(figsize=(10, 10))
             ax = fig.add_subplot(111, projection='3d')
 
-        plot_cameras_3d(self.r.rvecs_c2w, self.r.tvecs_c2w, self.r.K, self.r.D,
-                        cameras_names=self.r.camera_names, ax=ax)
+        draw_cameras(self.r.rig, depths=1, ax=ax)
 
         if soup.num_points == 0: return ax
 

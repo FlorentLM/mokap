@@ -3,6 +3,8 @@ import pickle
 import polars as pl
 import cv2
 from pathlib import Path
+
+from lucida import CameraRig
 from mokap.utils import fileio
 from mokap.reconstruction.config import ReconstructorConfig
 from mokap.reconstruction.reconstruction import Reconstructor
@@ -15,7 +17,7 @@ from lucida.geometry.backend import xp
 
 # ================= CONFIGURATION =================
 # Options: "RAYS", "EPIPOLAR", "HYPOTHESIS", "SOUP", "RAW_SOUP", "TRACKLETS", "LINKED_TRACKS"
-MODE = "RAW_SOUP"
+MODE = "RAYS"
 
 FOLDER = Path().home() / 'Desktop' / '3d_ant_data'
 PREFIX = '240905-1616'
@@ -46,13 +48,14 @@ def load_images(folder, prefix, session, cams, frame):
 if __name__ == "__main__":
 
     input_dir = FOLDER / PREFIX / 'inputs' / 'tracking'
-    cal_data = fileio.read_parameters(FOLDER / PREFIX / 'calibration')
+    rig_file = FOLDER / PREFIX / 'calibration' / 'camera_rig.toml'
+    rig = CameraRig.load(rig_file)
     keypoints, bones = fileio.load_skeleton_SLEAP(input_dir, indices=False)
-    cam_names = sorted(cal_data.keys())
+    cam_names = sorted(c.name for c in rig)
     bounds = {'x': (-10.5, 13.0), 'y': (-21.0, 11.0), 'z': (180.0, 201.0)}
 
     # Setup Reconstructor
-    rec = Reconstructor(cal_data, bounds, ReconstructorConfig(repro_thresh=10.0, min_views=2))
+    rec = Reconstructor(rig, bounds, ReconstructorConfig(repro_thresh=10.0, min_views=2))
     viz = ReconstructorVisualizer(rec)
 
     # Load data and plot selected mode
@@ -85,7 +88,7 @@ if __name__ == "__main__":
         raw_dets = []
         raw_confs = []
 
-        for c in range(rec.num_cams):
+        for c in range(len(rec.rig)):
             c_mask = (inputs['cam_ids'][mask] == c)
             if np.any(c_mask):
                 raw_dets.append(inputs['coords'][mask][c_mask])
