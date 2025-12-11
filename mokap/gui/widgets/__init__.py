@@ -10,6 +10,6 @@ CALIB_PROCESSING_FPS = 15.0
 # Cap camera acquisition during calibration
 CALIB_HARDWARE_FPS_MAX = 30.0
 
-from .windows_base import SharedBase, VideoWindowBase, FastImageItem
-from .window_viewer3d import Viewer3D
-from .windows_video import CalibrationVideoWindow, RecordingVideoWindow
+from .widget_base import SharedBase, VideoWindowBase, FastImageItem
+from .widget_viewer3d import Viewer3D
+from .widget_video import CalibrationVideoWindow, RecordingVideoWindow
