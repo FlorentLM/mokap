@@ -9,17 +9,19 @@ from scipy.sparse.csgraph import connected_components
 from scipy.sparse import csr_matrix
 from sklearn.cluster import DBSCAN
 import numpy as np
+
+from lucida import CameraRig
 from lucida.geometry.backend import xp, jit, set_at
 from lucida.geometry import (unproject, triangulate_from_projections, project_to_cameras, undistort, project,
-                             compose_transform_matrix, projection_matrix, invert_transform, intersect_aabb)
+                             invert_transform, intersect_aabb)
+
 from mokap.reconstruction.config import ReconstructorConfig
 from mokap.reconstruction.datatypes import SoupData
 from mokap.reconstruction.utils import solve_mwis_networkx, prepare_reconstruction_input
 
 logger = logging.getLogger(__name__)
 
-
-# JAX padding to prevent recompilation when running on GPU
+# JAX padding settings
 USE_PADDING = True
 MAX_DETS_PER_CAM = 32    # Max detections per view to consider for grouping
 PAD_BLOCK_SIZE = 64    # Pad hypothesis count to multiples of this
@@ -39,20 +41,20 @@ class Reconstructor:
     """
 
     def __init__(self,
-                 camera_parameters: Dict,
+                 rig: CameraRig,
                  volume_bounds: Dict,
                  config: ReconstructorConfig = ReconstructorConfig()
                  ):
 
         self.config = config
+        self.rig = rig
         self.volume_bounds = volume_bounds
 
-        self.update_camera_parameters(camera_parameters)
-
+        # Setup bounding box for intersection checks
         self.aabb_min = xp.array([self.volume_bounds[axis][0] for axis in ['x', 'y', 'z']])
         self.aabb_max = xp.array([self.volume_bounds[axis][1] for axis in ['x', 'y', 'z']])
 
-        # Pre-allocate empty arrays to avoid overhead
+        # Pre-allocate empty arrays
         self._init_emptys()
 
     def _init_emptys(self):
@@ -79,25 +81,6 @@ class Reconstructor:
             self.EMPTY_U32_NP
         )
 
-    def update_camera_parameters(self, camera_parameters: Dict):
-        """Updates the reconstructor with new camera parameters."""
-
-        self.camera_names = sorted(camera_parameters.keys())
-        self.num_cams = len(self.camera_names)
-
-        # Convert all params to JAX arrays
-        self.K = xp.stack([camera_parameters[name]['camera_matrix'] for name in self.camera_names])
-        self.D = xp.stack([camera_parameters[name]['dist_coeffs'] for name in self.camera_names])
-
-        # Extrinsics: World-to-camera (for projection/triangulation)
-        rvecs_c2w = xp.stack([camera_parameters[name]['rvec'] for name in self.camera_names])
-        tvecs_c2w = xp.stack([camera_parameters[name]['tvec'] for name in self.camera_names])
-
-        self.T_c2w = compose_transform_matrix(rvecs_c2w, tvecs_c2w)
-        self.T_w2c = invert_transform(self.T_c2w)
-
-        self.P = projection_matrix(self.K, self.T_w2c)
-
     @property
     def max_point_score(self) -> float:
         """
@@ -110,8 +93,7 @@ class Reconstructor:
 
     def reconstruct_batch(self, inputs: Dict[str, np.ndarray], keypoint_names: List[str]) -> SoupData:
         """
-        Reconstructs 3D points from a dictionary of flat arrays (Structure of Arrays).
-        Also computes 'Orphan Rays' for unused single-view detections.
+        Reconstructs 3D points from flattened inputs.
         """
         total_detections = len(inputs['kp_type_ids'])
         is_used = np.zeros(total_detections, dtype=bool)
@@ -188,7 +170,7 @@ class Reconstructor:
             soup_frame = self.EMPTY_I32_NP
             soup_mask = self.EMPTY_U32_NP
 
-        # Orphan is not used in a 3D point AND has valid 2D coordinates
+        # Handle Orphan Rays (Unused detections)
         has_valid_coords = ~np.isnan(inputs['coords'][:, 0])
         orphan_mask = (~is_used) & has_valid_coords
 
@@ -226,34 +208,33 @@ class Reconstructor:
             ray_frame_indices=ray_frame.astype(np.int32),
 
             keypoint_names=keypoint_names,
-            camera_names=self.camera_names
+            camera_names=[c.name for c in self.rig]
         )
 
     @partial(jit, static_argnums=(0,))
     def _compute_rays(self, cam_ids, coords):
         """
-        Computes 3D rays for 2D points using vmap to handle per-point camera parameters.
+        Computes 3D rays.
         """
+        # Access parameters via the Rig
+        Ks_batch = self.rig.K[cam_ids]
+        Ts_c2w_batch = self.rig.T_c2w[cam_ids]
+        Ds_batch = self.rig.D[cam_ids]
 
-        # Gather parameters for each point based on its camera ID
-        Ks_batch = self.K[cam_ids]  # (N, 3, 3)
-        Ts_c2w_batch = self.T_c2w[cam_ids]  # (N, 4, 4)
-        Ds_batch = self.D[cam_ids]  # (N, k)
+        pts_uv = xp.array(coords)
 
-        pts_uv = xp.array(coords)  # (N, 2)
-
+        # Unproject points at depth=1.0 to get world coordinates
         world_pts = unproject(
-            pts_uv,
-            xp.ones(len(cam_ids)),
-            Ks_batch,
-            Ts_c2w_batch,
-            Ds_batch
+            points2d=pts_uv,
+            depth=xp.ones(len(cam_ids)),
+            K=Ks_batch,
+            T_c2w=Ts_c2w_batch,
+            D=Ds_batch,
+            distortion_model=self.rig.distortion_model
         )
 
         # Compute directions
-        # Camera centers are the translation component of C2W
-        origins = Ts_c2w_batch[:, :3, 3]
-
+        origins = Ts_c2w_batch[:, :3, 3]  # Camera centers
         ray_vecs = world_pts - origins
         ray_dirs = ray_vecs / (xp.linalg.norm(ray_vecs, axis=1, keepdims=True) + 1e-8)
 
@@ -296,9 +277,6 @@ class Reconstructor:
         Generates all plausible 3D points hypotheses from 2D detections.
         """
 
-        # Grouping (graph logic is on CPU)
-        # groups is a list of lists of integers (indices into coords_np)
-
         if USE_PADDING:
             groups = self._group_points_pad(coords_np, cam_ids_np, coords_xp)
         else:
@@ -308,23 +286,20 @@ class Reconstructor:
         if M == 0:
             return self.NULL_POINT3D_XP, [], self.EMPTY_F32_XP, self.EMPTY_F32_XP, self.EMPTY_F32_XP
 
-        # Convert List[List[int]] to flat index arrays for scattering
+        # Flatten groups for vectorized triangulation
         group_lengths = [len(g) for g in groups]
         idx_group = np.repeat(np.arange(M), group_lengths)
         idx_val = np.fromiter(itertools.chain.from_iterable(groups), dtype=np.int32)
         idx_cam = cam_ids_np[idx_val]
 
-        # Pad triangulation batch to prevent JIT recompilation
-        # We pad M to the next multiple of PAD_BLOCK_SIZE
         M_padded = ((M + PAD_BLOCK_SIZE - 1) // PAD_BLOCK_SIZE) * PAD_BLOCK_SIZE
 
-        matched_uvs = xp.full((self.num_cams, M_padded, 2), xp.nan, dtype=xp.float32)
+        matched_uvs = xp.full((len(self.rig), M_padded, 2), xp.nan, dtype=xp.float32)
         matched_uvs = set_at(matched_uvs, (idx_cam, idx_group), coords_xp[idx_val])
 
-        tri_weights = xp.zeros((self.num_cams, M_padded), dtype=xp.float32)
+        tri_weights = xp.zeros((len(self.rig), M_padded), dtype=xp.float32)
         tri_weights = set_at(tri_weights, (idx_cam, idx_group), scores_xp[idx_val])
 
-        # Run geometry kernels (JIT compiled for M_padded sizes)
         points3d, view_counts, summed_confs, reproj_errors, valid_mask = self._triangulate_and_check(
             matched_uvs, tri_weights
         )
@@ -350,19 +325,33 @@ class Reconstructor:
     @partial(jit, static_argnums=(0,))
     def _triangulate_and_check(self, matched_uvs, tri_weights):
 
-        undistorted_uvs = undistort(matched_uvs, self.K, self.D)
-        points3d = triangulate_from_projections(undistorted_uvs, self.P, weights=tri_weights)
+        undistorted_uvs = undistort(
+            matched_uvs,
+            self.rig.K,
+            self.rig.D,
+            distortion_model=self.rig.distortion_model
+        )
 
-        # Validation
+        points3d = triangulate_from_projections(
+            undistorted_uvs,
+            self.rig.P,
+            weights=tri_weights
+        )
+
         valid_triangulation = ~xp.any(xp.isnan(points3d), axis=1)
 
         all_reprojected, proj_validity = project_to_cameras(
-            points3d, self.T_w2c, self.K, self.D
+            points3d,
+            self.rig.T_w2c,
+            self.rig.K,
+            self.rig.D,
+            distortion_model=self.rig.distortion_model
         )
 
         # Errors
         orig_vis_mask = ~xp.isnan(matched_uvs[:, :, 0])
         combined_mask = orig_vis_mask.astype(xp.float32) * proj_validity
+
         diffs = all_reprojected - matched_uvs
         valid_diffs = xp.where(combined_mask[..., None], diffs, 0.0)
         distances = xp.linalg.norm(valid_diffs, axis=-1)
@@ -379,220 +368,99 @@ class Reconstructor:
         return points3d, view_counts, summed_confs, reproj_errors, final_mask
 
     def _group_points(self, coords_np, cam_ids_np, coords_xp):
-        """CPU-friendly version of points grouping (no padding)"""
+        """CPU-friendly points grouping (no padding)."""
 
         total_dets = len(coords_np)
         if total_dets < self.config.min_views:
             return []
 
-        cam_indices_map = [np.where(cam_ids_np == i)[0] for i in range(self.num_cams)]
+        cam_indices_map = [np.where(cam_ids_np == i)[0] for i in range(len(self.rig))]
         source_indices, target_indices = [], []
 
-        # We access the JAX array directly (no padding)
-        for i in range(self.num_cams):
+        for i in range(len(self.rig)):
             idxs_i = cam_indices_map[i]
             n_i = len(idxs_i)
-            if n_i == 0: continue
 
-            # On CPU it is faster to slice the JAX array directly than to pad it
+            if n_i == 0:
+                continue
+
             d_i = coords_xp[idxs_i]
 
-            for j in range(i + 1, self.num_cams):
+            for j in range(i + 1, len(self.rig)):
                 idxs_j = cam_indices_map[j]
                 n_j = len(idxs_j)
-                if n_j == 0: continue
 
+                if n_j == 0:
+                    continue
                 d_j = coords_xp[idxs_j]
 
-                # JAX will compile a version for (1,1), (2,2), (4,4) etc
-                # When n_i and n_j are small (1-5), this hits the cache 99% of the time
                 cost_mat = self._compute_cost_matrix(d_i, d_j, i, j)
 
                 if cost_mat.size == 0:
                     continue
 
-                # We transfer only the small result matrix back to CPU
-                cost_mat_np = np.array(cost_mat)
-
-                match_rows, match_cols = np.where(cost_mat_np < self.config.T_epi)
+                match_rows, match_cols = np.where(np.array(cost_mat) < self.config.T_epi)
                 source_indices.extend(idxs_i[match_rows])
                 target_indices.extend(idxs_j[match_cols])
 
-        if not source_indices:
-            return []
-
-        # graph logic
-        # TODO: that is identical to the padded version
-
-        adj_matrix = csr_matrix((np.ones(len(source_indices)), (source_indices, target_indices)),
-                                shape=(total_dets, total_dets))
-        n_components, labels = connected_components(csgraph=adj_matrix, directed=False, return_labels=True)
-
-        all_final_groups = []
-        processed_groups = set()
-
-        for i in range(n_components):
-            component_indices = np.where(labels == i)[0]
-            if len(component_indices) < self.config.min_views: continue
-
-            subgraph_adj = adj_matrix[component_indices, :][:, component_indices]
-            component_graph = nx.from_scipy_sparse_array(subgraph_adj)
-            mapping = {local: global_idx for local, global_idx in enumerate(component_indices)}
-            nx.relabel_nodes(component_graph, mapping, copy=False)
-
-            cliques = find_cliques(component_graph)
-            for clique_indices in cliques:
-                if len(clique_indices) < self.config.min_views: continue
-
-                # Check camera uniqueness
-                clique_cams = cam_ids_np[clique_indices]
-                if len(set(clique_cams)) < self.config.min_views: continue
-
-                # Conflict graph
-                conflict_graph = nx.Graph()
-                conflict_graph.add_nodes_from(clique_indices)
-
-                # Simple collision check
-                for idx_a in range(len(clique_indices)):
-                    node_a = clique_indices[idx_a]
-                    cam_a = cam_ids_np[node_a]
-                    for idx_b in range(idx_a + 1, len(clique_indices)):
-                        node_b = clique_indices[idx_b]
-                        if cam_a == cam_ids_np[node_b]:
-                            conflict_graph.add_edge(node_a, node_b)
-
-                complement_g = nx.complement(conflict_graph)
-                for group in find_cliques(complement_g):
-                    if len(group) >= self.config.min_views:
-                        fg = frozenset(group)
-                        if fg not in processed_groups:
-                            all_final_groups.append(sorted(group))
-                            processed_groups.add(fg)
-
-        return all_final_groups
-
-    @partial(jit, static_argnums=(0, 3, 4))
-    def _compute_cost_matrix(self, dets_i, dets_j, i, j):
-        """
-        Dynamic shape cost matrix. No padding computations, a bit more CPU-friendly.
-        """
-        Ni, Nj = dets_i.shape[0], dets_j.shape[0]
-        K_i, D_i, T_i = self.K[i], self.D[i], self.T_w2c[i]
-        K_j, D_j, T_j = self.K[j], self.D[j], self.T_w2c[j]
-
-        udets_j = undistort(dets_j, K_j, D_j)
-
-        E_c2w_i = invert_transform(T_i)
-        cam_center_i = E_c2w_i[:3, 3]
-
-        # Back project
-        p_3d_on_ray = unproject(
-            dets_i,
-            xp.ones(Ni),
-            K_i,
-            E_c2w_i,
-            D_i
-        )
-
-        ray_dirs = p_3d_on_ray - cam_center_i
-
-        # Safe normalise
-        ray_dirs /= (xp.linalg.norm(ray_dirs, axis=-1, keepdims=True) + 1e-8)
-
-        p_near_3d, p_far_3d, has_intersection = intersect_aabb(
-            cam_center_i, ray_dirs, self.aabb_min, self.aabb_max
-        )
-        segments_3d = xp.vstack([p_near_3d, p_far_3d])
-
-        segments_3d = xp.nan_to_num(segments_3d)
-
-        # Project segments to camera j
-        segments_2d, _ = project(
-            segments_3d, T_j, K_j, xp.zeros_like(D_j), 'none'
-        )
-
-        a_pts = segments_2d[:Ni]
-        b_pts = segments_2d[Ni:]
-
-        p = udets_j[None, :, :]  # (1, Nj, 2)
-        a = a_pts[:, None, :]    # (Ni, 1, 2)
-        b = b_pts[:, None, :]
-        ab = b - a
-        ap = p - a
-
-        denom = xp.sum(ab * ab, axis=-1)  # shape (Ni, 1)
-        numer = xp.sum(ap * ab, axis=-1)  # shape (Ni, Nj)
-        t = numer / (denom + 1e-6)  # shape (Ni, Nj)
-        t_clamped = xp.clip(t, 0.0, 1.0)
-        closest_points = a + t_clamped[..., None] * ab
-        dists = xp.linalg.norm(p - closest_points, axis=-1)
-
-        final_costs = xp.where(has_intersection[:, None], dists, 1e6)
-
-        return final_costs
+        return self._resolve_graph(source_indices, target_indices, total_dets, cam_ids_np)
 
     def _group_points_pad(self, coords_np, cam_ids_np, coords_xp):
-        """GPU-friendly version of points grouping (with padding)"""
+        """GPU-friendly points grouping (with padding)."""
 
         total_dets = len(coords_np)
         if total_dets < self.config.min_views:
             return []
 
-        cam_indices_map = [np.where(cam_ids_np == i)[0] for i in range(self.num_cams)]
+        cam_indices_map = [np.where(cam_ids_np == i)[0] for i in range(len(self.rig))]
         source_indices, target_indices = [], []
 
-        # JAX Padding: Create buffers for cost matrix inputs
-        # so that _compute_cost_matrix_padded is compiled only once
-        for i in range(self.num_cams):
-
+        for i in range(len(self.rig)):
             idxs_i = cam_indices_map[i]
+
             if len(idxs_i) == 0:
                 continue
 
-            # Pad i input
-            n_i = len(idxs_i)
-            if n_i > MAX_DETS_PER_CAM:
-                # Fallback: if we exceed bucket, we slice. Rare case.
-                idxs_i = idxs_i[:MAX_DETS_PER_CAM]
-                n_i = MAX_DETS_PER_CAM
-
+            n_i = min(len(idxs_i), MAX_DETS_PER_CAM)
+            idxs_i = idxs_i[:n_i]  # slice to max bucket
             pad_i = MAX_DETS_PER_CAM - n_i
 
             d_i = coords_xp[idxs_i]
             if pad_i > 0:
                 d_i = xp.pad(d_i, ((0, pad_i), (0, 0)), constant_values=xp.nan)
 
-            for j in range(i + 1, self.num_cams):
+            for j in range(i + 1, len(self.rig)):
+
                 idxs_j = cam_indices_map[j]
-                if len(idxs_j) == 0: continue
+                if len(idxs_j) == 0:
+                    continue
 
-                n_j = len(idxs_j)
-                if n_j > MAX_DETS_PER_CAM:
-                    idxs_j = idxs_j[:MAX_DETS_PER_CAM]
-                    n_j = MAX_DETS_PER_CAM
-
+                n_j = min(len(idxs_j), MAX_DETS_PER_CAM)
+                idxs_j = idxs_j[:n_j]
                 pad_j = MAX_DETS_PER_CAM - n_j
-                d_j = coords_xp[idxs_j]
-                if pad_j > 0:
-                    d_j = xp.pad(d_j, ((0, pad_j), (0, 0)), constant_values=xp.nan)
 
-                # JIT function with the fixed shapes (MAX_DETS, 2)
+                d_j = coords_xp[idxs_j]
+                if pad_j > 0: d_j = xp.pad(d_j, ((0, pad_j), (0, 0)), constant_values=xp.nan)
+
                 cost_mat_padded = self._compute_cost_matrix_pad(d_i, d_j, i, j)
 
-                # Transfer back and unpad
-                cost_mat_full = np.asarray(cost_mat_padded)  # GPU -> CPU
-                cost_mat = cost_mat_full[:n_i, :n_j]  # slice relevant part
+                # Unpad and check
+                cost_mat = np.asarray(cost_mat_padded)[:n_i, :n_j]
 
-                if cost_mat.size == 0: continue
+                if cost_mat.size == 0:
+                    continue
 
                 match_rows, match_cols = np.where(cost_mat < self.config.T_epi)
                 source_indices.extend(idxs_i[match_rows])
                 target_indices.extend(idxs_j[match_cols])
 
+        return self._resolve_graph(source_indices, target_indices, total_dets, cam_ids_np)
+
+    def _resolve_graph(self, source_indices, target_indices, total_dets, cam_ids_np):
+        """Common graph logic for both grouping methods."""
         if not source_indices:
             return []
 
-        # Graph logic (CPU)
         adj_matrix = csr_matrix((np.ones(len(source_indices)), (source_indices, target_indices)),
                                 shape=(total_dets, total_dets))
         n_components, labels = connected_components(csgraph=adj_matrix, directed=False, return_labels=True)
@@ -609,10 +477,12 @@ class Reconstructor:
             mapping = {local: global_idx for local, global_idx in enumerate(component_indices)}
             nx.relabel_nodes(component_graph, mapping, copy=False)
 
+            # Find cliques (ambiguity handling)
             cliques = find_cliques(component_graph)
 
             for clique_indices in cliques:
                 if len(clique_indices) < self.config.min_views: continue
+                if len(np.unique(cam_ids_np[clique_indices])) < self.config.min_views: continue
 
                 clique_cams = cam_ids_np[clique_indices]
                 if len(np.unique(clique_cams)) < self.config.min_views: continue
@@ -621,7 +491,7 @@ class Reconstructor:
                 conflict_graph = nx.Graph()
                 conflict_graph.add_nodes_from(clique_indices)
 
-                # Connect detections from same camera
+                # Connect same-camera detections (mutually exclusive)
                 # (this nested loop should be fine for small cliques < 10 nodes)
                 for idx_a in range(len(clique_indices)):
                     node_a = clique_indices[idx_a]
@@ -631,6 +501,7 @@ class Reconstructor:
                         if cam_a == cam_ids_np[node_b]:
                             conflict_graph.add_edge(node_a, node_b)
 
+                # Solve independent sets on the clique
                 complement_g = nx.complement(conflict_graph)
                 for group in find_cliques(complement_g):
                     if len(group) >= self.config.min_views:
@@ -643,34 +514,55 @@ class Reconstructor:
         return all_final_groups
 
     @partial(jit, static_argnums=(0, 3, 4))
-    def _compute_cost_matrix_pad(self, dets_i_padded, dets_j_padded, i, j):
-        """
-        Calculates cost matrix on fixed size arrays (MAX_DETS x MAX_DETS).
-        NaNs in input result in large costs, which are filtered later.
-        """
-        Ni, Nj = dets_i_padded.shape[0], dets_j_padded.shape[0]
-        K_i, D_i, T_i = self.K[i], self.D[i], self.T_w2c[i]
-        K_j, D_j, T_j = self.K[j], self.D[j], self.T_w2c[j]
+    def _compute_cost_matrix(self, dets_i, dets_j, i, j):
+        """Dynamic shape cost matrix using Rig parameters."""
+        # Extract specific camera parameters from Rig
+        K_i, D_i, T_i = self.rig.K[i], self.rig.D[i], self.rig.T_w2c[i]
+        K_j, D_j, T_j = self.rig.K[j], self.rig.D[j], self.rig.T_w2c[j]
 
-        udets_j = undistort(dets_j_padded, K_j, D_j)
+        # Use helper
+        return self._epipolar_cost(dets_i, dets_j, K_i, D_i, T_i, K_j, D_j, T_j)
 
+    @partial(jit, static_argnums=(0, 3, 4))
+    def _compute_cost_matrix_pad(self, dets_i, dets_j, i, j):
+        """Padded shape cost matrix using Rig parameters."""
+        K_i, D_i, T_i = self.rig.K[i], self.rig.D[i], self.rig.T_w2c[i]
+        K_j, D_j, T_j = self.rig.K[j], self.rig.D[j], self.rig.T_w2c[j]
+
+        cost = self._epipolar_cost(dets_i, dets_j, K_i, D_i, T_i, K_j, D_j, T_j)
+        return xp.nan_to_num(cost, nan=1e6)
+
+    def _epipolar_cost(self, dets_i, dets_j, K_i, D_i, T_i, K_j, D_j, T_j):
+        """Geometry logic shared between padded and unpadded calls."""
+        Ni, Nj = dets_i.shape[0], dets_j.shape[0]
+
+        udets_j = undistort(dets_j, K_j, D_j, distortion_model=self.rig.distortion_model)
         E_c2w_i = invert_transform(T_i)
         cam_center_i = E_c2w_i[:3, 3]
 
         # Back project
-        p_3d_on_ray = unproject(dets_i_padded, xp.ones(Ni), xp.stack([K_i] * Ni),
-                                xp.stack([E_c2w_i] * Ni), xp.stack([D_i] * Ni))
+        p_3d_on_ray = unproject(
+            dets_i,
+            xp.ones(Ni),
+            xp.stack([K_i] * Ni),
+            xp.stack([E_c2w_i] * Ni),
+            xp.stack([D_i] * Ni),
+            distortion_model=self.rig.distortion_model
+        )
 
         ray_dirs = p_3d_on_ray - cam_center_i
         ray_dirs /= (xp.linalg.norm(ray_dirs, axis=-1, keepdims=True) + 1e-8)
 
-        p_near_3d, p_far_3d, has_intersection = intersect_aabb(cam_center_i, ray_dirs, self.aabb_min,
-                                                               self.aabb_max)
+        p_near_3d, p_far_3d, has_intersection = intersect_aabb(
+            cam_center_i, ray_dirs, self.aabb_min, self.aabb_max
+        )
         segments_3d = xp.vstack([p_near_3d, p_far_3d])
-        segments_3d = xp.nan_to_num(segments_3d)       # Prevent projection issues
+        segments_3d = xp.nan_to_num(segments_3d)
 
         # Project segments to camera J
-        segments_2d, _ = project(segments_3d, T_j, K_j, xp.zeros_like(D_j), 'none')
+        segments_2d, _ = project(
+            segments_3d, T_j, K_j, xp.zeros_like(D_j), 'none'
+        )
 
         a_pts = segments_2d[:Ni]
         b_pts = segments_2d[Ni:]
@@ -748,6 +640,8 @@ class Reconstructor:
 
             # Merging logic
             merged = False
+
+            # Check Jaccard similarity for merge
             if len(local_indices) > 1 and self.config.filter_method == 'average':
                 # Check if points in this cluster should be merged
                 cluster_groups_sets = [set(winner_groups[i]) for i in local_indices]
@@ -762,6 +656,7 @@ class Reconstructor:
 
                     averaged_point = np.sum(cluster_pts * weights[:, np.newaxis], axis=0)
                     averaged_score = np.sum(cluster_scores * weights)
+                    averaged_error = np.sum(errors_np[winner_indices[local_indices]] * weights)
 
                     merged_global_indices = []
                     merged_mask = 0
@@ -771,9 +666,6 @@ class Reconstructor:
                         g_idxs, mask = process_group(winner_groups[idx])
                         merged_global_indices.extend(g_idxs)
                         merged_mask |= mask
-
-                    # Calculate weighted average of errors too
-                    averaged_error = np.sum(errors[winner_indices[local_indices]] * weights)
 
                     final_points.append(averaged_point)
                     final_scores.append(averaged_score)
@@ -786,7 +678,7 @@ class Reconstructor:
                 for idx in local_indices:
                     final_points.append(winner_points_3d[idx])
                     final_scores.append(winner_scores[idx])
-                    final_errors.append(errors[winner_indices[idx]])
+                    final_errors.append(errors_np[winner_indices[idx]])
                     g_idxs, mask = process_group(winner_groups[idx])
                     final_indices_list.append(g_idxs)
                     final_cam_masks.append(mask)
@@ -898,26 +790,27 @@ if __name__ == '__main__':
     folder = Path().home() / 'Desktop' / '3d_ant_data'
     prefix = '240905-1616'
     session = 22
-    BATCH_SIZE = 100  # nb of frames per batch
+    BATCH_SIZE = 100
 
     input_dir = folder / prefix / 'inputs' / 'tracking'
     output_file = folder / prefix / 'outputs' / f'points_soup_session{session}.pkl'
+    rig_file = folder / prefix / 'calibration' / 'camera_rig.toml'
 
-    # Load calibration & skeleton
     print("Loading metadata...")
-    cal_data = fileio.read_parameters(folder / prefix / 'calibration')
+    rig = CameraRig.load(rig_file)
+    print(f"Loaded rig with {len(rig)} cameras.")
+
     keypoints, _ = fileio.load_skeleton_SLEAP(input_dir, indices=False)
-    camera_names = sorted(list(cal_data.keys()))
+    camera_names = [c.name for c in rig]
 
     volume_bounds = {'x': (-10.5, 13.0), 'y': (-21.0, 11.0), 'z': (180.0, 201.0)}
 
-    # Load data (polars)
     print("Loading 2D detections...")
     df = fileio.load_session(input_dir, session=session, use_polars=True)
 
     # Initialise Reconstructor
     reconstructor = Reconstructor(
-        camera_parameters=cal_data,
+        rig=rig,
         volume_bounds=volume_bounds,
         config=ReconstructorConfig(
             repro_thresh=10.0,
@@ -961,7 +854,8 @@ if __name__ == '__main__':
 
         frames_done = min(i + BATCH_SIZE, total_frames)
         curr_time = time.time() - start_time
-        print(f"  Processed {frames_done}/{total_frames} frames in {curr_time:.2f} seconds... ({total_points_found} points found so far)")
+        print(
+            f"  Processed {frames_done}/{total_frames} frames in {curr_time:.2f} seconds... ({total_points_found} points)")
 
     total_time = time.time() - start_time
     print(f"Reconstruction finished in {total_time:.2f} seconds.")

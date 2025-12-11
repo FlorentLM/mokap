@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional, Dict, List
 from collections import defaultdict
 from alive_progress import alive_bar
+
 from mokap.utils import fileio
 from mokap.reconstruction.config import PipelineConfig
 from mokap.reconstruction.datatypes import SoupData
@@ -14,6 +15,7 @@ from mokap.reconstruction.reconstruction import Reconstructor
 from mokap.reconstruction.anatomy import StatsBootstrapper, AnatomyLearner
 from mokap.reconstruction.tracking import SkeletonAssembler, MultiObjectTracker
 from mokap.reconstruction.linking import FragmentMerger, TrackletLinker, load_tracklets, combine_chains
+from lucida import CameraRig
 
 
 # Stage 1: Reconstruction
@@ -21,7 +23,7 @@ from mokap.reconstruction.linking import FragmentMerger, TrackletLinker, load_tr
 def stage1_reconstruction(
         df: pl.DataFrame,
         keypoints: list,
-        cal_data: dict,
+        camera_rig: CameraRig,
         volume_bounds: dict,
         config: PipelineConfig,
         batch_size: int,
@@ -248,7 +250,9 @@ if __name__ == '__main__':
 
     # Load Metadata
     df = fileio.load_session(input_dir, session=session, use_polars=True)
-    cal_data = fileio.read_parameters(folder / prefix / 'calibration')
+    rig_file = folder / prefix / 'calibration' / 'camera_rig.toml'
+    rig = CameraRig.load(rig_file)
+    print(f"Loaded rig with {len(rig)} cameras.")
     keypoints, bones, symmetry = fileio.load_skeleton_SLEAP(input_dir, symmetry=True)
 
     # Execution
@@ -256,7 +260,7 @@ if __name__ == '__main__':
     # Reconstruction
     if not points_soup_file.exists():
         points_soup = stage1_reconstruction(
-            df, keypoints, cal_data, volume_bounds, config, BATCH_SIZE, points_soup_file
+            df, keypoints, rig, volume_bounds, config, BATCH_SIZE, points_soup_file
         )
     else:
         print(f"Loading existing soup from {points_soup_file}")
