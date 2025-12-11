@@ -36,8 +36,8 @@ class DetectorWorker(QObject):
 
     def __init__(
             self,
-            camera: CameraModel,
-            calibration_board: Union[ChessBoard, CharucoBoard],
+            camera: 'CameraModel',
+            calibration_board: Union['ChessBoard', 'CharucoBoard'],
     ):
         super().__init__()
         
@@ -93,7 +93,7 @@ class DetectorWorker(QObject):
         self.finished.emit()
 
     @Slot(object)
-    def configure_new_board(self, board: Union[ChessBoard, CharucoBoard]):
+    def configure_new_board(self, board: Union['ChessBoard', 'CharucoBoard']):
         """Update the calibration board (recreates detector)."""
         self._board = board
         

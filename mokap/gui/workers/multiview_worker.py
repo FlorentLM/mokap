@@ -44,8 +44,8 @@ class MultiviewWorker(QObject):
 
     def __init__(
             self,
-            rig: CameraRig,
-            calibration_board: Union[ChessBoard, CharucoBoard],
+            rig: 'CameraRig',
+            calibration_board: Union['ChessBoard', 'CharucoBoard'],
             origin_cam: Optional[Union[int, str]] = None,
             min_samples: int = 100,
             max_samples: int = 300,
@@ -66,7 +66,7 @@ class MultiviewWorker(QObject):
         self._current_stage = 0
 
         # Store latest detections for visualization (per camera)
-        self._latest_detections: Dict[str, Optional[DetectionResult]] = {
+        self._latest_detections: Dict[str, Optional['DetectionResult']] = {
             cam.name: None for cam in self._rig
         }
 
@@ -85,7 +85,7 @@ class MultiviewWorker(QObject):
     # ──────────────────────────────── Handle detections ────────────────────────────────
 
     @Slot(str, object)
-    def on_detection(self, camera_name: str, result: DetectionResult):
+    def on_detection(self, camera_name: str, result: 'DetectionResult'):
         """
         Receive detection from a DetectorThread.
         """
@@ -178,7 +178,7 @@ class MultiviewWorker(QObject):
             board_3d = self._board.object_points
 
             # Detections are on the stationary board
-            detections_3d = self._get_detections_stage0(board_3d)
+            detections_3d = self._get_detections(board_3d)
 
         else:
             # Extrinsics stage: Cameras fixed, board moves
@@ -188,7 +188,7 @@ class MultiviewWorker(QObject):
                 board_3d = transform_points(self._board.object_points, T_o2w)
 
                 # Detections are on the transformed board
-                detections_3d = self._get_detections_stage1(board_3d)
+                detections_3d = self._get_detections(board_3d)
 
         # Apply OpenGL coordinate transform (flip Y and Z)
         scene_data = {
@@ -253,8 +253,11 @@ class MultiviewWorker(QObject):
 
         return np.array(axes)  # (C, 2, 3)
 
-    def _get_detections_stage0(self, board_3d: np.ndarray) -> List[np.ndarray]:
+    def _get_detections(self, board_3d: np.ndarray) -> List[np.ndarray]:
         """Get 3D detection positions when board is at origin."""
+
+        # TODO: Use the tool's reproject method instead??
+
         detections = []
 
         for cam in self._rig:
@@ -271,11 +274,6 @@ class MultiviewWorker(QObject):
                 detections.append(np.zeros((0, 3)))
 
         return detections
-
-    def _get_detections_stage1(self, board_3d: np.ndarray) -> List[np.ndarray]:
-        """Get 3D detection positions when board is transformed."""
-        # Same logic as stage 0, but board_3d is already transformed
-        return self._get_detections_stage0(board_3d)
 
     @staticmethod
     def _to_gl(points: Optional[np.ndarray]) -> Optional[np.ndarray]:
@@ -336,7 +334,7 @@ class MultiviewWorker(QObject):
     # ──────────────────────────────── Configuration ────────────────────────────────
 
     @Slot(object)
-    def configure_new_board(self, board: Union[ChessBoard, CharucoBoard]):
+    def configure_new_board(self, board: Union['ChessBoard', 'CharucoBoard']):
         """Handle board parameter changes."""
         logger.debug("[Multiview] Board changed, resetting...")
 

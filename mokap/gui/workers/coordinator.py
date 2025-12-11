@@ -25,7 +25,7 @@ class CalibrationCoordinator(QObject):
     # Signal to request multiview refinement
     request_refinement = Signal()
 
-    def __init__(self, rig: CameraRig):
+    def __init__(self, rig: 'CameraRig'):
         super().__init__()
         
         self._rig = rig
@@ -37,7 +37,7 @@ class CalibrationCoordinator(QObject):
             self._origin_camera = rig[0].name
 
     @property
-    def rig(self) -> CameraRig:
+    def rig(self) -> 'CameraRig':
         return self._rig
 
     @property
@@ -77,7 +77,7 @@ class CalibrationCoordinator(QObject):
     # ──────────────────────────────── Board management ────────────────────────────────
 
     @Slot(object)
-    def handle_board_change(self, new_board: Union[ChessBoard, CharucoBoard]):
+    def handle_board_change(self, new_board: Union['ChessBoard', 'CharucoBoard']):
         """
         Handle calibration board parameter changes.
         

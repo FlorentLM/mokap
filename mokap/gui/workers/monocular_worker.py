@@ -41,8 +41,8 @@ class MonocularWorker(QObject):
 
     def __init__(
             self,
-            camera_model: CameraModel,
-            calibration_board: Union[ChessBoard, CharucoBoard],
+            camera_model: 'CameraModel',
+            calibration_board: Union['ChessBoard', 'CharucoBoard'],
             min_samples: int = 15,
             max_samples: int = 100
     ):
@@ -64,7 +64,7 @@ class MonocularWorker(QObject):
         self._current_stage = 0
 
         # Store latest detection for UI access
-        self._latest_detection: Optional[DetectionResult] = None
+        self._latest_detection: Optional['DetectionResult'] = None
 
         # Policy settings (TODO: make configurable from GUI)
         self._auto_sample = True
@@ -76,14 +76,14 @@ class MonocularWorker(QObject):
         self._last_calib_failed = False
 
     @property
-    def latest_detection(self) -> Optional[DetectionResult]:
+    def latest_detection(self) -> Optional['DetectionResult']:
         """Most recent detection result for UI display."""
         return self._latest_detection
 
     # ──────────────────────────────── Handle detections ────────────────────────────────
 
     @Slot(object)
-    def on_detection(self, result: DetectionResult):
+    def on_detection(self, result: 'DetectionResult'):
         """
         Handle detection results from DetectorThread.
         This is called when a detection arrives.
@@ -190,7 +190,7 @@ class MonocularWorker(QObject):
         self._auto_compute = enabled
 
     @Slot(object)
-    def configure_new_board(self, board: Union[ChessBoard, CharucoBoard]):
+    def configure_new_board(self, board: Union['ChessBoard', 'CharucoBoard']):
         """Handle board parameter changes: recreate the tool."""
         logger.debug(f"[{self.name}] Board changed, recreating tool.")
         
