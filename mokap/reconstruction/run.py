@@ -33,12 +33,12 @@ def stage1_reconstruction(
     print("\nStage 1: Cooking 3D point soup")
 
     reconstructor = Reconstructor(
-        camera_parameters=cal_data,
+        rig=camera_rig,
         volume_bounds=volume_bounds,
         config=config.reconstruction
     )
 
-    camera_names = sorted(list(cal_data.keys()))
+    camera_names = sorted(camera_rig)
 
     # Sort frames for slicing
     all_frame_indices = np.sort(df["frame"].unique().to_numpy())
