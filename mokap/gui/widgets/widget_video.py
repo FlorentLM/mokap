@@ -436,8 +436,12 @@ class CalibrationVideoWindow(VideoWindowBase):
 
     def _send_frame_for_processing(self):
         """Send frame to detector thread."""
-        if self._latest_frame is not None and not self._worker_blocking:
-            frame_idx = getattr(self, '_current_frame_idx', 0)
+        # Guard: don't send if detector is already processing or worker is blocking
+        if self._detector_busy or self._worker_blocking:
+            return
+
+        if self._latest_frame is not None:
+            frame_idx = self._current_frame_data.get('frame_number', 0)
             self._detector_busy = True
             self.send_frame_to_detector.emit(self._latest_frame, frame_idx)
 

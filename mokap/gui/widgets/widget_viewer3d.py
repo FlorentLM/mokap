@@ -286,7 +286,7 @@ class Viewer3D(SharedBase):
         items['detections'].setData(pos=detection_points)
         items['detections'].setVisible(detection_points.shape[0] > 0)
 
-    def _create_board(self) -> Union[CharucoBoard, ChessBoard, None]:
+    def _create_board(self) -> Union['CharucoBoard', 'ChessBoard', None]:
 
         board_class = self.boards_map[self.board_type_combo.currentText()]
 
@@ -330,7 +330,7 @@ class Viewer3D(SharedBase):
         self.cols_spin.setValue(board.cols)
         self.sq_len_spin.setValue(board.square_length)
 
-        is_charuco = isinstance(board, CharucoBoard)
+        is_charuco = type(board) ==CharucoBoard
         if is_charuco:
             self.marker_size_spin.setCurrentText(str(board.markers_size))
             self.margin_spin.setValue(board.margin)

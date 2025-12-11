@@ -45,10 +45,10 @@ class DetectorWorker(QObject):
         self._board = calibration_board
 
         # Create the appropriate detector
-        if isinstance(calibration_board, CharucoBoard) and not isinstance(calibration_board, ChessBoard):
+        if type(calibration_board) is CharucoBoard:
             self._detector = CharucoDetector(calibration_board)
 
-        elif isinstance(calibration_board, ChessBoard):
+        elif type(calibration_board) is ChessBoard:
             self._detector = ChessboardDetector(calibration_board)
 
         else:
@@ -97,101 +97,16 @@ class DetectorWorker(QObject):
         """Update the calibration board (recreates detector)."""
         self._board = board
         
-        if isinstance(board, CharucoBoard) and not isinstance(board, ChessBoard):
+        if type(self._board) is CharucoBoard:
             self._detector = CharucoDetector(board)
-        else:
+
+        elif type(self._board) is ChessBoard:
             self._detector = ChessboardDetector(board)
+
+        else:
+            raise TypeError(f"Unsupported board type: {type(self._board)}")
         
         logger.debug(f"[{self.name}] Detector reconfigured for new board.")
 
     def set_paused(self, paused: bool):
         self._paused = paused
-
-
-# class MultiDetectorManager(QObject):
-#     """
-#     Manages multiple detector threads for a camera rig.
-#
-#     Provides a convenient interface for:
-#     - Creating detector threads for each camera
-#     - Routing frames to the correct detector
-#     - Collecting detection results
-#
-#     Usage:
-#         manager = MultiDetectorManager(rig, board)
-#         manager.start_all()
-#
-#         # Route frames
-#         for cam_name, frame in frames.items():
-#             manager.submit_frame(cam_name, frame, frame_idx)
-#
-#         # Collect results (connect to this signal)
-#         manager.detection_ready.connect(on_detection)
-#     """
-#
-#     # Emitted when any detector produces a result
-#     # Includes camera name for routing: (camera_name, DetectionResult)
-#     detection_ready = Signal(str, object)
-#
-#     def __init__(
-#             self,
-#             cameras: list,  # List of CameraModel
-#             calibration_board: Union[ChessBoard, CharucoBoard],
-#     ):
-#         super().__init__()
-#
-#         from PySide6.QtCore import QThread
-#
-#         self._board = calibration_board
-#         self._detectors: dict[str, DetectorThread] = {}
-#         self._threads: dict[str, QThread] = {}
-#
-#         for camera in cameras:
-#             # Create detector
-#             detector = DetectorThread(camera, calibration_board)
-#
-#             # Create thread
-#             thread = QThread()
-#             detector.moveToThread(thread)
-#
-#             # Connect detection results (add camera name for routing)
-#             detector.detection_ready.connect(
-#                 lambda result, cam=camera.name: self.detection_ready.emit(cam, result)
-#             )
-#
-#             self._detectors[camera.name] = detector
-#             self._threads[camera.name] = thread
-#
-#     def start_all(self):
-#         """Start all detector threads."""
-#         for thread in self._threads.values():
-#             if not thread.isRunning():
-#                 thread.start()
-#
-#     def stop_all(self):
-#         """Stop all detector threads."""
-#         for thread in self._threads.values():
-#             thread.quit()
-#             thread.wait()
-#
-#     def submit_frame(self, camera_name: str, frame: np.ndarray, frame_idx: int):
-#         """Submit a frame to the appropriate detector."""
-#         if camera_name in self._detectors:
-#             # This will be processed in the detector's thread
-#             self._detectors[camera_name].handle_frame(frame, frame_idx)
-#
-#     def get_detector(self, camera_name: str) -> Optional[DetectorThread]:
-#         """Get a specific detector thread."""
-#         return self._detectors.get(camera_name)
-#
-#     def set_paused(self, paused: bool):
-#         """Pause/unpause all detectors."""
-#         for detector in self._detectors.values():
-#             detector.set_paused(paused)
-#
-#     @Slot(object)
-#     def configure_new_board(self, board: Union[ChessBoard, CharucoBoard]):
-#         """Update board on all detectors."""
-#         self._board = board
-#         for detector in self._detectors.values():
-#             detector.configure_new_board(board)
