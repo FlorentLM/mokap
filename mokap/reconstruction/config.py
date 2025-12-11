@@ -10,7 +10,6 @@ Centralized configuration for the multi-animal reconstruction and tracking pipel
 - PipelineConfig: A master class to hold all other configurations
 
 """
-
 from dataclasses import dataclass, field
 from typing import Dict, Literal
 

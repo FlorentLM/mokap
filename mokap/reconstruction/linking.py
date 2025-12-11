@@ -1,20 +1,15 @@
 import logging
 from typing import List, Dict, Tuple
 from collections import defaultdict
-
 import numpy as np
-from mokap.geometry.backend import xp
-
 from itertools import combinations
 from scipy.optimize import linear_sum_assignment
 from scipy.spatial.distance import cdist
 from alive_progress import alive_bar
-
+from lucida.geometry.backend import xp
+from lucida.geometry import align_rigid
 from mokap.reconstruction.config import MergerConfig, LinkerConfig
 from mokap.reconstruction.datatypes import TrackletData
-
-from mokap.geometry import align_rigid
-
 
 logger = logging.getLogger(__name__)
 

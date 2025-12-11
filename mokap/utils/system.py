@@ -1,14 +1,10 @@
-import subprocess
 from pathlib import Path
 from typing import Union
-
 import numpy as np
-from subprocess import  check_output
 import os
 import time
 import errno
 import platform
-
 
 
 def setup_ulimit(wanted_value=8192, silent=True):

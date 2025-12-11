@@ -14,7 +14,7 @@ from scipy.optimize import linear_sum_assignment
 from scipy.spatial import cKDTree
 
 from mokap.utils import fileio
-from mokap.geometry import align_rigid
+from lucida.geometry import align_rigid
 
 from mokap.reconstruction.config import AssemblerConfig, TrackerConfig, AnatomyConfig
 from mokap.reconstruction.datatypes import Bone, AssembledSkeleton, CandidateSkeleton, SoupData

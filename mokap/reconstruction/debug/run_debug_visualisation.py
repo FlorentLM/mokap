@@ -1,10 +1,7 @@
 import numpy as np
-from mokap.geometry import xp
-
 import pickle
 import polars as pl
 import cv2
-
 from pathlib import Path
 from mokap.utils import fileio
 from mokap.reconstruction.config import ReconstructorConfig
@@ -13,6 +10,8 @@ from mokap.reconstruction.utils import prepare_reconstruction_input
 from mokap.reconstruction.debug.visualisation import (
     ReconstructorVisualizer, run_sequence_viewer, convert_track_centric_to_frame_centric, view_soup_frame
 )
+from lucida.geometry.backend import xp
+
 
 # ================= CONFIGURATION =================
 # Options: "RAYS", "EPIPOLAR", "HYPOTHESIS", "SOUP", "RAW_SOUP", "TRACKLETS", "LINKED_TRACKS"

@@ -3,26 +3,18 @@ import time
 from functools import partial
 from typing import Dict, List, Set, Tuple
 import itertools
-
 import networkx as nx
 from networkx.algorithms.clique import find_cliques
 from scipy.sparse.csgraph import connected_components
 from scipy.sparse import csr_matrix
 from sklearn.cluster import DBSCAN
-
 import numpy as np
-from mokap.geometry.backend import xp, jit, set_at
-
+from lucida.geometry.backend import xp, jit, set_at
+from lucida.geometry import (unproject, triangulate_from_projections, project_to_cameras, undistort, project,
+                             compose_transform_matrix, projection_matrix, invert_transform, intersect_aabb)
 from mokap.reconstruction.config import ReconstructorConfig
 from mokap.reconstruction.datatypes import SoupData
 from mokap.reconstruction.utils import solve_mwis_networkx, prepare_reconstruction_input
-
-from mokap.geometry import (
-    unproject, triangulate_from_projections,
-    project_to_cameras, undistort, project,
-    compose_transform_matrix, projection_matrix,
-    invert_transform, intersect_aabb
-)
 
 logger = logging.getLogger(__name__)
 

@@ -18,6 +18,10 @@ INFO_PANEL_MINSIZE_H = 200
 VIDEO_PANEL_MINSIZE_H = 50
 WINDOW_MIN_W = 630
 
+
+MAX_PLOT_WIDTH = 50
+
+
 # Icons
 
 cwd = Path(__file__).parent

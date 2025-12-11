@@ -1,23 +1,16 @@
 import numpy as np
-from mokap.geometry import xp
-
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider
 import cv2
 from scipy.spatial.distance import cdist
 from collections import defaultdict
 from typing import List, Tuple
-
 from mokap.reconstruction.datatypes import SoupData
-
-from mokap.geometry import (
-    undistort, unproject, project, project_to_multiple_cameras
-)
-
-from mokap.geometry import compose_transform_matrix, decompose_transform_matrix
-from mokap.geometry.fitting import intersect_aabb
-
-from mokap.utils.visualisation import plot_cameras_3d, CUSTOM_COLORS
+from lucida.geometry.backend import xp
+from lucida.geometry import undistort, unproject, project
+from lucida.geometry import compose_transform_matrix, decompose_transform_matrix
+from lucida.geometry import intersect_aabb
+from lucida.visualisation import CUSTOM_COLORS
 
 
 class ReconstructorVisualizer:

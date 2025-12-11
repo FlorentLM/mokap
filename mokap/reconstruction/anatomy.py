@@ -9,7 +9,6 @@ import numpy as np
 import pandas as pd
 from alive_progress import alive_bar
 from scipy.stats import median_abs_deviation
-
 from mokap.reconstruction.config import AnatomyConfig
 from mokap.reconstruction.datatypes import Bone, AssembledSkeleton, SoupData
 from mokap.reconstruction.utils import create_canonical_map

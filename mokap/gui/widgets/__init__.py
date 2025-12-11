@@ -1,20 +1,15 @@
-from mokap.utils.datatypes import ChessBoard, CharucoBoard
+# Text, histograms, sliders updates can run slowly
+UI_UPDATE_FPS = 15.0
 
-BOARD_TYPES = {
-    "ChArUco": CharucoBoard,
-    "Chessboard": ChessBoard
-}
+# Display runs at 30 FPS for reasonable smoothness, regardless of camera speed
+DISPLAY_FPS = 30.0
 
-# TODO: Board should be loaded from config file
-DEFAULT_BOARD = CharucoBoard(rows=6, cols=5, square_length=1.5, markers_size=4)
+# Limits how often processing runs during calibration
+CALIB_PROCESSING_FPS = 15.0
 
-MAX_PLOT_X = 50
+# Cap camera acquisition during calibration
+CALIB_HARDWARE_FPS_MAX = 30.0
 
-SLOW_UPDATE = 15.0
-SLOW_UPDATE_INTERVAL = 1.0 / SLOW_UPDATE
-
-DISPLAY_FRAMERATE = 30.0        # 60 is fine when not recording, but not when recording so 30 it is
-DISPLAY_INTERVAL = 1.0 / DISPLAY_FRAMERATE
-
-PROCESSING_FRAMERATE = 15.0     # let's process at... idk, 15 Hz?
-PROCESSING_INTERVAL = 1.0 / PROCESSING_FRAMERATE
+from .windows_base import SharedBase, VideoWindowBase, FastImageItem
+from .window_viewer3d import Viewer3D
+from .windows_video import CalibrationVideoWindow, RecordingVideoWindow

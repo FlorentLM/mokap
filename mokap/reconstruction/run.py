@@ -6,13 +6,10 @@ from pathlib import Path
 from typing import Optional, Dict, List
 from collections import defaultdict
 from alive_progress import alive_bar
-
 from mokap.utils import fileio
-
 from mokap.reconstruction.config import PipelineConfig
 from mokap.reconstruction.datatypes import SoupData
 from mokap.reconstruction.utils import create_canonical_map, prepare_reconstruction_input
-
 from mokap.reconstruction.reconstruction import Reconstructor
 from mokap.reconstruction.anatomy import StatsBootstrapper, AnatomyLearner
 from mokap.reconstruction.tracking import SkeletonAssembler, MultiObjectTracker

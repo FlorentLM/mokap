@@ -46,4 +46,5 @@ class GUILogger:
 
 GUI_LOGGER = GUILogger()
 
-from mokap.gui.widgets.window_maincontrols import QApplication, MainControls
+# These are imported by the main script mokap.py
+from mokap.gui.widgets.window_main import QApplication, MainControls
