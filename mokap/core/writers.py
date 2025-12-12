@@ -7,7 +7,7 @@ import platform
 import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 import cv2
 import numpy as np
 
@@ -19,8 +19,8 @@ class FrameWriter(ABC):
     Abstract base class for writing frames to disk.
     It defines the common interface for all writer types (e.g. video, image sequence).
     """
-    def __init__(self, filepath: Path, pixel_format: str, width: int, height: int, framerate: float, cam_name: str):
-        self.filepath = filepath
+    def __init__(self, filepath: Union[Path, str], pixel_format: str, width: int, height: int, framerate: float, cam_name: str):
+        self.filepath = Path(filepath)
         self.pixel_format = pixel_format
         self.width = width
         self.height = height
@@ -65,7 +65,7 @@ class ImageSequenceWriter(FrameWriter):
     The filepath provided in the constructor is treated as the base name
     and is used as the folder to store the images
     """
-    def __init__(self, folder: Path, ext: str, quality: int, **kwargs):
+    def __init__(self, folder: Union[Path, str], ext: str, quality: int, **kwargs):
         # The filepath for the base class is the folder itself
         super().__init__(folder, **kwargs)
 
@@ -194,21 +194,20 @@ class FFmpegWriter(FrameWriter):
     _available_encoders = None
     _encoders_lock = threading.Lock()
 
-    def __init__(self, filepath: Path, ffmpeg_path: str, params: Dict, use_gpu: bool, **kwargs):
+    def __init__(self, filepath: Union[Path, str], ffmpeg_path: Union[Path, str], params: Dict, use_gpu: bool, **kwargs):
         super().__init__(filepath, **kwargs)
 
         self.proc: Optional[subprocess.Popen] = None
 
-        which_ffmpeg = shutil.which(ffmpeg_path)
+        which_ffmpeg = shutil.which(str(ffmpeg_path)) # shutil.which does *not* work with Path objects in Python < 3.12
         if not which_ffmpeg:
             raise OSError(f"Can't find FFmpeg. Is it installed?")
 
-        path = Path(which_ffmpeg)
-        if not os.access(path, os.X_OK):
-            raise PermissionError(f"Can't run FFmpeg from `{path.as_posix()}`. Is it executable?")
+        ffmpeg_path = Path(which_ffmpeg)
+        if not os.access(ffmpeg_path, os.X_OK):
+            raise PermissionError(f"Can't run FFmpeg from `{ffmpeg_path}`. Is it executable?")
 
-        self.ffmpeg_path = path.resolve()
-        print(self.ffmpeg_path)
+        self.ffmpeg_path = ffmpeg_path
 
         if use_gpu:
             # Allow user override first
@@ -297,7 +296,7 @@ class FFmpegWriter(FrameWriter):
         )
 
     @staticmethod
-    def _get_available_encoders(ffmpeg_path: str) -> set:
+    def _get_available_encoders(ffmpeg_path: Union[Path, str]) -> set:
         """
         Gets a set of all available encoders from the ffmpeg executable.
         Results are cached in the class to avoid repeated calls to the subprocess from multiple threads.
@@ -338,7 +337,7 @@ class FFmpegWriter(FrameWriter):
                 FFmpegWriter._available_encoders = set()  # cache failure
                 return FFmpegWriter._available_encoders
 
-    def _get_best_profile_key(self, ffmpeg_path: str, params: Dict) -> str:
+    def _get_best_profile_key(self, ffmpeg_path: Union[Path, str], params: Dict) -> str:
         """
         Automatically determines the best encoder profile to use.
         (based on OS, available hardware, and a predefined priority list)
