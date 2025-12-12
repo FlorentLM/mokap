@@ -1,9 +1,8 @@
 import logging
-
 import PySpin
 import numpy as np
 import re
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, List
 from mokap.core.cameras.genicam import GenICamCamera
 from mokap.utils import pol_to_hsv
 
@@ -12,8 +11,8 @@ logger = logging.getLogger(__name__)
 
 class FLIRCamera(GenICamCamera):
     """
-    Concrete implementation for FLIR Spinnaker cameras
-    Inherits all GenICam logic from the GenICamCamera parent classs
+    Concrete implementation for FLIR Spinnaker cameras.
+    Inherits all GenICam logic from the GenICamCamera parent classs.
     (only adds FLIR-specific connection, grabbing, and feature access)
     """
 
@@ -25,7 +24,7 @@ class FLIRCamera(GenICamCamera):
         self._cam_ptr: Optional[PySpin.CameraPtr] = pyspin_camera_ptr
         self._system: Optional[PySpin.SystemPtr] = pyspin_system  # store the system instance
 
-        nodemap_tldevice = self._cam_ptr.GetTLDeviceNodeMap()   # has to be before Init()
+        nodemap_tldevice = self._cam_ptr.GetTLDeviceNodeMap()  # has to be before Init()
 
         node_serial = PySpin.CStringPtr(nodemap_tldevice.GetNode('DeviceSerialNumber'))
 
@@ -135,7 +134,7 @@ class FLIRCamera(GenICamCamera):
             if image_result: image_result.Release()
             if not self.is_grabbing: self._cam_ptr.EndAcquisition()
 
-    # --- GenICamCamera abstract contract ---
+    # ────── GenICamCamera abstract contract ──────
 
     def _get_nodemap(self):
 
@@ -219,7 +218,7 @@ class FLIRCamera(GenICamCamera):
         except PySpin.SpinnakerException as e:
             raise AttributeError(f"Failed to set feature '{name}' to '{value}': {e}") from e
 
-    def _get_feature_entries(self, name: str) -> list[str]:
+    def _get_feature_entries(self, name: str) -> List[str]:
         try:
             node = self._get_nodemap().GetNode(name)
             if not PySpin.IsAvailable(node) or not PySpin.IsReadable(node):

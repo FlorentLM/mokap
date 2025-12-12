@@ -1,6 +1,6 @@
 import abc
 import logging
-from typing import Any, Dict, Optional, Tuple, Union, Sequence
+from typing import Any, Dict, Optional, Tuple, Sequence, List
 from mokap.core.cameras.interface import AbstractCamera
 
 logger = logging.getLogger(__name__)
@@ -8,13 +8,13 @@ logger = logging.getLogger(__name__)
 
 class GenICamCamera(AbstractCamera, abc.ABC):
     """
-    An abstract base class for any GenICam-compliant cameras
+    An abstract base class for any GenICam-compliant cameras.
 
     This class provides a concrete implementation for most camera properties
-    (exposure, gain, etc.) by mapping them to standard GenICam feature names
+    (exposure, gain, etc.) by mapping them to standard GenICam feature names.
 
     Subclasses implement the vendor-specific methods for connecting,
-    grabbing, and the low-level feature accessors (_get_feature_value, etc)
+    grabbing, and the low-level feature accessors (_get_feature_value, etc).
     """
 
     def __init__(self, unique_id: str):
@@ -34,7 +34,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         self._roi: Optional[Tuple[int, int, int, int]] = None
 
     def _apply_configuration(self, config: Optional[Dict[str, Any]] = None):
-        """ Applies a set of initial parameters to the camera """
+        """Applies a set of initial parameters to the camera."""
         if not self.is_connected:
             raise RuntimeError("Camera is not connected.")
 
@@ -100,17 +100,17 @@ class GenICamCamera(AbstractCamera, abc.ABC):
 
     # Hooks for subclasses
     def _pre_apply_configuration(self, settings: Dict[str, Any]):
-        """ A hook for subclasses to run code before the main configuration is applied """
+        """A hook for subclasses to run code before the main configuration is applied."""
         self._set_feature_value('AcquisitionMode', 'Continuous')
         self._set_feature_value('ExposureAuto', 'Off')
         self._set_feature_value('GainAuto', 'Off')
 
     def _post_apply_configuration(self, settings: Dict[str, Any]):
-        """ A hook for subclasses to run code after the main configuration is applied """
+        """A hook for subclasses to run code after the main configuration is applied."""
         pass
 
     def _get_feature_range(self, name: str) -> Tuple[float, float]:
-        """ Helper to get the min/max of a float-based feature """
+        """Helper to get the min/max of a float-based feature."""
         try:
             min_val = float(self._get_feature_min_value(name))
             max_val = float(self._get_feature_max_value(name))
@@ -122,27 +122,27 @@ class GenICamCamera(AbstractCamera, abc.ABC):
 
     @abc.abstractmethod
     def _get_feature_value(self, name: str) -> Any:
-        """ Vendor-specific implementation to get a feature's value """
+        """Vendor-specific implementation to get a feature's value."""
         pass
 
     @abc.abstractmethod
     def _set_feature_value(self, name: str, value: Any) -> Any:
-        """ Vendor-specific implementation to set a feature's value. Should return the actual value set """
+        """Vendor-specific implementation to set a feature's value. Should return the actual value set."""
         pass
 
     @abc.abstractmethod
     def _get_feature_min_value(self, name: str) -> Any:
-        """ Vendor-specific implementation to get a feature's maximum possible value """
+        """Vendor-specific implementation to get a feature's maximum possible value."""
         pass
 
     @abc.abstractmethod
     def _get_feature_max_value(self, name: str) -> Any:
-        """ Vendor-specific implementation to get a feature's maximum possible value """
+        """Vendor-specific implementation to get a feature's maximum possible value."""
         pass
 
     @abc.abstractmethod
-    def _get_feature_entries(self, name: str) -> list[str]:
-        """ Vendor-specific implementation to get all enum entries for a feature """
+    def _get_feature_entries(self, name: str) -> List[str]:
+        """Vendor-specific implementation to get all enum entries for a feature."""
         pass
 
     @property
@@ -272,7 +272,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
                 self.start_grabbing()
 
     @property
-    def available_pixel_formats(self) -> list[str]:
+    def available_pixel_formats(self) -> List[str]:
         return self._get_feature_entries('PixelFormat')
 
     @property
@@ -341,7 +341,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         self._binning_mode = h_mode
 
     @property
-    def available_binning_modes(self) -> list[str]:
+    def available_binning_modes(self) -> List[str]:
         return self._get_feature_entries('BinningHorizontalMode')
 
     @property
@@ -360,7 +360,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
             return None
 
     @property
-    def sensor_shape(self) -> Tuple[int, int]:
+    def resolution(self) -> Tuple[int, int]:
         try:  # try GenICam standard names
             return self._get_feature_max_value('WidthMax'), self._get_feature_max_value('HeightMax')
         except AttributeError:  # fallback for some SDKs (Spinnaker)
@@ -371,7 +371,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         return self._roi
 
     @roi.setter
-    def roi(self, value: Union[Sequence[int]]):
+    def roi(self, value: Sequence[int]):
         was_grabbing = self.is_grabbing
 
         try:

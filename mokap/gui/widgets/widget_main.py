@@ -49,7 +49,7 @@ def create_camera_rig(hardware_cameras):
         intrinsics = Intrinsics.from_specs(
             image_size=(width, height),
             focal=65.0,
-            sensor=hw_cam.sensor_shape or [4.968, 3.726],
+            sensor=hw_cam.resolution or [4.968, 3.726],
             distortion_model='standard'
         )
         camera = CameraModel(intrinsics, Extrinsics(), name=hw_cam.name)

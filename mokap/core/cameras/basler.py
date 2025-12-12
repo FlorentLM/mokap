@@ -1,9 +1,8 @@
 import logging
-
 from pypylon import pylon
 from pypylon import genicam as geni
 import numpy as np
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, List
 from mokap.core.cameras.genicam import GenICamCamera
 
 logger = logging.getLogger(__name__)
@@ -11,8 +10,8 @@ logger = logging.getLogger(__name__)
 
 class BaslerCamera(GenICamCamera):
     """
-    Concrete implementation for Basler cameras
-    Inherits all GenICam logic from the GenICamCamera parent classs
+    Concrete implementation for Basler cameras.
+    Inherits all GenICam logic from the GenICamCamera parent classs.
     (only adds Basler-specific connection, grabbing, and feature access)
     """
 
@@ -80,7 +79,7 @@ class BaslerCamera(GenICamCamera):
             if not self.is_grabbing:
                 self._ptr.StopGrabbing()
 
-    # --- GenICamCamera abstract contract ---
+    # ────── GenICamCamera abstract contract ──────
 
     def _get_feature_value(self, name: str) -> Any:
         try:
@@ -127,7 +126,7 @@ class BaslerCamera(GenICamCamera):
         except geni.GenericException as e:
             raise AttributeError(f"Failed to set feature '{name}' to '{value}': {e}") from e
 
-    def _get_feature_entries(self, name: str) -> list[str]:
+    def _get_feature_entries(self, name: str) -> List[str]:
         try:
             node = self._ptr.GetNodeMap().GetNode(name)
 
