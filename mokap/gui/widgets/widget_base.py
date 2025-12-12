@@ -1,3 +1,9 @@
+"""
+Base classes for video windows.
+
+SharedBase: Common functionality for all secondary windows
+VideoWindowBase: Base for camera video windows with frame consumption and display
+"""
 import logging
 import time
 from collections import deque
@@ -5,7 +11,7 @@ from threading import Thread
 from typing import Optional, Tuple
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt, QTimer, QThread, Signal, Slot, QRectF
+from PySide6.QtCore import Qt, QTimer, QRectF
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGroupBox, QGraphicsObject, QSizePolicy
 import pyqtgraph as pg
@@ -36,7 +42,8 @@ class FastImageItem(QGraphicsObject):
 
         self.prepareGeometryChange()
         contiguous_arr = np.ascontiguousarray(data)
-        self._image = QImage(contiguous_arr.data, self._width, self._height, self._bytes_per_line, QImage.Format.Format_BGR888)
+        self._image = QImage(contiguous_arr.data, self._width, self._height, self._bytes_per_line,
+                             QImage.Format.Format_BGR888)
         self.update()
 
     def boundingRect(self) -> QRectF:
@@ -50,8 +57,12 @@ class FastImageItem(QGraphicsObject):
 
 class SharedBase(QWidget):
     """
-    Shared base for any secondary window (video or 3D view)
-      - Worker/thread/timer setup
+    Shared base for any secondary window (video or 3D view).
+
+    Provides:
+    - Reference to main window
+    - Slow update timer for UI elements
+    - Force destroy flag for window lifecycle
     """
 
     def __init__(self, main_window_ref):
@@ -62,27 +73,19 @@ class SharedBase(QWidget):
         # References for easier access
         self._mainwindow = main_window_ref
 
-        self._worker = None
-        self._worker_thread = None
-
         # This updater function does not need to run super frequently
         self.timer_slow = QTimer(self)
         self.timer_slow.timeout.connect(self._update_slow)
 
     @property
     def selected_monitor(self):
-      return self._mainwindow.selected_monitor
-
-    def _setup_worker(self, worker_object):
-        self._worker_thread = QThread(self)
-        self._worker = worker_object
-        self._worker.moveToThread(self._worker_thread)
+        return self._mainwindow.selected_monitor
 
     def _update_slow(self):
         """Subclasses override if they need a slow update."""
         pass
 
-    def  _start_timers(self, ui_frequency=UI_UPDATE_FPS, **kwargs):
+    def _start_timers(self, ui_frequency=UI_UPDATE_FPS, **kwargs):
         """Subclasses can override if they need more timers."""
         self.timer_slow.start(int(1 / UI_UPDATE_FPS * 1000))
 
@@ -92,8 +95,21 @@ class SharedBase(QWidget):
 
 
 class VideoWindowBase(SharedBase):
+    """
+    Base class for camera video windows.
 
-    send_frame = Signal(np.ndarray, int)
+    Provides:
+    - Frame consumption from hardware camera (background thread)
+    - Display updates (timer-driven)
+    - Processing hook for subclasses (timer-driven)
+    - Common UI elements (info panel, control panel)
+    - Pause/resume functionality
+
+    Subclasses must implement:
+    - _init_specific_ui(): Create mode-specific UI elements
+    - _send_frame_for_processing(): Send frames to processing pipeline (optional)
+    - _pause_worker() / _resume_worker(): Pause/resume processing (if has workers)
+    """
 
     def __init__(self, hardware_camera, main_window_ref):
         super().__init__(main_window_ref)
@@ -126,8 +142,6 @@ class VideoWindowBase(SharedBase):
         self._current_frame_data = {}
 
         # States
-        self._worker_busy = False
-        self._worker_blocking = False
         self._warning = False
 
         self._last_polled_values = {}
@@ -153,7 +167,7 @@ class VideoWindowBase(SharedBase):
         self._frame_consumer.start()
 
     def _start_timers(self,
-                      video_display_frequency=DISPLAY_FPS ,
+                      video_display_frequency=DISPLAY_FPS,
                       processing_frequency=CALIB_PROCESSING_FPS,
                       ui_frequency=UI_UPDATE_FPS):
 
@@ -167,20 +181,11 @@ class VideoWindowBase(SharedBase):
         self.timer_processing.stop()
         self.timer_slow.stop()
 
-    def _setup_worker(self, worker_object):
-        """Setup preview-windows-specific signals."""
-        super()._setup_worker(worker_object)
-
-        # Emit frames to worker
-        self.send_frame.connect(self._worker.handle_frame, type=Qt.QueuedConnection)
-
-        # Receive results and state from worker
-        self._worker.finished.connect(self.on_worker_finished)
-        self._worker.blocking.connect(self.blocking_toggle)
+    # ──────────────────────────────── UI setup ────────────────────────────────
 
     def _init_common_ui(self):
         """
-        This constructor creates all the UI elements that are common to all modes.
+        Creates all the UI elements that are common to all video window modes.
         """
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -196,7 +201,7 @@ class VideoWindowBase(SharedBase):
 
         # Add a ViewBox to hold the image and disable its native mouse interaction/menus
         self.view_box = self.graphics_widget.addViewBox(row=0, col=0)
-        self.view_box.setAspectLocked(True)              # for correct aspect ratio
+        self.view_box.setAspectLocked(True)  # for correct aspect ratio
         self.view_box.setMouseEnabled(x=False, y=False)  # no pan/zoom
         self.view_box.setMenuEnabled(False)
         self.view_box.disableAutoRange()
@@ -279,8 +284,12 @@ class VideoWindowBase(SharedBase):
             left_group_layout.addWidget(line)
 
     def _init_specific_ui(self):
-        """This does nothing in the base class, each VideoWindow implements its own specific UI elements."""
+        """
+        Subclasses implement this to create mode-specific UI elements.
+        """
         pass
+
+    # ──────────────────────────────── Frame consumption ────────────────────────────────
 
     def _consume_frames_loop(self):
         """
@@ -352,7 +361,7 @@ class VideoWindowBase(SharedBase):
                                 h = (raw_frame[..., 0] * 180).astype(np.uint8)
                                 s = (raw_frame[..., 1] * 255).astype(np.uint8)
                                 v = (raw_frame[..., 2] * 255).astype(np.uint8)
-                                cv2.cvtColor( cv2.merge([h, s, v]), cv2.COLOR_HSV2BGR, dst=bgr_frame)
+                                cv2.cvtColor(cv2.merge([h, s, v]), cv2.COLOR_HSV2BGR, dst=bgr_frame)
                             else:
                                 cv2.cvtColor(raw_frame, cv2.COLOR_HSV2BGR, dst=bgr_frame)
                         case _:
@@ -370,27 +379,61 @@ class VideoWindowBase(SharedBase):
                 self._latest_frame = bgr_frame
                 self._current_frame_data = frame_data
 
-    @Slot()
+    # ──────────────────────────────── Processing hook ────────────────────────────────
+
     def _send_frame_for_processing(self):
         """
-        Sends the latest available frame to the worker for processing.
-        """
+        Hook for subclasses to send frames to their processing pipeline.
 
-        # If the worker is busy with a long task we don't send another frame
-        if self._worker_busy or self._worker_blocking:
+        Called by timer_processing at CALIB_PROCESSING_FPS rate.
+
+        Subclasses should:
+        - Check if their worker(s) are busy/blocking before sending
+        - Emit their own signal to send the frame
+        - Set appropriate busy flags
+
+        Default implementation does nothing (no processing).
+        """
+        pass
+
+    # ──────────────────────────────── Display update ────────────────────────────────
+
+    def _annotate_frame(self):
+        """
+        Hook for subclasses to annotate the display frame.
+
+        Called at the display rate before updating the image on screen.
+        Default behavior: just copy the latest raw frame to the display buffer.
+        """
+        if self._latest_frame is not None:
+            np.copyto(self._latest_display_frame, self._latest_frame)
+            self._latest_frame = None  # mark as consumed for display
+
+    def _update_display(self):
+        """
+        Main display updater. Runs at a controlled rate for smooth video.
+        """
+        if self._latest_frame is None:
             return
 
-        # If a new frame has arrived since the last processing tick, send it
-        if self._latest_frame is not None:
+        # Subclasses do their own thing
+        self._annotate_frame()
 
-            frame_number = self._current_frame_data.get('frame_number', -1)
+        # Update the image on the screen
+        self.image_item.setImageData(self._latest_display_frame)
 
-            # Sends the *reference* to the latest frame: the worker is responsible for copying it
-            # (only if it needs to modify it)
-            self.send_frame.emit(self._latest_frame, frame_number)
-            self._worker_busy = True
+        # One-time setup to fit the image to the viewbox
+        if not self._video_initialised:
+            self.view_box.autoRange()
+            self._video_initialised = True
 
-    # ──────────────────────────────── Slow update method (text, etc) ────────────────────────────────
+    def _clear_display(self):
+        """Clears the video display to black and resets the initialisation flag."""
+        self._latest_display_frame.fill(0)
+        self.image_item.setImageData(self._latest_display_frame)
+        self._video_initialised = False
+
+    # ──────────────────────────────── Slow update (text, etc) ────────────────────────────────
 
     def _update_slow(self):
 
@@ -431,7 +474,7 @@ class VideoWindowBase(SharedBase):
             last_value = self._last_polled_values.get(param)
 
             if current_value != last_value:
-                self.update_slider_value(param, current_value)
+                self._on_slider_value_changed(param, current_value)
                 self._last_polled_values[param] = current_value
 
             # Poll for parameter *range* changes
@@ -439,7 +482,7 @@ class VideoWindowBase(SharedBase):
             last_range = self._last_polled_ranges.get(param)
 
             if current_range != last_range:
-                self.update_slider_range(param, current_range)
+                self._on_slider_range_changed(param, current_range)
                 self._last_polled_ranges[param] = current_range
 
         if self._mainwindow.manager.acquiring:
@@ -474,46 +517,33 @@ class VideoWindowBase(SharedBase):
         # else:
         #     self.temperature_value.setStyleSheet(f"color: {col_yellow}; font: bold;")
 
-    # ──────────────────────────────── Fast update methods ────────────────────────────────
-
-    def _annotate_frame(self):
+    def _on_slider_value_changed(self, label, value):
         """
-        Subclasses implement this. It's called at the high display rate.
+        Hook for subclasses to handle camera parameter value changes.
+        Called when a polled camera parameter changes.
         """
+        pass
 
-        # Default behavior: just copy the latest raw frame to the display buffer
-        # Subclasses will override this to add their annotations
-        if self._latest_frame is not None:
-            np.copyto(self._latest_display_frame, self._latest_frame)
-            self._latest_frame = None  # mark as consumed for display
-
-    def _update_display(self):
+    def _on_slider_range_changed(self, label, value):
         """
-        This is the main display updater.
-        It runs at a controlled rate for smooth video.
+        Hook for subclasses to handle camera parameter range changes.
+        Called when a polled camera parameter range changes.
         """
+        pass
 
-        if self._latest_frame is None:
-            return
+    # ──────────────────────────────── Worker control ────────────────────────────────
 
-        # Subclasses do their own thing
-        self._annotate_frame()
+    def _pause_worker(self):
+        """
+        Pause processing workers. Subclasses with workers must override this.
+        """
+        pass
 
-        # Update the image on the screen
-        self.image_item.setImageData(self._latest_display_frame)
-
-        # One-time setup to fit the image to the viewbox
-        if not self._video_initialised:
-            self.view_box.autoRange()
-            self._video_initialised = True
-
-    def _clear_display(self):
-        """Clears the video display to black and resets the initialisation flag."""
-
-        self._latest_display_frame.fill(0)
-        self.image_item.setImageData(self._latest_display_frame)
-
-        self._video_initialised = False
+    def _resume_worker(self):
+        """
+        Resume processing workers. Subclasses with workers must override this.
+        """
+        pass
 
     # ──────────────────────────────── Qt method overrides ────────────────────────────────
 
@@ -528,11 +558,6 @@ class VideoWindowBase(SharedBase):
                 self._frame_consumer.join(timeout=2.0)
                 if self._frame_consumer.is_alive():
                     logger.warning(f"{self.name} consumer thread did not shut down cleanly.")
-
-            # Stop the QThread worker
-            if self._worker_thread:
-                self._worker_thread.quit()
-                self._worker_thread.wait(2000)
 
             # Stop local timers
             self._stop_timers()
@@ -553,40 +578,6 @@ class VideoWindowBase(SharedBase):
         # This forces the image to always fill the view correctly.
         if self.view_box and self._video_initialised:
             self.view_box.setRange(rect=self.image_item.boundingRect(), padding=0)
-
-    # ──────────────────────────────── Thread control ────────────────────────────────
-
-    def _pause_worker(self):
-        self._worker.set_paused(True)
-
-    def _resume_worker(self):
-        self._worker.set_paused(False)
-
-    # ──────────────────────────────── UI signals ────────────────────────────────
-
-    @Slot(str, object)
-    def update_slider_value(self, label, value):
-        # Implemented in the concrete class
-        pass
-
-    @Slot(str, object)
-    def update_slider_range(self, label, value):
-        # Implemented in the concrete class
-        pass
-
-    @Slot()
-    def on_worker_result(self, bboxes):
-        # Called in the main thread when worker finishes processing and emits its 'annotation'
-        # Needs to be defined in each subclass because the result is not necessarily the same thing
-        pass
-
-    @Slot()
-    def on_worker_finished(self):
-        self._worker_busy = False
-
-    @Slot(bool)
-    def blocking_toggle(self, state):
-        self._worker_blocking = state
 
     # ──────────────────────────────── Properties ────────────────────────────────
 
@@ -641,7 +632,7 @@ class VideoWindowBase(SharedBase):
 
         monitor = self._mainwindow.selected_monitor
 
-        if monitor.height < monitor.width: # landscape
+        if monitor.height < monitor.width:  # landscape
             available_h = (monitor.height - TASKBAR_H) // 2 - SPACING * 3
             video_max_h = available_h - self.BOTTOM_PANEL.height() - TOPBAR_H
             video_max_w = video_max_h * self.aspect_ratio
@@ -649,7 +640,7 @@ class VideoWindowBase(SharedBase):
             h = int(video_max_h + self.BOTTOM_PANEL.height())
             w = int(video_max_w * width_multiplier)
 
-        else: # portrait
+        else:  # portrait
             video_max_w = monitor.width // 2 - SPACING * 3
             video_max_h = video_max_w / self.aspect_ratio
 

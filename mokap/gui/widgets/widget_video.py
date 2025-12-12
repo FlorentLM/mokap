@@ -19,7 +19,7 @@ from mokap.gui.workers import DetectorWorker, MonocularWorker
 class RecordingVideoWindow(VideoWindowBase):
     """
     Live view for Recording mode.
-    
+
     Features:
     - Crosshair overlay
     - Magnifier tool
@@ -57,7 +57,7 @@ class RecordingVideoWindow(VideoWindowBase):
 
     def _init_specific_ui(self):
         """Create Recording-specific UI elements."""
-        
+
         # Overlays
         crosshair_pen = pg.mkPen(color='w', style=Qt.DotLine)
         self.v_line = pg.InfiniteLine(angle=90, movable=False, pen=crosshair_pen)
@@ -116,7 +116,7 @@ class RecordingVideoWindow(VideoWindowBase):
 
         # Create sliders for camera parameters
         params = ['framerate', 'exposure', 'black_level', 'gain', 'gamma']
-        
+
         for label in params:
             try:
                 current_range = getattr(self._hw_camera, f"{label}_range")
@@ -188,17 +188,17 @@ class RecordingVideoWindow(VideoWindowBase):
             return slider_min
         if value >= max_val:
             return slider_max
-        
+
         log_min = np.log(max(min_val, 1))
         log_max = np.log(max_val)
         log_val = np.log(max(value, 1))
-        
+
         return int(slider_min + (log_val - log_min) / (log_max - log_min) * (slider_max - slider_min))
 
     def _slider_changed(self, label, value):
         """Handle slider value change."""
         scale = self.camera_controls_sliders_scales.get(label, 1)
-        
+
         if scale == 'log':
             params = self.log_slider_params[label]
             log_min = np.log(max(params['min_val'], 1))
@@ -216,7 +216,7 @@ class RecordingVideoWindow(VideoWindowBase):
 class CalibrationVideoWindow(VideoWindowBase):
     """
     Live view for Calibration mode.
-    
+
     Features:
     - Detection overlay (detected corners)
     - Reprojection overlay (computed board corners)
@@ -224,9 +224,16 @@ class CalibrationVideoWindow(VideoWindowBase):
     - Sampling controls
     - Error plots
     - Save/Load intrinsics
+
+    Processing pipeline:
+    - DetectorWorker: Runs detection in separate thread, emits detection_ready
+    - MonocularWorker: Receives detections, manages calibration logic
     """
 
-    send_frame_to_detector = Signal(np.ndarray, int)
+    # Signal to send frames to the detector
+    frame_ready = Signal(np.ndarray, int)
+
+    # Signals for save/load operations
     request_load = Signal(str)
     request_save = Signal(str)
 
@@ -245,39 +252,42 @@ class CalibrationVideoWindow(VideoWindowBase):
         # Get camera model from shared rig
         self._camera_model = self._mainwindow.rig[self._hw_cam_name]
 
-        # Create detector thread
+        # ──── ──── Detector (CPU-heavy, separate thread) ──── ────
         self._detector = DetectorWorker(self._camera_model, board_params)
         self._detector_thread = QThread()
         self._detector.moveToThread(self._detector_thread)
         self._detector_busy = False
 
-        # Create calibration worker
+        # ──── ──── Calibration worker (stateful, separate thread) ──── ────
         self._worker = MonocularWorker(self._camera_model, board_params)
         self._worker_thread = QThread()
         self._worker.moveToThread(self._worker_thread)
+        self._worker_blocking = False
 
-        # Wire detector -> worker
+        # ──── ──── Wire up signals ──── ────
+
+        # Frame dispatch: this window -> detector
+        self.frame_ready.connect(self._detector.handle_frame, Qt.QueuedConnection)
+
+        # Detection flow: detector -> worker
         self._detector.detection_ready.connect(self._worker.on_detection)
         self._detector.finished.connect(self._on_detector_finished)
 
-        # Start threads
-        self._detector_thread.start()
-        self._worker_thread.start()
-
-        # Connect worker signals to UI
+        # Worker signals -> UI updates
         self._worker.detection_updated.connect(self._on_detection_updated)
         self._worker.coverage_updated.connect(self._on_coverage_updated)
         self._worker.intrinsics_updated.connect(self._on_intrinsics_updated)
         self._worker.pose_updated.connect(self._on_pose_updated)
-        self._worker.blocking.connect(self._on_blocking)
+        self._worker.blocking.connect(self._on_worker_blocking)
         self._worker.stage_changed.connect(self._on_stage_changed)
 
-        # Connect frame handler
-        self.send_frame_to_detector.connect(self._detector.handle_frame, Qt.QueuedConnection)
-
-        # Connect save/load
+        # Save/load
         self.request_load.connect(self._worker.load_intrinsics)
         self.request_save.connect(self._worker.save_intrinsics)
+
+        # Start threads
+        self._detector_thread.start()
+        self._worker_thread.start()
 
         # Build UI
         self._init_common_ui()
@@ -292,8 +302,8 @@ class CalibrationVideoWindow(VideoWindowBase):
         layout = QHBoxLayout(self.RIGHT_GROUP)
         layout.setContentsMargins(5, 5, 5, 5)
 
-        # Overlays
-        
+        # ──── ──── Overlays ──── ────
+
         # Computing indicator
         self.computing_text = pg.TextItem(anchor=(0.5, 0.5), color=(255, 255, 255))
         self.computing_text.setPos(self.source_shape_hw[1] / 2, self.source_shape_hw[0] / 2)
@@ -341,7 +351,7 @@ class CalibrationVideoWindow(VideoWindowBase):
         self.stats_text.setZValue(5)
         self.computing_text.setZValue(6)
 
-        # Sampling controls
+        # ──── ──── Sampling controls ──── ────
         sampling_group = QWidget()
         sampling_layout = QVBoxLayout(sampling_group)
 
@@ -390,7 +400,7 @@ class CalibrationVideoWindow(VideoWindowBase):
         sampling_layout.addWidget(intrinsics_btns)
         layout.addWidget(sampling_group)
 
-        # Error plot
+        # ──── ──── Error plot ──── ────
         self.error_plot = pg.PlotWidget(title="Reprojection Error")
         self.error_plot.setStyleSheet("background-color: black;")
         self.error_plot.setLabel('left', 'Error (pixels)')
@@ -411,7 +421,7 @@ class CalibrationVideoWindow(VideoWindowBase):
 
         self.video_container_layout.addWidget(self.error_plot, 1)
 
-        # Save / load
+        # ──── ──── Save / load ──── ────
         io_group = QGroupBox("Load/Save")
         io_group.setMinimumWidth(250)
         io_group.setMaximumWidth(250)
@@ -432,18 +442,29 @@ class CalibrationVideoWindow(VideoWindowBase):
 
         layout.addWidget(io_group)
 
+    # ──────────────────────────────── Worker control ────────────────────────────────
+
+    def _pause_worker(self):
+        """Pause both detector and calibration worker."""
+        self._detector.set_paused(True)
+        self._worker.set_paused(True)
+
+    def _resume_worker(self):
+        """Resume both detector and calibration worker."""
+        self._detector.set_paused(False)
+        self._worker.set_paused(False)
+
     # ──────────────────────────────── Frame processing ────────────────────────────────
 
     def _send_frame_for_processing(self):
-        """Send frame to detector thread."""
-        # Guard: don't send if detector is already processing or worker is blocking
+        """Send frame to detector thread if pipeline is ready."""
         if self._detector_busy or self._worker_blocking:
             return
 
         if self._latest_frame is not None:
             frame_idx = self._current_frame_data.get('frame_number', 0)
             self._detector_busy = True
-            self.send_frame_to_detector.emit(self._latest_frame, frame_idx)
+            self.frame_ready.emit(self._latest_frame, frame_idx)
 
     def _annotate_frame(self):
         """Draw calibration overlays on display buffer."""
@@ -479,7 +500,7 @@ class CalibrationVideoWindow(VideoWindowBase):
 
     @Slot()
     def _on_detector_finished(self):
-        """Busy state check to avoid queue build up"""
+        """Called when detector finishes processing a frame. Clears busy flag."""
         self._detector_busy = False
 
     @Slot()
@@ -562,8 +583,8 @@ class CalibrationVideoWindow(VideoWindowBase):
             self.latest_reprojected_points = np.zeros((0, 2))
 
     @Slot(bool)
-    def _on_blocking(self, is_blocking: bool):
-        """Handle blocking state change."""
+    def _on_worker_blocking(self, is_blocking: bool):
+        """Handle blocking state change from worker."""
         self._worker_blocking = is_blocking
         self.computing_text.setVisible(is_blocking)
 
