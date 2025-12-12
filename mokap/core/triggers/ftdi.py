@@ -10,13 +10,13 @@ logger = logging.getLogger(__name__)
 
 class FTDITrigger(AbstractTrigger):
     """
-    Manages a hardware trigger signal from a USB-to-TTL Serial adapter
-
-    This implementation generates a PWM signal in software by toggling a serial port
-    control line (RTS or DTR) in a separate thread
-
-    This is subject to the OS's accuracy and may not be suitable for
-    very high-frequency or high-precision timing applications
+    Manages a hardware trigger signal from a USB-to-TTL Serial adapter.
+    
+    This generates a PWM signal in software by toggling a serial port 
+        control line (RTS or DTR) in a separate thread.
+        
+    Note: This is subject to the OS's accuracy and may not be suitable 
+        for very high-frequency or high-precision timing applications.
     """
 
     def __init__(self, config: Optional[Dict] = None):
@@ -41,7 +41,7 @@ class FTDITrigger(AbstractTrigger):
         self._connect()
 
     def _connect(self) -> None:
-        """ Establishes the serial connection to the FTDI device """
+        """Establishes the serial connection to the FTDI device."""
 
         logger.debug(f'Connecting to FTDI trigger at {self.port}...')
 
@@ -62,7 +62,7 @@ class FTDITrigger(AbstractTrigger):
             self._connected = False
 
     def _set_pin_state(self, state: bool):
-        """ Sets the state of the selected control pin (RTS or DTR) """
+        """Sets the state of the selected control pin (RTS or DTR)."""
 
         if not self.connected:
             return
@@ -77,7 +77,7 @@ class FTDITrigger(AbstractTrigger):
             self.disconnect()
 
     def _trigger_loop(self, on_time: float, off_time: float):
-        """ The loop that generates the PWM signal, run in a thread """
+        """The loop that generates the PWM signal, run in a thread."""
 
         while not self._stop_event.is_set():
             self._set_pin_state(True)
@@ -94,7 +94,7 @@ class FTDITrigger(AbstractTrigger):
         self._set_pin_state(False)
 
     def start(self, frequency: float, duty_cycle_percent: int = 50) -> None:
-        """ Starts the trigger signal by launching a software PWM thread """
+        """Starts the trigger signal by launching a software PWM thread."""
         if not self.connected:
             logger.error('Cannot start trigger: not connected.')
             return
@@ -126,7 +126,7 @@ class FTDITrigger(AbstractTrigger):
         logger.info(f"Trigger started at {frequency:.2f} Hz with {duty_cycle_percent}% duty cycle.")
 
     def stop(self) -> None:
-        """ Stops the trigger signal thread """
+        """Stops the trigger signal thread."""
 
         if self._trigger_thread and self._trigger_thread.is_alive():
             self._stop_event.set()
@@ -141,7 +141,7 @@ class FTDITrigger(AbstractTrigger):
             self._set_pin_state(False)
 
     def disconnect(self) -> None:
-        """ Stops the trigger and closes the connection to the hardware device """
+        """Stops the trigger and closes the connection to the hardware device."""
         if not self.connected:
             return
 
@@ -164,7 +164,7 @@ if __name__ == '__main__':
     secs = 5
     freq = 10
 
-    print("--- Testing FtdiTrigger ---")
+    print("[ Testing FtdiTrigger ]")
 
     try:
         with FTDITrigger() as trigger:

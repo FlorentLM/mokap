@@ -17,9 +17,8 @@ logger = logging.getLogger(__name__)
 class FrameWriter(ABC):
     """
     Abstract base class for writing frames to disk.
-    It defines the common interface for all writer types (e.g., video, image sequence).
+    It defines the common interface for all writer types (e.g. video, image sequence).
     """
-
     def __init__(self, filepath: Path, pixel_format: str, width: int, height: int, framerate: float, cam_name: str):
         self.filepath = filepath
         self.pixel_format = pixel_format
@@ -66,7 +65,6 @@ class ImageSequenceWriter(FrameWriter):
     The filepath provided in the constructor is treated as the base name
     and is used as the folder to store the images
     """
-
     def __init__(self, folder: Path, ext: str, quality: int, **kwargs):
         # The filepath for the base class is the folder itself
         super().__init__(folder, **kwargs)
@@ -120,7 +118,7 @@ class ImageSequenceWriter(FrameWriter):
                 logger.info(f"ImageSequenceWriter: TIFF quality {self.quality} < 95."
                             f" Using JPEG compression inside TIFF.")
 
-        elif self.ext in ('bmp'):
+        elif self.ext == 'bmp':
             self._encoding_params['lossless'] = True
             logger.info(f"ImageSequenceWriter: BMP. Lossless.")
 
@@ -136,10 +134,10 @@ class ImageSequenceWriter(FrameWriter):
                 # Preserve bit depth for PNG/TIFF
                 # Scale up to full 16-bit range
                 if self.pixel_format == 'Mono10':
-                    return (frame.astype(np.uint16) << 6)
+                    return frame.astype(np.uint16) << 6
 
                 if self.pixel_format == 'Mono12':
-                    return (frame.astype(np.uint16) << 4)
+                    return frame.astype(np.uint16) << 4
 
                 return frame  # Mono16 is already uint16
             else:
@@ -207,7 +205,7 @@ class FFmpegWriter(FrameWriter):
 
         path = Path(which_ffmpeg)
         if not os.access(path, os.X_OK):
-            raise PermissionError(f"Can't run FFmpeg from `{path.as_posix()}`. Is it executable?.")
+            raise PermissionError(f"Can't run FFmpeg from `{path.as_posix()}`. Is it executable?")
 
         self.ffmpeg_path = path.resolve()
         print(self.ffmpeg_path)

@@ -10,8 +10,8 @@ logger = logging.getLogger(__name__)
 
 class AbstractTrigger(ABC):
     """
-    Abstract Base Class for a hardware trigger
-    Defines a common interface for different hardware trigger implementations
+    Abstract Base Class for a hardware trigger.
+    Defines a common interface for different hardware trigger implementations.
     """
 
     def __init__(self, config: Optional[Dict] = None):
@@ -21,18 +21,18 @@ class AbstractTrigger(ABC):
 
     @abstractmethod
     def _connect(self) -> None:
-        """ Establishes the connection to the hardware device """
+        """Establishes the connection to the hardware device."""
         pass
 
     @property
     def connected(self) -> bool:
-        """ Returns the connection status """
+        """Returns the connection status."""
         return self._connected
 
     @abstractmethod
     def start(self, frequency: float, duty_cycle_percent: int = 50) -> None:
         """
-        Starts the trigger signal
+        Starts the trigger signal.
 
         Args:
             frequency (float): The frequency of the signal in Hz
@@ -42,20 +42,20 @@ class AbstractTrigger(ABC):
 
     @abstractmethod
     def stop(self) -> None:
-        """ Stops the trigger signal """
+        """Stops the trigger signal."""
         pass
 
     @abstractmethod
     def disconnect(self) -> None:
-        """ Closes the connection to the hardware device """
+        """Closes the connection to the hardware device."""
         pass
 
     def __enter__(self):
-        """ Context manager entry point """
+        """Context manager entry point."""
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """ Context manager exit point. Ensures stop() and disconnect() are called """
+        """Context manager exit point. Ensures stop() and disconnect() are called."""
         if self.connected:
             logger.debug("Exiting context: stopping and disconnecting trigger.")
             self.stop()

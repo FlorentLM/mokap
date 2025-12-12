@@ -1,6 +1,5 @@
 import logging
 from typing import Optional, Dict
-
 from mokap.core.triggers.interface import AbstractTrigger
 from mokap.core.cameras.interface import AbstractCamera
 from mokap.core.cameras.genicam import GenICamCamera
@@ -10,10 +9,9 @@ logger = logging.getLogger(__name__)
 
 class CameraTrigger(AbstractTrigger):
     """
-    Uses a GenICam-compliant camera as a hardware trigger source for other cameras
-
+    Uses a GenICam-compliant camera as a hardware trigger source for other cameras.
     This trigger configures a designated 'primary' camera to output a signal on one of its GPIO lines.
-    This signal can then be used to trigger other cameras
+    This signal can then be used to trigger other cameras.
     """
 
     def __init__(self, primary_camera: AbstractCamera, config: Optional[Dict] = None):
@@ -32,7 +30,7 @@ class CameraTrigger(AbstractTrigger):
         self._connect()
 
     def _connect(self) -> None:
-        """ The connection is already managed by the MultiCam class """
+        """The connection is already managed by the MultiCam class."""
         
         if self.primary_camera and self.primary_camera.is_connected:
             self._connected = True
@@ -44,7 +42,7 @@ class CameraTrigger(AbstractTrigger):
             logger.error("PrimaryCameraTrigger could not initialize: Primary camera is not connected.")
 
     def start(self, frequency: float, duty_cycle_percent: int = 50):
-        """ Configures the primary camera to start outputting the trigger signal """
+        """Configures the primary camera to start outputting the trigger signal."""
 
         if not self.connected:
             logger.error("Cannot start trigger: not connected to the primary camera.")
@@ -75,7 +73,7 @@ class CameraTrigger(AbstractTrigger):
             self._connected = False
 
     def stop(self):
-        """ Configures the primary camera to stop outputting the trigger signal """
+        """Configures the primary camera to stop outputting the trigger signal."""
 
         if not self.primary_camera or not self.primary_camera.is_connected:
             return
@@ -95,7 +93,7 @@ class CameraTrigger(AbstractTrigger):
         logger.info('Trigger stopped.')
 
     def disconnect(self):
-        """ Resets the internal state. Does not disconnect the camera """ # TODO: should it?
+        """Resets the internal state. Does not disconnect the camera.""" # TODO: should it?
 
         if self.connected:
             self.stop()

@@ -11,19 +11,19 @@ logger = logging.getLogger(__name__)
 class RaspberryTrigger(AbstractTrigger):
     """
     Manages a hardware trigger signal from a Raspberry Pi using pigpio:
-    https://abyz.me.uk/rpi/pigpio/
+        https://abyz.me.uk/rpi/pigpio/
 
     This class establishes a persistent SSH connection to send commands that start and
-    stop a Pulse Width Modulation signal on a specified GPIO pin
+        stop a Pulse Width Modulation signal on a specified GPIO pin.
 
     It is designed to be used as a context manager to ensure that the SSH
-    connection is always closed properly
+        connection is always closed properly.
 
     Requires the following environment variables to be set in a .env file or
-    in the system environment:
-        - TRIGGER_HOST: The IP address or hostname of the Raspberry Pi
-        - TRIGGER_USER: The username for the SSH connection
-        - TRIGGER_PASS: The password for the SSH connection
+        in the system environment:
+            - TRIGGER_HOST: The IP address or hostname of the Raspberry Pi
+            - TRIGGER_USER: The username for the SSH connection
+            - TRIGGER_PASS: The password for the SSH connection
     """
 
     def __init__(self, config: Optional[Dict] = None):
@@ -46,7 +46,7 @@ class RaspberryTrigger(AbstractTrigger):
         self._connect()
 
     def _connect(self):
-        """ Establishes the SSH connection to the Raspberry Pi """
+        """Establishes the SSH connection to the Raspberry Pi."""
         required_vars = {
             "TRIGGER_HOST": self.host,
             "TRIGGER_USER": self.user,
@@ -106,7 +106,7 @@ class RaspberryTrigger(AbstractTrigger):
             self.disconnect()  # Assume connection is dead
 
     def stop(self):
-        """ Stops the PWM signal and sets the pin to a low state """
+        """Stops the PWM signal and sets the pin to a low state."""
         if not self.connected:
             # No need to print an error if already disconnected
             return
@@ -131,7 +131,7 @@ class RaspberryTrigger(AbstractTrigger):
             self.disconnect()
 
     def disconnect(self):
-        """ Closes the SSH connection if it is open """
+        """Closes the SSH connection if it is open."""
         if self.client:
             self.client.close()
             self.client = None
@@ -149,7 +149,7 @@ if __name__ == '__main__':
     secs = 5
     freq = 10
 
-    print("--- Testing RaspberryTrigger ---")
+    print("[ Testing RaspberryTrigger ]")
 
     try:
         with RaspberryTrigger() as trigger:

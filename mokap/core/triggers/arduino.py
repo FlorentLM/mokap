@@ -9,10 +9,8 @@ logger = logging.getLogger(__name__)
 
 class ArduinoTrigger(AbstractTrigger):
     """
-    Manages a hardware trigger signal from an Arduino-compatible board
-    over a serial (USB) connection
-
-    It sends simple commands ("START freq duty", "STOP") to the device
+    Manages a hardware trigger signal from an Arduino-compatible board over a serial (USB) connection.
+    It sends simple commands ("START freq duty", "STOP") to the device.
     """
 
     def __init__(self, config: Optional[Dict] = None):
@@ -32,7 +30,7 @@ class ArduinoTrigger(AbstractTrigger):
         self._connect()
 
     def _connect(self) -> None:
-        """ Establishes the serial connection to the Arduino """
+        """Establishes the serial connection to the Arduino."""
 
         try:
             logger.debug(f'Connecting to Arduino trigger at {self.port}...')
@@ -40,7 +38,7 @@ class ArduinoTrigger(AbstractTrigger):
             self.ser = serial.Serial(self.port, self.baud_rate, timeout=2)
             time.sleep(2)  # wait for arduino to reset and initialize
 
-            # simple handshake to confirm connection
+            # Simple handshake to confirm connection
             self.ser.write(b"PING\n")
             response = self.ser.readline().decode().strip()
             if response != 'PONG':
@@ -68,7 +66,7 @@ class ArduinoTrigger(AbstractTrigger):
             self._connected = False
 
     def _send_command(self, command: str) -> bool:
-        """ Sends a command and waits for an "OK" response """
+        """Sends a command and waits for an "OK" response."""
         if not self.connected:
             return False
 
@@ -125,7 +123,7 @@ if __name__ == '__main__':
     secs = 5
     freq = 31
 
-    print("--- Testing ArduinoTrigger ---")
+    print("[ Testing ArduinoTrigger ]")
 
     try:
         with ArduinoTrigger() as trigger:
