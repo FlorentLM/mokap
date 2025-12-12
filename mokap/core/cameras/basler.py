@@ -32,6 +32,13 @@ class BaslerCamera(GenICamCamera):
 
     # ────── GenICam abstract contract (Basler-specific implementation) ──────
 
+    def _get_node_map(self):
+
+        if not self._cam_ptr or not self.is_connected:
+            raise RuntimeError("Basler camera is not initialized.")
+
+        return self._cam_ptr.GetNodeMap()
+
     def _get_feature_value(self, name: str) -> Any:
         try:
             node = self._ptr.GetNodeMap().GetNode(name)

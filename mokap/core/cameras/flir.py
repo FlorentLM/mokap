@@ -52,7 +52,7 @@ class FLIRCamera(GenICamCamera):
 
     # ────── GenICam abstract contract (FLIR-specific implementation) ──────
 
-    def _get_nodemap(self):
+    def _get_node_map(self):
 
         if not self._cam_ptr or not self.is_connected:
             raise RuntimeError("FLIR camera is not initialized.")
@@ -61,7 +61,7 @@ class FLIRCamera(GenICamCamera):
 
     def _get_feature_value(self, name: str) -> Any:
         try:
-            node = self._get_nodemap().GetNode(name)
+            node = self._get_node_map().GetNode(name)
 
             if not PySpin.IsAvailable(node) or not PySpin.IsReadable(node):
                 raise AttributeError(f"Feature '{name}' not readable.")
@@ -87,7 +87,7 @@ class FLIRCamera(GenICamCamera):
 
     def _set_feature_value(self, name: str, value: Any) -> Any:
         try:
-            node = self._get_nodemap().GetNode(name)
+            node = self._get_node_map().GetNode(name)
 
             if not PySpin.IsAvailable(node) or not PySpin.IsWritable(node):
                 raise AttributeError(f"Feature '{name}' not writable.")
@@ -136,7 +136,7 @@ class FLIRCamera(GenICamCamera):
 
     def _get_feature_min_value(self, name: str) -> Any:
         try:
-            node = self._get_nodemap().GetNode(name)
+            node = self._get_node_map().GetNode(name)
             iface = node.GetPrincipalInterfaceType()
 
             match iface:
@@ -152,7 +152,7 @@ class FLIRCamera(GenICamCamera):
 
     def _get_feature_max_value(self, name: str) -> Any:
         try:
-            node = self._get_nodemap().GetNode(name)
+            node = self._get_node_map().GetNode(name)
             iface = node.GetPrincipalInterfaceType()
 
             match iface:
@@ -168,7 +168,7 @@ class FLIRCamera(GenICamCamera):
 
     def _get_feature_entries(self, name: str) -> List[str]:
         try:
-            node = self._get_nodemap().GetNode(name)
+            node = self._get_node_map().GetNode(name)
             if not PySpin.IsAvailable(node) or not PySpin.IsReadable(node):
                 raise AttributeError(f"Feature '{name}' not readable.")
 
