@@ -6,40 +6,49 @@ import shutil
 import subprocess
 import time
 from datetime import datetime
-from multiprocessing.dummy import current_process
 from pathlib import Path
 from queue import Queue, Empty
-from threading import Thread, Event, Lock, current_thread
+from threading import Thread, Event, Lock
 from typing import List, Dict, Optional, Tuple, Any
 import numpy as np
 from PIL import Image
-
 from mokap.core.cameras import CameraFactory, AbstractCamera, CAMERAS_COLOURS
 from mokap.core.triggers import AbstractTrigger, CameraTrigger, RaspberryTrigger, ArduinoTrigger, FTDITrigger
 from mokap.core.writers import FrameWriter, ImageSequenceWriter, FFmpegWriter
-
-from mokap.utils import fileio, is_locked
+from mokap.utils import fileio
 from mokap.utils.system import setup_ulimit, safe_replace
 
 logger = logging.getLogger(__name__)
 
+# Camera properties that can be broadcast to all cameras via the manager
+# These are properties defined in AbstractCamera that make sense to set globally
+BROADCAST_CAMERA_PROPERTIES = {
+    'exposure', 'gain', 'black_level', 'gamma', 'binning', 'binning_mode',
+    'pixel_format', 'roi', 'hardware_triggered'
+}
+
 
 class MultiCam:
     """
-    An orchestrator for managing multiple cameras for high-speed, synchronized recording
-    It handles camera discovery, threading, recording state, and file output
+    An orchestrator for managing multiple cameras for high-speed, synchronized recording.
+    It handles camera discovery, threading, recording state, and file output.
+
+    Camera properties (exposure, gain, etc.) can be accessed directly on this class
+    and will be broadcast to all cameras. For example:
+        manager.exposure = 5000  # Sets exposure on all cameras
+        manager.gain = 10.0      # Sets gain on all cameras
     """
 
     def __init__(self,
-                 config:         Optional[Dict] = None,
-                 session_name:   Optional[str] = None):
+                 config: Optional[Dict] = None,
+                 session_name: Optional[str] = None):
 
-        # --- Configuration ---
+        # Configuration
         self.config = config if config else fileio.read_config('config.yaml')
         self._base_folder = Path(self.config.get('base_path', './MokapRecordings'))
         self._base_folder.mkdir(parents=True, exist_ok=True)
 
-        # --- State Management ---
+        # State management
         self._acquiring = Event()
         self._recording = Event()
         self._threads: List[Thread] = []
@@ -47,12 +56,12 @@ class MultiCam:
         self._session_name = ""
         self.session_name = session_name  # use setter to initialize
 
-        setup_ulimit()   # Linux only, does nothing on other platforms
+        setup_ulimit()  # Linux only, does nothing on other platforms
 
         # internal value for the framerate used to broadcast to all cameras
         self._framerate = self.config.get('framerate', 60)
 
-        # --- Hardware and Cameras ---
+        # Hardware and cameras
         self.cameras: List[AbstractCamera] = []
         self.camera_colours: Dict[str, str] = {}
         self._camera_setting_overrides: Dict[str, Dict] = {}
@@ -62,7 +71,7 @@ class MultiCam:
         self._trigger_instance: Optional[AbstractTrigger] = None
         self._initialize_trigger()
 
-        ## --- Threading Resources ---
+        # Threading resources
         self.buffer_size = self.config.get('frame_buffer_size', 200)
 
         # shared state for the most recent frame protected by a lock
@@ -80,8 +89,115 @@ class MultiCam:
         for event in self._finished_saving_events:
             event.set()
 
-        # --- Metadata ---
         self._metadata = {'sessions': []}
+
+    # ─────────────────────────────── Camera property pass-through ───────────────────────────────
+
+    def __getattr__(self, name: str) -> Any:
+        """
+        Pass-through getter for camera properties.
+        Returns the value if all cameras agree, None otherwise.
+        """
+        # Avoid infinite recursion during initialization
+        if name.startswith('_') or name not in BROADCAST_CAMERA_PROPERTIES:
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
+        # Check if we have cameras
+        if not self.cameras:
+            return None
+
+        # Get values from all cameras
+        values = []
+        for cam in self.cameras:
+            try:
+                values.append(getattr(cam, name))
+            except AttributeError:
+                return None
+
+        # Return value if all cameras agree, None otherwise
+        if len(set(map(str, values))) == 1:  # Use str() for unhashable types like lists
+            return values[0]
+        return None
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """
+        Pass-through setter for camera properties.
+        Broadcasts the value to all cameras.
+        """
+        # Handle private attributes and non-camera properties normally
+        if name.startswith('_') or name not in BROADCAST_CAMERA_PROPERTIES:
+            super().__setattr__(name, value)
+            return
+
+        # Broadcast to all cameras
+        if hasattr(self, 'cameras'):
+            for cam in self.cameras:
+                try:
+                    setattr(cam, name, value)
+                except Exception as e:
+                    logger.error(f"Could not set '{name}' on camera {cam.name}: {e}")
+
+    def get_camera_property_range(self, name: str) -> Optional[Tuple[Any, Any]]:
+        """
+        Get the range for a camera property across all cameras.
+        Returns the most restrictive range (max of mins, min of maxes).
+        """
+        if not self.cameras:
+            return None
+
+        range_attr = f"{name}_range"
+        mins, maxes = [], []
+
+        for cam in self.cameras:
+            try:
+                r = getattr(cam, range_attr)
+                if r:
+                    mins.append(r[0])
+                    maxes.append(r[1])
+            except AttributeError:
+                pass
+
+        if mins and maxes:
+            return (max(mins), min(maxes))
+        return None
+
+    # ─────────────────────────────── Framerate (special case) ───────────────────────────────
+
+    @property
+    def framerate(self) -> Optional[float]:
+        return self._framerate
+
+    @framerate.setter
+    def framerate(self, value: float):
+        """Sets the framerate for the whole system (incl external trigger)."""
+        new_framerate = float(value)
+        self._framerate = new_framerate
+
+        if self.hardware_triggered:
+            # Hardware trigger controls timing: update trigger if already running
+            if self._acquiring.is_set() and self._trigger_instance:
+                self._trigger_instance.start(self._framerate)
+        else:
+            # Software trigger: set framerate on each camera directly
+            for cam in self.cameras:
+                try:
+                    cam.framerate = new_framerate
+                except Exception as e:
+                    logger.error(f"Could not set framerate on camera {cam.name}: {e}")
+
+            # Verify all cameras accepted the framerate
+            if not all(cam.framerate == new_framerate for cam in self.cameras):
+                self._framerate = None
+                logger.warning("Not all cameras could be set to the requested framerate.")
+            else:
+                logger.debug(f"All cameras successfully set to {new_framerate} fps.")
+
+    @property
+    def framerate_range(self) -> Optional[Tuple[float, float]]:
+        """Get the most restrictive framerate range across all cameras."""
+        return self.get_camera_property_range('framerate')
+
+    # ─────────────────────────────── Trigger setup ───────────────────────────────
 
     def _initialize_trigger(self):
 
@@ -94,13 +210,14 @@ class MultiCam:
 
         if not trigger_type:
             logger.error(
-                "Config contains 'hardware_trigger: true', but no trigger 'type' found. Running without hardware trigger.")
+                "Config contains 'hardware_trigger: true', but no trigger 'type' found."
+                " Running without hardware trigger.")
             self._trigger_instance = None
             return
 
         if trigger_type == 'camera':
             primary_cam_name = trigger_conf.get('name')
-            
+
             if not primary_cam_name:
                 logger.error("Camera trigger requires 'name' in config. Disabling trigger.")
                 self._trigger_instance = None
@@ -110,14 +227,10 @@ class MultiCam:
 
             if not primary_camera:
                 logger.error(
-                    f"Camera '{primary_cam_name}' for trigger not found among connected cameras. Disabling trigger.")
+                    f"Camera '{primary_cam_name}' for trigger not found among connected cameras."
+                    f" Disabling trigger.")
                 self._trigger_instance = None
                 return
-
-            # if primary_camera.hardware_triggered:
-            #     logger.warning(
-            #         f"Primary camera '{primary_cam_name}' was configured with 'hardware_trigger: true'.\n"
-            #         f"This will be overridden, as it cannot be both a primary and a secondary.")
 
             self._trigger_instance = CameraTrigger(primary_camera=primary_camera, config=trigger_conf)
 
@@ -132,20 +245,23 @@ class MultiCam:
             logger.info("FTDI Trigger is not recommended for high-precision applications.")
 
         else:
-            logger.error(f"Trigger 'type' '{trigger_type}' is not valid. Running without hardware trigger.")
+            logger.error(f"Trigger 'type' '{trigger_type}' is not valid."
+                         f" Running without hardware trigger.")
             self._trigger_instance = None
 
         if self._trigger_instance and not self._trigger_instance.connected:
-            logger.error("Failed to connect to trigger. Running without hardware trigger.")
+            logger.error("Failed to connect to trigger."
+                         " Running without hardware trigger.")
             self._trigger_instance = None
 
+    # ─────────────────────────────── Camera connection ───────────────────────────────
+
     def connect_cameras(self):
-        """ Discovers and connects to all available cameras using the camera factory """
+        """Discovers and connects to all available cameras using the camera factory."""
 
         logger.debug("Discovering cameras...")
 
         # Get a list of all physically present devices from the factory
-        # TODO: re-implement virtual cameras support
         all_discovered_devices = CameraFactory.discover_cameras()
 
         if not all_discovered_devices:
@@ -176,7 +292,7 @@ class MultiCam:
 
         for friendly_name, cam_config in configured_sources.items():
             serial = str(cam_config.get('serial', ''))  # ensure serial is a string
-            vendor = cam_config.get('vendor')           # for serial-less lookup
+            vendor = cam_config.get('vendor')  # for serial-less lookup
 
             device_info = None
 
@@ -248,7 +364,7 @@ class MultiCam:
                     logger.error(f"Failed to connect or configure camera '{friendly_name}' (S/N: {serial}): {e}")
 
     def disconnect_cameras(self):
-        """ Cleanly disconnect all cameras """
+        """Cleanly disconnect all cameras."""
 
         for cam in self.cameras:
             if cam.is_connected:
@@ -256,8 +372,10 @@ class MultiCam:
 
         logger.info("All cameras disconnected.")
 
+    # ─────────────────────────────── Acquisition control ───────────────────────────────
+
     def start_acquisition(self):
-        """ Starts all background threads for grabbing and displaying frames """
+        """Starts all background threads for grabbing and displaying frames."""
 
         if self._acquiring.is_set():
             logger.info("Acquisition is already running.")
@@ -284,7 +402,7 @@ class MultiCam:
         logger.info(f"Acquisition started with {self.nb_cameras} cameras.")
 
     def stop_acquisition(self):
-        """ Stops all background threads """
+        """Stops all background threads."""
 
         if not self._acquiring.is_set():
             return
@@ -308,8 +426,10 @@ class MultiCam:
 
         logger.info("Acquisition stopped.")
 
+    # ─────────────────────────────── Recording control ───────────────────────────────
+
     def start_recording(self):
-        """ Begins a recording session, signaling the writer threads to save frames """
+        """Begins a recording session, signaling the writer threads to save frames."""
 
         if not self._acquiring.is_set():
             logger.error("Cannot record, acquisition is not running.")
@@ -324,7 +444,7 @@ class MultiCam:
                       'binning', 'binning_mode', 'roi', 'save_format']
         session_config = {k: self.config[k] for k in keys_order if k in self.config}
 
-        if session_config.get('save_format') !=  'mp4' and self.config.get('save_quality'):
+        if session_config.get('save_format') != 'mp4' and self.config.get('save_quality'):
             session_config['save_quality'] = self.config.get('save_quality')
 
         # Prepare metadata for this new session
@@ -338,7 +458,7 @@ class MultiCam:
         if self.hardware_triggered:
             session_metadata['trigger_frequency'] = self.framerate
         session_metadata.update(session_config)
-        session_metadata['cameras'] = {}    # this will be populated ad the end of a recording
+        session_metadata['cameras'] = {}  # this will be populated at the end of a recording
 
         self._metadata['sessions'].append(session_metadata)
 
@@ -351,7 +471,7 @@ class MultiCam:
         logger.info(f"Recording started. Saving to: {self.full_path}")
 
     def pause_recording(self):
-        """ Pauses the current recording session, finalizing files """
+        """Pauses the current recording session, finalizing files."""
 
         if not self._recording.is_set():
             return
@@ -362,7 +482,7 @@ class MultiCam:
 
         logger.info("Finishing writing for current session...")
 
-        # we calculate and store session duration BEFORE asking the threads to stop
+        # We calculate and store session duration *before* asking the threads to stop
         curr_session = self._metadata['sessions'][-1]
 
         start_ts = curr_session['start_time']
@@ -412,8 +532,10 @@ class MultiCam:
 
         logger.info("Recording paused. Files saved.")
 
+    # ─────────────────────────────── Threading ───────────────────────────────
+
     def _grabber_thread(self, cam_idx: int):
-        """ Dedicated thread to continuously grab frames from a single camera """
+        """Dedicated thread to continuously grab frames from a single camera."""
 
         cam = self.cameras[cam_idx]
         writer_queue = self._writer_queues[cam_idx]
@@ -444,8 +566,8 @@ class MultiCam:
 
     def _writer_thread(self, cam_idx: int):
         """
-        Dedicated thread to write frames from a queue to a file
-        This thread manages the lifecycle of a FrameWriter object
+        Dedicated thread to write frames from a queue to a file.
+        This thread manages the lifecycle of a FrameWriter object.
         """
         cam = self.cameras[cam_idx]
         w_queue = self._writer_queues[cam_idx]
@@ -459,7 +581,7 @@ class MultiCam:
                 try:
                     first_frame, first_frame_data = w_queue.get(timeout=2.0)
 
-                    curr_session_idx = len(self._metadata['sessions']) -1
+                    curr_session_idx = len(self._metadata['sessions']) - 1
 
                     self._writers[cam_idx] = self._create_writer(cam, curr_session_idx)
                     writer = self._writers[cam_idx]
@@ -477,7 +599,6 @@ class MultiCam:
                 except Exception as e:
                     logger.error(f"Failed to create writer for {cam.name}: {e}")
                     self._recording.clear()  # this is debatable, but prevents getting stuck in an error loop
-                    # TODO: Maybe keep a separate status for each camera?
 
                     self._finished_saving_events[cam_idx].set()
                     continue
@@ -518,7 +639,7 @@ class MultiCam:
                 time.sleep(0.1)
 
     def _create_writer(self, cam: AbstractCamera, session_idx: int) -> FrameWriter:
-        """ Factory method to instantiate the correct writer based on config """
+        """Factory method to instantiate the correct writer based on config."""
 
         # Get the camera-specific config, if it exists
         cam_config = self.config.get('sources', {}).get(cam.name, {})
@@ -558,7 +679,7 @@ class MultiCam:
             )
 
     def _correct_video_framerate(self, filepath: Path, actual_fps: float):
-        """ Corrects the framerate metadata in a video file without re-encoding """
+        """Corrects the framerate metadata in a video file without re-encoding."""
 
         if not filepath.exists() or actual_fps <= 0:
             return
@@ -594,7 +715,7 @@ class MultiCam:
                 os.remove(temp_filepath)
 
     def take_snapshot(self) -> bool:
-        """ Takes a snapshot from all cameras (tries to sync) """
+        """Takes a snapshot from all cameras (tries to sync)."""
 
         if not self.acquiring:
             logger.warning("Cannot take snapshot, acquisition is not running.")
@@ -618,7 +739,6 @@ class MultiCam:
         frames, frames_datas = zip(*current_frames)
 
         # We only have one frame per camera, so we check if their IDs match
-        # This is a much simpler check than the previous buffer search
         first_frame_id = frames_datas[0].get('frame_id')
         is_synchronized = False
         if first_frame_id is not None:
@@ -637,7 +757,6 @@ class MultiCam:
         for i, cam in enumerate(self.cameras):
             try:
                 Image.fromarray(frames[i]).save(self.full_path / f"snapshot_{now}_{cam.name}.png")
-                # TODO: use cv2 and the config's quality settings
 
             except Exception as e:
                 logger.error(f"Could not save snapshot for camera {cam.name}: {e}")
@@ -648,24 +767,7 @@ class MultiCam:
 
         return success
 
-    def set_all_cameras(self, parameter: str, value: Any):
-        """ Broadcasts a setting to all cameras """
-        # TODO: we probably want to have setters that will call this, like the framerate one for other properties
-
-        logger.debug(f"Broadcasting '{parameter} = {value}' to all cameras.")
-
-        # The trigger framerate must be set via its own property
-        if parameter == 'framerate' and self.hardware_triggered:
-            self.framerate = value
-
-        for cam in self.cameras:
-            try:
-                # use setattr to dynamically set the property (e.g., 'exposure', 'gain')
-                setattr(cam, parameter, value)
-            except Exception as e:
-                logger.error(f"Could not set '{parameter}' on camera {cam.name}: {e}")
-
-    # --- Session and Metadata Management ---
+    # ─────────────────────────────── Session and metadata ───────────────────────────────
 
     @property
     def session_name(self) -> str:
@@ -688,56 +790,12 @@ class MultiCam:
         return self._base_folder / self.session_name
 
     def save_metadata(self):
-        """ Saves the current session metadata to a JSON file """
+        """Saves the current session metadata to a JSON file."""
         meta_path = self.full_path / 'metadata.json'
         with open(meta_path, 'w', encoding='utf-8') as f:
             json.dump(self._metadata, f, ensure_ascii=False, indent=4)
 
-    def __enter__(self):
-        """ Context manager entry: starts acquisition """
-        self.start_acquisition()
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """ Context manager exit: ensures threads and cameras are cleaned up """
-        self.stop_acquisition()
-        self.disconnect_cameras()
-
-    @property
-    def framerate(self) -> Optional[float]:
-        return self._framerate
-
-    @framerate.setter
-    def framerate(self, value: float):
-        """ Sets the framerate for the whole system (incl external trigger) """
-
-        # TODO: Similar setters for other properties
-
-        new_framerate = float(value)
-
-        # for hardware trigger, update internal value and the trigger itself
-        self._framerate = new_framerate
-        if self._acquiring.is_set() and self._trigger_instance:
-            # only update if already running (if not, trigger will pick up new value when it starts)
-            self._trigger_instance.start(self._framerate)
-
-        else:
-            # for software trigger, broadcast to all cameras and then verify
-            self.set_all_cameras('framerate', new_framerate)
-
-            all_cams_synced = True
-            for cam in self.cameras:
-                if cam.framerate != new_framerate:
-                    logger.warning(f"Camera {cam.name} could not be set to {new_framerate} fps. Actual: {cam.framerate} fps.")
-                    all_cams_synced = False
-                    break
-
-            if all_cams_synced:
-                self._framerate = new_framerate
-                logger.debug(f"All cameras successfully set to {new_framerate} fps.")
-            else:
-                self._framerate = None
-                logger.warning("Not all cameras could be set to the requested framerate. System framerate is now undefined.")
+    # ─────────────────────────────── Properties ───────────────────────────────
 
     @property
     def nb_cameras(self) -> int:
@@ -745,12 +803,12 @@ class MultiCam:
 
     @property
     def acquiring(self) -> bool:
-        """ Provides backward compatibility for the old '.acquiring' property """
+        """Returns True if acquisition is running."""
         return self._acquiring.is_set()
 
     @property
     def recording(self) -> bool:
-        """ Provides backward compatibility for the old '.recording' property """
+        """Returns True if recording is active."""
         return self._recording.is_set()
 
     @property
@@ -759,32 +817,46 @@ class MultiCam:
 
     @property
     def saved(self) -> Tuple[int, ...]:
-        """ count of frames saved in the current session, per camera """
+        """Count of frames saved in the current session, per camera."""
         return tuple(self._session_frame_counts)
 
     @property
     def buffered(self) -> Tuple[int, ...]:
-        """ Rough count of how many frames are currently in the buffers """
-        # TODO: this should have negligible performance impact, but would be good to test thouroughly
+        """Rough count of how many frames are currently in the buffers."""
         return tuple(q.qsize() for q in self._writer_queues)
 
     @property
     def colours(self) -> Dict[str, str]:
-        """ Alias for camera_colours """
+        """Alias for camera_colours."""
         return self.camera_colours
 
+    # ─────────────────────────────── Context manager ───────────────────────────────
+
+    def __enter__(self):
+        """Context manager entry: starts acquisition."""
+        self.start_acquisition()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit: ensures threads and cameras are cleaned up."""
+        self.stop_acquisition()
+        self.disconnect_cameras()
+
+    # ─────────────────────────────── Some aliases ───────────────────────────────
+    # TODO: Maybe remove these
+
     def on(self):
-        """ Alias for start_acquisition() """
+        """Alias for start_acquisition()."""
         self.start_acquisition()
 
     def off(self):
-        """ Alias for stop_acquisition() """
+        """Alias for stop_acquisition()."""
         self.stop_acquisition()
 
     def record(self):
-        """ Alias for start_recording() """
+        """Alias for start_recording()."""
         self.start_recording()
 
     def pause(self):
-        """ Alias for pause_recording() """
+        """Alias for pause_recording()."""
         self.pause_recording()

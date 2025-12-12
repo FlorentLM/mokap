@@ -608,7 +608,7 @@ class MainControls(QMainWindow):
 
         now = time.monotonic()
         if now - self._tick >= 0.5:
-            size = get_size(self.manager.full_path)
+            size = get_size(self.manager.full_path) if self.manager.full_path.is_dir() else 0
             self.frames_saved_label.setText(f'Saved: ({pretty_size(size)})')
             self._tick = now
 
