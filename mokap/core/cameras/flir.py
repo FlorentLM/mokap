@@ -35,8 +35,10 @@ class FLIRCamera(GenICamCamera):
 
         super().__init__(unique_id=unique_id)
 
+    # ────── Hooks ──────
+
     def _pre_apply_configuration(self, settings: Dict[str, Any]):
-        """ FLIR-specific hook """
+        """FLIR-specific hook."""
 
         # TODO: check how polarisation is called in other vendors' SDKs
 
@@ -48,93 +50,7 @@ class FLIRCamera(GenICamCamera):
 
         super()._pre_apply_configuration(settings)  # call parent class's hook
 
-    def connect(self, config: Optional[Dict[str, Any]] = None) -> None:
-
-        if self.is_connected:
-            logger.warning(f"Camera {self.unique_id} is already connected.")
-            return
-        try:
-            self._cam_ptr.Init()
-            self._is_connected = True
-            self._apply_configuration(config)
-            logger.info(f"Connected to FLIR camera {self.unique_id}")
-
-        except PySpin.SpinnakerException as e:
-            self._is_connected = False
-            raise RuntimeError(f"Failed to connect to FLIR camera {self.unique_id}: {e}") from e
-
-    def disconnect(self) -> None:
-        if self.is_grabbing: self.stop_grabbing()
-
-        if self._cam_ptr and self._is_connected: self._cam_ptr.DeInit()
-
-        # PySpin's garbage collection requires deleting the camera pointer object
-        # to release the camera itself
-        if hasattr(self, '_cam_ptr') and self._cam_ptr is not None:
-            del self._cam_ptr
-            self._cam_ptr = None
-
-        self._is_connected = False
-        logger.info(f"Disconnected from FLIR camera {self.unique_id}")
-
-        # After releasing the camera, we must release the system instance reference
-        # that was acquired when this camera was created
-        if hasattr(self, '_system') and self._system is not None:
-            self._system.ReleaseInstance()
-            self._system = None
-
-    def start_grabbing(self) -> None:
-        if self.is_connected and not self.is_grabbing and self._cam_ptr:
-            self._cam_ptr.BeginAcquisition()
-            self._is_grabbing = True
-
-    def stop_grabbing(self) -> None:
-        if self.is_grabbing and self._cam_ptr:
-            self._cam_ptr.EndAcquisition()
-            self._is_grabbing = False
-
-    def grab_frame(self, timeout_ms: int = 2000) -> Tuple[np.ndarray, Dict[str, Any]]:
-        # This is specific to PySpin's grabbing strategy
-
-        if not self._cam_ptr:
-            raise RuntimeError("Camera is not connected or has been released.")
-
-        if not self.is_grabbing: self._cam_ptr.BeginAcquisition()
-
-        image_result = None
-        try:
-            image_result = self._cam_ptr.GetNextImage(timeout_ms)
-
-            if image_result.IsIncomplete():
-                raise IOError(f"Grab failed: Image incomplete with status {image_result.GetImageStatus()}")
-            else:
-                frame_meta = {'frame_number': image_result.GetFrameID(), 'timestamp': image_result.GetTimeStamp()}
-
-                if self._polarisation_sensor:
-
-                    # quad_0 = PySpin.ImageUtilityPolarization.ExtractPolarQuadrant(image_result, 0).GetNDArray().copy()
-                    # quad_45 = PySpin.ImageUtilityPolarization.ExtractPolarQuadrant(image_result, 1).GetNDArray().copy()
-                    # quad_90 = PySpin.ImageUtilityPolarization.ExtractPolarQuadrant(image_result, 2).GetNDArray().copy()
-                    # quad_135 = PySpin.ImageUtilityPolarization.ExtractPolarQuadrant(image_result, 3).GetNDArray().copy()
-                    #
-                    # image_arr = pol_to_hsv(quad_0, quad_45, quad_90, quad_135)
-                    # frame_meta['pixel_format'] = 'HSV'
-
-                    quad_0 = PySpin.ImageUtilityPolarization.ExtractPolarQuadrant(image_result, 0)
-                    image_arr = quad_0.GetNDArray().copy()
-                    frame_meta['pixel_format'] = self._POL_PATTERN.sub('', self._pixel_format)
-
-                else:
-                    # IMPORTANT: GetNDArray returns a view. We must copy it!!
-                    image_arr = image_result.GetNDArray().copy()
-
-                return image_arr, frame_meta
-
-        finally:
-            if image_result: image_result.Release()
-            if not self.is_grabbing: self._cam_ptr.EndAcquisition()
-
-    # ────── GenICamCamera abstract contract ──────
+    # ────── GenICam abstract contract (FLIR-specific implementation) ──────
 
     def _get_nodemap(self):
 
@@ -218,19 +134,6 @@ class FLIRCamera(GenICamCamera):
         except PySpin.SpinnakerException as e:
             raise AttributeError(f"Failed to set feature '{name}' to '{value}': {e}") from e
 
-    def _get_feature_entries(self, name: str) -> List[str]:
-        try:
-            node = self._get_nodemap().GetNode(name)
-            if not PySpin.IsAvailable(node) or not PySpin.IsReadable(node):
-                raise AttributeError(f"Feature '{name}' not readable.")
-
-            enum_node = PySpin.CEnumerationPtr(node)
-
-            return [entry.GetSymbolic() for entry in enum_node.GetEntries()]
-
-        except PySpin.SpinnakerException as e:
-            raise AttributeError(f"Failed to get entries for feature '{name}': {e}") from e
-
     def _get_feature_min_value(self, name: str) -> Any:
         try:
             node = self._get_nodemap().GetNode(name)
@@ -262,3 +165,107 @@ class FLIRCamera(GenICamCamera):
 
         except PySpin.SpinnakerException as e:
             raise AttributeError(f"Failed to get max for feature '{name}': {e}") from e
+
+    def _get_feature_entries(self, name: str) -> List[str]:
+        try:
+            node = self._get_nodemap().GetNode(name)
+            if not PySpin.IsAvailable(node) or not PySpin.IsReadable(node):
+                raise AttributeError(f"Feature '{name}' not readable.")
+
+            enum_node = PySpin.CEnumerationPtr(node)
+
+            return [entry.GetSymbolic() for entry in enum_node.GetEntries()]
+
+        except PySpin.SpinnakerException as e:
+            raise AttributeError(f"Failed to get entries for feature '{name}': {e}") from e
+
+    # ────── Core methods ──────
+
+    def connect(self, config: Optional[Dict[str, Any]] = None) -> None:
+
+        if self.is_connected:
+            logger.warning(f"Camera {self.unique_id} is already connected.")
+            return
+        try:
+            self._cam_ptr.Init()
+            self._is_connected = True
+            self._apply_configuration(config)
+            logger.info(f"Connected to FLIR camera {self.unique_id}")
+
+        except PySpin.SpinnakerException as e:
+            self._is_connected = False
+            raise RuntimeError(f"Failed to connect to FLIR camera {self.unique_id}: {e}") from e
+
+    def disconnect(self) -> None:
+
+        if self.is_grabbing:
+            self.stop_grabbing()
+
+        if self._cam_ptr and self._is_connected: self._cam_ptr.DeInit()
+
+        # PySpin's garbage collection requires deleting the camera pointer object
+        # to release the camera itself
+        if hasattr(self, '_cam_ptr') and self._cam_ptr is not None:
+            del self._cam_ptr
+            self._cam_ptr = None
+
+        self._is_connected = False
+        logger.info(f"Disconnected from FLIR camera {self.unique_id}")
+
+        # After releasing the camera, we must release the system instance reference
+        # that was acquired when this camera was created
+        if hasattr(self, '_system') and self._system is not None:
+            self._system.ReleaseInstance()
+            self._system = None
+
+    def start_grabbing(self) -> None:
+        if self.is_connected and not self.is_grabbing and self._cam_ptr:
+            self._cam_ptr.BeginAcquisition()
+            self._is_grabbing = True
+
+    def stop_grabbing(self) -> None:
+        if self.is_grabbing and self._cam_ptr:
+            self._cam_ptr.EndAcquisition()
+            self._is_grabbing = False
+
+    def grab_frame(self, timeout_ms: int = 2000) -> Tuple[np.ndarray, Dict[str, Any]]:
+        # This is specific to PySpin's grabbing strategy
+
+        if not self._cam_ptr:
+            raise RuntimeError("Camera is not connected or has been released.")
+
+        if not self.is_grabbing:
+            self._cam_ptr.BeginAcquisition()
+
+        image_result = None
+        try:
+            image_result = self._cam_ptr.GetNextImage(timeout_ms)
+
+            if image_result.IsIncomplete():
+                raise IOError(f"Grab failed: Image incomplete with status {image_result.GetImageStatus()}")
+            else:
+                frame_meta = {'frame_number': image_result.GetFrameID(), 'timestamp': image_result.GetTimeStamp()}
+
+                if self._polarisation_sensor:
+
+                    # quad_0 = PySpin.ImageUtilityPolarization.ExtractPolarQuadrant(image_result, 0).GetNDArray().copy()
+                    # quad_45 = PySpin.ImageUtilityPolarization.ExtractPolarQuadrant(image_result, 1).GetNDArray().copy()
+                    # quad_90 = PySpin.ImageUtilityPolarization.ExtractPolarQuadrant(image_result, 2).GetNDArray().copy()
+                    # quad_135 = PySpin.ImageUtilityPolarization.ExtractPolarQuadrant(image_result, 3).GetNDArray().copy()
+                    #
+                    # image_arr = pol_to_hsv(quad_0, quad_45, quad_90, quad_135)
+                    # frame_meta['pixel_format'] = 'HSV'
+
+                    quad_0 = PySpin.ImageUtilityPolarization.ExtractPolarQuadrant(image_result, 0)
+                    image_arr = quad_0.GetNDArray().copy()
+                    frame_meta['pixel_format'] = self._POL_PATTERN.sub('', self._pixel_format)
+
+                else:
+                    # IMPORTANT: GetNDArray returns a view: must copy it!!
+                    image_arr = image_result.GetNDArray().copy()
+
+                return image_arr, frame_meta
+
+        finally:
+            if image_result: image_result.Release()
+            if not self.is_grabbing: self._cam_ptr.EndAcquisition()

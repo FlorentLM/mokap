@@ -20,66 +20,17 @@ class BaslerCamera(GenICamCamera):
         self._ptr: Optional[pylon.InstantCamera] = None
         super().__init__(unique_id=pylon_device_info.GetSerialNumber())
 
-    def connect(self, config: Optional[Dict[str, Any]] = None) -> None:
-        if self.is_connected:
-            logger.warning(f"Camera {self.unique_id} is already connected.")
-            return
-        try:
-            self._ptr = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateDevice(self._device_info))
-            self._ptr.Open()
-            self._is_connected = True
-            self._apply_configuration(config)
-
-        except geni.GenericException as e:
-            self._is_connected = False
-            raise RuntimeError(f"Failed to connect to Basler camera {self.unique_id}: {e}") from e
+    # ────── Hooks ──────
 
     def _pre_apply_configuration(self, settings: Dict[str, Any]):
-        """ Basler-specific hook """
+        """Basler-specific hook."""
 
         super()._pre_apply_configuration(settings)  # call parent class's hook
 
         self._set_feature_value('UserSetSelector', 'Default')
         self._ptr.UserSetLoad.Execute()
 
-    def disconnect(self) -> None:
-        if self.is_grabbing: self.stop_grabbing()
-        if self._ptr and self._ptr.IsOpen(): self._ptr.Close()
-        self._ptr = None
-        self._is_connected = False
-
-        logger.info(f"Disconnected from Basler camera {self.unique_id}")
-
-    def start_grabbing(self) -> None:
-        if self.is_connected and not self.is_grabbing:
-            self._ptr.StartGrabbing(pylon.GrabStrategy_OneByOne)
-            self._is_grabbing = True
-
-    def stop_grabbing(self) -> None:
-        if self.is_grabbing:
-            self._ptr.StopGrabbing()
-            self._is_grabbing = False
-
-    def grab_frame(self, timeout_ms: int = 2000) -> Tuple[np.ndarray, Dict[str, Any]]:
-        # This is specific to pylon's grabbing strategy
-
-        if not self.is_grabbing:
-            self._ptr.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
-
-        try:
-            grab_result = self._ptr.RetrieveResult(timeout_ms, pylon.TimeoutHandling_ThrowException)
-            if grab_result:
-                # pylon's Array creates a copy by default, so it is safe
-                return grab_result.Array, {'frame_number': grab_result.ImageNumber, 'timestamp': grab_result.TimeStamp}
-            else:
-                raise IOError(f"Grab failed: {grab_result.GetErrorCode()} {grab_result.GetErrorDescription()}")
-        finally:
-            if 'grab_result' in locals() and grab_result:
-                grab_result.Release()
-            if not self.is_grabbing:
-                self._ptr.StopGrabbing()
-
-    # ────── GenICamCamera abstract contract ──────
+    # ────── GenICam abstract contract (Basler-specific implementation) ──────
 
     def _get_feature_value(self, name: str) -> Any:
         try:
@@ -126,18 +77,6 @@ class BaslerCamera(GenICamCamera):
         except geni.GenericException as e:
             raise AttributeError(f"Failed to set feature '{name}' to '{value}': {e}") from e
 
-    def _get_feature_entries(self, name: str) -> List[str]:
-        try:
-            node = self._ptr.GetNodeMap().GetNode(name)
-
-            if not isinstance(node, geni.IEnumeration):
-                raise TypeError(f"Feature '{name}' is not an enumeration.")
-
-            return [entry.GetSymbolic() for entry in node.GetEntries()]
-
-        except geni.GenericException as e:
-            raise AttributeError(f"Failed to get entries for feature '{name}': {e}") from e
-
     def _get_feature_min_value(self, name: str) -> Any:
         try:
             return self._ptr.GetNodeMap().GetNode(name).GetMin()
@@ -151,3 +90,69 @@ class BaslerCamera(GenICamCamera):
 
         except geni.GenericException as e:
             raise AttributeError(f"Failed to get max for feature '{name}': {e}") from e
+
+    def _get_feature_entries(self, name: str) -> List[str]:
+        try:
+            node = self._ptr.GetNodeMap().GetNode(name)
+
+            if not isinstance(node, geni.IEnumeration):
+                raise TypeError(f"Feature '{name}' is not an enumeration.")
+
+            return [entry.GetSymbolic() for entry in node.GetEntries()]
+
+        except geni.GenericException as e:
+            raise AttributeError(f"Failed to get entries for feature '{name}': {e}") from e
+
+    # ────── Core methods ──────
+
+    def connect(self, config: Optional[Dict[str, Any]] = None) -> None:
+        if self.is_connected:
+            logger.warning(f"Camera {self.unique_id} is already connected.")
+            return
+        try:
+            self._ptr = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateDevice(self._device_info))
+            self._ptr.Open()
+            self._is_connected = True
+            self._apply_configuration(config)
+
+        except geni.GenericException as e:
+            self._is_connected = False
+            raise RuntimeError(f"Failed to connect to Basler camera {self.unique_id}: {e}") from e
+
+    def disconnect(self) -> None:
+        if self.is_grabbing: self.stop_grabbing()
+        if self._ptr and self._ptr.IsOpen(): self._ptr.Close()
+        self._ptr = None
+        self._is_connected = False
+
+        logger.info(f"Disconnected from Basler camera {self.unique_id}")
+
+    def start_grabbing(self) -> None:
+        if self.is_connected and not self.is_grabbing:
+            self._ptr.StartGrabbing(pylon.GrabStrategy_OneByOne)
+            self._is_grabbing = True
+
+    def stop_grabbing(self) -> None:
+        if self.is_grabbing:
+            self._ptr.StopGrabbing()
+            self._is_grabbing = False
+
+    def grab_frame(self, timeout_ms: int = 2000) -> Tuple[np.ndarray, Dict[str, Any]]:
+        # This is specific to pylon's grabbing strategy
+
+        if not self.is_grabbing:
+            self._ptr.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
+
+        grab_result = None
+        try:
+            grab_result = self._ptr.RetrieveResult(timeout_ms, pylon.TimeoutHandling_ThrowException)
+            if grab_result:
+                # pylon's Array creates a copy by default, so it is safe
+                return grab_result.Array, {'frame_number': grab_result.ImageNumber, 'timestamp': grab_result.TimeStamp}
+            else:
+                raise IOError(f"Grab failed: {grab_result.GetErrorCode()} {grab_result.GetErrorDescription()}")
+        finally:
+            if 'grab_result' in locals() and grab_result:
+                grab_result.Release()
+            if not self.is_grabbing:
+                self._ptr.StopGrabbing()

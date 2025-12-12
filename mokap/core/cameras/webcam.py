@@ -44,30 +44,8 @@ class WebcamCamera(AbstractCamera):
         self._frame_counter = 0
         super().__init__(unique_id=f'webcam_{camera_index}')
 
-    def connect(self, config: Optional[Dict[str, Any]] = None) -> None:
-        if self.is_connected:
-            logger.warning(f'Camera {self.unique_id} is already connected.')
-            return
-
-        try:
-            self._ptr = cv2.VideoCapture(self._index)
-            # self._ptr = cv2.VideoCapture(self._index, cv2.CAP_DSHOW)
-            # TODO: test more whether CAP_DSHOW is more stable (on Windows probably?)
-
-            if not self._ptr.isOpened():
-                raise IOError(f'Cannot open webcam with index {self._index}')
-
-            self._is_connected = True
-            self._apply_configuration(config)
-            logger.info(f'Connected to Webcam: {self.unique_id}')
-
-        except Exception as e:
-            self._is_connected = False
-            self._ptr = None
-            raise RuntimeError(f'Failed to connect to Webcam {self.unique_id}: {e}') from e
-
     def _apply_configuration(self, config: Optional[Dict[str, Any]] = None):
-        """ Applies a set of initial parameters to the camera. """
+        """Applies a set of initial parameters to the camera."""
         if not self.is_connected:
             raise RuntimeError('Camera is not connected.')
 
@@ -112,6 +90,40 @@ class WebcamCamera(AbstractCamera):
         self._roi = self.roi
         self._framerate = self.framerate
 
+    def _get_cv2_property(self, prop_id: int) -> Any:
+        if self._ptr:
+            return self._ptr.get(prop_id)
+        return None
+
+    def _set_cv2_property(self, prop_id: int, value: Any) -> bool:
+        if self._ptr:
+            return self._ptr.set(prop_id, value)
+        return False
+
+    # ────── Core methods ──────
+
+    def connect(self, config: Optional[Dict[str, Any]] = None) -> None:
+        if self.is_connected:
+            logger.warning(f'Camera {self.unique_id} is already connected.')
+            return
+
+        try:
+            self._ptr = cv2.VideoCapture(self._index)
+            # self._ptr = cv2.VideoCapture(self._index, cv2.CAP_DSHOW)
+            # TODO: test more whether CAP_DSHOW is more stable (on Windows probably?)
+
+            if not self._ptr.isOpened():
+                raise IOError(f'Cannot open webcam with index {self._index}')
+
+            self._is_connected = True
+            self._apply_configuration(config)
+            logger.info(f'Connected to Webcam: {self.unique_id}')
+
+        except Exception as e:
+            self._is_connected = False
+            self._ptr = None
+            raise RuntimeError(f'Failed to connect to Webcam {self.unique_id}: {e}') from e
+
     def disconnect(self) -> None:
 
         if self._ptr and self._ptr.isOpened():
@@ -149,16 +161,6 @@ class WebcamCamera(AbstractCamera):
             'timestamp': timestamp  # timestamp from host computer clock
         }
         return frame, metadata
-
-    def _get_cv2_property(self, prop_id: int) -> Any:
-        if self._ptr:
-            return self._ptr.get(prop_id)
-        return None
-
-    def _set_cv2_property(self, prop_id: int, value: Any) -> bool:
-        if self._ptr:
-            return self._ptr.set(prop_id, value)
-        return False
 
     # ────── Properties implementation (well, the ones that can be implemented) ──────
 
@@ -215,6 +217,28 @@ class WebcamCamera(AbstractCamera):
         return _TYPICAL_RANGES['gamma']
 
     @property
+    def binning(self) -> Optional[int]:
+        return None
+
+    @binning.setter
+    def binning(self, value: int):
+        logger.warning('Webcams do not support hardware binning. Ignoring.')
+        pass
+
+    @property
+    def binning_mode(self) -> Optional[str]:
+        return None
+
+    @property
+    def available_binning_modes(self) -> List[str]:
+        return []
+
+    @binning_mode.setter
+    def binning_mode(self, value: str):
+        logger.warning('Webcams do not support hardware binning. Ignoring.')
+        pass
+
+    @property
     def framerate(self) -> float:
         return self._get_cv2_property(cv2.CAP_PROP_FPS)
 
@@ -268,29 +292,31 @@ class WebcamCamera(AbstractCamera):
     def available_pixel_formats(self) -> List[str]:
         return ['BGR8']
 
-    # ────── These are likely unsupported by all webcams ──────
+    # ────── Sensor information (ro) ──────
 
     @property
-    def binning(self) -> Optional[int]:
-        return None
-
-    @binning.setter
-    def binning(self, value: int):
-        logger.warning('Webcams do not support hardware binning. Ignoring.')
-        pass
+    def resolution(self) -> Tuple[int, int]:
+        # There's no reliable way to get max sensor shape
+        # so return the current resolution as a stand-in
+        return self.roi[2], self.roi[3]
 
     @property
-    def binning_mode(self) -> Optional[str]:
+    def sensor_size(self) -> Optional[Tuple[float, float]]:
         return None
 
     @property
-    def available_binning_modes(self) -> List[str]:
-        return []
+    def pixel_pitch(self) -> Optional[float]:
+        return None
 
-    @binning_mode.setter
-    def binning_mode(self, value: str):
-        logger.warning('Webcams do not support hardware binning. Ignoring.')
-        pass
+    # ────── Other (ro) information properties ──────
+
+    @property
+    def model(self) -> str:
+        return f"Webcam (Index {self._index})"
+
+    @property
+    def vendor(self) -> str:
+        return "Generic USB"
 
     @property
     def temperature(self) -> Optional[float]:
@@ -299,9 +325,3 @@ class WebcamCamera(AbstractCamera):
     @property
     def temperature_state(self) -> Optional[str]:
         return None
-
-    @property
-    def resolution(self) -> Tuple[int, int]:
-        # There's no reliable way to get max sensor shape
-        # so return the current resolution as a stand-in
-        return self.roi[2], self.roi[3]

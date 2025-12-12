@@ -98,7 +98,8 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         # Allow subclasses to run post-configuration hooks if needed
         self._post_apply_configuration(settings)
 
-    # Hooks for subclasses
+    # ────── Hooks ──────
+
     def _pre_apply_configuration(self, settings: Dict[str, Any]):
         """A hook for subclasses to run code before the main configuration is applied."""
         self._set_feature_value('AcquisitionMode', 'Continuous')
@@ -119,6 +120,13 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         except AttributeError as e:
             logger.error(f"Could not retrieve range for '{name}': {e}")
             return 0.0, 0.0
+
+    # ────── GenICam abstract contract (overridden by vendor implementations) ──────
+
+    @abc.abstractmethod
+    def _get_nodemap(self, name: str) -> Any:
+        """Vendor-specific implementation to available nodes."""
+        pass
 
     @abc.abstractmethod
     def _get_feature_value(self, name: str) -> Any:
@@ -145,17 +153,22 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         """Vendor-specific implementation to get all enum entries for a feature."""
         pass
 
-    @property
-    def black_level(self) -> float:
-        return self._black_level
-
-    @black_level.setter
-    def black_level(self, value: float):
-        self._black_level = self._set_feature_value('BlackLevel', value)
+    # ────── Core camera control properties ──────
 
     @property
-    def black_level_range(self) -> Tuple[float, float]:
-        return self._get_feature_range('BlackLevel')
+    def exposure(self) -> float:
+        return self._exposure
+
+    @exposure.setter
+    def exposure(self, value: float):
+        self._exposure = self._set_feature_value('ExposureTime', value)
+        # After setting exposure, the max framerate might have decreased
+        # re-apply the current framerate setting to ensure it's still valid or let the framerate setter handle clamping
+        self.framerate = self._framerate
+
+    @property
+    def exposure_range(self) -> Tuple[float, float]:
+        return self._get_feature_range('ExposureTime')
 
     @property
     def gain(self) -> float:
@@ -168,6 +181,18 @@ class GenICamCamera(AbstractCamera, abc.ABC):
     @property
     def gain_range(self) -> Tuple[float, float]:
         return self._get_feature_range('Gain')
+
+    @property
+    def black_level(self) -> float:
+        return self._black_level
+
+    @black_level.setter
+    def black_level(self, value: float):
+        self._black_level = self._set_feature_value('BlackLevel', value)
+
+    @property
+    def black_level_range(self) -> Tuple[float, float]:
+        return self._get_feature_range('BlackLevel')
 
     @property
     def gamma(self) -> float:
@@ -185,20 +210,49 @@ class GenICamCamera(AbstractCamera, abc.ABC):
     def gamma_range(self) -> Tuple[float, float]:
         return self._get_feature_range('Gamma')
 
-    @property
-    def exposure(self) -> float:
-        return self._exposure
-
-    @exposure.setter
-    def exposure(self, value: float):
-        self._exposure = self._set_feature_value('ExposureTime', value)
-        # After setting exposure, the max framerate might have decreased
-        # re-apply the current framerate setting to ensure it's still valid or let the framerate setter handle clamping
-        self.framerate = self._framerate
 
     @property
-    def exposure_range(self) -> Tuple[float, float]:
-        return self._get_feature_range('ExposureTime')
+    def binning(self) -> int:
+        return self._binning
+
+    @binning.setter
+    def binning(self, value: int):
+        was_grabbing = self.is_grabbing
+        if was_grabbing:
+            self.stop_grabbing()
+
+        h_val = self._set_feature_value('BinningHorizontal', value)
+        v_val = self._set_feature_value('BinningVertical', value)
+
+        if h_val != v_val:
+            logger.warning(f"Binning mismatch! H={h_val} V={v_val}")
+
+        self._binning = h_val
+
+        self._set_feature_value('OffsetX', 0)
+        self._set_feature_value('OffsetY', 0)
+        self._set_feature_value('Width', self._get_feature_max_value('Width'))
+        self._set_feature_value('Height', self._get_feature_max_value('Height'))
+
+        self._roi = (0, 0, self._get_feature_value('Width'), self._get_feature_value('Height'))
+
+        if was_grabbing:
+            self.start_grabbing()
+
+    @property
+    def binning_mode(self) -> str:
+        return self._binning_mode
+
+    @binning_mode.setter
+    def binning_mode(self, value: str):
+        mode = 'Average' if value.lower() in ['a', 'avg', 'average'] else 'Sum'
+        h_mode = self._set_feature_value('BinningHorizontalMode', mode)
+        self._set_feature_value('BinningVerticalMode', mode)
+        self._binning_mode = h_mode
+
+    @property
+    def available_binning_modes(self) -> List[str]:
+        return self._get_feature_entries('BinningHorizontalMode')
 
     @property
     def framerate(self) -> float:
@@ -256,115 +310,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
             logger.warning(f"Could not determine settable framerate range for {self.unique_id}.")
             return 0.5, 500.0
 
-    @property
-    def pixel_format(self) -> str:
-        return self._pixel_format
-
-    @pixel_format.setter
-    def pixel_format(self, value: str):
-        was_grabbing = self.is_grabbing
-        if was_grabbing:
-            self.stop_grabbing()
-        try:
-            self._pixel_format = self._set_feature_value('PixelFormat', value)
-        finally:
-            if was_grabbing:
-                self.start_grabbing()
-
-    @property
-    def available_pixel_formats(self) -> List[str]:
-        return self._get_feature_entries('PixelFormat')
-
-    @property
-    def hardware_triggered(self) -> bool:
-        return self._hardware_triggered
-
-    @hardware_triggered.setter
-    def hardware_triggered(self, enabled: bool):
-        if enabled:
-            # apparently some SDKs use integers, others use strings so we do a bit of voodoo here
-            trigger_source = f"Line{''.join([char for char in str(self._trigger_line) if char.isdigit()])}"
-
-            self._set_feature_value('TriggerSelector', 'FrameStart')
-            self._set_feature_value('TriggerMode', 'On')
-            self._set_feature_value('TriggerSource', trigger_source)
-            try:
-                self._set_feature_value('AcquisitionFrameRateEnable', False)
-            except AttributeError:
-                pass
-        else:
-            self._set_feature_value('TriggerMode', 'Off')
-            try:
-                self._set_feature_value('AcquisitionFrameRateEnable', True)
-            except AttributeError:
-                pass
-        self._hardware_triggered = enabled
-        self.framerate = self._framerate
-
-    @property
-    def binning(self) -> int:
-        return self._binning
-
-    @binning.setter
-    def binning(self, value: int):
-        was_grabbing = self.is_grabbing
-        if was_grabbing:
-            self.stop_grabbing()
-
-        h_val = self._set_feature_value('BinningHorizontal', value)
-        v_val = self._set_feature_value('BinningVertical', value)
-
-        if h_val != v_val:
-            logger.warning(f"Binning mismatch! H={h_val} V={v_val}")
-
-        self._binning = h_val
-
-        self._set_feature_value('OffsetX', 0)
-        self._set_feature_value('OffsetY', 0)
-        self._set_feature_value('Width', self._get_feature_max_value('Width'))
-        self._set_feature_value('Height', self._get_feature_max_value('Height'))
-
-        self._roi = (0, 0, self._get_feature_value('Width'), self._get_feature_value('Height'))
-
-        if was_grabbing:
-            self.start_grabbing()
-
-    @property
-    def binning_mode(self) -> str:
-        return self._binning_mode
-
-    @binning_mode.setter
-    def binning_mode(self, value: str):
-        mode = 'Average' if value.lower() in ['a', 'avg', 'average'] else 'Sum'
-        h_mode = self._set_feature_value('BinningHorizontalMode', mode)
-        self._set_feature_value('BinningVerticalMode', mode)
-        self._binning_mode = h_mode
-
-    @property
-    def available_binning_modes(self) -> List[str]:
-        return self._get_feature_entries('BinningHorizontalMode')
-
-    @property
-    def temperature(self) -> Optional[float]:
-        try:
-            temp = self._get_feature_value('DeviceTemperature')
-            return temp if 0 < temp < 420 else None
-        except (AttributeError, Exception):
-            return None
-
-    @property
-    def temperature_state(self) -> Optional[str]:
-        try:
-            return self._get_feature_value('TemperatureState')
-        except (AttributeError, Exception):
-            return None
-
-    @property
-    def resolution(self) -> Tuple[int, int]:
-        try:  # try GenICam standard names
-            return self._get_feature_max_value('WidthMax'), self._get_feature_max_value('HeightMax')
-        except AttributeError:  # fallback for some SDKs (Spinnaker)
-            return self._get_feature_value('SensorWidth'), self._get_feature_value('SensorHeight')
+    # ────── Image format and ROI properties ──────
 
     @property
     def roi(self) -> Tuple[int, int, int, int]:
@@ -437,3 +383,101 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         finally:
             if was_grabbing:
                 self.start_grabbing()
+
+    @property
+    def pixel_format(self) -> str:
+        return self._pixel_format
+
+    @pixel_format.setter
+    def pixel_format(self, value: str):
+        was_grabbing = self.is_grabbing
+        if was_grabbing:
+            self.stop_grabbing()
+        try:
+            self._pixel_format = self._set_feature_value('PixelFormat', value)
+        finally:
+            if was_grabbing:
+                self.start_grabbing()
+
+    @property
+    def available_pixel_formats(self) -> List[str]:
+        return self._get_feature_entries('PixelFormat')
+
+    # ────── Triggering and synchronization ──────
+
+    @property
+    def hardware_triggered(self) -> bool:
+        return self._hardware_triggered
+
+    @hardware_triggered.setter
+    def hardware_triggered(self, enabled: bool):
+        if enabled:
+            # apparently some SDKs use integers, others use strings so we do a bit of voodoo here
+            trigger_source = f"Line{''.join([char for char in str(self._trigger_line) if char.isdigit()])}"
+
+            self._set_feature_value('TriggerSelector', 'FrameStart')
+            self._set_feature_value('TriggerMode', 'On')
+            self._set_feature_value('TriggerSource', trigger_source)
+            try:
+                self._set_feature_value('AcquisitionFrameRateEnable', False)
+            except AttributeError:
+                pass
+        else:
+            self._set_feature_value('TriggerMode', 'Off')
+            try:
+                self._set_feature_value('AcquisitionFrameRateEnable', True)
+            except AttributeError:
+                pass
+        self._hardware_triggered = enabled
+        self.framerate = self._framerate
+
+    # ────── Sensor information (ro) ──────
+
+    @property
+    def resolution(self) -> Tuple[int, int]:
+        try:  # try GenICam standard names
+            return self._get_feature_max_value('WidthMax'), self._get_feature_max_value('HeightMax')
+        except AttributeError:  # fallback for some SDKs (Spinnaker)
+            return self._get_feature_value('SensorWidth'), self._get_feature_value('SensorHeight')
+
+    @property
+    def sensor_size(self) -> Optional[Tuple[float, float]]:
+        # GenICam doesn't have a universal standard for physical sensor size.
+        # Subclasses should override.
+        return None
+
+    @property
+    def pixel_pitch(self) -> Optional[float]:
+        # Similar to sensor_size, PixelSize is not strictly standard in the main namespace.
+        return None
+
+    # ────── Other (ro) information properties ──────
+
+    @property
+    def model(self) -> str:
+        try:
+            return self._get_feature_value('DeviceModelName')
+        except (AttributeError, Exception):
+            return "Unknown GenICam Model"
+
+    @property
+    def vendor(self) -> str:
+        try:
+            return self._get_feature_value('DeviceVendorName')
+        except (AttributeError, Exception):
+            return "Unknown Vendor"
+
+    @property
+    def temperature(self) -> Optional[float]:
+        try:
+            temp = self._get_feature_value('DeviceTemperature')
+            return temp if 0 < temp < 420 else None
+        except (AttributeError, Exception):
+            return None
+
+    @property
+    def temperature_state(self) -> Optional[str]:
+        try:
+            return self._get_feature_value('TemperatureState')
+        except (AttributeError, Exception):
+            return None
