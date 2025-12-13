@@ -1,8 +1,5 @@
 """
 Live video view windows for Recording and Calibration modes.
-
-RecordingVideoWindow: Camera preview with hardware controls
-CalibrationVideoWindow: Camera preview with calibration tools
 """
 import logging
 from collections import deque
@@ -23,12 +20,6 @@ logger = logging.getLogger(__name__)
 class RecordingVideoWindow(VideoWindowBase):
     """
     Live view for Recording mode.
-
-    Features:
-    - Crosshair overlay
-    - Magnifier tool
-    - Camera hardware control sliders with sync checkboxes
-    - Recording indicator
     """
 
     def __init__(self, hw_cam, main_window_ref):
