@@ -6,7 +6,7 @@ from collections import deque
 from pathlib import Path
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, Slot, Signal, QThread, QEvent, QRectF
+from PySide6.QtCore import Qt, Slot, Signal, QThread, QEvent
 from PySide6.QtWidgets import (QHBoxLayout, QWidget, QVBoxLayout, QGroupBox, QLabel, QSlider,
                                QCheckBox, QPushButton, QFileDialog, QGraphicsRectItem, QGraphicsItemGroup, QSizePolicy)
 from mokap.utils import pretty_microseconds
@@ -69,22 +69,18 @@ class RecordingVideoWindow(VideoWindowBase):
         # Recording indicator
         self.recording_text = pg.TextItem(anchor=(0.5, 0), color=(255, 0, 0))
         self.recording_text.setPos(self.source_shape_hw[1] / 2, self.source_shape_hw[0] / 2)
-        self.recording_text.setHtml(
-            '<span style="font-size: 16pt; font-weight: bold;">[ ⬤ RECORDING ]</span>'
-        )
+        self.recording_text.setHtml('<span style="font-size: 16pt; font-weight: bold;">[ ⬤ RECORDING ]</span>')
         self.view_box.addItem(self.recording_text)
         self.recording_text.hide()
 
         # Warning indicator
         self.warning_text = pg.TextItem(anchor=(0.5, 0), color=(255, 165, 0))
         self.warning_text.setPos(self.source_shape_hw[1] / 2, 10)
-        self.warning_text.setHtml(
-            '<span style="font-size: 16pt; font-weight: bold;">[ WARNING ]</span>'
-        )
+        self.warning_text.setHtml('<span style="font-size: 16pt; font-weight: bold;">[ ⚠ WARNING ]</span>')
         self.view_box.addItem(self.warning_text)
         self.warning_text.hide()
 
-        # Magnifier
+        # Magnifier setup
         self.magnifier_group = QGraphicsItemGroup()
         self.magnifier_item = FastImageItem()
         self.magnifier_border = QGraphicsRectItem()
@@ -98,25 +94,15 @@ class RecordingVideoWindow(VideoWindowBase):
         self.magnifier_source_rect = QGraphicsRectItem()
         self.magnifier_source_rect.setPen(pg.mkPen('y', width=1))
         self.view_box.addItem(self.magnifier_source_rect)
-        self.magnifier_source_rect.hide()
 
-        # Set Z-order
+        # Set Z-order (only for image and magnifier, matching old code)
         self.image_item.setZValue(0)
         self.magnifier_source_rect.setZValue(1)
         self.magnifier_group.setZValue(2)
-        self.v_line.setZValue(3)
-        self.h_line.setZValue(3)
-        self.recording_text.setZValue(4)
-        self.warning_text.setZValue(4)
+        self.magnifier_source_rect.hide()
 
         # Mouse events for magnifier
         self.graphics_widget.scene().installEventFilter(self)
-
-        # Force the view range immediately so crosshairs are visible even before the first frame arrives
-        self.view_box.setRange(
-            QRectF(0, 0, self._source_width, self._source_height),
-            padding=0
-        )
 
         # ──── ──── Right panel layout ──── ────
         right_layout = QHBoxLayout(self.RIGHT_GROUP)

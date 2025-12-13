@@ -698,11 +698,18 @@ class MainControls(QMainWindow):
 
     def quit(self):
         """Clean shutdown."""
+
+        self.timer_slow.stop()
         self._stop_secondary_windows()
-        self.controller.stop_acquisition()
-        QApplication.quit()
+
+        if self.controller.acquiring:
+            self.controller.stop_acquisition()
+
+        self.controller.disconnect_cameras()
+
+        QApplication.instance().quit()
 
     def closeEvent(self, event):
         """Handle window close."""
+        event.ignore()
         self.quit()
-        event.accept()
