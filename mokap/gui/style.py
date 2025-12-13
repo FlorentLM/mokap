@@ -23,7 +23,7 @@ MAX_PLOT_WIDTH = 50
 
 # Icons
 
-cwd = Path(__file__).parent.parent
+cwd = Path(__file__).parent
 
 icon_capture = str(cwd / 'icons' / 'capture.png')
 icon_capture_bw = str(cwd / 'icons' / 'capture_bw.png')
