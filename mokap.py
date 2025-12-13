@@ -16,9 +16,9 @@ def main():
 
     app = QApplication(sys.argv)
 
-    mc = CameraController(config=config)
+    cc = CameraController(config=config)
 
-    if mc.nb_cameras == 0:
+    if cc.nb_cameras == 0:
         msg = ("No cameras were found or connected.\n\n"
                "Please check:\n"
                "  - Camera connections and power.\n"
@@ -27,7 +27,7 @@ def main():
 
         QMessageBox.warning(None, "No Cameras Found", msg)
 
-    main_window = MainControls(mc)
+    main_window = MainControls(cc)
     main_window.show()
 
     sys.exit(app.exec())
