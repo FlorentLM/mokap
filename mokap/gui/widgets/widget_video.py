@@ -6,7 +6,7 @@ from collections import deque
 from pathlib import Path
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, Slot, Signal, QThread, QEvent
+from PySide6.QtCore import Qt, Slot, Signal, QThread, QEvent, QRectF
 from PySide6.QtWidgets import (QHBoxLayout, QWidget, QVBoxLayout, QGroupBox, QLabel, QSlider,
                                QCheckBox, QPushButton, QFileDialog, QGraphicsRectItem, QGraphicsItemGroup, QSizePolicy)
 from mokap.utils import pretty_microseconds
@@ -53,20 +53,20 @@ class RecordingVideoWindow(VideoWindowBase):
     def _init_specific_ui(self):
         """Create Recording-specific UI elements."""
 
-        # ──── ──── Overlays (crosshairs & text) ──── ────
+        # ──── ──── Overlays ──── ────
 
         # Crosshairs
         crosshair_pen = pg.mkPen(color='w', style=Qt.DotLine)
         self.v_line = pg.InfiniteLine(angle=90, movable=False, pen=crosshair_pen)
         self.h_line = pg.InfiniteLine(angle=0, movable=False, pen=crosshair_pen)
+
         self.v_line.setPos(self.source_shape_hw[1] / 2)
         self.h_line.setPos(self.source_shape_hw[0] / 2)
 
-        # Add to viewbox
         self.view_box.addItem(self.v_line)
         self.view_box.addItem(self.h_line)
 
-        # Recording text
+        # Recording indicator
         self.recording_text = pg.TextItem(anchor=(0.5, 0), color=(255, 0, 0))
         self.recording_text.setPos(self.source_shape_hw[1] / 2, self.source_shape_hw[0] / 2)
         self.recording_text.setHtml(
@@ -75,7 +75,7 @@ class RecordingVideoWindow(VideoWindowBase):
         self.view_box.addItem(self.recording_text)
         self.recording_text.hide()
 
-        # Warning text
+        # Warning indicator
         self.warning_text = pg.TextItem(anchor=(0.5, 0), color=(255, 165, 0))
         self.warning_text.setPos(self.source_shape_hw[1] / 2, 10)
         self.warning_text.setHtml(
@@ -84,7 +84,7 @@ class RecordingVideoWindow(VideoWindowBase):
         self.view_box.addItem(self.warning_text)
         self.warning_text.hide()
 
-        # Magnifier group
+        # Magnifier
         self.magnifier_group = QGraphicsItemGroup()
         self.magnifier_item = FastImageItem()
         self.magnifier_border = QGraphicsRectItem()
@@ -106,9 +106,17 @@ class RecordingVideoWindow(VideoWindowBase):
         self.magnifier_group.setZValue(2)
         self.v_line.setZValue(3)
         self.h_line.setZValue(3)
+        self.recording_text.setZValue(4)
+        self.warning_text.setZValue(4)
 
-        # Mouse events for magnifier interaction
+        # Mouse events for magnifier
         self.graphics_widget.scene().installEventFilter(self)
+
+        # Force the view range immediately so crosshairs are visible even before the first frame arrives
+        self.view_box.setRange(
+            QRectF(0, 0, self._source_width, self._source_height),
+            padding=0
+        )
 
         # ──── ──── Right panel layout ──── ────
         right_layout = QHBoxLayout(self.RIGHT_GROUP)
@@ -126,7 +134,7 @@ class RecordingVideoWindow(VideoWindowBase):
         sync_layout = QVBoxLayout(sync_group)
         sync_layout.setSpacing(12)
 
-        # Create sliders
+        # Create sliders for each parameter
         params = ['framerate', 'exposure', 'black_level', 'gain', 'gamma']
 
         for label in params:
@@ -241,21 +249,21 @@ class RecordingVideoWindow(VideoWindowBase):
         buttons_row.setMaximumHeight(80)
         buttons_layout = QHBoxLayout(buttons_row)
 
-        # # Nothing Button
+        # # Nothing button
         # self.n_button = QPushButton('Nothing')
         # self.n_button.setCheckable(True)
         # self.n_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         # self.n_button.clicked.connect(self._toggle_n_display)
         # buttons_layout.addWidget(self.n_button)
 
-        # Magnifier Button
+        # Magnifier button
         self.magn_button = QPushButton('Magnifier')
         self.magn_button.setCheckable(True)
         self.magn_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.magn_button.clicked.connect(self._toggle_magnifier)
         buttons_layout.addWidget(self.magn_button)
 
-        # Zoom Slider
+        # Zoom slider
         self.magn_slider = QSlider(Qt.Vertical)
         self.magn_slider.setRange(1, 5)
         self.magn_slider.setValue(2)
@@ -513,9 +521,7 @@ class RecordingVideoWindow(VideoWindowBase):
     # ──────────────────────────────── Update ────────────────────────────────
 
     def _update_slow(self):
-        """
-        Override slow update to update warning text visibility based on flag.
-        """
+        """Override slow update to sync indicator states."""
         super()._update_slow()
 
         # if the base class calculated a warning, show the text
@@ -523,7 +529,6 @@ class RecordingVideoWindow(VideoWindowBase):
 
         is_rec = self._mainwindow.controller.recording
         self._set_recording_indicator(is_rec)
-
 
 
 class CalibrationVideoWindow(VideoWindowBase):
@@ -964,15 +969,23 @@ class CalibrationVideoWindow(VideoWindowBase):
 
     # ──────────────────────────────── Cleanup ────────────────────────────────
 
-    def closeEvent(self, event):
-        """Clean up threads on close."""
-        if self._force_destroy:
-            # Stop detector thread
+    def cleanup(self):
+        """Stop worker threads."""
+        super().cleanup()
+
+        # Stop detector thread
+        if self._detector_thread.isRunning():
             self._detector_thread.quit()
             self._detector_thread.wait(2000)
 
-            # Stop worker thread
+        # Stop worker thread
+        if self._worker_thread.isRunning():
             self._worker_thread.quit()
             self._worker_thread.wait(2000)
+
+    def closeEvent(self, event):
+        """Clean up threads on close."""
+        if self._force_destroy:
+            self.cleanup()
 
         super().closeEvent(event)
