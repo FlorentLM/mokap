@@ -147,112 +147,58 @@ class MultiviewWorker(QObject):
     # ────────────────────────────────  3D scene computation ────────────────────────────────
 
     def _compute_3d_scene(self):
-        """
-        Compute 3D scene data for the OpenGL visualization.
-        """
+        """Compute 3D scene data for the OpenGL visualisation."""
+
         if self._paused:
             return
 
+        frustum_depth = self._board.diagonal * 5.0
+        axis_length = self._board.diagonal * 2.5
+
         with self._rig.locked():
-            K = self._rig.K.copy()
-            T_c2w = self._rig.T_c2w.copy()
+            C = len(self._rig)
+            cam_centers = self._rig.centers
+            ready_mask = [cam.intrinsics.is_set for cam in self._rig]
 
-            # Check which cameras have valid intrinsics
-            ready_mask = np.array([cam.fx > 1.0 for cam in self._rig])
+        frustums_3d = np.zeros((C, 5, 3))
+        optical_axes_3d = np.zeros((C, 2, 3))
 
-        C = len(self._rig)
-
-        # Camera centers from extrinsics
-        cam_centers = T_c2w[:, :3, 3]
-
-        # Compute frustum corners by unprojecting image corners
-        frustums_3d = self._compute_frustums(K, T_c2w, ready_mask)
-        optical_axes_3d = self._compute_optical_axes(K, T_c2w, cam_centers)
-
-        # Board and detection positions depend on stage
-        board_3d = None
-        detections_3d = [np.zeros((0, 3))] * C
-
-        if self._current_stage == 0:
-            # Intrinsics stage: Board at origin, cameras move around it
-            board_3d = self._board.object_points
-
-            # Detections are on the stationary board
-            detections_3d = self._get_detections(board_3d)
-
-        else:
-            # Extrinsics stage: Cameras fixed, board moves
-            if self._tool is not None and self._tool.current_object_pose is not None:
-                # Transform board by current pose
-                T_o2w = self._tool.current_object_pose
-                board_3d = transform_points(self._board.object_points, T_o2w)
-
-                # Detections are on the transformed board
-                detections_3d = self._get_detections(board_3d)
-
-        # Apply OpenGL coordinate transform (flip Y and Z)
-        scene_data = {
-            'ready_mask': ready_mask,
-            'cam_centers': self._to_gl(cam_centers),
-            'frustums_3d': self._to_gl(frustums_3d),
-            'optical_axes_3d': self._to_gl(optical_axes_3d),
-            'board_3d': self._to_gl(board_3d),
-            'detections_3d': [self._to_gl(d) for d in detections_3d],
-        }
-
-        self.scene_updated.emit(scene_data)
-
-    # TODO: Replace these two functions by the image_corners property and unproject / raycast
-    def _compute_frustums(self, K, T_c2w, ready_mask) -> np.ndarray:
-        """Compute frustum corner positions for each camera."""
-        C = len(self._rig)
-        frustum_depth = 200.0  # TODO: compute automatically
-
-        frustums = []
-        for i, cam in enumerate(self._rig):
-            w, h = cam.image_size
-
-            if not ready_mask[i]:
-                # Camera not ready - return degenerate frustum at center
-                center = T_c2w[i, :3, 3]
-                frustums.append(np.tile(center, (5, 1)))
-                continue
-
-            # Image corners
-            corners_2d = np.array([
-                [0, 0], [w, 0], [w, h], [0, h]
-            ], dtype=np.float32)
-
-            # Unproject to rays and extend to frustum_depth
-            origins, directions = cam.raycast(corners_2d)
-            corners_3d = origins + directions * frustum_depth
-
-            # Frustum = [center, corner0, corner1, corner2, corner3]
-            center = T_c2w[i, :3, 3]
-            frustum = np.vstack([center[None, :], corners_3d])
-            frustums.append(frustum)
-
-        return np.array(frustums)  # (C, 5, 3)
-
-    def _compute_optical_axes(self, K, T_c2w, cam_centers) -> np.ndarray:
-        """Compute optical axis lines for each camera."""
-        axis_length = 100.0  # TODO: compute automatically
-
-        axes = []
         for i, cam in enumerate(self._rig):
             center = cam_centers[i]
 
-            # Principal point
-            w, h = cam.image_size
-            pp = np.array([[w / 2, h / 2]], dtype=np.float32)
+            if not ready_mask[i]:
+                frustums_3d[i] = center
+                optical_axes_3d[i] = center
+                continue
 
-            # Unproject principal point
-            _, direction = cam.raycast(pp)
-            endpoint = center + direction[0] * axis_length
+            points_2d = np.vstack([cam.image_corners, cam.c])   # 4 image corners + image centre + principal point
+            _, directions = cam.raycast(points_2d)
 
-            axes.append([center, endpoint])
+            # TODO: Use the image centre too
 
-        return np.array(axes)  # (C, 2, 3)
+            frustums_3d[i, 0] = center
+            frustums_3d[i, 1:] = center + directions[:4] * frustum_depth
+            optical_axes_3d[i, 0] = center
+            optical_axes_3d[i, 1] = center + directions[4] * axis_length
+
+        # Board position depends on stage
+        if self._current_stage == 0:
+            board_3d = self._board.object_points
+        elif self._tool is not None and self._tool.current_object_pose is not None:
+            board_3d = transform_points(self._board.object_points, self._tool.current_object_pose)
+        else:
+            board_3d = None
+
+        detections_3d = self._get_detections(board_3d) if board_3d is not None else [np.zeros((0, 3))] * C
+
+        self.scene_updated.emit({
+            'ready_mask': ready_mask,
+            'cam_centers': cam_centers,
+            'frustums_3d': frustums_3d,
+            'optical_axes_3d': optical_axes_3d,
+            'board_3d': board_3d,
+            'detections_3d': detections_3d,
+        })
 
     def _get_detections(self, board_3d: np.ndarray) -> List[np.ndarray]:
         """Get 3D detection positions when board is at origin."""
@@ -275,15 +221,6 @@ class MultiviewWorker(QObject):
                 detections.append(np.zeros((0, 3)))
 
         return detections
-
-    # TODO: Prob better to use a T matrix instead of this
-
-    @staticmethod
-    def _to_gl(points: Optional[np.ndarray]) -> Optional[np.ndarray]:
-        """Convert to OpenGL coordinates (rotate 180° around X)."""
-        if points is None or points.size == 0:
-            return points
-        return rotate_points(points, angle_degrees=180, axis=[1.0, 0.0, 0.0])
 
     # ──────────────────────────────── Stage management ────────────────────────────────
 
@@ -335,9 +272,15 @@ class MultiviewWorker(QObject):
         logger.debug("[Multiview] Board changed, resetting...")
 
         self._board = board
+
         self._object_points_hom = np.hstack([
             board.object_points,
             np.ones((board.object_points.shape[0], 1))
+        ])
+
+        self._board_diagonal = np.linalg.norm([
+            self._board.cols * self._board.square_length,
+            self._board.rows * self._board.square_length
         ])
 
         # Reset tool if it exists

@@ -2,6 +2,7 @@
 Central calibration window with 3D visualisation and board settings.
 """
 import logging
+from pathlib import Path
 from typing import Union
 import cv2
 import numpy as np
@@ -26,7 +27,8 @@ class Viewer3D(SharedBase):
     def __init__(self, main_window_ref):
         super().__init__(main_window_ref)
 
-        self.nb_cams = main_window_ref.nb_cams
+        self._antialiasing = True
+
         self._cameras_names = tuple(self._mainwindow.cameras_names)
 
         self._cam_colours_rgba = {
@@ -41,18 +43,16 @@ class Viewer3D(SharedBase):
             "ChArUco": CharucoBoard,
             "Chessboard": ChessBoard
         }
-
         self.is_editing_board = False
-        self._nb_object_points = self._mainwindow.board_params.object_points.shape[0]
 
         self._frustum_faces = np.array([
-            [0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 1],
+            [0, 1, 2], [0, 2, 3],
+            [0, 3, 4], [0, 4, 1],
             [1, 2, 3], [1, 3, 4]
         ])
 
-        self._frustum_depth = 200
-        self._gridsize = 100
-        self._antialiasing = True
+        # Scale grid and frustum based on board dimensions
+        self._gridsize = self._mainwindow.board_params.diagonal * 3.0
 
         self._percamera_gl_items = {}
         self.global_gl_items = {}
@@ -216,7 +216,7 @@ class Viewer3D(SharedBase):
                     pos=np.zeros((2, 3)), color=color, width=2, antialias=self._antialiasing
                 ),
                 'detections': GLScatterPlotItem(
-                    pos=np.zeros((self._nb_object_points, 3)), color=color, size=7, pxMode=True
+                    pos=np.zeros((self._mainwindow.board_params.nb_points, 3)), color=color, size=7, pxMode=True
                 )
             }
 
@@ -226,7 +226,7 @@ class Viewer3D(SharedBase):
             self._percamera_gl_items[cam_name] = items
 
         self.global_gl_items['board_3d'] = GLScatterPlotItem(
-            pos=np.zeros((self._nb_object_points, 3)), color=(1, 0, 1, 0.9), size=8, pxMode=True
+            pos=np.zeros((self._mainwindow.board_params.nb_points, 3)), color=(1, 0, 1, 0.9), size=8, pxMode=True
         )
         self.global_gl_items['board_3d'].setVisible(False)
         self.view.addItem(self.global_gl_items['board_3d'])

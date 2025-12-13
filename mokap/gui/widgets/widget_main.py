@@ -450,7 +450,8 @@ class MainControls(QMainWindow):
             # Connect detections to multiview
             for cam_name, view in self.calibration_views.items():
                 view._detector.detection_ready.connect(
-                    lambda result, name=cam_name: self.multiview_worker.on_detection(name, result)
+                    lambda result, name=cam_name: self.multiview_worker.on_detection(name, result),
+                    Qt.QueuedConnection
                 )
 
             # Connect 3D scene updates
@@ -598,6 +599,7 @@ class MainControls(QMainWindow):
 
     def cascade_windows(self):
         """Arrange windows in a cascade."""
+        # TODO: reimplement this!!
         pass
 
     # ──────────────────────────────── Updates ────────────────────────────────

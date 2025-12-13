@@ -111,10 +111,10 @@ class VideoWindowBase(SharedBase):
     - _pause_worker() / _resume_worker(): Pause/resume processing (if has workers)
     """
 
-    def __init__(self, hardware_camera, main_window_ref):
+    def __init__(self, hw_cam, main_window_ref):
         super().__init__(main_window_ref)
 
-        self._hw_camera = hardware_camera
+        self._hw_camera = hw_cam
         self._hw_cam_name = self._hw_camera.name
         self._hw_cam_idx = self._mainwindow.get_camera_index(self._hw_camera.unique_id)
 

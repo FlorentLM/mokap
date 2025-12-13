@@ -4,7 +4,9 @@ Live video view windows for Recording and Calibration modes.
 RecordingVideoWindow: Camera preview with hardware controls
 CalibrationVideoWindow: Camera preview with calibration tools
 """
+import logging
 from collections import deque
+from pathlib import Path
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, Slot, Signal, QThread
@@ -14,6 +16,8 @@ from mokap.utils import pretty_microseconds
 from mokap.gui.style import *
 from mokap.gui.widgets import VideoWindowBase, FastImageItem
 from mokap.gui.workers import DetectorWorker, MonocularWorker
+
+logger = logging.getLogger(__name__)
 
 
 class RecordingVideoWindow(VideoWindowBase):
@@ -27,8 +31,8 @@ class RecordingVideoWindow(VideoWindowBase):
     - Recording indicator
     """
 
-    def __init__(self, hardware_camera, main_window_ref):
-        super().__init__(hardware_camera, main_window_ref)
+    def __init__(self, hw_cam, main_window_ref):
+        super().__init__(hw_cam, main_window_ref)
 
         # Magnification parameters
         self.magn_window_w = 100
@@ -210,7 +214,14 @@ class RecordingVideoWindow(VideoWindowBase):
             actual_value = value / scale if scale != 1 else value
             display_text = f"{actual_value:.2f}" if scale != 1 else f"{int(actual_value)}"
 
+        # Update label
         self.camera_controls_sliders_labels[label].setText(display_text)
+
+        # Apply the value to the hardware camera
+        try:
+            setattr(self._hw_camera, label, actual_value)
+        except Exception as e:
+            logger.warning(f"[{self._hw_cam_name}] Failed to set {label} to {actual_value}: {e}")
 
 
 class CalibrationVideoWindow(VideoWindowBase):
@@ -237,8 +248,8 @@ class CalibrationVideoWindow(VideoWindowBase):
     request_load = Signal(str)
     request_save = Signal(str)
 
-    def __init__(self, hardware_camera, main_window_ref, board_params):
-        super().__init__(hardware_camera, main_window_ref)
+    def __init__(self, hw_cam, main_window_ref, board_params):
+        super().__init__(hw_cam, main_window_ref)
 
         # Data stores for plotting
         self.live_error_deque = deque(maxlen=MAX_PLOT_WIDTH)
@@ -249,17 +260,16 @@ class CalibrationVideoWindow(VideoWindowBase):
         self.latest_reprojected_points = np.zeros((0, 2))
         self.latest_detected_ids = np.array([])
 
-        # Get camera model from shared rig
-        self._camera_model = self._mainwindow.rig[self._hw_cam_name]
+        self._cam = self._mainwindow.rig[self._hw_cam_name]
 
         # ──── ──── Detector (CPU-heavy, separate thread) ──── ────
-        self._detector = DetectorWorker(self._camera_model, board_params)
+        self._detector = DetectorWorker(self._cam, board_params)
         self._detector_thread = QThread()
         self._detector.moveToThread(self._detector_thread)
         self._detector_busy = False
 
         # ──── ──── Calibration worker (stateful, separate thread) ──── ────
-        self._worker = MonocularWorker(self._camera_model, board_params)
+        self._worker = MonocularWorker(self._cam, board_params)
         self._worker_thread = QThread()
         self._worker.moveToThread(self._worker_thread)
         self._worker_blocking = False
@@ -543,7 +553,7 @@ class CalibrationVideoWindow(VideoWindowBase):
     @Slot()
     def _on_intrinsics_updated(self):
         """Handle intrinsics update from worker."""
-        cam = self._camera_model
+        cam = self._cam
 
         with cam.intrinsics.locked():
             rms_per_view = cam.intrinsics.stats.get('rms_per_view', [])
