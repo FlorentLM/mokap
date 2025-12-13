@@ -131,6 +131,11 @@ class RecordingVideoWindow(VideoWindowBase):
             except AttributeError:
                 continue
 
+            # Determine if the control is actually usable
+            is_usable = True
+            if min_val <= 0 or max_val <= 0 or max_val <= min_val:
+                is_usable = False
+
             # Slider row
             line = QWidget()
             line_layout = QHBoxLayout(line)
@@ -145,34 +150,43 @@ class RecordingVideoWindow(VideoWindowBase):
             slider = QSlider(Qt.Horizontal)
             slider.setMinimumWidth(100)
 
-            is_float = isinstance(param_value, float) or isinstance(min_val, float)
-            should_scale = is_float and max_val < 1000
+            value_text = "N/A"
 
-            if label == 'exposure':
-                slider.setRange(0, 1000)
-                self.log_slider_params[label] = {
-                    'min_val': min_val, 'max_val': max_val,
-                    'slider_min': 0, 'slider_max': 1000
-                }
-                slider.setValue(self._log_map(param_value, min_val, max_val, 0, 1000))
-                self.camera_controls_sliders_scales[label] = 'log'
-                value_text = pretty_microseconds(param_value)
-            elif should_scale:
-                scale = 100
-                slider.setMinimum(int(min_val * scale))
-                slider.setMaximum(int(max_val * scale))
-                slider.setValue(int(param_value * scale))
-                self.camera_controls_sliders_scales[label] = scale
-                value_text = f"{param_value:.2f}"
+            if not is_usable:
+                slider.setRange(0, 1)
+                slider.setValue(0)
+                slider.setEnabled(False)
             else:
-                slider.setMinimum(int(min_val))
-                slider.setMaximum(int(max_val))
-                slider.setValue(int(param_value))
-                self.camera_controls_sliders_scales[label] = 1
-                value_text = f"{int(param_value)}"
+                is_float = isinstance(param_value, float) or isinstance(min_val, float)
+                should_scale = is_float and max_val < 1000
 
-            slider.valueChanged.connect(lambda v, lbl=label: self._slider_changed(lbl, v))
-            slider.sliderReleased.connect(lambda lbl=label: self._slider_released(lbl))
+                if label == 'exposure':
+                    slider.setRange(0, 1000)
+                    self.log_slider_params[label] = {
+                        'min_val': min_val, 'max_val': max_val,
+                        'slider_min': 0, 'slider_max': 1000
+                    }
+                    slider.setValue(self._log_map(param_value, min_val, max_val, 0, 1000))
+                    self.camera_controls_sliders_scales[label] = 'log'
+                    value_text = pretty_microseconds(param_value)
+                elif should_scale:
+                    scale = 100
+                    slider.setMinimum(int(min_val * scale))
+                    slider.setMaximum(int(max_val * scale))
+                    slider.setValue(int(param_value * scale))
+                    self.camera_controls_sliders_scales[label] = scale
+                    value_text = f"{param_value:.2f}"
+                else:
+                    slider.setMinimum(int(min_val))
+                    slider.setMaximum(int(max_val))
+                    slider.setValue(int(param_value))
+                    self.camera_controls_sliders_scales[label] = 1
+                    value_text = f"{int(param_value)}"
+
+                # Connect signals only if usable
+                slider.valueChanged.connect(lambda v, lbl=label: self._slider_changed(lbl, v))
+                slider.sliderReleased.connect(lambda lbl=label: self._slider_released(lbl))
+
             line_layout.addWidget(slider, 1)
 
             value_label = QLabel(value_text)
@@ -184,14 +198,20 @@ class RecordingVideoWindow(VideoWindowBase):
             sync_check.setMaximumWidth(16)
             sync_check.setChecked(True)
 
+            if not is_usable:
+                sync_check.setEnabled(False)
+                sync_check.setChecked(False)
+
             if self._hw_camera.hardware_triggered and label == 'framerate':
                 sync_check.setDisabled(True)    # Can't be toggled off in hardware sync mode
 
             sync_layout.addWidget(sync_check)
 
-            self.camera_controls_sliders[label] = slider
-            self.camera_controls_sliders_labels[label] = value_label
-            self.camera_controls_sync_checks[label] = sync_check
+            # Only add to control dictionaries if usable
+            if is_usable:
+                self.camera_controls_sliders[label] = slider
+                self.camera_controls_sliders_labels[label] = value_label
+                self.camera_controls_sync_checks[label] = sync_check
 
             sliders_layout.addWidget(line)
 
