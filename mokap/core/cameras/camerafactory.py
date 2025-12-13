@@ -1,7 +1,6 @@
 import logging
 import os
-import sys
-from contextlib import redirect_stderr
+import platform
 from typing import List, Dict, Optional, Union, Any, TYPE_CHECKING
 import cv2
 from mokap.core.cameras.interface import AbstractCamera
@@ -14,28 +13,22 @@ if TYPE_CHECKING:
     from mokap.core.cameras.flir import FLIRCamera
 
 
-class noprint:
-    def __enter__(self):
-        self._original_stdout = sys.stdout
-        self._original_stderr = sys.stderr
-        sys.stdout = open(os.devnull, 'w')
-        sys.stderr = open(os.devnull, 'w')
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        sys.stdout.close()
-        sys.stderr.close()
-        sys.stdout = self._original_stdout
-        sys.stderr = self._original_stderr
-
-
-def discover_webcams(max_to_check: int = 10):  # increased default just in case
+def discover_webcams(max_to_check: int = 10):
     """ Attempts to find available webcams by trying to open them sequentially """
+
+    try:
+        # TODO: This does not work
+        cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_SILENT)
+    except AttributeError:
+        pass  # older OpenCV version
+
     found_cams = []
     index = 0
 
     while len(found_cams) < max_to_check:
-        # try to open the camera at the current index
-        with noprint():
+        if platform.system() == 'Windows':
+            cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+        else:
             cap = cv2.VideoCapture(index)
 
         if cap.isOpened():
@@ -45,8 +38,11 @@ def discover_webcams(max_to_check: int = 10):  # increased default just in case
             cap.release()
             index += 1
         else:
-            # if this fails, we assume there are no more cameras and break
             cap.release()
+            # If missed index 0, check 1 just in case (some laptops map rear cam to 1) otherwise assume no more cameras
+            if index == 0:
+                index += 1
+                continue
             break
 
     return found_cams
@@ -63,7 +59,7 @@ class CameraFactory:
         """
         CameraFactory._discovered_devices = []
 
-        # --- Discover Basler Cameras ---
+        # Discover Basler cameras
         try:
             from pypylon import pylon as py
             tlf = py.TlFactory.GetInstance()
@@ -82,7 +78,7 @@ class CameraFactory:
         except Exception as e:
             logger.error(f"Error during Basler discovery: {e}")
 
-        # --- Discover FLIR Cameras ---
+        # Discover FLIR cameras
         try:
 
             import PySpin
@@ -114,10 +110,10 @@ class CameraFactory:
                     'vendor': 'FLIR',
                     'model': model_name,
                     'serial': serial_number,
-                    'native_object': None       # should not keep a ref to the pointer, otherwise we get device busy
+                    'native_object': None  # should not keep a ref to the pointer, otherwise we get device busy
                 })
 
-                del cam     #  also we must explicitly delete this to release the reference
+                del cam  # also we must explicitly delete this to release the reference
 
                 cam_list.Clear()  # This is safe because we are not holding the ref to the pointer
                 system.ReleaseInstance()
@@ -126,7 +122,7 @@ class CameraFactory:
             logger.debug("PySpin SDK not found. Skipping FLIR camera discovery.")
             pass
 
-        # --- Discover Webcams ---
+        # Discover webcams
         try:
             # We call the discover_webcams function which returns WebcamCamera instances
             found_webcams = discover_webcams()
@@ -146,7 +142,6 @@ class CameraFactory:
             pass
 
         return CameraFactory._discovered_devices
-
 
     @staticmethod
     def get_camera_info(identifier: Union[int, str]) -> Optional[Dict[str, Any]]:
@@ -215,8 +210,8 @@ class CameraFactory:
                 system = PySpin.System.GetInstance()
 
                 cam_list = system.GetCameras()
-                cam_ptr = cam_list.GetBySerial(serial) # this is the safe way to re-acquire a camera
-                cam_list.Clear()    # we can release the list
+                cam_ptr = cam_list.GetBySerial(serial)  # this is the safe way to re-acquire a camera
+                cam_list.Clear()  # we can release the list
 
                 if cam_ptr and cam_ptr.IsValid():
                     # If we got a valid camera, return a FLIRCamera instacne
@@ -227,7 +222,7 @@ class CameraFactory:
                     logger.error(f"Could not re-acquire FLIR camera with serial {serial}. Was it disconnected?")
 
                     if system:
-                        system.ReleaseInstance() # clean up the system instance
+                        system.ReleaseInstance()  # clean up the system instance
                     return None
 
             except ImportError:
