@@ -8,6 +8,8 @@ Manages:
 - Coordinator and multiview worker setup
 """
 import logging
+import os
+import subprocess
 import sys
 import time
 from functools import partial
@@ -207,11 +209,19 @@ class MainControls(QMainWindow):
         left_layout.addWidget(name_widget)
 
         # Path display
-        self.save_dir_current = QLabel()
-        self.save_dir_current.setStyleSheet(f"color: {col_darkgray};")
-        self.save_dir_current.setWordWrap(True)
-        self.save_dir_current.setText(f'{self.controller.full_path.resolve()}')
-        left_layout.addWidget(self.save_dir_current)
+        path_label_widget = QWidget()
+        path_label_layout = QHBoxLayout(path_label_widget)
+        self.current_dir_label = QLabel()
+        self.current_dir_label.setStyleSheet(f"color: {col_darkgray};")
+        self.current_dir_label.setWordWrap(True)
+        self.current_dir_label.setText(f'{self.controller.full_path.resolve()}')
+        path_label_layout.addWidget(self.current_dir_label)
+
+        self.button_open_folder = QPushButton("Open")
+        self.button_open_folder.clicked.connect(self._open_session_folder)
+        path_label_layout.addWidget(self.button_open_folder)
+
+        left_layout.addWidget(path_label_widget)
 
         # Buttons
         btns_h = 60
@@ -523,6 +533,21 @@ class MainControls(QMainWindow):
         except Exception as e:
             logger.error(f"Failed to load calibration: {e}")
 
+    # ──────────────────────────────── Other actions ────────────────────────────────
+
+    @Slot()
+    def _open_session_folder(self):
+        path = self.controller.full_path.resolve()
+        try:
+            if 'Linux' in platform.system():
+                subprocess.Popen(['xdg-open', path])
+            elif 'Windows' in platform.system():
+                os.startfile(path)
+            elif 'Darwin' in platform.system():
+                subprocess.Popen(['open', path])
+        except:
+            pass
+
     # ──────────────────────────────── Monitors management ────────────────────────────────
 
     def _set_monitor(self, idx=None):
@@ -611,7 +636,7 @@ class MainControls(QMainWindow):
         now = time.monotonic()
         if now - self._tick >= 0.5:
             size = get_size(self.controller.full_path) if self.controller.full_path.is_dir() else 0
-            self.frames_saved_label.setText(f'Saved: ({pretty_size(size)})')
+            self.frames_saved_label.setText(f'Saved: {pretty_size(size)}')
             self._tick = now
 
         buffers = np.array(self.controller.buffered)

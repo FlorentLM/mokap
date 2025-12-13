@@ -6,7 +6,7 @@ from collections import deque
 from pathlib import Path
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, Slot, Signal, QThread
+from PySide6.QtCore import Qt, Slot, Signal, QThread, QEvent
 from PySide6.QtWidgets import (QHBoxLayout, QWidget, QVBoxLayout, QGroupBox, QLabel, QSlider,
                                QCheckBox, QPushButton, QFileDialog, QGraphicsRectItem, QGraphicsItemGroup, QSizePolicy)
 from mokap.utils import pretty_microseconds
@@ -247,7 +247,7 @@ class RecordingVideoWindow(VideoWindowBase):
         additional_layout.addWidget(buttons_row)
         right_layout.addWidget(additional_widget)
 
-    # ──── ──── Slider helpers ──── ────
+    # ──────────────────────────────── Various helpers ────────────────────────────────
 
     def _log_map(self, value, min_val, max_val, slider_min, slider_max):
         """Map value to log-scale slider position."""
@@ -372,8 +372,6 @@ class RecordingVideoWindow(VideoWindowBase):
         current = getattr(self._hw_camera, label)
         self._update_slider_from_value(label, current)
 
-    # --- Magnifier ---
-
     def _toggle_magnifier(self):
         enabled = self.magn_button.isChecked()
         self.magnifier_group.setVisible(enabled)
@@ -383,13 +381,117 @@ class RecordingVideoWindow(VideoWindowBase):
         else:
             self.magn_button.setStyleSheet('')
 
-    # --- Recording/Warning indicators ---
-
     def set_recording_indicator(self, visible: bool):
         self.recording_text.setVisible(visible)
 
     def set_warning_indicator(self, visible: bool):
         self.warning_text.setVisible(visible)
+
+    # ──────────────────────────────── Display update ────────────────────────────────
+
+    def eventFilter(self, watched_obj, event):
+        """
+        Captures mouse events from the graphics scene to control the magnifier.
+        Left Drag: Moves the source area (what is being magnified).
+        Right Drag: Moves the magnifier overlay position.
+        """
+        # TODO: Should this move to the base class? Might be useful in Calib mode
+
+        if event.type() in [QEvent.GraphicsSceneMousePress,
+                            QEvent.GraphicsSceneMouseMove,
+                            QEvent.GraphicsSceneMouseRelease]:
+
+            scene_pos = event.scenePos()
+            # Map scene coordinates to the ViewBox (image coordinates)
+            image_pos = self.view_box.mapSceneToView(scene_pos)
+
+            mouse_x = image_pos.x()
+            mouse_y = image_pos.y()
+
+            img_h, img_w = self.source_shape_hw
+
+            # Clamp coordinates to image bounds
+            mouse_x = max(0, min(img_w, mouse_x))
+            mouse_y = max(0, min(img_h, mouse_y))
+
+            buttons = event.buttons()
+
+            if event.type() == QEvent.GraphicsSceneMousePress:
+                if buttons & Qt.LeftButton:
+                    self.left_mouse_btn = True
+                if buttons & Qt.RightButton:
+                    self.right_mouse_btn = True
+
+            if event.type() == QEvent.GraphicsSceneMouseRelease:
+                if event.button() == Qt.LeftButton:
+                    self.left_mouse_btn = False
+                if event.button() == Qt.RightButton:
+                    self.right_mouse_btn = False
+
+            if self.left_mouse_btn:
+                # Update target center (normalized 0.0 - 1.0)
+                self.magn_target_cx = mouse_x / img_w
+                self.magn_target_cy = mouse_y / img_h
+
+            if self.right_mouse_btn:
+                # Move the QGraphicsItemGroup
+                self.magnifier_group.setPos(mouse_x, mouse_y)
+
+            return True
+
+        return super().eventFilter(watched_obj, event)
+
+    # ──────────────────────────────── Display update ────────────────────────────────
+
+    def _annotate_frame(self):
+        """
+        Copies the frame to display buffer and handles Magnifier slicing.
+        """
+        if self._latest_frame is None:
+            return
+
+        # Copy raw frame to display buffer
+        np.copyto(self._latest_display_frame, self._latest_frame)
+        self._latest_frame = None  # mark as consumed
+
+        # Magnifier
+        if not self.magnifier_group.isVisible():
+            return
+
+        # Calculate coordinates based on target center (0.0-1.0)
+        view_target_cx = self.magn_target_cx * self._source_width
+        view_target_cy = self.magn_target_cy * self._source_height
+
+        # Calculate top-left corner of the source rectangle
+        source_rect_x = view_target_cx - self.magn_window_w / 2
+        source_rect_y = view_target_cy - self.magn_window_h / 2
+
+        # Clamp to image boundaries
+        source_rect_x = max(0, min(self._source_width - self.magn_window_w, source_rect_x))
+        source_rect_y = max(0, min(self._source_height - self.magn_window_h, source_rect_y))
+
+        # Update the yellow rectangle showing WHAT is being magnified
+        self.magnifier_source_rect.setRect(source_rect_x, source_rect_y, self.magn_window_w, self.magn_window_h)
+
+        # Slice the numpy array
+        slice_x1 = int(source_rect_x)
+        slice_x2 = slice_x1 + self.magn_window_w
+        slice_y1 = int(source_rect_y)
+        slice_y2 = slice_y1 + self.magn_window_h
+
+        # Extract the ROI
+        magnifier_source_data = self._latest_display_frame[slice_y1:slice_y2, slice_x1:slice_x2]
+
+        # Update the item inside the magnifier group
+        self.magnifier_item.setImageData(magnifier_source_data)
+
+        # Apply zoom scale from the vertical slider
+        scale = self.magn_slider.value()
+        self.magnifier_item.setScale(scale)
+
+        # Update the border around the magnifier window to match the scale
+        scaled_rect = self.magnifier_item.mapRectToParent(self.magnifier_item.boundingRect())
+        self.magnifier_border.setRect(scaled_rect)
 
 
 class CalibrationVideoWindow(VideoWindowBase):
