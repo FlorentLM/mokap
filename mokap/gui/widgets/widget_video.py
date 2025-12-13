@@ -53,7 +53,7 @@ class RecordingVideoWindow(VideoWindowBase):
     def _init_specific_ui(self):
         """Create Recording-specific UI elements."""
 
-        # --- Overlays ---
+        # ──── ──── Overlays ──── ────
         crosshair_pen = pg.mkPen(color='w', style=Qt.DotLine)
         self.v_line = pg.InfiniteLine(angle=90, movable=False, pen=crosshair_pen)
         self.h_line = pg.InfiniteLine(angle=0, movable=False, pen=crosshair_pen)
@@ -103,7 +103,7 @@ class RecordingVideoWindow(VideoWindowBase):
         # Mouse events for magnifier
         self.graphics_widget.scene().installEventFilter(self)
 
-        # --- Right panel layout ---
+        # ──── ──── Right panel layout ──── ────
         right_layout = QHBoxLayout(self.RIGHT_GROUP)
         right_layout.setContentsMargins(5, 5, 5, 5)
 
@@ -137,7 +137,7 @@ class RecordingVideoWindow(VideoWindowBase):
             line_layout.setContentsMargins(1, 1, 1, 1)
             line_layout.setSpacing(2)
 
-            slider_label = QLabel(f'{label.title()}:')
+            slider_label = QLabel(f"{label.replace('_', ' ').title()}:")
             slider_label.setFixedWidth(70)
             slider_label.setAlignment(Qt.AlignRight)
             line_layout.addWidget(slider_label)
@@ -198,7 +198,7 @@ class RecordingVideoWindow(VideoWindowBase):
         right_layout.addWidget(sliders_widget)
         right_layout.addWidget(sync_group)
 
-        # --- Additional controls (magnifier buttons) ---
+        # ──── ──── Additional controls (magnifier buttons) ──── ────
         additional_widget = QWidget()
         additional_layout = QVBoxLayout(additional_widget)
         additional_layout.setContentsMargins(0, 20, 0, 5)
@@ -221,7 +221,7 @@ class RecordingVideoWindow(VideoWindowBase):
         additional_layout.addWidget(buttons_row)
         right_layout.addWidget(additional_widget)
 
-    # --- Slider helpers ---
+    # ──── ──── Slider helpers ──── ────
 
     def _log_map(self, value, min_val, max_val, slider_min, slider_max):
         """Map value to log-scale slider position."""

@@ -147,11 +147,6 @@ class VideoWindowBase(SharedBase):
         self._last_polled_values = {}
         self._last_polled_ranges = {}
 
-        # Clock and counter
-        self._fps_clock = time.monotonic()
-        self._last_frame_number_for_fps = 0
-        self._capture_fps_deque = deque(maxlen=5)
-
         # This timer is for video display only (updating the QImage)
         self.timer_display = QTimer(self)
         self.timer_display.timeout.connect(self._update_display)
@@ -440,30 +435,19 @@ class VideoWindowBase(SharedBase):
         if not self.isVisible():
             return
 
-        now = time.monotonic()
-        dt = now - self._fps_clock
+        if self._mainwindow.manager.acquiring:
 
-        if dt > 0 and self._mainwindow.manager.acquiring:
-            current_frame_number = self._current_frame_data.get('frame_number', 0)
+            measured_fps = self._hw_camera.measured_framerate
+            target_fps = self._hw_camera.framerate
 
-            frames_acquired = current_frame_number - self._last_frame_number_for_fps
+            # Update label
+            self.capturefps_value.setText(f"{measured_fps:.2f} fps")
 
-            if frames_acquired > 0:
-                current_acquisition_fps = frames_acquired / dt
-                self._capture_fps_deque.append(current_acquisition_fps)
-                avg_fps = sum(self._capture_fps_deque) / len(self._capture_fps_deque)
-
-                target_framerate = self._hw_camera.framerate
-
-                if abs(avg_fps - target_framerate) > (target_framerate * 0.1):  # 10% tolerance
-                    self._warning = True
-                else:
-                    self._warning = False
-
-                self.capturefps_value.setText(f"{avg_fps:.2f} fps")
-
-            self._fps_clock = now
-            self._last_frame_number_for_fps = current_frame_number
+            # Update Warning Flag
+            if target_fps > 0 and abs(measured_fps - target_fps) > (target_fps * 0.1):
+                self._warning = True
+            else:
+                self._warning = False
 
         params_to_poll = ['exposure', 'framerate', 'gain', 'black_level', 'gamma']
 
@@ -497,7 +481,6 @@ class VideoWindowBase(SharedBase):
             self.capturefps_value.setText("Off")
             self.brightness_value.setText("-")
             self._warning = False
-            self._capture_fps_deque.clear()
 
             if self._video_initialised:
                 self._clear_display()
