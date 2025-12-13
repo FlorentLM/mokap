@@ -53,16 +53,20 @@ class RecordingVideoWindow(VideoWindowBase):
     def _init_specific_ui(self):
         """Create Recording-specific UI elements."""
 
-        # ──── ──── Overlays ──── ────
+        # ──── ──── Overlays (crosshairs & text) ──── ────
+
+        # Crosshairs
         crosshair_pen = pg.mkPen(color='w', style=Qt.DotLine)
         self.v_line = pg.InfiniteLine(angle=90, movable=False, pen=crosshair_pen)
         self.h_line = pg.InfiniteLine(angle=0, movable=False, pen=crosshair_pen)
         self.v_line.setPos(self.source_shape_hw[1] / 2)
         self.h_line.setPos(self.source_shape_hw[0] / 2)
+
+        # Add to viewbox
         self.view_box.addItem(self.v_line)
         self.view_box.addItem(self.h_line)
 
-        # Recording indicator
+        # Recording text
         self.recording_text = pg.TextItem(anchor=(0.5, 0), color=(255, 0, 0))
         self.recording_text.setPos(self.source_shape_hw[1] / 2, self.source_shape_hw[0] / 2)
         self.recording_text.setHtml(
@@ -71,7 +75,7 @@ class RecordingVideoWindow(VideoWindowBase):
         self.view_box.addItem(self.recording_text)
         self.recording_text.hide()
 
-        # Warning indicator
+        # Warning text
         self.warning_text = pg.TextItem(anchor=(0.5, 0), color=(255, 165, 0))
         self.warning_text.setPos(self.source_shape_hw[1] / 2, 10)
         self.warning_text.setHtml(
@@ -80,7 +84,7 @@ class RecordingVideoWindow(VideoWindowBase):
         self.view_box.addItem(self.warning_text)
         self.warning_text.hide()
 
-        # Magnifier
+        # Magnifier group
         self.magnifier_group = QGraphicsItemGroup()
         self.magnifier_item = FastImageItem()
         self.magnifier_border = QGraphicsRectItem()
@@ -90,17 +94,20 @@ class RecordingVideoWindow(VideoWindowBase):
         self.view_box.addItem(self.magnifier_group)
         self.magnifier_group.hide()
 
+        # Magnifier source rect (yellow box on main image)
         self.magnifier_source_rect = QGraphicsRectItem()
         self.magnifier_source_rect.setPen(pg.mkPen('y', width=1))
         self.view_box.addItem(self.magnifier_source_rect)
         self.magnifier_source_rect.hide()
 
-        # Z-order
+        # Set Z-order
         self.image_item.setZValue(0)
         self.magnifier_source_rect.setZValue(1)
         self.magnifier_group.setZValue(2)
+        self.v_line.setZValue(3)
+        self.h_line.setZValue(3)
 
-        # Mouse events for magnifier
+        # Mouse events for magnifier interaction
         self.graphics_widget.scene().installEventFilter(self)
 
         # ──── ──── Right panel layout ──── ────
@@ -119,7 +126,7 @@ class RecordingVideoWindow(VideoWindowBase):
         sync_layout = QVBoxLayout(sync_group)
         sync_layout.setSpacing(12)
 
-        # Create sliders for each parameter
+        # Create sliders
         params = ['framerate', 'exposure', 'black_level', 'gain', 'gamma']
 
         for label in params:
@@ -224,7 +231,8 @@ class RecordingVideoWindow(VideoWindowBase):
         right_layout.addWidget(sliders_widget)
         right_layout.addWidget(sync_group)
 
-        # ──── ──── Additional controls (magnifier buttons) ──── ────
+        # ──── ──── Additional controls (Buttons) ──── ────
+
         additional_widget = QWidget()
         additional_layout = QVBoxLayout(additional_widget)
         additional_layout.setContentsMargins(0, 20, 0, 5)
@@ -233,12 +241,21 @@ class RecordingVideoWindow(VideoWindowBase):
         buttons_row.setMaximumHeight(80)
         buttons_layout = QHBoxLayout(buttons_row)
 
+        # # Nothing Button
+        # self.n_button = QPushButton('Nothing')
+        # self.n_button.setCheckable(True)
+        # self.n_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # self.n_button.clicked.connect(self._toggle_n_display)
+        # buttons_layout.addWidget(self.n_button)
+
+        # Magnifier Button
         self.magn_button = QPushButton('Magnifier')
         self.magn_button.setCheckable(True)
         self.magn_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.magn_button.clicked.connect(self._toggle_magnifier)
         buttons_layout.addWidget(self.magn_button)
 
+        # Zoom Slider
         self.magn_slider = QSlider(Qt.Vertical)
         self.magn_slider.setRange(1, 5)
         self.magn_slider.setValue(2)
@@ -381,10 +398,10 @@ class RecordingVideoWindow(VideoWindowBase):
         else:
             self.magn_button.setStyleSheet('')
 
-    def set_recording_indicator(self, visible: bool):
+    def _set_recording_indicator(self, visible: bool):
         self.recording_text.setVisible(visible)
 
-    def set_warning_indicator(self, visible: bool):
+    def _set_warning_indicator(self, visible: bool):
         self.warning_text.setVisible(visible)
 
     # ──────────────────────────────── Display update ────────────────────────────────
@@ -492,6 +509,21 @@ class RecordingVideoWindow(VideoWindowBase):
         # Update the border around the magnifier window to match the scale
         scaled_rect = self.magnifier_item.mapRectToParent(self.magnifier_item.boundingRect())
         self.magnifier_border.setRect(scaled_rect)
+
+    # ──────────────────────────────── Update ────────────────────────────────
+
+    def _update_slow(self):
+        """
+        Override slow update to update warning text visibility based on flag.
+        """
+        super()._update_slow()
+
+        # if the base class calculated a warning, show the text
+        self._set_warning_indicator(self._warning)
+
+        is_rec = self._mainwindow.controller.recording
+        self._set_recording_indicator(is_rec)
+
 
 
 class CalibrationVideoWindow(VideoWindowBase):

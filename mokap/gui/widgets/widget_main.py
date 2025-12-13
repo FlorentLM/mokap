@@ -116,7 +116,7 @@ class MainControls(QMainWindow):
         self.is_recording = False
 
         # Window references
-        self.central_calib_window = None
+        self.viewer_3d = None
         self.video_windows = []
         self.calibration_views = {}
 
@@ -353,6 +353,8 @@ class MainControls(QMainWindow):
         self.acq_name_textbox.setDisabled(not checked)
         self.acq_name_edit_btn.setText("Save" if checked else "Edit")
 
+    # ──────────────────────────────── Main actions ────────────────────────────────
+
     def _toggle_acquisition(self, checked):
         """Toggle camera acquisition."""
         if checked:
@@ -430,14 +432,12 @@ class MainControls(QMainWindow):
                 )
 
             # Create 3D view window
-            self.central_calib_window = Viewer3D(self)
-            self.central_calib_window.show()
-            self.central_calib_window.request_load_calibration.connect(
-                self._on_load_calibration
-            )
+            self.viewer_3d = Viewer3D(self)
+            self.viewer_3d.show()
+            self.viewer_3d.request_load_calibration.connect(self._on_load_calibration)
 
             # Create multiview worker
-            origin_cam = self.central_calib_window.origin_camera_combo.currentText()
+            origin_cam = self.viewer_3d.origin_camera_combo.currentText()
 
             self.multiview_worker = MultiviewWorker(
                 rig=self.rig,
@@ -466,7 +466,7 @@ class MainControls(QMainWindow):
 
             # Connect 3D scene updates
             self.multiview_worker.scene_updated.connect(
-                self.central_calib_window.update_3d_scene
+                self.viewer_3d.update_3d_scene
             )
 
             self.multiview_thread.start()
@@ -479,13 +479,13 @@ class MainControls(QMainWindow):
             w._force_destroy = True
             w.close()
 
-        if self.central_calib_window:
-            self.central_calib_window._force_destroy = True
-            self.central_calib_window.close()
+        if self.viewer_3d:
+            self.viewer_3d._force_destroy = True
+            self.viewer_3d.close()
 
         self.video_windows.clear()
         self.calibration_views.clear()
-        self.central_calib_window = None
+        self.viewer_3d = None
 
         if self.multiview_thread:
             self.multiview_thread.quit()
@@ -493,9 +493,22 @@ class MainControls(QMainWindow):
             self.multiview_thread = None
             self.multiview_worker = None
 
+    def get_visible_windows(self, include_main=False):
+        """Get list of visible windows."""
+        windows = [w for w in self.video_windows if w.isVisible()]
+        if self.viewer_3d and self.viewer_3d.isVisible():
+            windows.append(self.viewer_3d)
+        if include_main:
+            windows.append(self)
+        return windows
+
+    def cascade_windows(self):
+        """Arrange windows in a cascade."""
+        # TODO: reimplement this!!
+        pass
+
     # ──────────────────────────────── Calibration I/O ────────────────────────────────
 
-    @Slot()
     def _on_load_calibration(self):
         """Load calibration from file."""
         file_path, _ = QFileDialog.getOpenFileName(
@@ -535,7 +548,6 @@ class MainControls(QMainWindow):
 
     # ──────────────────────────────── Other actions ────────────────────────────────
 
-    @Slot()
     def _open_session_folder(self):
         path = self.controller.full_path.resolve()
         try:
@@ -562,7 +574,7 @@ class MainControls(QMainWindow):
         else:
             self.selected_monitor = self._monitors[0]
 
-    def screen_update(self, idx, event=None):
+    def _monitor_update(self, idx, event=None):
         """Handle monitor selection click."""
         self._set_monitor(idx)
         self._update_monitors_buttons()
@@ -572,7 +584,7 @@ class MainControls(QMainWindow):
         self.monitors_buttons_scene.clear()
 
         SCALE = 40
-        visible_wins = self.visible_windows(include_main=True)
+        visible_wins = self.get_visible_windows(include_main=True)
 
         for i, m in enumerate(self._monitors):
             mx, my = m.x // SCALE, m.y // SCALE
@@ -583,7 +595,7 @@ class MainControls(QMainWindow):
             rect = QGraphicsRectItem(mx, my, mw - 2, mh - 2)
             rect.setBrush(QBrush(QColor(col)))
             rect.setPen(QPen(Qt.PenStyle.NoPen))
-            rect.mousePressEvent = partial(self.screen_update, i)
+            rect.mousePressEvent = partial(self._monitor_update, i)
             rect.setZValue(0)
             self.monitors_buttons_scene.addItem(rect)
 
@@ -612,20 +624,6 @@ class MainControls(QMainWindow):
             text.setPos(mx + 2, my + mh - text.boundingRect().height() - 2)
             text.setZValue(2)
             self.monitors_buttons_scene.addItem(text)
-
-    def visible_windows(self, include_main=False):
-        """Get list of visible windows."""
-        windows = [w for w in self.video_windows if w.isVisible()]
-        if self.central_calib_window and self.central_calib_window.isVisible():
-            windows.append(self.central_calib_window)
-        if include_main:
-            windows.append(self)
-        return windows
-
-    def cascade_windows(self):
-        """Arrange windows in a cascade."""
-        # TODO: reimplement this!!
-        pass
 
     # ──────────────────────────────── Updates ────────────────────────────────
 
