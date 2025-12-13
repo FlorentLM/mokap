@@ -2,6 +2,7 @@ import abc
 import logging
 from typing import Any, Dict, Optional, Tuple, Sequence, List
 from mokap.core.cameras.interface import AbstractCamera
+from mokap.utils import pretty_microseconds
 
 logger = logging.getLogger(__name__)
 
@@ -161,10 +162,28 @@ class GenICamCamera(AbstractCamera, abc.ABC):
 
     @exposure.setter
     def exposure(self, value: float):
+        if self.hardware_triggered and self._framerate > 0:
+            # Max exposure must leave time for readout between triggers
+            # Frame period in µs minus some margin for readout
+            frame_period_us = 1e6 / self._framerate
+            # Readout overhead depends on camera, but 5% of frame period should be fine
+            max_exposure_for_trigger = frame_period_us * 0.95
+
+            hw_min, hw_max = self.exposure_range
+            effective_max = min(hw_max, max_exposure_for_trigger)
+
+            if value > effective_max:
+                logger.warning(
+                    f"[{self.name}] Clamping exposure from {pretty_microseconds(value)}"
+                    f" to {pretty_microseconds(effective_max)} (trigger at {self._framerate:.1f} Hz)"
+                )
+                value = effective_max
+
         self._exposure = self._set_feature_value('ExposureTime', value)
-        # After setting exposure, the max framerate might have decreased
-        # re-apply the current framerate setting to ensure it's still valid or let the framerate setter handle clamping
-        self.framerate = self._framerate
+
+        if not self.hardware_triggered:
+            # In software mode, re-apply framerate in case it needs clamping
+            self.framerate = self._framerate
 
     @property
     def exposure_range(self) -> Tuple[float, float]:
@@ -260,36 +279,40 @@ class GenICamCamera(AbstractCamera, abc.ABC):
 
     @framerate.setter
     def framerate(self, value: float):
-        self._framerate = value  # cache the desired value first
 
-        # if in hardware trigger mode, the camera's internal pacer is off
-        if self.hardware_triggered:
-            logger.debug(f"Hardware trigger is on. Skipping setting framerate on {self.name} camera directly.")
-            return
+        # Cache the desired value first for both hardware and software modes
+        # (for hardware mode, this is just for reporting, it does nothing to the internal pacer)
+        self._framerate = value
+        # TODO: Ideally this should not be set, and the self._framerate value should be inferred from the manager or the trigger... but that would mean keeping a ref to either one
 
-        # if not hardware triggered
-        try:
-            # enable framerate control
-            self._set_feature_value('AcquisitionFrameRateEnable', True)
-
-            # set the target framerate. The setter will clamp it
-            actual_value_set = self._set_feature_value('AcquisitionFrameRate', value)
-
-            # update the cached value with what was actually set
-            self._framerate = actual_value_set
-            logger.debug(f"Set {self.name}'s framerate to {self._framerate} fps.")
-
-        except AttributeError:
-
-            # Fallback for cameras that might not support explicit framerate control
-            logger.warning(f"Camera {self.name} does not support explicit framerate control.")
-
-            # Try to read the current framerate as a best-effort guess
+        if not self.hardware_triggered:
             try:
-                self._framerate = float(self._get_feature_value('ResultingFrameRate'))
+                # enable framerate control
+                self._set_feature_value('AcquisitionFrameRateEnable', True)
+
+                # set the target framerate. The setter will clamp it
+                actual_value_set = self._set_feature_value('AcquisitionFrameRate', value)
+
+                # update the cached value with what was actually set
+                self._framerate = actual_value_set
+                logger.debug(f"[{self.name}] Set framerate to {self._framerate} fps.")
+
             except AttributeError:
-                logger.warning(f"Could not read ResultingFrameRate for {self.unique_id}.")
-                self._framerate = 0.0
+
+                # Fallback for cameras that might not support explicit framerate control
+                logger.warning(f"Camera {self.name} does not support explicit framerate control.")
+
+                # Try to read the current framerate as a best-effort guess
+                try:
+                    self._framerate = float(self._get_feature_value('ResultingFrameRate'))
+                except AttributeError:
+                    logger.warning(f"[{self.name}] Could not read ResultingFrameRate.")
+                    self._framerate = 0.0
+
+        else:
+            logger.warning(
+                f"[{self.name}] Hardware trigger is on. Skipping setting framerate directly."
+            )
 
     @property
     def framerate_range(self) -> Tuple[float, float]:

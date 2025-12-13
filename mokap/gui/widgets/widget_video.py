@@ -11,7 +11,7 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, Slot, Signal, QThread
 from PySide6.QtWidgets import (QHBoxLayout, QWidget, QVBoxLayout, QGroupBox, QLabel, QSlider,
-                               QCheckBox, QPushButton, QFileDialog, QGraphicsRectItem, QGraphicsItemGroup)
+                               QCheckBox, QPushButton, QFileDialog, QGraphicsRectItem, QGraphicsItemGroup, QSizePolicy)
 from mokap.utils import pretty_microseconds
 from mokap.gui.style import *
 from mokap.gui.widgets import VideoWindowBase, FastImageItem
@@ -27,7 +27,7 @@ class RecordingVideoWindow(VideoWindowBase):
     Features:
     - Crosshair overlay
     - Magnifier tool
-    - Camera hardware control sliders
+    - Camera hardware control sliders with sync checkboxes
     - Recording indicator
     """
 
@@ -44,12 +44,12 @@ class RecordingVideoWindow(VideoWindowBase):
         self.left_mouse_btn = False
         self.right_mouse_btn = False
 
-        # Slider parameter storage
+        # Slider storage
         self.log_slider_params = {}
         self.camera_controls_sliders = {}
         self.camera_controls_sliders_labels = {}
         self.camera_controls_sliders_scales = {}
-        self._val_in_sync = {}
+        self.camera_controls_sync_checks = {}
 
         # Build UI
         self._init_common_ui()
@@ -62,7 +62,7 @@ class RecordingVideoWindow(VideoWindowBase):
     def _init_specific_ui(self):
         """Create Recording-specific UI elements."""
 
-        # Overlays
+        # --- Overlays ---
         crosshair_pen = pg.mkPen(color='w', style=Qt.DotLine)
         self.v_line = pg.InfiniteLine(angle=90, movable=False, pen=crosshair_pen)
         self.h_line = pg.InfiniteLine(angle=0, movable=False, pen=crosshair_pen)
@@ -80,7 +80,7 @@ class RecordingVideoWindow(VideoWindowBase):
         self.view_box.addItem(self.recording_text)
         self.recording_text.hide()
 
-        # Warning text
+        # Warning indicator
         self.warning_text = pg.TextItem(anchor=(0.5, 0), color=(255, 165, 0))
         self.warning_text.setPos(self.source_shape_hw[1] / 2, 10)
         self.warning_text.setHtml(
@@ -109,16 +109,26 @@ class RecordingVideoWindow(VideoWindowBase):
         self.magnifier_source_rect.setZValue(1)
         self.magnifier_group.setZValue(2)
 
-        # Right panel: Camera controls
+        # Mouse events for magnifier
+        self.graphics_widget.scene().installEventFilter(self)
+
+        # --- Right panel layout ---
         right_layout = QHBoxLayout(self.RIGHT_GROUP)
         right_layout.setContentsMargins(5, 5, 5, 5)
 
+        # Sliders column
         sliders_widget = QWidget()
         sliders_layout = QVBoxLayout(sliders_widget)
-        sliders_layout.setContentsMargins(0, 5, 0, 5)
-        sliders_layout.setSpacing(2)
+        sliders_layout.setContentsMargins(0, 20, 0, 5)
+        sliders_layout.setSpacing(0)
 
-        # Create sliders for camera parameters
+        # Sync checkboxes column
+        sync_group = QGroupBox("Sync")
+        sync_group.setContentsMargins(5, 20, 0, 5)
+        sync_layout = QVBoxLayout(sync_group)
+        sync_layout.setSpacing(12)
+
+        # Create sliders for each parameter
         params = ['framerate', 'exposure', 'black_level', 'gain', 'gamma']
 
         for label in params:
@@ -130,6 +140,7 @@ class RecordingVideoWindow(VideoWindowBase):
             except AttributeError:
                 continue
 
+            # Slider row
             line = QWidget()
             line_layout = QHBoxLayout(line)
             line_layout.setContentsMargins(1, 1, 1, 1)
@@ -152,8 +163,7 @@ class RecordingVideoWindow(VideoWindowBase):
                     'min_val': min_val, 'max_val': max_val,
                     'slider_min': 0, 'slider_max': 1000
                 }
-                initial_pos = self._log_map(param_value, min_val, max_val, 0, 1000)
-                slider.setValue(initial_pos)
+                slider.setValue(self._log_map(param_value, min_val, max_val, 0, 1000))
                 self.camera_controls_sliders_scales[label] = 'log'
                 value_text = pretty_microseconds(param_value)
             elif should_scale:
@@ -170,58 +180,199 @@ class RecordingVideoWindow(VideoWindowBase):
                 self.camera_controls_sliders_scales[label] = 1
                 value_text = f"{int(param_value)}"
 
-            slider.valueChanged.connect(
-                lambda value, lbl=label: self._slider_changed(lbl, value)
-            )
-            line_layout.addWidget(slider)
+            slider.valueChanged.connect(lambda v, lbl=label: self._slider_changed(lbl, v))
+            slider.sliderReleased.connect(lambda lbl=label: self._slider_released(lbl))
+            line_layout.addWidget(slider, 1)
 
             value_label = QLabel(value_text)
-            value_label.setFixedWidth(60)
+            value_label.setFixedWidth(50)
             line_layout.addWidget(value_label)
+
+            # Sync checkbox (in separate column)
+            sync_check = QCheckBox()
+            sync_check.setMaximumWidth(16)
+            sync_check.setChecked(True)
+
+            if self._hw_camera.hardware_triggered and label == 'framerate':
+                sync_check.setDisabled(True)    # Can't be toggled off in hardware sync mode
+
+            sync_layout.addWidget(sync_check)
 
             self.camera_controls_sliders[label] = slider
             self.camera_controls_sliders_labels[label] = value_label
+            self.camera_controls_sync_checks[label] = sync_check
 
             sliders_layout.addWidget(line)
 
         right_layout.addWidget(sliders_widget)
+        right_layout.addWidget(sync_group)
+
+        # --- Additional controls (magnifier buttons) ---
+        additional_widget = QWidget()
+        additional_layout = QVBoxLayout(additional_widget)
+        additional_layout.setContentsMargins(0, 20, 0, 5)
+
+        buttons_row = QWidget()
+        buttons_row.setMaximumHeight(80)
+        buttons_layout = QHBoxLayout(buttons_row)
+
+        self.magn_button = QPushButton('Magnifier')
+        self.magn_button.setCheckable(True)
+        self.magn_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.magn_button.clicked.connect(self._toggle_magnifier)
+        buttons_layout.addWidget(self.magn_button)
+
+        self.magn_slider = QSlider(Qt.Vertical)
+        self.magn_slider.setRange(1, 5)
+        self.magn_slider.setValue(2)
+        buttons_layout.addWidget(self.magn_slider)
+
+        additional_layout.addWidget(buttons_row)
+        right_layout.addWidget(additional_widget)
+
+    # --- Slider helpers ---
 
     def _log_map(self, value, min_val, max_val, slider_min, slider_max):
-        """Map a value to logarithmic slider position."""
+        """Map value to log-scale slider position."""
         if value <= min_val:
             return slider_min
         if value >= max_val:
             return slider_max
-
-        log_min = np.log(max(min_val, 1))
+        log_min = np.log(min_val)
         log_max = np.log(max_val)
-        log_val = np.log(max(value, 1))
+        log_val = np.log(value)
+        scale = (log_val - log_min) / (log_max - log_min)
+        return int(slider_min + scale * (slider_max - slider_min))
 
-        return int(slider_min + (log_val - log_min) / (log_max - log_min) * (slider_max - slider_min))
+    def _inv_log_map(self, pos, min_val, max_val, slider_min, slider_max):
+        """Map log-scale slider position back to value."""
+        if pos <= slider_min:
+            return min_val
+        if pos >= slider_max:
+            return max_val
+        log_min = np.log(min_val)
+        log_max = np.log(max_val)
+        scale = (pos - slider_min) / (slider_max - slider_min)
+        return np.exp(log_min + scale * (log_max - log_min))
 
-    def _slider_changed(self, label, value):
-        """Handle slider value change."""
+    def _slider_changed(self, label, int_value):
+        """Update label text as slider moves (no camera write yet)."""
         scale = self.camera_controls_sliders_scales.get(label, 1)
 
         if scale == 'log':
             params = self.log_slider_params[label]
-            log_min = np.log(max(params['min_val'], 1))
-            log_max = np.log(params['max_val'])
-            ratio = (value - params['slider_min']) / (params['slider_max'] - params['slider_min'])
-            actual_value = np.exp(log_min + ratio * (log_max - log_min))
-            display_text = pretty_microseconds(actual_value)
+            value = self._inv_log_map(int_value, **params)
+            text = pretty_microseconds(value)
         else:
-            actual_value = value / scale if scale != 1 else value
-            display_text = f"{actual_value:.2f}" if scale != 1 else f"{int(actual_value)}"
+            value = int_value / scale
+            text = f"{int(value)}" if float(value).is_integer() else f"{value:.2f}"
 
-        # Update label
-        self.camera_controls_sliders_labels[label].setText(display_text)
+        self.camera_controls_sliders_labels[label].setText(text)
 
-        # Apply the value to the hardware camera
-        try:
-            setattr(self._hw_camera, label, actual_value)
-        except Exception as e:
-            logger.warning(f"[{self._hw_cam_name}] Failed to set {label} to {actual_value}: {e}")
+    def _slider_released(self, label):
+        """Apply value to camera(s) when slider is released."""
+        slider = self.camera_controls_sliders[label]
+        scale = self.camera_controls_sliders_scales.get(label, 1)
+
+        if scale == 'log':
+            params = self.log_slider_params[label]
+            value = self._inv_log_map(slider.value(), **params)
+        else:
+            value = slider.value() / scale
+
+        if self.camera_controls_sync_checks[label].isChecked():
+
+            # Apply to all cameras whose sync checkbox is checked
+            for window in self._mainwindow.video_windows:
+                if not hasattr(window, 'camera_controls_sync_checks'):
+                    continue  # Skip non-recording windows
+                if window.camera_controls_sync_checks.get(label, None) is None:
+                    continue  # This window doesn't have this parameter
+                if not window.camera_controls_sync_checks[label].isChecked():
+                    continue  # This camera opted out of sync
+                if window._hw_camera.hardware_triggered and label == 'framerate':
+                    continue  # This should never happen since the checkbox is disabled in hardware mode. But still
+
+                # Set on this camera
+                setattr(window._hw_camera, label, value)
+
+                # Update that window's slider UI
+                actual = getattr(window._hw_camera, label)
+                window._update_slider_from_value(label, actual)
+                window._last_polled_values[label] = actual
+
+            # Handle framerate specially for hardware trigger
+            if label == 'framerate' and self._mainwindow.manager.hardware_triggered:
+                self._mainwindow.manager.framerate = value
+        else:
+            # Only this camera
+            setattr(self._hw_camera, label, value)
+            actual = getattr(self._hw_camera, label)
+            self._update_slider_from_value(label, actual)
+            self._last_polled_values[label] = actual
+
+    def _update_slider_from_value(self, label, value):
+        """Update slider position and label from a camera value."""
+        slider = self.camera_controls_sliders[label]
+        scale = self.camera_controls_sliders_scales.get(label, 1)
+
+        slider.blockSignals(True)
+        if scale == 'log':
+            params = self.log_slider_params[label]
+            slider.setValue(self._log_map(value, **params))
+            self.camera_controls_sliders_labels[label].setText(pretty_microseconds(value))
+        else:
+            slider.setValue(int(value * scale))
+            text = f"{int(value)}" if float(value).is_integer() else f"{value:.2f}"
+            self.camera_controls_sliders_labels[label].setText(text)
+        slider.blockSignals(False)
+
+    # Override the polling hooks from base class
+    def _on_slider_value_changed(self, label, value):
+        """Called by base class when polled camera value changes."""
+        if label in self.camera_controls_sliders:
+            self._update_slider_from_value(label, value)
+
+    def _on_slider_range_changed(self, label, new_range):
+        """Called by base class when polled camera range changes."""
+        if label not in self.camera_controls_sliders:
+            return
+
+        slider = self.camera_controls_sliders[label]
+        scale = self.camera_controls_sliders_scales.get(label, 1)
+        min_val, max_val = new_range
+
+        slider.blockSignals(True)
+        if scale == 'log':
+            self.log_slider_params[label]['min_val'] = min_val
+            self.log_slider_params[label]['max_val'] = max_val
+        else:
+            slider.setMinimum(int(min_val * scale))
+            slider.setMaximum(int(max_val * scale))
+        slider.blockSignals(False)
+
+        # Refresh display with current value
+        current = getattr(self._hw_camera, label)
+        self._update_slider_from_value(label, current)
+
+    # --- Magnifier ---
+
+    def _toggle_magnifier(self):
+        enabled = self.magn_button.isChecked()
+        self.magnifier_group.setVisible(enabled)
+        self.magnifier_source_rect.setVisible(enabled)
+        if enabled:
+            self.magn_button.setStyleSheet(f'background-color: #80{col_yellow.lstrip("#")};')
+        else:
+            self.magn_button.setStyleSheet('')
+
+    # --- Recording/Warning indicators ---
+
+    def set_recording_indicator(self, visible: bool):
+        self.recording_text.setVisible(visible)
+
+    def set_warning_indicator(self, visible: bool):
+        self.warning_text.setVisible(visible)
 
 
 class CalibrationVideoWindow(VideoWindowBase):
@@ -239,6 +390,10 @@ class CalibrationVideoWindow(VideoWindowBase):
     Processing pipeline:
     - DetectorWorker: Runs detection in separate thread, emits detection_ready
     - MonocularWorker: Receives detections, manages calibration logic
+
+    Naming conventions:
+    - _hw_camera: Hardware camera (inherited from VideoWindowBase)
+    - _cam: Lucida CameraModel for calibration parameters
     """
 
     # Signal to send frames to the detector
@@ -260,6 +415,7 @@ class CalibrationVideoWindow(VideoWindowBase):
         self.latest_reprojected_points = np.zeros((0, 2))
         self.latest_detected_ids = np.array([])
 
+        # Lucida CameraModel from the shared rig (for calibration parameters)
         self._cam = self._mainwindow.rig[self._hw_cam_name]
 
         # ──── ──── Detector (CPU-heavy, separate thread) ──── ────

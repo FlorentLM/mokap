@@ -177,20 +177,21 @@ class MultiCam:
             # Hardware trigger controls timing: update trigger if already running
             if self._acquiring.is_set() and self._trigger_instance:
                 self._trigger_instance.start(self._framerate)
-        else:
-            # Software trigger: set framerate on each camera directly
-            for cam in self.cameras:
-                try:
-                    cam.framerate = new_framerate
-                except Exception as e:
-                    logger.error(f"Could not set framerate on camera {cam.name}: {e}")
 
-            # Verify all cameras accepted the framerate
-            if not all(cam.framerate == new_framerate for cam in self.cameras):
-                self._framerate = None
-                logger.warning("Not all cameras could be set to the requested framerate.")
-            else:
-                logger.debug(f"All cameras successfully set to {new_framerate} fps.")
+        # Framerate set on each camera directly for *both* software and hardware, so they are all consistent
+        # (even if it's not actually changing the cameras internal pacers in hardware trigger modes)
+        for cam in self.cameras:
+            try:
+                cam.framerate = new_framerate
+            except Exception as e:
+                logger.error(f"Could not set framerate on camera {cam.name}: {e}")
+
+        # Verify all cameras accepted the framerate
+        if not all(cam.framerate == new_framerate for cam in self.cameras):
+            self._framerate = None
+            logger.warning("Not all cameras could be set to the requested framerate.")
+        else:
+            logger.debug(f"All cameras successfully set to {new_framerate} fps.")
 
     @property
     def framerate_range(self) -> Optional[Tuple[float, float]]:
