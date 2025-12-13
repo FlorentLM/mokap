@@ -9,6 +9,7 @@ Manages:
 """
 import logging
 import os
+import platform
 import subprocess
 import sys
 import time
@@ -198,7 +199,10 @@ class MainControls(QMainWindow):
 
         self.acq_name_textbox = QLineEdit()
         self.acq_name_textbox.setDisabled(True)
-        self.acq_name_textbox.setPlaceholderText("yymmdd-hhmm")
+        self.acq_name_textbox.setText(self.controller.session_name)
+        self.acq_name_textbox.setPlaceholderText("Default name: yymmdd-hhmm")
+        # Connect returnPressed to save the name when Enter is pressed
+        self.acq_name_textbox.returnPressed.connect(self._apply_session_name)
         name_layout.addWidget(self.acq_name_textbox, 1)
 
         self.acq_name_edit_btn = QPushButton("Edit")
@@ -350,8 +354,48 @@ class MainControls(QMainWindow):
 
     def _toggle_text_editing(self, checked):
         """Toggle session name editing."""
-        self.acq_name_textbox.setDisabled(not checked)
-        self.acq_name_edit_btn.setText("Save" if checked else "Edit")
+        if checked:
+            # Entering edit mode, only allow if not acquiring
+            if self.controller.acquiring:
+                self.acq_name_edit_btn.setChecked(False)
+                logger.warning("Cannot edit session name while acquisition is running.")
+                return
+            self.acq_name_textbox.setDisabled(False)
+            self.acq_name_edit_btn.setText("Save")
+            self.acq_name_textbox.setFocus()
+            self.acq_name_textbox.selectAll()
+        else:
+            # Exiting edit mode, apply the name
+            self._apply_session_name()
+            self.acq_name_textbox.setDisabled(True)
+            self.acq_name_edit_btn.setText("Edit")
+
+    def _apply_session_name(self):
+        """Apply the session name from the textbox to the controller."""
+        new_name = self.acq_name_textbox.text().strip()
+        if not new_name:
+            # If empty, restore the current name
+            self.acq_name_textbox.setText(self.controller.session_name)
+            return
+
+        if new_name == self.controller.session_name:
+            # No change
+            return
+
+        try:
+            self.controller.session_name = new_name
+            # Update textbox with the actual name (might be modified if folder existed)
+            self.acq_name_textbox.setText(self.controller.session_name)
+            # Update path label
+            self.current_dir_label.setText(f'{self.controller.full_path.resolve()}')
+            logger.info(f"Session name changed to: {self.controller.session_name}")
+        except RuntimeError as e:
+            # Can't change name while acquiring
+            logger.error(f"Cannot change session name: {e}")
+            self.acq_name_textbox.setText(self.controller.session_name)
+        except Exception as e:
+            logger.error(f"Failed to change session name: {e}")
+            self.acq_name_textbox.setText(self.controller.session_name)
 
     # ──────────────────────────────── Main actions ────────────────────────────────
 
@@ -365,12 +409,18 @@ class MainControls(QMainWindow):
             )
             self.button_snapshot.setEnabled(True)
             self.button_recpause.setEnabled(True)
+            self.acq_name_edit_btn.setEnabled(False)
+            if self.acq_name_edit_btn.isChecked():
+                self.acq_name_edit_btn.setChecked(False)
+                self.acq_name_textbox.setDisabled(True)
+                self.acq_name_edit_btn.setText("Edit")
         else:
             self.controller.stop_acquisition()
             self.button_acquisition.setText("Acquisition off")
             self.button_acquisition.setStyleSheet("")
             self.button_snapshot.setEnabled(False)
             self.button_recpause.setEnabled(False)
+            self.acq_name_edit_btn.setEnabled(True)
 
     def _toggle_recording(self, checked):
         """Toggle recording."""
@@ -495,11 +545,14 @@ class MainControls(QMainWindow):
 
     def get_visible_windows(self, include_main=False):
         """Get list of visible windows."""
-        windows = [w for w in self.video_windows if w.isVisible()]
-        if self.viewer_3d and self.viewer_3d.isVisible():
-            windows.append(self.viewer_3d)
-        if include_main:
-            windows.append(self)
+        try:
+            windows = [w for w in self.video_windows if w.isVisible()]
+            if self.viewer_3d and self.viewer_3d.isVisible():
+                windows.append(self.viewer_3d)
+            if include_main:
+                windows.append(self)
+        except RuntimeError as e:
+            windows = []
         return windows
 
     def cascade_windows(self):
