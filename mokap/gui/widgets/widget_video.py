@@ -957,7 +957,6 @@ class CalibrationVideoWindow(VideoWindowBase):
 
     def cleanup(self):
         """Stop worker threads."""
-        super().cleanup()
 
         # Stop detector thread
         if self._detector_thread.isRunning():

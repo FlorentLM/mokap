@@ -17,7 +17,7 @@ from functools import partial
 import numpy as np
 import screeninfo
 from PySide6.QtCore import QTimer, Qt, Slot, QThread
-from PySide6.QtGui import QFont, QBrush, QColor, QPen
+from PySide6.QtGui import QFont, QBrush, QColor, QPen, QGuiApplication
 from PySide6.QtWidgets import (QMainWindow, QVBoxLayout, QWidget, QFrame, QHBoxLayout, QLabel, QComboBox,
                                QPushButton, QGroupBox, QLineEdit, QCheckBox, QGraphicsView, QGraphicsScene,
                                QProgressBar, QFileDialog, QApplication, QGraphicsRectItem, QGraphicsTextItem)
@@ -556,9 +556,52 @@ class MainControls(QMainWindow):
         return windows
 
     def cascade_windows(self):
-        """Arrange windows in a cascade."""
-        # TODO: reimplement this!!
-        pass
+        """Arrange windows in a cascade pattern on the selected monitor."""
+        self.raise_()  # Bring main window to top
+
+        ax, ay, aw, ah = self._available_screen_space()
+        cascade_offset = 30
+
+        visible = self.get_visible_windows(include_main=True)
+        num_secondary = len([w for w in visible if w is not self])
+
+        for win in visible:
+            frame = win.frameGeometry()
+            win_w, win_h = frame.width(), frame.height()
+
+            if win is self:
+                # Main window: offset based on number of secondary windows
+                offset = cascade_offset * (num_secondary + 1)
+            else:
+                # Secondary windows: offset based on their index
+                idx = getattr(win, 'idx', 0)
+                offset = cascade_offset * (idx + 1)
+
+            # Calculate position, constrained to screen bounds
+            new_x = max(ax, min(ax + offset, ax + aw - win_w))
+            new_y = max(ay, min(ay + offset, ay + ah - win_h))
+
+            win.move(new_x, new_y)
+
+    def _available_screen_space(self):
+        """
+        Get the available screen space (excluding taskbar/dock) for the selected monitor.
+        Returns (x, y, width, height).
+        """
+        # Default to primary screen
+        geom = QGuiApplication.primaryScreen().availableGeometry()
+
+        # Try to find the matching QScreen for our selected monitor
+        if self.selected_monitor:
+            m = self.selected_monitor
+            for screen in QGuiApplication.screens():
+                rect = screen.geometry()
+                if (rect.x() == m.x and rect.y() == m.y and
+                        rect.width() == m.width and rect.height() == m.height):
+                    geom = screen.availableGeometry()
+                    break
+
+        return geom.x(), geom.y(), geom.width(), geom.height()
 
     # ──────────────────────────────── Calibration I/O ────────────────────────────────
 
