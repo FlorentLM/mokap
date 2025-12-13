@@ -153,9 +153,11 @@ class BaslerCamera(GenICamCamera):
         grab_result = None
         try:
             grab_result = self._ptr.RetrieveResult(timeout_ms, pylon.TimeoutHandling_ThrowException)
-            if grab_result:
+            if grab_result and grab_result.GrabSucceeded():
+                ts = grab_result.TimeStamp
+                self._timestamp_buffer.append(ts)
                 # pylon's Array creates a copy by default, so it is safe
-                return grab_result.Array, {'frame_number': grab_result.ImageNumber, 'timestamp': grab_result.TimeStamp}
+                return grab_result.Array, {'frame_number': grab_result.ImageNumber, 'timestamp': ts}
             else:
                 raise IOError(f"Grab failed: {grab_result.GetErrorCode()} {grab_result.GetErrorDescription()}")
         finally:

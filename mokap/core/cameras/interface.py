@@ -1,4 +1,6 @@
 import abc
+from collections import deque
+
 import numpy as np
 from typing import Tuple, Dict, Any, Optional, Sequence, List
 
@@ -16,6 +18,7 @@ class AbstractCamera(abc.ABC):
         self._name = unique_id  # default name to the serial number
         self._is_connected = False
         self._is_grabbing = False
+        self._timestamp_buffer = deque(maxlen=30)  # buffer to calculate actual framerate
 
     @property
     def unique_id(self) -> str:
@@ -187,6 +190,27 @@ class AbstractCamera(abc.ABC):
     def framerate_range(self) -> Tuple[float, float]:
         """Min and max framerate."""
         pass
+
+    @property
+    def measured_framerate(self) -> float:
+        """
+        Calculates the actual framerate based on the history of timestamps.
+        """
+        if len(self._timestamp_buffer) < 2:
+            return 0.0
+
+        diffs = np.diff(np.array(self._timestamp_buffer))
+        # Filter out crazy values like if a timestamp reset happened or if diff is 0 (duplicate frames)
+        valid_diffs = diffs[diffs > 0]
+
+        if len(valid_diffs) == 0:
+            return 0.0
+
+        avg_diff_ns = float(np.mean(valid_diffs))
+        if avg_diff_ns == 0:
+            return 0.0
+
+        return 1e9 / avg_diff_ns
 
     # ────── Image format and ROI properties ──────
 

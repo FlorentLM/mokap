@@ -244,7 +244,9 @@ class FLIRCamera(GenICamCamera):
             if image_result.IsIncomplete():
                 raise IOError(f"Grab failed: Image incomplete with status {image_result.GetImageStatus()}")
             else:
-                frame_meta = {'frame_number': image_result.GetFrameID(), 'timestamp': image_result.GetTimeStamp()}
+                ts = image_result.GetTimeStamp()
+                self._timestamp_buffer.append(ts)
+                frame_meta = {'frame_number': image_result.GetFrameID(), 'timestamp': ts}
 
                 if self._polarisation_sensor:
 

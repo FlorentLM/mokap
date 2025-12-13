@@ -280,10 +280,9 @@ class GenICamCamera(AbstractCamera, abc.ABC):
     @framerate.setter
     def framerate(self, value: float):
 
-        # Cache the desired value first for both hardware and software modes
-        # (for hardware mode, this is just for reporting, it does nothing to the internal pacer)
+        # Always cache the desired value
+        # (in hardware trigger mode, this acts as the 'expected' frequency for exposure calculations)
         self._framerate = value
-        # TODO: Ideally this should not be set, and the self._framerate value should be inferred from the manager or the trigger... but that would mean keeping a ref to either one
 
         if not self.hardware_triggered:
             try:
@@ -308,7 +307,6 @@ class GenICamCamera(AbstractCamera, abc.ABC):
                 except AttributeError:
                     logger.warning(f"[{self.name}] Could not read ResultingFrameRate.")
                     self._framerate = 0.0
-
         else:
             logger.warning(
                 f"[{self.name}] Hardware trigger is on. Skipping setting framerate directly."

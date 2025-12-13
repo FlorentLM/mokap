@@ -198,6 +198,11 @@ class MultiCam:
         """Get the most restrictive framerate range across all cameras."""
         return self.get_camera_property_range('framerate')
 
+    @property
+    def measured_framerate(self) -> Tuple[float, ...]:
+        """Returns the actual measured framerate for all cameras."""
+        return tuple(round(cam.measured_framerate, 2) for cam in self.cameras)
+
     # ─────────────────────────────── Trigger setup ───────────────────────────────
 
     def _initialize_trigger(self):

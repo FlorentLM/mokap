@@ -147,7 +147,7 @@ class WebcamCamera(AbstractCamera):
         if not self.is_connected or not self._ptr.isOpened():
             raise RuntimeError('Webcam is not connected.')
 
-        # OpenCV's read() is blocking and but timeout is not directly supported...
+        # OpenCV's read() is blocking and timeout is not directly supported...
         ret, frame = self._ptr.read()
         # Generate a software timestamp immediately after the frame arrives
         timestamp = time.time_ns()
@@ -156,6 +156,9 @@ class WebcamCamera(AbstractCamera):
             raise IOError('Failed to grab frame from webcam.')
 
         self._frame_counter += 1
+
+        self._timestamp_buffer.append(timestamp)
+
         metadata = {
             'frame_number': self._frame_counter,
             'timestamp': timestamp  # timestamp from host computer clock
