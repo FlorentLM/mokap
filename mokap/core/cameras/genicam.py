@@ -125,7 +125,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
     # ────── GenICam abstract contract (overridden by vendor implementations) ──────
 
     @abc.abstractmethod
-    def _get_node_map(self, name: str) -> Any:
+    def _get_node_map(self) -> Any:
         """Vendor-specific implementation to available nodes."""
         pass
 
