@@ -2,16 +2,15 @@ import platform
 from pathlib import Path
 from mokap.utils import hex_to_rgb
 
-
-# Height (in pixels) of the OS taskbar
-# TODO: this probably should be improved
 if platform.system() == 'Windows':
-    TASKBAR_H = 48
-    TOPBAR_H = 23
+    DEFAULT_FONT = 'Segoe UI Variable'
+elif platform.system() == 'Darwin':
+    DEFAULT_FONT = 'SF Pro'
 else:
-    TASKBAR_H = 48
-    TOPBAR_H = 23
+    DEFAULT_FONT = 'Monospace'
 
+TASKBAR_H = 48
+TOPBAR_H = 23
 SPACING = 5
 
 INFO_PANEL_MINSIZE_H = 200

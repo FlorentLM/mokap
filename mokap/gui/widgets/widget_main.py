@@ -583,7 +583,7 @@ class MainControls(QMainWindow):
             # Monitor number
             text = QGraphicsTextItem(f"{i}")
             text.setDefaultTextColor(QColor('#ffffffff'))
-            text.setFont(QFont("Monospace", 9))
+            text.setFont(QFont(DEFAULT_FONT, 9))
             text.setPos(mx + 2, my + mh - text.boundingRect().height() - 2)
             text.setZValue(2)
             self.monitors_buttons_scene.addItem(text)

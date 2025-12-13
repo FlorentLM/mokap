@@ -133,7 +133,13 @@ class RecordingVideoWindow(VideoWindowBase):
 
             # Determine if the control is actually usable
             is_usable = True
-            if min_val <= 0 or max_val <= 0 or max_val <= min_val:
+            if label == 'exposure':
+                if min_val <= 0:
+                    self.camera_controls_sliders_scales[label] = 1
+                else:
+                    self.camera_controls_sliders_scales[label] = 'log'
+
+            if min_val < 0 or max_val <= 0:
                 is_usable = False
 
             # Slider row
