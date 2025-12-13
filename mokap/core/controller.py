@@ -28,7 +28,7 @@ BROADCAST_CAMERA_PROPERTIES = {
 }
 
 
-class MultiCam:
+class CameraController:
     """
     An orchestrator for managing multiple cameras for high-speed, synchronized recording.
     It handles camera discovery, threading, recording state, and file output.

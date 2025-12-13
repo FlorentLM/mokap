@@ -319,8 +319,8 @@ class RecordingVideoWindow(VideoWindowBase):
                 window._last_polled_values[label] = actual
 
             # Handle framerate specially for hardware trigger
-            if label == 'framerate' and self._mainwindow.manager.hardware_triggered:
-                self._mainwindow.manager.framerate = value
+            if label == 'framerate' and self._mainwindow.controller.hardware_triggered:
+                self._mainwindow.controller.framerate = value
         else:
             # Only this camera
             setattr(self._hw_camera, label, value)
@@ -792,7 +792,7 @@ class CalibrationVideoWindow(VideoWindowBase):
         """Save intrinsics to file."""
         file_path, _ = QFileDialog.getSaveFileName(
             self, "Save Intrinsics",
-            str(self._mainwindow.manager.full_path.resolve()),
+            str(self._mainwindow.controller.full_path.resolve()),
             "TOML Files (*.toml)"
         )
 
@@ -804,7 +804,7 @@ class CalibrationVideoWindow(VideoWindowBase):
         """Load intrinsics from file."""
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Load Intrinsics",
-            str(self._mainwindow.manager.full_path.parent),
+            str(self._mainwindow.controller.full_path.parent),
             "TOML Files (*.toml)"
         )
 

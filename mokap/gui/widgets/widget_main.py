@@ -62,17 +62,17 @@ def create_camera_rig(hardware_cameras):
 class MainControls(QMainWindow):
     """Main control window."""
 
-    def __init__(self, manager):
+    def __init__(self, camera_controller):
         super().__init__()
 
         self.setWindowTitle('Controls')
 
         # References
         self.gui_logger = GUI_LOGGER
-        self.manager = manager
+        self.controller = camera_controller
 
         # Create camera rig
-        self.rig = create_camera_rig(self.manager.cameras)
+        self.rig = create_camera_rig(self.controller.cameras)
         logger.info(f"Created CameraRig with cameras: {[c.name for c in self.rig]}")
 
         # Calibration board parameters
@@ -86,18 +86,18 @@ class MainControls(QMainWindow):
         self.multiview_thread = None
 
         # Camera info
-        self.nb_cams = self.manager.nb_cameras
-        self._cameras_names = tuple(hwcam.name for hwcam in self.manager.cameras)
+        self.nb_cams = self.controller.nb_cameras
+        self._cameras_names = tuple(hwcam.name for hwcam in self.controller.cameras)
 
         self.sources_shapes_hw = {
             hwcam.name: (hwcam.roi[3], hwcam.roi[2])
-            for hwcam in self.manager.cameras
+            for hwcam in self.controller.cameras
         }
 
         # Camera colours
         self.main_colours = {
-            hwcam.name: self.manager.colours[hwcam.unique_id]
-            for hwcam in self.manager.cameras
+            hwcam.name: self.controller.colours[hwcam.unique_id]
+            for hwcam in self.controller.cameras
         }
         self.secondary_colours = {
             k: col_white if hex_to_hls(v)[1] < 60 else col_black
@@ -141,7 +141,7 @@ class MainControls(QMainWindow):
 
     def get_camera_index(self, unique_id: str) -> int:
         """Find camera index by unique ID."""
-        for i, cam in enumerate(self.manager.cameras):
+        for i, cam in enumerate(self.controller.cameras):
             if cam.unique_id == unique_id:
                 return i
         raise ValueError(f"Camera not found: {unique_id}")
@@ -210,7 +210,7 @@ class MainControls(QMainWindow):
         self.save_dir_current = QLabel()
         self.save_dir_current.setStyleSheet(f"color: {col_darkgray};")
         self.save_dir_current.setWordWrap(True)
-        self.save_dir_current.setText(f'{self.manager.full_path.resolve()}')
+        self.save_dir_current.setText(f'{self.controller.full_path.resolve()}')
         left_layout.addWidget(self.save_dir_current)
 
         # Buttons
@@ -304,13 +304,13 @@ class MainControls(QMainWindow):
         self.is_recording = False
 
         if self.is_calibrating:
-            if self.manager.hardware_triggered:
-                self._recording_framerates['trigger'] = self.manager.framerate
-                self.manager.framerate = CALIB_HARDWARE_FPS_MAX
+            if self.controller.hardware_triggered:
+                self._recording_framerates['trigger'] = self.controller.framerate
+                self.controller.framerate = CALIB_HARDWARE_FPS_MAX
                 logger.info(f"[Hardware Trigger] Limit applied for calibration: {CALIB_HARDWARE_FPS_MAX} fps")
             else:
                 # Save current state and cap framerate
-                for cam in self.manager.cameras:
+                for cam in self.controller.cameras:
                     self._recording_framerates[cam.name] = cam.framerate
 
                     if cam.framerate > CALIB_HARDWARE_FPS_MAX:
@@ -320,13 +320,13 @@ class MainControls(QMainWindow):
                         except Exception:
                             pass
         else:
-            if self.manager.hardware_triggered:
+            if self.controller.hardware_triggered:
                 prev_fps = self._recording_framerates.get('trigger')
-                self.manager.framerate = prev_fps
+                self.controller.framerate = prev_fps
                 logger.info(f"[Hardware Trigger] Restored framerate: {prev_fps} fps")
             else:
                 # Restore previous framerate (unconstrained)
-                for cam in self.manager.cameras:
+                for cam in self.controller.cameras:
                     prev_fps = self._recording_framerates.get(cam.name)
                     if prev_fps is not None and cam.framerate != prev_fps:
                         try:
@@ -346,7 +346,7 @@ class MainControls(QMainWindow):
     def _toggle_acquisition(self, checked):
         """Toggle camera acquisition."""
         if checked:
-            self.manager.start_acquisition()
+            self.controller.start_acquisition()
             self.button_acquisition.setText("Acquisition ON")
             self.button_acquisition.setStyleSheet(
                 f"background-color: {col_green}; color: {col_white};"
@@ -354,7 +354,7 @@ class MainControls(QMainWindow):
             self.button_snapshot.setEnabled(True)
             self.button_recpause.setEnabled(True)
         else:
-            self.manager.stop_acquisition()
+            self.controller.stop_acquisition()
             self.button_acquisition.setText("Acquisition off")
             self.button_acquisition.setStyleSheet("")
             self.button_snapshot.setEnabled(False)
@@ -363,21 +363,21 @@ class MainControls(QMainWindow):
     def _toggle_recording(self, checked):
         """Toggle recording."""
         if checked:
-            self.manager.start_recording()
+            self.controller.start_recording()
             self.button_recpause.setText("RECORDING (Space to stop)")
             self.button_recpause.setStyleSheet(
                 f"background-color: {col_red}; color: {col_white};"
             )
             self.is_recording = True
         else:
-            self.manager.pause_recording()
+            self.controller.pause_recording()
             self.button_recpause.setText("Not recording (Space)")
             self.button_recpause.setStyleSheet("")
             self.is_recording = False
 
     def _take_snapshot(self):
         """Take a snapshot."""
-        self.manager.take_snapshot()
+        self.controller.take_snapshot()
 
     # ──────────────────────────────── Secondary windows ────────────────────────────────
 
@@ -386,7 +386,7 @@ class MainControls(QMainWindow):
         self.calibration_views = {}
 
         # Create camera windows
-        for i, cam in enumerate(self.manager.cameras):
+        for i, cam in enumerate(self.controller.cameras):
             if self.is_calibrating:
                 w = CalibrationVideoWindow(cam, self, self.board_params)
                 self.calibration_views[cam.name] = w
@@ -490,7 +490,7 @@ class MainControls(QMainWindow):
         """Load calibration from file."""
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Load Calibration",
-            str(self.manager.full_path.parent),
+            str(self.controller.full_path.parent),
             "TOML Files (*.toml)"
         )
 
@@ -610,12 +610,12 @@ class MainControls(QMainWindow):
 
         now = time.monotonic()
         if now - self._tick >= 0.5:
-            size = get_size(self.manager.full_path) if self.manager.full_path.is_dir() else 0
+            size = get_size(self.controller.full_path) if self.controller.full_path.is_dir() else 0
             self.frames_saved_label.setText(f'Saved: ({pretty_size(size)})')
             self._tick = now
 
-        buffers = np.array(self.manager.buffered)
-        pressure = np.nanmean(buffers / self.manager.buffer_size).astype(np.float32)
+        buffers = np.array(self.controller.buffered)
+        pressure = np.nanmean(buffers / self.controller.buffer_size).astype(np.float32)
         self._mem_pressure_bar.setValue(int(pressure * 100))
 
     # ──────────────────────────────── Shutdown ────────────────────────────────
@@ -623,7 +623,7 @@ class MainControls(QMainWindow):
     def quit(self):
         """Clean shutdown."""
         self._stop_secondary_windows()
-        self.manager.stop_acquisition()
+        self.controller.stop_acquisition()
         QApplication.quit()
 
     def closeEvent(self, event):

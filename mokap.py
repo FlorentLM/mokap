@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 import sys
 from mokap.gui import QApplication, MainControls, QMessageBox
-from mokap.core.manager import MultiCam
+from mokap.core.controller import CameraController
 from mokap.utils import fileio
+
 
 def main():
     """ Main entry point for the Mokap GUI """
@@ -15,7 +16,7 @@ def main():
 
     app = QApplication(sys.argv)
 
-    mc = MultiCam(config=config)
+    mc = CameraController(config=config)
 
     if mc.nb_cameras == 0:
         msg = ("No cameras were found or connected.\n\n"

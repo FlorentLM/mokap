@@ -155,7 +155,7 @@ class VideoWindowBase(SharedBase):
         self.timer_processing = QTimer(self)
         self.timer_processing.timeout.connect(self._send_frame_for_processing)
 
-        # Start a dedicated thread to consume frames from the manager's queue
+        # Start a dedicated thread to consume frames from the controller's queue
         # (a regular Thread (i.e. not a QThread) is better for this)
         self._consumer_thread_active = True
         self._frame_consumer = Thread(target=self._consume_frames_loop)
@@ -288,14 +288,14 @@ class VideoWindowBase(SharedBase):
 
     def _consume_frames_loop(self):
         """
-        This runs in a background thread. It polls the manager's latest frame
+        This runs in a background thread. It polls the controller's latest frame
         buffer at a controlled rate, converts the frame to a displayable format,
         and updates the reference used by the GUI's display timer.
         """
 
-        manager = self._mainwindow.manager
+        controller = self._mainwindow.controller
 
-        lock = manager._latest_frame_locks[self._hw_cam_idx]
+        lock = controller._latest_frame_locks[self._hw_cam_idx]
         last_frame_id = -1
 
         # Pre-allocate the destination buffer to avoid creating new arrays in the loop
@@ -312,7 +312,7 @@ class VideoWindowBase(SharedBase):
             frame_data = None
             with lock:
                 # check if a new frame has arrived since last check
-                latest_data = manager._latest_frames[self._hw_cam_idx]
+                latest_data = controller._latest_frames[self._hw_cam_idx]
 
                 if latest_data:
                     current_frame_id = latest_data[1].get('frame_number', -1)
@@ -435,7 +435,7 @@ class VideoWindowBase(SharedBase):
         if not self.isVisible():
             return
 
-        if self._mainwindow.manager.acquiring:
+        if self._mainwindow.controller.acquiring:
 
             measured_fps = self._hw_camera.measured_framerate
             target_fps = self._hw_camera.framerate
@@ -469,7 +469,7 @@ class VideoWindowBase(SharedBase):
                 self._on_slider_range_changed(param, current_range)
                 self._last_polled_ranges[param] = current_range
 
-        if self._mainwindow.manager.acquiring:
+        if self._mainwindow.controller.acquiring:
             h, w, _ = self._latest_display_frame.shape
             if w > 0:
                 scale = 100 / w
