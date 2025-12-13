@@ -16,8 +16,8 @@ import time
 from functools import partial
 import numpy as np
 import screeninfo
-from PySide6.QtCore import QTimer, Qt, Slot, QThread
-from PySide6.QtGui import QFont, QBrush, QColor, QPen, QGuiApplication
+from PySide6.QtCore import QTimer, Qt, QThread
+from PySide6.QtGui import QFont, QBrush, QColor, QPen, QGuiApplication, QIcon
 from PySide6.QtWidgets import (QMainWindow, QVBoxLayout, QWidget, QFrame, QHBoxLayout, QLabel, QComboBox,
                                QPushButton, QGroupBox, QLineEdit, QCheckBox, QGraphicsView, QGraphicsScene,
                                QProgressBar, QFileDialog, QApplication, QGraphicsRectItem, QGraphicsTextItem)
@@ -233,11 +233,13 @@ class MainControls(QMainWindow):
         self.button_acquisition = QPushButton("Acquisition off")
         self.button_acquisition.setMinimumHeight(btns_h)
         self.button_acquisition.setCheckable(True)
+        self.button_acquisition.setIcon(QIcon(icon_capture_bw))
         self.button_acquisition.clicked.connect(self._toggle_acquisition)
         left_layout.addWidget(self.button_acquisition)
 
         self.button_snapshot = QPushButton("Snapshot")
         self.button_snapshot.setMinimumHeight(btns_h)
+        self.button_snapshot.setIcon(QIcon(icon_snapshot_bw))
         self.button_snapshot.clicked.connect(self._take_snapshot)
         self.button_snapshot.setDisabled(True)
         left_layout.addWidget(self.button_snapshot)
@@ -245,6 +247,7 @@ class MainControls(QMainWindow):
         self.button_recpause = QPushButton("Not recording (Space)")
         self.button_recpause.setMinimumHeight(btns_h)
         self.button_recpause.setCheckable(True)
+        self.button_recpause.setIcon(QIcon(icon_rec_bw))
         self.button_recpause.clicked.connect(self._toggle_recording)
         self.button_recpause.setDisabled(True)
         left_layout.addWidget(self.button_recpause)
@@ -355,7 +358,7 @@ class MainControls(QMainWindow):
     def _toggle_text_editing(self, checked):
         """Toggle session name editing."""
         if checked:
-            # Entering edit mode, only allow if not acquiring
+            # Entering edit mode - only allow if not acquiring
             if self.controller.acquiring:
                 self.acq_name_edit_btn.setChecked(False)
                 logger.warning("Cannot edit session name while acquisition is running.")
@@ -365,7 +368,7 @@ class MainControls(QMainWindow):
             self.acq_name_textbox.setFocus()
             self.acq_name_textbox.selectAll()
         else:
-            # Exiting edit mode, apply the name
+            # Exiting edit mode - apply the name
             self._apply_session_name()
             self.acq_name_textbox.setDisabled(True)
             self.acq_name_edit_btn.setText("Edit")
@@ -404,6 +407,7 @@ class MainControls(QMainWindow):
         if checked:
             self.controller.start_acquisition()
             self.button_acquisition.setText("Acquisition ON")
+            self.button_acquisition.setIcon(QIcon(icon_capture))
             self.button_acquisition.setStyleSheet(
                 f"background-color: {col_green}; color: {col_white};"
             )
@@ -417,6 +421,7 @@ class MainControls(QMainWindow):
         else:
             self.controller.stop_acquisition()
             self.button_acquisition.setText("Acquisition off")
+            self.button_acquisition.setIcon(QIcon(icon_capture_bw))
             self.button_acquisition.setStyleSheet("")
             self.button_snapshot.setEnabled(False)
             self.button_recpause.setEnabled(False)
@@ -427,6 +432,7 @@ class MainControls(QMainWindow):
         if checked:
             self.controller.start_recording()
             self.button_recpause.setText("RECORDING (Space to stop)")
+            self.button_recpause.setIcon(QIcon(icon_rec_on))
             self.button_recpause.setStyleSheet(
                 f"background-color: {col_red}; color: {col_white};"
             )
@@ -434,6 +440,7 @@ class MainControls(QMainWindow):
         else:
             self.controller.pause_recording()
             self.button_recpause.setText("Not recording (Space)")
+            self.button_recpause.setIcon(QIcon(icon_rec_bw))
             self.button_recpause.setStyleSheet("")
             self.is_recording = False
 

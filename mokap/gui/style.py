@@ -23,15 +23,15 @@ MAX_PLOT_WIDTH = 50
 
 # Icons
 
-cwd = Path(__file__).parent
+cwd = Path(__file__).parent.parent
 
-icon_capture = (cwd / 'icons' / 'capture.png').as_posix()
-icon_capture_bw = (cwd / 'icons' / 'capture_bw.png').as_posix()
-icon_snapshot = (cwd / 'icons' / 'snapshot.png').as_posix()
-icon_snapshot_bw = (cwd / 'icons' / 'snapshot_bw.png').as_posix()
-icon_rec_on = (cwd / 'icons' / 'rec.png').as_posix()
-icon_rec_bw = (cwd / 'icons' / 'srec_bw.png').as_posix()
-icon_move_bw =(cwd / 'icons' / 'move.png').as_posix()     # TODO make an icon - this is a temp one
+icon_capture = str(cwd / 'icons' / 'capture.png')
+icon_capture_bw = str(cwd / 'icons' / 'capture_bw.png')
+icon_snapshot = str(cwd / 'icons' / 'snapshot.png')
+icon_snapshot_bw = str(cwd / 'icons' / 'snapshot_bw.png')
+icon_rec_on = str(cwd / 'icons' / 'rec.png')
+icon_rec_bw = str(cwd / 'icons' / 'rec_bw.png')
+icon_move_bw = str(cwd / 'icons' / 'move.png')  # TODO make an icon - this is a temp one
 
 # Colours
 col_white = "#ffffff"
