@@ -35,8 +35,8 @@ class MultiviewWorker(QObject):
     blocking = Signal(bool)
 
     # UI refresh signals
-    scene_updated = Signal(dict)    # 3D scene data for OpenGL view
-    coverage_updated = Signal()     # Sample count changed
+    scene_updated = Signal(dict)  # 3D scene data for OpenGL view
+    coverage_updated = Signal()  # Sample count changed
     refinement_complete = Signal(bool)  # BA finished (success/failure)
 
     # Stage management
@@ -95,7 +95,7 @@ class MultiviewWorker(QObject):
         # Store for visualization
         self._latest_detections[camera_name] = result if result.valid else None
 
-        # In Stage 1+, register with the calibration tool
+        # In Extrinsics Stage, register with the calibration tool
         if self._current_stage > 0 and self._tool is not None and result.valid:
             cam_idx = self._rig.get_index(camera_name)
             
@@ -194,14 +194,15 @@ class MultiviewWorker(QObject):
         scene_data = {
             'ready_mask': ready_mask,
             'cam_centers': self._to_gl(cam_centers),
-            'frustums_3d': self._to_gl_batch(frustums_3d),
-            'optical_axes_3d': self._to_gl_batch(optical_axes_3d),
+            'frustums_3d': self._to_gl(frustums_3d),
+            'optical_axes_3d': self._to_gl(optical_axes_3d),
             'board_3d': self._to_gl(board_3d),
             'detections_3d': [self._to_gl(d) for d in detections_3d],
         }
 
         self.scene_updated.emit(scene_data)
 
+    # TODO: Replace these two functions by the image_corners property and unproject / raycast
     def _compute_frustums(self, K, T_c2w, ready_mask) -> np.ndarray:
         """Compute frustum corner positions for each camera."""
         C = len(self._rig)
@@ -275,16 +276,11 @@ class MultiviewWorker(QObject):
 
         return detections
 
+    # TODO: Prob better to use a T matrix instead of this
+
     @staticmethod
     def _to_gl(points: Optional[np.ndarray]) -> Optional[np.ndarray]:
         """Convert to OpenGL coordinates (rotate 180° around X)."""
-        if points is None or points.size == 0:
-            return points
-        return rotate_points(points, angle_degrees=180, axis=[1.0, 0.0, 0.0])
-
-    @staticmethod
-    def _to_gl_batch(points: Optional[np.ndarray]) -> Optional[np.ndarray]:
-        """Convert batch of points to OpenGL coordinates."""
         if points is None or points.size == 0:
             return points
         return rotate_points(points, angle_degrees=180, axis=[1.0, 0.0, 0.0])
