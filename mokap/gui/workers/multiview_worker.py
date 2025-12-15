@@ -191,14 +191,15 @@ class MultiviewWorker(QObject):
 
         detections_3d = self._get_detections(board_3d) if board_3d is not None else [np.zeros((0, 3))] * C
 
-        self.scene_updated.emit({
+        scene_data = {
             'ready_mask': ready_mask,
-            'cam_centers': cam_centers,
-            'frustums_3d': frustums_3d,
-            'optical_axes_3d': optical_axes_3d,
-            'board_3d': board_3d,
-            'detections_3d': detections_3d,
-        })
+            'cam_centers': self._to_gl(cam_centers),
+            'frustums_3d': self._to_gl(frustums_3d),
+            'optical_axes_3d': self._to_gl(optical_axes_3d),
+            'board_3d': self._to_gl(board_3d),
+            'detections_3d': [self._to_gl(d) for d in detections_3d],
+        }
+        self.scene_updated.emit(scene_data)
 
     def _get_detections(self, board_3d: np.ndarray) -> List[np.ndarray]:
         """Get 3D detection positions when board is at origin."""
@@ -221,6 +222,14 @@ class MultiviewWorker(QObject):
                 detections.append(np.zeros((0, 3)))
 
         return detections
+
+    # TODO: Prob better to use a T matrix instead of this
+    @staticmethod
+    def _to_gl(points: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        """Convert to OpenGL coordinates (rotate 180° around X)."""
+        if points is None or points.size == 0:
+            return points
+        return rotate_points(points, angle_degrees=180, axis=[1.0, 0.0, 0.0])
 
     # ──────────────────────────────── Stage management ────────────────────────────────
 
