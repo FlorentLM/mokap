@@ -19,7 +19,7 @@ roi: [0, 0, 1440, 1080]     # ROI can be [x offset, y offset, width, height] or 
 # [ Global Saving & Encoding Settings ]
 save_format: mp4          # or 'png', 'jpg', 'bmp', 'tiff'
 save_quality: 90          # 0-100 scale (only for images, ignored in video encoding)
-frame_buffer_size: 200    # max number of frames to buffer in RAM (per camera)
+frame_buffer_size: 500    # max number of frames to buffer in RAM (per camera)
 
 # [ Hardware trigger parameters ]
 # You can use a Raspberry Pi
@@ -54,20 +54,20 @@ ffmpeg:
 
   params:
     # [ CPU Profiles ]
-    # H.265
-    cpu_h265: >-
-      -c:v libx265 -preset superfast -tune zerolatency -crf 20 -x265-params "vbv-maxrate=60000k:vbv-bufsize=120000k:keyint=100:min-keyint=100"
     # H.264
     cpu_h264: >-
       -c:v libx264 -preset superfast -tune zerolatency -crf 21
+    # H.265
+    cpu_h265: >-
+      -c:v libx265 -preset superfast -tune zerolatency -crf 20 -x265-params "vbv-maxrate=60000k:vbv-bufsize=120000k:keyint=100:min-keyint=100"
 
     # [ NVIDIA Profiles ]
-    # H.265
-    gpu_nvenc_h265: >-
-      -c:v hevc_nvenc -preset fast -tune ll -rc constqp -qp 19 -g 100 -bf 0
     # H.264
     gpu_nvenc_h264: >-
-      -c:v h264_nvenc -preset fast -tune ll -rc constqp -qp 20 -g 100 -bf 0
+      -c:v h264_nvenc -preset p1 -tune hq -rc constqp -qp 20 -g 100 -bf 0 -delay 0
+    # H.265
+    gpu_nvenc_h265: >-
+      -c:v hevc_nvenc -preset p1 -tune ll -rc constqp -qp 19 -g 100 -bf 0
 
     # [ AMD profile (Windows) ]
     gpu_amf: >-
