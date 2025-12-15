@@ -263,7 +263,7 @@ class FFmpegWriter(FrameWriter):
                 # Hardware encoders prefer p010le, software prefers yuv420p10le
                 output_pixel_fmt = 'p010le' if use_gpu else 'yuv420p10le'
             else:
-                output_pixel_fmt = 'yuv420p'
+                output_pixel_fmt = 'nv12' if use_gpu else 'yuv420p'
             extra_encoder_args  = f"-pix_fmt {output_pixel_fmt}"
 
         # Build the command
