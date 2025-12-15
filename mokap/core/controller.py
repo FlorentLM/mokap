@@ -675,6 +675,7 @@ class CameraController:
                 ffmpeg_path=ffmpeg_config.get('path', 'ffmpeg'),
                 params=ffmpeg_config.get('params', {}),
                 use_gpu=ffmpeg_config.get('gpu', False),
+                profile=ffmpeg_config.get('profile'),
                 **writer_params
             )
         else:

@@ -14,21 +14,14 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-def _drain_stderr(proc):
-    """Drain stderr to prevent buffer deadlock."""
-    try:
-        for line in proc.stderr:
-            logger.debug(f"FFmpeg: {line.decode().strip()}")
-    except:
-        pass
-
-
 class FrameWriter(ABC):
     """
     Abstract base class for writing frames to disk.
     It defines the common interface for all writer types (e.g. video, image sequence).
     """
-    def __init__(self, filepath: Union[Path, str], pixel_format: str, width: int, height: int, framerate: float, cam_name: str):
+
+    def __init__(self, filepath: Union[Path, str], pixel_format: str, width: int, height: int, framerate: float,
+                 cam_name: str):
         self.filepath = Path(filepath)
         self.pixel_format = pixel_format
         self.width = width
@@ -52,7 +45,7 @@ class FrameWriter(ABC):
         Increments the internal counter
         """
         self._write_frame(frame, frame_data)
-        self.frame_count += 1   # this counter is only incremented if _write_frame succeeds
+        self.frame_count += 1  # this counter is only incremented if _write_frame succeeds
 
     @abstractmethod
     def _write_frame(self, frame: np.ndarray, frame_data: Dict[str, Any]):
@@ -74,6 +67,7 @@ class ImageSequenceWriter(FrameWriter):
     The filepath provided in the constructor is treated as the base name
     and is used as the folder to store the images
     """
+
     def __init__(self, folder: Union[Path, str], ext: str, quality: int, **kwargs):
         # The filepath for the base class is the folder itself
         super().__init__(folder, **kwargs)
@@ -203,12 +197,14 @@ class FFmpegWriter(FrameWriter):
     _available_encoders = None
     _encoders_lock = threading.Lock()
 
-    def __init__(self, filepath: Union[Path, str], ffmpeg_path: Union[Path, str], params: Dict, use_gpu: bool, **kwargs):
+    def __init__(self, filepath: Union[Path, str], ffmpeg_path: Union[Path, str], params: Dict,
+                 use_gpu: bool, profile: Optional[str] = None, **kwargs):
         super().__init__(filepath, **kwargs)
 
         self.proc: Optional[subprocess.Popen] = None
+        self._stderr_thread: Optional[threading.Thread] = None
 
-        which_ffmpeg = shutil.which(str(ffmpeg_path)) # shutil.which does *not* work with Path objects in Python < 3.12
+        which_ffmpeg = shutil.which(str(ffmpeg_path))
         if not which_ffmpeg:
             raise OSError(f"Can't find FFmpeg. Is it installed?")
 
@@ -218,22 +214,19 @@ class FFmpegWriter(FrameWriter):
 
         self.ffmpeg_path = ffmpeg_path
 
-        if use_gpu:
-            # Allow user override first
-            param_key = params.get('ffmpeg', {}).get('profile')
-            if not param_key:
-                # If no override, auto-detect
-                param_key = self._get_best_profile_key(ffmpeg_path, params)
+        # Determine which profile to use
+        if profile:
+            param_key = profile
+        elif use_gpu:
+            param_key = self._get_best_profile_key(ffmpeg_path, params)
         else:
-            param_key = 'cpu_x265'
+            param_key = 'cpu_h264'
 
         encoder_params_str = params.get(param_key)
         if not encoder_params_str:
             raise ValueError(f"FFmpeg profile '{param_key}' not found in config's 'params' section.")
 
-        # Pixel formats
-
-        # map camera format to FFmpeg input format
+        # Map camera format to FFmpeg input format
         input_format_map = {
             'Mono8': 'gray',
             'BayerRG8': 'bayer_rggr8',
@@ -251,46 +244,18 @@ class FFmpegWriter(FrameWriter):
         if not input_pixel_fmt:
             raise ValueError(f"Unsupported pixel_format '{self.pixel_format}' for FFmpegWriter.")
 
-        # Determine output format, and if we are doing a high-bit-depth encode
+        # Determine output format and encoder-specific setup
         high_bitdepth = self.pixel_format in ('Mono10', 'Mono12', 'Mono16')
-        extra_encoder_args = ""
 
-        if 'vaapi' in param_key:
-            # VAAPI needs a filter chain with hwupload
-            vaapi_format = 'p010' if high_bitdepth else 'nv12'
-            extra_encoder_args = f"-vf format={vaapi_format},hwupload"
-
-        elif 'videotoolbox' in param_key:
-            # Inject the correct profile if not already specified by the user in the config
-            if "-profile" not in encoder_params_str:
-                profile_arg = "-profile main10" if high_bitdepth else "-profile main"
-                extra_encoder_args = profile_arg
-
-        else:  # Covers cpu, nvenc, qsv, amf
-            # These encoders use the standard -pix_fmt flag at the end
-            if high_bitdepth:
-                # Hardware encoders prefer p010le, software prefers yuv420p10le
-                output_pixel_fmt = 'p010le' if use_gpu else 'yuv420p10le'
-            else:
-                output_pixel_fmt = 'nv12' if use_gpu else 'yuv420p'
-            extra_encoder_args  = f"-pix_fmt {output_pixel_fmt}"
-
-        # Build the command
-        # input_args = (
-        #     f"-y -s {self.width}x{self.height} -f rawvideo "
-        #     f"-framerate {self.framerate:.3f} -pix_fmt {input_pixel_fmt} -i pipe:0"
-        # )
-
-        input_args = (
-            f"-thread_queue_size 1024 -y -s {self.width}x{self.height} -f rawvideo "
-            f"-framerate {self.framerate:.3f} -pix_fmt {input_pixel_fmt} -i pipe:0"
+        # Build the command based on encoder type
+        command = self._build_ffmpeg_command(
+            filepath=filepath,
+            param_key=param_key,
+            encoder_params_str=encoder_params_str,
+            input_pixel_fmt=input_pixel_fmt,
+            high_bitdepth=high_bitdepth,
+            use_gpu=use_gpu
         )
-
-        # Add the dynamically determined pixel format to the encoder params
-        # full_encoder_params = f"{encoder_params_str} {extra_encoder_args} "
-        full_encoder_params = f"{encoder_params_str} {extra_encoder_args} -movflags +frag_keyframe+empty_moov "
-
-        command = f"{shlex.quote(str(self.ffmpeg_path))} -hide_banner {input_args} {full_encoder_params} {shlex.quote(str(filepath))}"
 
         logger.debug(f"FFmpeg command for '{self.cam_name}': {command}")
 
@@ -306,12 +271,78 @@ class FFmpegWriter(FrameWriter):
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            # stdout=subprocess.PIPE,         # for debug
-            # stderr=subprocess.PIPE,          # for debug
+            # stdout=subprocess.PIPE,
+            # stderr=subprocess.PIPE,
             bufsize=10 ** 8
         )
-        # self._stderr_thread = threading.Thread(target=_drain_stderr, args=(self.proc,), daemon=True)
-        # self._stderr_thread.start()
+
+        # Start stderr drain thread to prevent buffer deadlock
+        self._stderr_thread = threading.Thread(
+            target=self._drain_stderr,
+            daemon=True
+        )
+        self._stderr_thread.start()
+
+    def _build_ffmpeg_command(self, filepath: Path, param_key: str, encoder_params_str: str,
+                              input_pixel_fmt: str, high_bitdepth: bool, use_gpu: bool) -> str:
+        """Build the complete FFmpeg command string based on encoder type."""
+
+        extra_input_args = ""
+        extra_encoder_args = ""
+
+        # Vulkan encoders need special handling
+        if 'vulkan' in param_key:
+            # Vulkan requires hardware device initialization
+            # The filter chain handles format conversion
+            extra_input_args = "-init_hw_device vulkan=vk -filter_hw_device vk"
+
+            # For grayscale input, we need to convert to a format Vulkan can handle
+            if input_pixel_fmt == 'gray':
+                extra_encoder_args = "-vf format=nv12,hwupload"
+            else:
+                extra_encoder_args = "-vf hwupload"
+
+        elif 'vaapi' in param_key:
+            # VAAPI needs a filter chain with hwupload
+            vaapi_format = 'p010' if high_bitdepth else 'nv12'
+            extra_encoder_args = f"-vf format={vaapi_format},hwupload"
+
+        elif 'videotoolbox' in param_key:
+            # Inject the correct profile if not already specified
+            if "-profile" not in encoder_params_str:
+                profile_arg = "-profile main10" if high_bitdepth else "-profile main"
+                extra_encoder_args = profile_arg
+
+        else:  # Covers cpu, nvenc, qsv, amf
+            # These encoders use the standard -pix_fmt flag at the end
+            if high_bitdepth:
+                output_pixel_fmt = 'p010le' if use_gpu else 'yuv420p10le'
+            else:
+                output_pixel_fmt = 'nv12' if use_gpu else 'yuv420p'
+            extra_encoder_args = f"-pix_fmt {output_pixel_fmt}"
+
+        # Build input arguments
+        input_args = (
+            f"{extra_input_args} -thread_queue_size 1024 -y -s {self.width}x{self.height} -f rawvideo "
+            f"-framerate {self.framerate:.3f} -pix_fmt {input_pixel_fmt} -i pipe:0"
+        ).strip()
+
+        # Build full encoder params
+        full_encoder_params = f"{encoder_params_str} {extra_encoder_args} -movflags +frag_keyframe+empty_moov".strip()
+
+        command = f"{shlex.quote(str(self.ffmpeg_path))} -hide_banner {input_args} {full_encoder_params} {shlex.quote(str(filepath))}"
+
+        return command
+
+    def _drain_stderr(self):
+        """Drain stderr to prevent buffer deadlock and log FFmpeg output."""
+        try:
+            for line in self.proc.stderr:
+                decoded = line.decode('utf-8', errors='replace').strip()
+                if decoded:
+                    logger.debug(f"FFmpeg: {decoded}")
+        except Exception:
+            pass
 
     @staticmethod
     def _get_available_encoders(ffmpeg_path: Union[Path, str]) -> set:
@@ -362,11 +393,13 @@ class FFmpegWriter(FrameWriter):
         """
 
         # Priority is defined as: Best quality/efficiency first
-        # We prefer AV1 > HEVC, and Hardware > Software
+        # Prefer AV1 > HEVC, and Hardware > Software
         PRIORITY_MAP = {
             'Linux': [
                 ('gpu_nvenc_h264', 'h264_nvenc'),
                 ('gpu_nvenc_h265', 'hevc_nvenc'),
+                ('gpu_vulkan_h264', 'h264_vulkan'),
+                ('gpu_vulkan_h265', 'hevc_vulkan'),
                 ('gpu_arc_av1', 'av1_qsv'),
                 ('gpu_vaapi', 'hevc_vaapi'),
                 ('gpu_arc_hevc', 'hevc_qsv'),
@@ -376,6 +409,8 @@ class FFmpegWriter(FrameWriter):
             'Windows': [
                 ('gpu_nvenc_h264', 'h264_nvenc'),
                 ('gpu_nvenc_h265', 'hevc_nvenc'),
+                ('gpu_vulkan_h264', 'h264_vulkan'),
+                ('gpu_vulkan_h265', 'hevc_vulkan'),
                 ('gpu_arc_av1', 'av1_qsv'),
                 ('gpu_amf', 'hevc_amf'),
                 ('gpu_arc_hevc', 'hevc_qsv'),
@@ -395,7 +430,7 @@ class FFmpegWriter(FrameWriter):
         priority_list = PRIORITY_MAP.get(system, [])
         if not priority_list:
             logger.warning(f"Unsupported OS '{system}' for auto-selection. Falling back to CPU.")
-            return 'cpu_x265'  # a safe default
+            return 'cpu_h265'
 
         for profile_key, encoder_name in priority_list:
             if profile_key in params and encoder_name in available_encoders:
@@ -403,22 +438,19 @@ class FFmpegWriter(FrameWriter):
                 return profile_key
 
         logger.warning("No suitable high-priority encoder found. Check FFmpeg build and drivers.")
-        return 'cpu_x264'  # absolute fallback
+        return 'cpu_h264'
 
     def _write_frame(self, frame: np.ndarray, frame_data: Dict[str, Any]):
 
         if self.proc and self.proc.stdin:
             try:
-                # Write the raw bytes of the frame to the stdin of the FFmpeg process
                 self.proc.stdin.write(memoryview(frame))
 
             except (IOError, BrokenPipeError) as e:
 
                 # This can happen if FFmpeg closes unexpectedly
                 logger.error(f"Failed to write to FFmpeg process: {e}")
-
-                # We can try to get more info from stderr if it was captured
-                self.close()  # Attempt to clean up
+                self.close()
                 raise IOError("FFmpeg process terminated unexpectedly.") from e
 
     def close(self):

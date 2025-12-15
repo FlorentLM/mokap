@@ -53,7 +53,7 @@ ffmpeg:
   gpu: true
 
   params:
-    # [ CPU Profiles ]
+    # [ CPU profiles ]
     # H.264
     cpu_h264: >-
       -c:v libx264 -preset superfast -tune zerolatency -crf 21
@@ -61,7 +61,16 @@ ffmpeg:
     cpu_h265: >-
       -c:v libx265 -preset superfast -tune zerolatency -crf 20 -x265-params "vbv-maxrate=60000k:vbv-bufsize=120000k:keyint=100:min-keyint=100"
 
-    # [ NVIDIA Profiles ]
+    # [ General GPU Vulkan profiles ]
+    # [ General GPU Vulkan profiles (FFmpeg 8+) ]
+    gpu_vulkan_h264: >-
+      -c:v h264_vulkan -qp 23 -g 100
+    gpu_vulkan_h265: >-
+      -c:v hevc_vulkan -qp 23 -g 100
+    gpu_vulkan_av1: >-
+      -c:v av1_vulkan -qp 30 -g 100
+
+    # [ NVIDIA profiles ]
     # H.264
     gpu_nvenc_h264: >-
       -c:v h264_nvenc -preset p1 -tune ll -rc constqp -qp 20 -g 100 -bf 0 -delay 0
