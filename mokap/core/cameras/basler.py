@@ -30,6 +30,12 @@ class BaslerCamera(GenICamCamera):
         self._set_feature_value('UserSetSelector', 'Default')
         self._ptr.UserSetLoad.Execute()
 
+        try:
+            # Basler's default is 10, se set 50 (gives ~0.5s buffer at 100 fps)
+            self._ptr.MaxNumBuffer.Value = 50
+        except Exception:
+            pass
+
     # ────── GenICam abstract contract (Basler-specific implementation) ──────
 
     def _get_node_map(self):
@@ -145,10 +151,10 @@ class BaslerCamera(GenICamCamera):
             self._is_grabbing = False
 
     def grab_frame(self, timeout_ms: int = 2000) -> Tuple[np.ndarray, Dict[str, Any]]:
-        # This is specific to pylon's grabbing strategy
-
+        # Ensure we are grabbing
         if not self.is_grabbing:
-            self._ptr.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
+            self._ptr.StartGrabbing(pylon.GrabStrategy_OneByOne)
+            self._is_grabbing = True
 
         grab_result = None
         try:
@@ -156,12 +162,20 @@ class BaslerCamera(GenICamCamera):
             if grab_result and grab_result.GrabSucceeded():
                 ts = grab_result.TimeStamp
                 self._timestamp_buffer.append(ts)
-                # pylon's Array creates a copy by default, so it is safe
                 return grab_result.Array, {'frame_number': grab_result.ImageNumber, 'timestamp': ts}
             else:
-                raise IOError(f"Grab failed: {grab_result.GetErrorCode()} {grab_result.GetErrorDescription()}")
+                # if grab failed but did not raise an exception, raise one
+                desc = grab_result.GetErrorDescription() if grab_result else "Unknown"
+                raise IOError(f"Grab failed: {desc}")
+
+        except Exception as e:
+            # Check if the camera stopped grabbing unexpectedly (e.g. buffer cancelled)
+            if not self._ptr.IsGrabbing():
+                logger.warning(f"Camera {self.unique_id} stopped grabbing unexpectedly. Restarting engine.")
+                self._is_grabbing = False
+                # Next call to grab_frame will trigger StartGrabbing() above
+            raise IOError(f"Grab failed: {e}") from e
+
         finally:
             if 'grab_result' in locals() and grab_result:
                 grab_result.Release()
-            if not self.is_grabbing:
-                self._ptr.StopGrabbing()

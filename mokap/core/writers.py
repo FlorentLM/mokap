@@ -267,12 +267,18 @@ class FFmpegWriter(FrameWriter):
             extra_encoder_args  = f"-pix_fmt {output_pixel_fmt}"
 
         # Build the command
+        # input_args = (
+        #     f"-y -s {self.width}x{self.height} -f rawvideo "
+        #     f"-framerate {self.framerate:.3f} -pix_fmt {input_pixel_fmt} -i pipe:0"
+        # )
+
         input_args = (
-            f"-y -s {self.width}x{self.height} -f rawvideo "
+            f"-thread_queue_size 1024 -y -s {self.width}x{self.height} -f rawvideo "
             f"-framerate {self.framerate:.3f} -pix_fmt {input_pixel_fmt} -i pipe:0"
         )
 
         # Add the dynamically determined pixel format to the encoder params
+        # full_encoder_params = f"{encoder_params_str} {extra_encoder_args} "
         full_encoder_params = f"{encoder_params_str} {extra_encoder_args} -movflags +frag_keyframe+empty_moov "
 
         command = f"{shlex.quote(str(self.ffmpeg_path))} -hide_banner {input_args} {full_encoder_params} {shlex.quote(str(filepath))}"
