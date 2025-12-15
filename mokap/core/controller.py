@@ -413,7 +413,7 @@ class CameraController:
             return
 
         if self._recording.is_set():
-            self.pause_recording()  # Gracefully finish recording
+            self.stop_recording()  # Gracefully finish recording
 
         self._acquiring.clear()
 
@@ -475,7 +475,7 @@ class CameraController:
 
         logger.info(f"Recording started. Saving to: {self.full_path}")
 
-    def pause_recording(self):
+    def stop_recording(self):
         """Pauses the current recording session, finalizing files."""
 
         if not self._recording.is_set():
@@ -821,12 +821,12 @@ class CameraController:
         return self._trigger_instance is not None and self._trigger_instance.connected
 
     @property
-    def saved(self) -> Tuple[int, ...]:
+    def nb_saved_frames(self) -> Tuple[int, ...]:
         """Count of frames saved in the current session, per camera."""
         return tuple(self._session_frame_counts)
 
     @property
-    def buffered(self) -> Tuple[int, ...]:
+    def nb_buffered_frames(self) -> Tuple[int, ...]:
         """Rough count of how many frames are currently in the buffers."""
         return tuple(q.qsize() for q in self._writer_queues)
 
@@ -846,22 +846,3 @@ class CameraController:
         """Context manager exit: ensures threads and cameras are cleaned up."""
         self.stop_acquisition()
         self.disconnect_cameras()
-
-    # ─────────────────────────────── Some aliases ───────────────────────────────
-    # TODO: Maybe remove these
-
-    def on(self):
-        """Alias for start_acquisition()."""
-        self.start_acquisition()
-
-    def off(self):
-        """Alias for stop_acquisition()."""
-        self.stop_acquisition()
-
-    def record(self):
-        """Alias for start_recording()."""
-        self.start_recording()
-
-    def pause(self):
-        """Alias for pause_recording()."""
-        self.pause_recording()

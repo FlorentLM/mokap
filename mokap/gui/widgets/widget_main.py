@@ -438,7 +438,7 @@ class MainControls(QMainWindow):
             )
             self.is_recording = True
         else:
-            self.controller.pause_recording()
+            self.controller.stop_recording()
             self.button_recpause.setText("Not recording (Space)")
             self.button_recpause.setIcon(QIcon(icon_rec_bw))
             self.button_recpause.setStyleSheet("")
