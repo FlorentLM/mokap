@@ -242,32 +242,41 @@ class FLIRCamera(GenICamCamera):
             image_result = self._cam_ptr.GetNextImage(timeout_ms)
 
             if image_result.IsIncomplete():
-                raise IOError(f"Grab failed: Image incomplete with status {image_result.GetImageStatus()}")
+                status = image_result.GetImageStatus()
+                desc = PySpin.Image.GetImageStatusDescription(status)
+
+                if status == PySpin.IMAGE_DATA_OVERFLOW:
+                    logger.warning(
+                        f"FLIR Camera {self.unique_id}: Stream buffer overflow. Increasing 'StreamBufferCountManual' might help.")
+
+                raise IOError(f"Image incomplete: {desc} ({status})")
+
+            ts = image_result.GetTimeStamp()
+            self._timestamp_buffer.append(ts)
+            frame_meta = {'frame_number': image_result.GetFrameID(), 'timestamp': ts}
+
+            if self._polarisation_sensor:
+
+                # quad_0 = PySpin.ImageUtilityPolarization.ExtractPolarQuadrant(image_result, 0).GetNDArray().copy()
+                # quad_45 = PySpin.ImageUtilityPolarization.ExtractPolarQuadrant(image_result, 1).GetNDArray().copy()
+                # quad_90 = PySpin.ImageUtilityPolarization.ExtractPolarQuadrant(image_result, 2).GetNDArray().copy()
+                # quad_135 = PySpin.ImageUtilityPolarization.ExtractPolarQuadrant(image_result, 3).GetNDArray().copy()
+                #
+                # image_arr = pol_to_hsv(quad_0, quad_45, quad_90, quad_135)
+                # frame_meta['pixel_format'] = 'HSV'
+
+                quad_0 = PySpin.ImageUtilityPolarization.ExtractPolarQuadrant(image_result, 0)
+                image_arr = quad_0.GetNDArray().copy()
+                frame_meta['pixel_format'] = self._POL_PATTERN.sub('', self._pixel_format)
+
             else:
-                ts = image_result.GetTimeStamp()
-                self._timestamp_buffer.append(ts)
-                frame_meta = {'frame_number': image_result.GetFrameID(), 'timestamp': ts}
+                # IMPORTANT: GetNDArray returns a view: must copy it!!
+                image_arr = image_result.GetNDArray().copy()
 
-                if self._polarisation_sensor:
-
-                    # quad_0 = PySpin.ImageUtilityPolarization.ExtractPolarQuadrant(image_result, 0).GetNDArray().copy()
-                    # quad_45 = PySpin.ImageUtilityPolarization.ExtractPolarQuadrant(image_result, 1).GetNDArray().copy()
-                    # quad_90 = PySpin.ImageUtilityPolarization.ExtractPolarQuadrant(image_result, 2).GetNDArray().copy()
-                    # quad_135 = PySpin.ImageUtilityPolarization.ExtractPolarQuadrant(image_result, 3).GetNDArray().copy()
-                    #
-                    # image_arr = pol_to_hsv(quad_0, quad_45, quad_90, quad_135)
-                    # frame_meta['pixel_format'] = 'HSV'
-
-                    quad_0 = PySpin.ImageUtilityPolarization.ExtractPolarQuadrant(image_result, 0)
-                    image_arr = quad_0.GetNDArray().copy()
-                    frame_meta['pixel_format'] = self._POL_PATTERN.sub('', self._pixel_format)
-
-                else:
-                    # IMPORTANT: GetNDArray returns a view: must copy it!!
-                    image_arr = image_result.GetNDArray().copy()
-
-                return image_arr, frame_meta
+            return image_arr, frame_meta
 
         finally:
-            if image_result: image_result.Release()
-            if not self.is_grabbing: self._cam_ptr.EndAcquisition()
+            if 'image_result' in locals() and image_result:
+                image_result.Release()
+            # if not self.is_grabbing:
+            #     self._cam_ptr.EndAcquisition()
