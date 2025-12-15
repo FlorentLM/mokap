@@ -742,7 +742,8 @@ class MainControls(QMainWindow):
 
         buffers = np.array(self.controller.nb_buffered_frames)
         pressure = np.nanmean(buffers / self.controller.buffer_size).astype(np.float32)
-        self._mem_pressure_bar.setValue(int(pressure * 100))
+        bar_val = int(pressure * 100) if np.isfinite(pressure) else 0
+        self._mem_pressure_bar.setValue(bar_val)
 
     # ──────────────────────────────── Shutdown ────────────────────────────────
 
