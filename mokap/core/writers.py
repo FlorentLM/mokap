@@ -393,7 +393,7 @@ class FFmpegWriter(FrameWriter):
         if self.proc and self.proc.stdin:
             try:
                 # Write the raw bytes of the frame to the stdin of the FFmpeg process
-                self.proc.stdin.write(frame.tobytes())
+                self.proc.stdin.write(memoryview(frame))
 
             except (IOError, BrokenPipeError) as e:
 
