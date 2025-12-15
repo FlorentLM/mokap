@@ -157,9 +157,8 @@ class FTDITrigger(AbstractTrigger):
 
 
 if __name__ == '__main__':
-    # debug mini-script
-    # To run this, you need a config.yaml file in the project root
-    # (or to pass the config dictionary directly)
+    # This just a debug mini script.
+    # 'config.yaml' file in the project root is needed
 
     secs = 5
     freq = 10

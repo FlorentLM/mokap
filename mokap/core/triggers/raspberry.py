@@ -79,7 +79,7 @@ class RaspberryTrigger(AbstractTrigger):
 
     def start(self, frequency: float, duty_cycle_percent: int = 50):
         """
-        Starts the PWM signal on the configured GPIO pin
+        Starts the PWM signal on the configured GPIO pin.
 
         Args:
             frequency (float): The frequency of the signal in Hz
@@ -141,10 +141,9 @@ class RaspberryTrigger(AbstractTrigger):
 
 
 if __name__ == '__main__':
-    # This just a debug mini script
-    # .env file with the required variables is needed
-    # you also need a config.yaml file in the project root
-    # (or to pass the config dictionary directly)
+    # This just a debug mini script.
+    # `.env` file with the required variables is needed.
+    # `config.yaml` file in the project root is needed too.
 
     secs = 5
     freq = 10

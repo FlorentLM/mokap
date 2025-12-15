@@ -20,9 +20,8 @@ from mokap.utils.system import setup_ulimit, safe_replace
 
 logger = logging.getLogger(__name__)
 
-# Camera properties that can be broadcast to all cameras via the manager
-# These are properties defined in AbstractCamera that make sense to set globally
-BROADCAST_CAMERA_PROPERTIES = {
+# Camera properties (defined in AbstractCamera) that can be broadcast to all cameras via the controller
+BROADCAST_CAM_PROPS = {
     'exposure', 'gain', 'black_level', 'gamma', 'binning', 'binning_mode',
     'pixel_format', 'roi', 'hardware_triggered'
 }
@@ -35,8 +34,8 @@ class CameraController:
 
     Camera properties (exposure, gain, etc.) can be accessed directly on this class
     and will be broadcast to all cameras. For example:
-        manager.exposure = 5000  # Sets exposure on all cameras
-        manager.gain = 10.0      # Sets gain on all cameras
+        controller.exposure = 5000  # Sets exposure on all cameras
+        controller.gain = 10.0      # Sets gain on all cameras
     """
 
     def __init__(self,
@@ -99,7 +98,7 @@ class CameraController:
         Returns the value if all cameras agree, None otherwise.
         """
         # Avoid infinite recursion during initialization
-        if name.startswith('_') or name not in BROADCAST_CAMERA_PROPERTIES:
+        if name.startswith('_') or name not in BROADCAST_CAM_PROPS:
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
         # Check if we have cameras
@@ -125,7 +124,7 @@ class CameraController:
         Broadcasts the value to all cameras.
         """
         # Handle private attributes and non-camera properties normally
-        if name.startswith('_') or name not in BROADCAST_CAMERA_PROPERTIES:
+        if name.startswith('_') or name not in BROADCAST_CAM_PROPS:
             super().__setattr__(name, value)
             return
 

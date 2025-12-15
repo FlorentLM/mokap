@@ -1,5 +1,4 @@
 import logging
-import os
 import platform
 from typing import List, Dict, Optional, Union, Any, TYPE_CHECKING
 import cv2
@@ -14,7 +13,7 @@ if TYPE_CHECKING:
 
 
 def discover_webcams(max_to_check: int = 10):
-    """ Attempts to find available webcams by trying to open them sequentially """
+    """Attempts to find available webcams by trying to open them sequentially."""
 
     try:
         # TODO: This does not work
@@ -146,8 +145,8 @@ class CameraFactory:
     @staticmethod
     def get_camera_info(identifier: Union[int, str]) -> Optional[Dict[str, Any]]:
         """
-        Retrieves the discovery information for a camera by index or serial
-        NOTE: This does *not* return the native SDK object (for safety)
+        Retrieves the discovery information for a camera by index or serial.
+        Note: This does *not* return the native SDK object.
         """
 
         if not CameraFactory._discovered_devices:
@@ -175,7 +174,7 @@ class CameraFactory:
     @staticmethod
     def get_camera(device_info: Dict[str, Any]) -> Optional[AbstractCamera]:
         """
-        Get a camera instance from its discovery information dictionary
+        Get a camera instance from its discovery information dictionary.
         """
 
         if not device_info:
@@ -242,7 +241,6 @@ class CameraFactory:
             try:
                 cam_index = device_info.get('native_object')
                 if cam_index is not None:
-                    # We already have the WebcamCamera class imported
                     return WebcamCamera(camera_index=cam_index)
                 else:
                     logger.error("Webcam device info is missing the camera index.")

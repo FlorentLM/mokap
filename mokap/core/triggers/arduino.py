@@ -66,7 +66,7 @@ class ArduinoTrigger(AbstractTrigger):
             self._connected = False
 
     def _send_command(self, command: str) -> bool:
-        """Sends a command and waits for an "OK" response."""
+        """Sends a command and waits for an 'OK' response."""
         if not self.connected:
             return False
 
@@ -116,9 +116,8 @@ class ArduinoTrigger(AbstractTrigger):
             logger.info('Trigger disconnected.')
 
 if __name__ == '__main__':
-    # This just a debug mini script
-    # To run this, you need a config.yaml file in the project root
-    # (or to pass the config dictionary directly)
+    # This just a debug mini script.
+    # 'config.yaml' file in the project root is needed
 
     secs = 5
     freq = 31
