@@ -7,11 +7,13 @@ import platform
 import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, Any, Optional, Union
+from typing import Dict, Any, Optional, Union, Tuple
 import cv2
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+DEBUG = False
 
 
 class FrameWriter(ABC):
@@ -195,6 +197,7 @@ class FFmpegWriter(FrameWriter):
     """Writes frames to a video file by piping them to an FFmpeg subprocess."""
 
     _available_encoders = None
+    _ffmpeg_version = None
     _encoders_lock = threading.Lock()
 
     def __init__(self, filepath: Union[Path, str], ffmpeg_path: Union[Path, str], params: Dict,
@@ -266,22 +269,26 @@ class FFmpegWriter(FrameWriter):
             'command': command
         }
 
+        if DEBUG:
+            out = subprocess.PIPE
+        else:
+            out = subprocess.DEVNULL
+
         self.proc = subprocess.Popen(
             shlex.split(command),
             stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            # stdout=subprocess.PIPE,
-            # stderr=subprocess.PIPE,
+            stdout=out,
+            stderr=out,
             bufsize=10 ** 8
         )
 
-        # Start stderr drain thread to prevent buffer deadlock
-        self._stderr_thread = threading.Thread(
-            target=self._drain_stderr,
-            daemon=True
-        )
-        self._stderr_thread.start()
+        if out == subprocess.PIPE:
+            # Start stderr drain thread to prevent buffer deadlock
+            self._stderr_thread = threading.Thread(
+                target=self._drain_stderr,
+                daemon=True
+            )
+            self._stderr_thread.start()
 
     def _build_ffmpeg_command(self, filepath: Path, param_key: str, encoder_params_str: str,
                               input_pixel_fmt: str, high_bitdepth: bool, use_gpu: bool) -> str:
@@ -345,6 +352,44 @@ class FFmpegWriter(FrameWriter):
             pass
 
     @staticmethod
+    def _get_ffmpeg_version(ffmpeg_path: Union[Path, str]) -> Tuple[int, int, int]:
+        """
+        Gets the FFmpeg version as a tuple (major, minor, patch).
+        """
+        if FFmpegWriter._ffmpeg_version is not None:
+            return FFmpegWriter._ffmpeg_version
+
+        with FFmpegWriter._encoders_lock:
+            if FFmpegWriter._ffmpeg_version is not None:
+                return FFmpegWriter._ffmpeg_version
+
+            try:
+                result = subprocess.check_output(
+                    [ffmpeg_path, '-version'],
+                    stderr=subprocess.STDOUT
+                ).decode('utf-8')
+
+                # Parse version from first line, e.g., "ffmpeg version 8.0.1-full_build ..."
+                import re
+                match = re.search(r'ffmpeg version (\d+)\.(\d+)(?:\.(\d+))?', result)
+                if match:
+                    major = int(match.group(1))
+                    minor = int(match.group(2))
+                    patch = int(match.group(3)) if match.group(3) else 0
+                    FFmpegWriter._ffmpeg_version = (major, minor, patch)
+                    logger.debug(f"Detected FFmpeg version: {major}.{minor}.{patch}")
+                else:
+                    logger.warning("Could not parse FFmpeg version, assuming 6.0.0+")
+                    FFmpegWriter._ffmpeg_version = (6, 0, 0)
+
+                return FFmpegWriter._ffmpeg_version
+
+            except (subprocess.CalledProcessError, FileNotFoundError) as e:
+                logger.error(f"Could not query FFmpeg version: {e}")
+                FFmpegWriter._ffmpeg_version = (6, 0, 0)
+                return FFmpegWriter._ffmpeg_version
+
+    @staticmethod
     def _get_available_encoders(ffmpeg_path: Union[Path, str]) -> set:
         """
         Gets a set of all available encoders from the ffmpeg executable.
@@ -392,35 +437,36 @@ class FFmpegWriter(FrameWriter):
         (based on OS, available hardware, and a predefined priority list)
         """
 
-        # Priority is defined as: Best quality/efficiency first
-        # Prefer AV1 > HEVC, and Hardware > Software
+        ffmpeg_version = self._get_ffmpeg_version(ffmpeg_path)
+
+        # (profile_key, encoder_name, minimum_ffmpeg_version as tuple)
         PRIORITY_MAP = {
             'Linux': [
-                ('gpu_nvenc_h264', 'h264_nvenc'),
-                ('gpu_nvenc_h265', 'hevc_nvenc'),
-                ('gpu_vulkan_h264', 'h264_vulkan'),
-                ('gpu_vulkan_h265', 'hevc_vulkan'),
-                ('gpu_arc_av1', 'av1_qsv'),
-                ('gpu_vaapi', 'hevc_vaapi'),
-                ('gpu_arc_hevc', 'hevc_qsv'),
-                ('cpu_h264', 'libx264'),
-                ('cpu_h265', 'libx265'),
+                ('gpu_nvenc_h264', 'h264_nvenc', (4, 0, 0)),
+                ('gpu_nvenc_h265', 'hevc_nvenc', (4, 0, 0)),
+                ('gpu_vulkan_h264', 'h264_vulkan', (8, 0, 0)),
+                ('gpu_vulkan_h265', 'hevc_vulkan', (8, 0, 0)),
+                ('gpu_arc_av1', 'av1_qsv', (5, 0, 0)),
+                ('gpu_vaapi', 'hevc_vaapi', (4, 0, 0)),
+                ('gpu_arc_hevc', 'hevc_qsv', (5, 0, 0)),
+                ('cpu_h264', 'libx264', (0, 0, 0)),
+                ('cpu_h265', 'libx265', (0, 0, 0)),
             ],
             'Windows': [
-                ('gpu_nvenc_h264', 'h264_nvenc'),
-                ('gpu_nvenc_h265', 'hevc_nvenc'),
-                ('gpu_vulkan_h264', 'h264_vulkan'),
-                ('gpu_vulkan_h265', 'hevc_vulkan'),
-                ('gpu_arc_av1', 'av1_qsv'),
-                ('gpu_amf', 'hevc_amf'),
-                ('gpu_arc_hevc', 'hevc_qsv'),
-                ('cpu_h264', 'libx264'),
-                ('cpu_h265', 'libx265'),
+                ('gpu_nvenc_h264', 'h264_nvenc', (4, 0, 0)),
+                ('gpu_nvenc_h265', 'hevc_nvenc', (4, 0, 0)),
+                ('gpu_vulkan_h264', 'h264_vulkan', (8, 0, 0)),
+                ('gpu_vulkan_h265', 'hevc_vulkan', (8, 0, 0)),
+                ('gpu_arc_av1', 'av1_qsv', (5, 0, 0)),
+                ('gpu_amf', 'hevc_amf', (4, 0, 0)),
+                ('gpu_arc_hevc', 'hevc_qsv', (5, 0, 0)),
+                ('cpu_h264', 'libx264', (0, 0, 0)),
+                ('cpu_h265', 'libx265', (0, 0, 0)),
             ],
             'Darwin': [
-                ('gpu_videotoolbox', 'hevc_videotoolbox'),
-                ('cpu_h264', 'libx264'),
-                ('cpu_h265', 'libx265'),
+                ('gpu_videotoolbox', 'hevc_videotoolbox', (4, 0, 0)),
+                ('cpu_h264', 'libx264', (0, 0, 0)),
+                ('cpu_h265', 'libx265', (0, 0, 0)),
             ]
         }
 
@@ -432,7 +478,10 @@ class FFmpegWriter(FrameWriter):
             logger.warning(f"Unsupported OS '{system}' for auto-selection. Falling back to CPU.")
             return 'cpu_h265'
 
-        for profile_key, encoder_name in priority_list:
+        for profile_key, encoder_name, min_version in priority_list:
+            if ffmpeg_version < min_version:
+                continue
+
             if profile_key in params and encoder_name in available_encoders:
                 logger.info(f"Auto-selected FFmpeg profile: '{profile_key}' (using '{encoder_name}')")
                 return profile_key
