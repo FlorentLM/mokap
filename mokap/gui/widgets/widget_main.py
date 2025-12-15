@@ -740,7 +740,7 @@ class MainControls(QMainWindow):
             self.frames_saved_label.setText(f'Saved: {pretty_size(size)}')
             self._tick = now
 
-        buffers = np.array(self.controller.nb_frames_buffered)
+        buffers = np.array(self.controller.nb_buffered_frames)
         pressure = np.nanmean(buffers / self.controller.buffer_size).astype(np.float32)
         self._mem_pressure_bar.setValue(int(pressure * 100))
 
