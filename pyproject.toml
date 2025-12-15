@@ -25,6 +25,7 @@ dependencies = [
     "jax>=0.6.1",
     "pyserial>=3.5",
     "polars>=1.31.0",
+    "pywin32"
 ]
 [tool.setuptools]
 py-modules = ['mokap']

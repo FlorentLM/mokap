@@ -60,7 +60,8 @@ def disable_usb(hub_number):
 def is_locked(path: str) -> bool:
     path = str(path)
     if platform.system().startswith('Windows'):
-        import win32file, win32con
+        from win32 import win32file
+        import win32con
         GENERIC_READ = win32con.GENERIC_READ
         OPEN_EXISTING = win32con.OPEN_EXISTING
         FILE_SHARE_READ = 0

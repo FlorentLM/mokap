@@ -273,7 +273,7 @@ class FFmpegWriter(FrameWriter):
         )
 
         # Add the dynamically determined pixel format to the encoder params
-        full_encoder_params = f"{encoder_params_str} {extra_encoder_args}"
+        full_encoder_params = f"{encoder_params_str} {extra_encoder_args} -movflags +frag_keyframe+empty_moov "
 
         command = f"{shlex.quote(str(self.ffmpeg_path))} -hide_banner {input_args} {full_encoder_params} {shlex.quote(str(filepath))}"
 
@@ -290,9 +290,10 @@ class FFmpegWriter(FrameWriter):
             shlex.split(command),
             stdin=subprocess.PIPE,
             # stdout=subprocess.DEVNULL,
-            # stderr=subprocess.DEVNULL
+            # stderr=subprocess.DEVNULL,
             stdout=subprocess.PIPE,         # for debug
-            stderr=subprocess.PIPE          # for debug
+            stderr=subprocess.PIPE,          # for debug
+            bufsize=10 ** 8
         )
 
     @staticmethod
