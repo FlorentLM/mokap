@@ -408,9 +408,26 @@ class FFmpegWriter(FrameWriter):
         if not self.proc:
             return
 
-        # Gracefully close the input pipe and wait for FFmpeg to finish encoding
-        if self.proc.stdin:
-            self.proc.stdin.flush()
-            self.proc.stdin.close()
-        self.proc.wait(timeout=10)
+        # Close input pipe so FFmpeg knows stream is done
+        try:
+            if self.proc.stdin:
+                self.proc.stdin.close()
+        except (BrokenPipeError, OSError):
+            # Process might already be dead, which is fine
+            pass
+
+        # Wait for FFmpeg to finish writing the file
+        try:
+            self.proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            logger.warning(f"FFmpeg process for {self.cam_name} timed out during close. Forcing termination.")
+            try:
+                self.proc.terminate()
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait()
+            except Exception:
+                pass
+
         self.proc = None
