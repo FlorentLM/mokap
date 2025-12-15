@@ -30,11 +30,11 @@ class BaslerCamera(GenICamCamera):
         self._set_feature_value('UserSetSelector', 'Default')
         self._ptr.UserSetLoad.Execute()
 
-        # try:
-        #     # Basler's default is 10, se set 50 (gives ~0.5s buffer at 100 fps)
-        #     self._ptr.MaxNumBuffer.Value = 50
-        # except Exception:
-        #     pass
+        try:
+            # Basler's default is 10, se set 50 (gives ~0.5s buffer at 100 fps)
+            self._ptr.MaxNumBuffer.Value = 50
+        except Exception:
+            pass
 
     # ────── GenICam abstract contract (Basler-specific implementation) ──────
 
