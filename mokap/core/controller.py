@@ -11,6 +11,7 @@ from queue import Queue, Empty
 from threading import Thread, Event, Lock
 from typing import List, Dict, Optional, Tuple, Any
 import numpy as np
+import psutil
 from PIL import Image
 from mokap.core.cameras import CameraFactory, AbstractCamera, CAMERAS_COLOURS
 from mokap.core.triggers import AbstractTrigger, CameraTrigger, RaspberryTrigger, ArduinoTrigger, FTDITrigger
@@ -435,6 +436,8 @@ class CameraController:
 
     def start_recording(self):
         """Begins a recording session, signaling the writer threads to save frames."""
+
+        psutil.Process().nice(psutil.HIGH_PRIORITY_CLASS)  # Windows
 
         if not self._acquiring.is_set():
             logger.error("Cannot record, acquisition is not running.")

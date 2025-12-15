@@ -14,6 +14,15 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+def _drain_stderr(proc):
+    """Drain stderr to prevent buffer deadlock."""
+    try:
+        for line in proc.stderr:
+            logger.debug(f"FFmpeg: {line.decode().strip()}")
+    except:
+        pass
+
+
 class FrameWriter(ABC):
     """
     Abstract base class for writing frames to disk.
@@ -295,12 +304,14 @@ class FFmpegWriter(FrameWriter):
         self.proc = subprocess.Popen(
             shlex.split(command),
             stdin=subprocess.PIPE,
-            # stdout=subprocess.DEVNULL,
-            # stderr=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,         # for debug
-            stderr=subprocess.PIPE,          # for debug
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            # stdout=subprocess.PIPE,         # for debug
+            # stderr=subprocess.PIPE,          # for debug
             bufsize=10 ** 8
         )
+        # self._stderr_thread = threading.Thread(target=_drain_stderr, args=(self.proc,), daemon=True)
+        # self._stderr_thread.start()
 
     @staticmethod
     def _get_available_encoders(ffmpeg_path: Union[Path, str]) -> set:

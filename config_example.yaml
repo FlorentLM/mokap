@@ -64,7 +64,7 @@ ffmpeg:
     # [ NVIDIA Profiles ]
     # H.264
     gpu_nvenc_h264: >-
-      -c:v h264_nvenc -preset p1 -tune hq -rc constqp -qp 20 -g 100 -bf 0 -delay 0
+      -c:v h264_nvenc -preset p1 -tune ll -rc constqp -qp 20 -g 100 -bf 0 -delay 0
     # H.265
     gpu_nvenc_h265: >-
       -c:v hevc_nvenc -preset p1 -tune ll -rc constqp -qp 19 -g 100 -bf 0
