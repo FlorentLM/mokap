@@ -211,7 +211,7 @@ class FFmpegWriter(FrameWriter):
 
         if use_gpu:
             # Allow user override first
-            param_key = params.get('profile')
+            param_key = params.get('ffmpeg', {}).get('profile')
             if not param_key:
                 # If no override, auto-detect
                 param_key = self._get_best_profile_key(ffmpeg_path, params)
@@ -289,10 +289,10 @@ class FFmpegWriter(FrameWriter):
         self.proc = subprocess.Popen(
             shlex.split(command),
             stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-            # stdout=subprocess.PIPE,         # for debug
-            # stderr=subprocess.PIPE          # for debug
+            # stdout=subprocess.DEVNULL,
+            # stderr=subprocess.DEVNULL
+            stdout=subprocess.PIPE,         # for debug
+            stderr=subprocess.PIPE          # for debug
         )
 
     @staticmethod
@@ -347,27 +347,27 @@ class FFmpegWriter(FrameWriter):
         # We prefer AV1 > HEVC, and Hardware > Software
         PRIORITY_MAP = {
             'Linux': [
-                ('gpu_arc_av1', 'av1_qsv'),
-                ('gpu_nvenc_h265', 'hevc_nvenc'),
                 ('gpu_nvenc_h264', 'h264_nvenc'),
+                ('gpu_nvenc_h265', 'hevc_nvenc'),
+                ('gpu_arc_av1', 'av1_qsv'),
                 ('gpu_vaapi', 'hevc_vaapi'),
                 ('gpu_arc_hevc', 'hevc_qsv'),
-                ('cpu_h265', 'libx265'),
                 ('cpu_h264', 'libx264'),
+                ('cpu_h265', 'libx265'),
             ],
             'Windows': [
-                ('gpu_arc_av1', 'av1_qsv'),
-                ('gpu_nvenc_h265', 'hevc_nvenc'),
                 ('gpu_nvenc_h264', 'h264_nvenc'),
+                ('gpu_nvenc_h265', 'hevc_nvenc'),
+                ('gpu_arc_av1', 'av1_qsv'),
                 ('gpu_amf', 'hevc_amf'),
                 ('gpu_arc_hevc', 'hevc_qsv'),
-                ('cpu_h265', 'libx265'),
                 ('cpu_h264', 'libx264'),
+                ('cpu_h265', 'libx265'),
             ],
             'Darwin': [
                 ('gpu_videotoolbox', 'hevc_videotoolbox'),
-                ('cpu_h265', 'libx265'),
                 ('cpu_h264', 'libx264'),
+                ('cpu_h265', 'libx265'),
             ]
         }
 
