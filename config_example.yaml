@@ -113,6 +113,7 @@ sources:
 #    binning: 1
 #    save_format: jpg
 #    save_quality: 90   # you can set per-camera writer settings
+#    profile: gpu_nvenc_h264  # you can have some cameras encoded with GPU, while others are encoded with the CPU
 
   some-other-camera:
     vendor: flir

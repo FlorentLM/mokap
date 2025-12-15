@@ -656,6 +656,9 @@ class CameraController:
         save_format = cam_config.get('save_format', self.config.get('save_format', 'mp4'))
         save_quality = cam_config.get('save_quality', self.config.get('save_quality', 90))
 
+        # Get per-camera profile override (None if not specified)
+        profile_override = cam_config.get('profile')
+
         base_path = self.full_path / f"{self.session_name}_{cam.name}_session{session_idx}"
 
         # Common parameters for all writers
@@ -670,12 +673,15 @@ class CameraController:
         if save_format == 'mp4':
             # For video
             ffmpeg_config = self.config.get('ffmpeg', {})
+
+            profile = ffmpeg_config.get('profile')
+
             return FFmpegWriter(
                 filepath=base_path.with_suffix('.mp4'),
                 ffmpeg_path=ffmpeg_config.get('path', 'ffmpeg'),
                 params=ffmpeg_config.get('params', {}),
                 use_gpu=ffmpeg_config.get('gpu', False),
-                profile=ffmpeg_config.get('profile'),
+                profile=profile_override if profile_override else profile,
                 **writer_params
             )
         else:
