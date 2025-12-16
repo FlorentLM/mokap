@@ -9,7 +9,7 @@ import numpy as np
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 from lucida import CameraRig
 from lucida.calibration import MultiviewCalibrationTool, CharucoBoard, ChessBoard
-from lucida.geometry import transform_points, rotate_points
+from lucida.geometry import transform_points
 from mokap.gui.workers import IndexedDetection
 
 logger = logging.getLogger(__name__)
@@ -54,12 +54,14 @@ class MultiviewWorker(QObject):
 
         self._rig = rig
         self._board = calibration_board
-        self._origin_cam = origin_cam if origin_cam is not None else 0
+        self._origin_cam = self._rig.get_name(origin_cam if origin_cam is not None else 0)
         self._min_samples = min_samples
         self._max_samples = max_samples
 
         # Tool is created when entering Extrinsics stage    # TODO: Should be destroyed when leaving extrinsics stage?
         self._tool: Optional[MultiviewCalibrationTool] = None
+
+        print(f'MultiviewWorker: Origin camera: {self._origin_cam} (index {rig.get_index(self._origin_cam)})')
 
         # Worker state
         self._paused = False
@@ -110,9 +112,9 @@ class MultiviewWorker(QObject):
         with self._rig.locked():
             C = len(self._rig)
             cam_centers = self._rig.centers
-            orig_cam_idx = self._rig.get_index(self._origin_cam)
-            ready_mask = [cam.intrinsics.is_set for cam in self._rig]
-        ready_mask[orig_cam_idx] = True
+            ready_mask = [cam.extrinsics.is_set for cam in self._rig]
+
+        # TODO: origin camera does not show up because of this check
 
         frustums_3d = np.zeros((C, 5, 3))
         optical_axes_3d = np.zeros((C, 2, 3))
@@ -252,7 +254,6 @@ class MultiviewWorker(QObject):
         """
         Called when the CameraRig has been updated externally.
         """
-
         self._compute_3d_scene()
 
     # ────────────────────────────────  Manual controls ────────────────────────────────

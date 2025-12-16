@@ -27,10 +27,12 @@ class CalibrationCoordinator(QObject):
         self._rig = rig
         self._current_stage = 0
 
-        self._origin_camera: Optional[str] = rig.metadata.get('origin_camera')
+        self._origin_cam: Optional[str] = rig.metadata.get('origin_camera')
 
-        if not self._origin_camera and len(rig) > 0:
-            self._origin_camera = rig[0].name
+        if not self._origin_cam and len(rig) > 0:
+            self._origin_cam = rig[0].name
+
+        print(f'Coordinator: Origin camera: {self._origin_cam} (index {rig.get_index(self._origin_cam)})')
 
     @property
     def rig(self) -> 'CameraRig':
@@ -86,7 +88,7 @@ class CalibrationCoordinator(QObject):
         try:
             # Verify camera exists
             self._rig.get_index(camera_name)
-            self._origin_camera = camera_name
+            self._origin_cam = camera_name
             logger.info(f"[Coordinator] Origin camera set to: {camera_name}")
         except KeyError:
             logger.error(f"[Coordinator] Unknown camera: {camera_name}")
@@ -115,24 +117,17 @@ class CalibrationCoordinator(QObject):
 
             has_all_extrinsics = True
             with self._rig.locked():
-                for cam in self._rig:
+                for cam in loaded_rig:
 
-                    if cam.name not in loaded_rig:
+                    if cam.name not in self._rig:
                         continue
 
-                    loaded_cam = loaded_rig[cam.name]
+                    self._rig[cam.name] = cam.copy()
 
-                    # Update Intrinsics
-                    cam.intrinsics.K = loaded_cam.intrinsics.K
-                    cam.intrinsics.D = loaded_cam.intrinsics.D
-                    cam.intrinsics.rms = loaded_cam.intrinsics.rms
-                    cam.intrinsics.stats = loaded_cam.intrinsics.stats.copy()
-
-                    # Update Extrinsics
-                    cam.extrinsics.T = loaded_cam.extrinsics.T
-
-                    if not cam.extrinsics.is_set and not cam.name == self._origin_camera:
+                    if not cam.extrinsics.is_set and not cam.name == self._origin_cam:
                         has_all_extrinsics = False
+
+            del loaded_rig
 
             logger.info(f"[Coordinator] Loaded calibration from {file_path}")
 
