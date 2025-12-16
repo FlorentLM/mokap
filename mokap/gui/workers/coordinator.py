@@ -17,6 +17,7 @@ class CalibrationCoordinator(QObject):
     broadcast_board_changed = Signal(object)  # ChessBoard or CharucoBoard
     broadcast_reset = Signal()
     broadcast_parameters_loaded = Signal()
+    broadcast_origin_camera_changed = Signal(str)
 
     # Signal to request multiview refinement
     request_refinement = Signal()
@@ -31,8 +32,6 @@ class CalibrationCoordinator(QObject):
 
         if not self._origin_cam and len(rig) > 0:
             self._origin_cam = rig[0].name
-
-        print(f'Coordinator: Origin camera: {self._origin_cam} (index {rig.get_index(self._origin_cam)})')
 
     @property
     def rig(self) -> 'CameraRig':
@@ -90,6 +89,8 @@ class CalibrationCoordinator(QObject):
             self._rig.get_index(camera_name)
             self._origin_cam = camera_name
             logger.info(f"[Coordinator] Origin camera set to: {camera_name}")
+            self.broadcast_origin_camera_changed.emit(camera_name)
+
         except KeyError:
             logger.error(f"[Coordinator] Unknown camera: {camera_name}")
 

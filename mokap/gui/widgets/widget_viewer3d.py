@@ -68,7 +68,6 @@ class Viewer3D(SharedBase):
 
         # UI -> Coordinator
         self.calibration_stage_combo.currentIndexChanged.connect(self._mainwindow.coordinator.set_stage)
-        self.origin_camera_combo.currentTextChanged.connect(self._mainwindow.coordinator.set_origin_camera)
         self.run_ba_button.clicked.connect(self._mainwindow.coordinator.trigger_refinement)
 
     def _init_ui(self):

@@ -61,8 +61,6 @@ class MultiviewWorker(QObject):
         # Tool is created when entering Extrinsics stage    # TODO: Should be destroyed when leaving extrinsics stage?
         self._tool: Optional[MultiviewCalibrationTool] = None
 
-        print(f'MultiviewWorker: Origin camera: {self._origin_cam} (index {rig.get_index(self._origin_cam)})')
-
         # Worker state
         self._paused = False
         self._current_stage = 0
