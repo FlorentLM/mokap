@@ -110,9 +110,17 @@ class MultiviewWorker(QObject):
         with self._rig.locked():
             C = len(self._rig)
             cam_centers = self._rig.centers
+
+            # TODO: Ready mask should be computed differently based on intrinsics or extrinsics stage...
             ready_mask = [cam.extrinsics.is_set for cam in self._rig]
 
-        # TODO: origin camera does not show up because of this check
+            # Ensure origin camera is always drawn as "ready" since it is implicitly at Identity
+            try:
+                if self._origin_cam:
+                    origin_idx = self._rig.get_index(self._origin_cam)
+                    ready_mask[origin_idx] = True
+            except KeyError:
+                pass
 
         frustums_3d = np.zeros((C, 5, 3))
         optical_axes_3d = np.zeros((C, 2, 3))
@@ -200,13 +208,13 @@ class MultiviewWorker(QObject):
         # In Extrinsics Stage, register with the calibration tool
         if self._current_stage > 0 and self._tool is not None and result.valid:
             cam_idx = self._rig.get_index(camera_name)
-            
+
             accepted = self._tool.register_detection(
                 cam_idx=cam_idx,
                 frame_idx=result.frame_idx,
                 detection=result.image_points
             )
-            
+
             if accepted:
                 self.coverage_updated.emit()
 
@@ -313,12 +321,18 @@ class MultiviewWorker(QObject):
     def set_origin_camera(self, camera_name: str):
         """Change which camera is the world origin."""
         try:
-            self._origin_cam = self._rig.get_index(camera_name)
-            logger.info(f"[Multiview] Origin camera set to: {camera_name}")
+            self._origin_cam = camera_name
 
-            # Recreate tool with new origin if in Extrinsics stage
+            # If the tool exists, let it handle the rig update so it can preserve samples
             if self._tool is not None:
-                self._create_tool()
+                self._tool.update_origin(camera_name)
+            else:
+                # Fallback if no tool exists
+                self._rig.set_origin(camera_name)
+                logger.info(f"[Multiview] Origin camera set to: {camera_name}")
+
+            # Force scene update
+            self._compute_3d_scene()
 
         except KeyError:
             logger.error(f"[Multiview] Unknown camera: {camera_name}")
