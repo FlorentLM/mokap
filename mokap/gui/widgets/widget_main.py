@@ -481,6 +481,7 @@ class MainControls(QMainWindow):
             for cam_name, view in self.calibration_views.items():
                 self.coordinator.broadcast_stage.connect(view._worker.set_stage)
                 self.coordinator.broadcast_reset.connect(view._worker.reset)
+                self.coordinator.broadcast_parameters_loaded.connect(view._on_parameters_loaded)
                 self.coordinator.broadcast_board_changed.connect(
                     view._detector.configure_new_board
                 )

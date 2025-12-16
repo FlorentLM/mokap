@@ -854,13 +854,15 @@ class CalibrationVideoWindow(VideoWindowBase):
         cam = self._cam
 
         with cam.intrinsics.locked():
+            # Get the per-view errors from the optimisation stats
             rms_per_view = cam.intrinsics.stats.get('rms_per_view', [])
+            # overall_rms = cam.intrinsics.rms
 
         if not rms_per_view:
             return
 
         errors = np.asarray(rms_per_view)
-        if not np.all(np.isfinite(errors)):
+        if np.all(~np.isfinite(errors)):
             return
 
         mean_error = np.nanmean(errors)
@@ -869,13 +871,17 @@ class CalibrationVideoWindow(VideoWindowBase):
         calib_index = len(self.historical_errors_data)
         self.historical_errors_data.append((calib_index, mean_error, std_error))
 
+        # Update the Error bar plot
         x_vals = [d[0] for d in self.historical_errors_data]
         y_vals = [d[1] for d in self.historical_errors_data]
         std_vals = [d[2] for d in self.historical_errors_data]
 
         self.historical_error_bars.setData(
-            x=np.array(x_vals), y=np.array(y_vals),
-            top=np.array(std_vals), bottom=np.array(std_vals)
+            x=np.array(x_vals),
+            y=np.array(y_vals),
+            top=np.array(std_vals),
+            bottom=np.array(std_vals),
+            beam=0.5  # width of the error bar cap
         )
 
         self.load_save_message.setText(f"Intrinsics updated.\nMean err: {mean_error:.3f} px")
@@ -883,12 +889,29 @@ class CalibrationVideoWindow(VideoWindowBase):
     @Slot()
     def _on_pose_updated(self):
         """Handle pose update from worker."""
-        reprojected = self._worker.tool.reproject()
 
+        # Handle reprojection overlays
+        reprojected = self._worker.tool.reproject()
         if reprojected is not None:
             self.latest_reprojected_points = reprojected
         else:
             self.latest_reprojected_points = np.zeros((0, 2))
+
+        # Handle live error plot
+        # The worker calculates RMS during estimate_pose and stores it in cam.extrinsics
+        current_rms = self._cam.extrinsics.rms
+
+        if current_rms is not None and self._worker.tool.pose_valid:
+            self.live_error_deque.append(current_rms)
+
+            # Update the curve
+            self.live_error_curve.setData(np.array(self.live_error_deque))
+
+            # Dynamic Y-range scaling if error jumps high
+            if current_rms > 5.0:
+                self.error_plot.enableAutoRange(axis='y')
+            else:
+                self.error_plot.setYRange(0, 5.0)
 
     @Slot(bool)
     def _on_worker_blocking(self, is_blocking: bool):
@@ -937,6 +960,23 @@ class CalibrationVideoWindow(VideoWindowBase):
             self._on_clear_intrinsics()
             self.request_load.emit(file_path)
             self.load_save_message.setText(f"Loading from\n{Path(file_path).name}")
+
+    @Slot()
+    def _on_parameters_loaded(self):
+        """Called after parameters are loaded from file (central or local)."""
+
+        # Update checkboxes (block signals to prevent recursion)
+        self.auto_sample_check.blockSignals(True)
+        self.auto_compute_check.blockSignals(True)
+
+        self.auto_sample_check.setChecked(False)
+        self.auto_compute_check.setChecked(False)
+
+        self.auto_sample_check.blockSignals(False)
+        self.auto_compute_check.blockSignals(False)
+
+        # Update error plot to show the error of the already-collected samples against the new parameters
+        self._on_intrinsics_updated()
 
     def _on_clear_intrinsics(self):
         """Clear all calibration data and UI."""

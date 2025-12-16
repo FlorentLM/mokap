@@ -130,26 +130,42 @@ class CalibrationCoordinator(QObject):
         try:
             loaded_rig = CameraRig.load(file_path)
 
+            has_all_extrinsics = True
             with self._rig.locked():
                 for cam in self._rig:
 
+                    if cam.name not in loaded_rig:
+                        continue
+
                     loaded_cam = loaded_rig[cam.name]
 
-                    with cam.locked():
-                        cam.intrinsics.K = loaded_cam.intrinsics.K
-                        cam.intrinsics.D = loaded_cam.intrinsics.D
-                        cam.intrinsics.rms = loaded_cam.intrinsics.rms
-                        cam.intrinsics.stats = loaded_cam.intrinsics.stats.copy()
-                        cam.extrinsics.T = loaded_cam.extrinsics.T
+                    # Update Intrinsics
+                    cam.intrinsics.K = loaded_cam.intrinsics.K
+                    cam.intrinsics.D = loaded_cam.intrinsics.D
+                    cam.intrinsics.rms = loaded_cam.intrinsics.rms
+                    cam.intrinsics.stats = loaded_cam.intrinsics.stats.copy()
+
+                    # Update Extrinsics
+                    cam.extrinsics.T = loaded_cam.extrinsics.T
+
+                    if not cam.extrinsics.is_set and not cam.name == self._origin_camera:
+                        has_all_extrinsics = False
 
             logger.info(f"[Coordinator] Loaded calibration from {file_path}")
+
+            # Decide on Stage Switch
+            if has_all_extrinsics and len(self._rig) > 1:
+                logger.info("[Coordinator] Loaded valid extrinsics. Switching to Extrinsics mode.")
+                self.set_stage(1)
+            else:
+                self.set_stage(0)
 
             # Notify everyone
             self.broadcast_parameters_loaded.emit()
 
-            # If we are in Extrinsics mode, this might require a worker reset too
-            # usually loading a file implies we are 'done' or starting from a known state
-            self.broadcast_reset.emit()
+            # If we are in extrinsics mode, the Multiview worker must reset
+            if self._current_stage == 1:
+                self.broadcast_reset.emit()
 
         except Exception as e:
             logger.error(f"[Coordinator] Failed to load calibration: {e}")

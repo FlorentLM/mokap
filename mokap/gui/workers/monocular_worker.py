@@ -240,7 +240,7 @@ class MonocularWorker(QObject):
     def load_intrinsics(self, file_path: str):
         """Load intrinsics from a TOML file."""
         try:
-            loaded_cam = CameraModel.load(file_path)
+            loaded_cam = CameraModel.load(file_path, self._camera_model.name)
             
             with self._camera_model.intrinsics.locked():
                 self._camera_model.intrinsics.K = loaded_cam.intrinsics.K
@@ -248,12 +248,13 @@ class MonocularWorker(QObject):
                 self._camera_model.intrinsics.rms = loaded_cam.intrinsics.rms
                 self._camera_model.intrinsics.stats = loaded_cam.intrinsics.stats.copy()
 
-            self._auto_sample = False
-            self._auto_compute = False
-            self.clear_samples()
-            
+            # Disable auto-logic to protect the loaded data
+            self.set_auto_sample(False)
+            self.set_auto_compute(False)
+
             self.intrinsics_updated.emit()
-            
+            self.coverage_updated.emit()
+
         except Exception as e:
             logger.error(f"[{self.name}] Failed to load intrinsics: {e}")
             self.error.emit(e)
