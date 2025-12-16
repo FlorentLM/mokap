@@ -279,14 +279,16 @@ class Viewer3D(SharedBase):
     def _update_camera_gl_items(self, cam_name, frustum_points, optical_axis, detection_points, is_ready):
         items = self._percamera_gl_items[cam_name]
         cam_center = optical_axis[0]
-        is_pose_valid = np.linalg.norm(cam_center) > 1e-6
-        should_show = is_pose_valid and is_ready
+
+        should_show = is_ready
 
         items['frustum_mesh'].setVisible(should_show)
         items['optical_axis'].setVisible(should_show)
-        items['center'].setVisible(is_pose_valid)
 
-        if is_pose_valid:
+        # Only draw the centre dot if it's visible
+        items['center'].setVisible(should_show)
+
+        if should_show:
             items['center'].setData(pos=cam_center[None, :])
 
         if not should_show:

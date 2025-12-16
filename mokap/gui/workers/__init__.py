@@ -1,29 +1,12 @@
 from dataclasses import dataclass
-import numpy as np
+from lucida.calibration import Detection
+
 @dataclass
-class DetectionResult:  # TODO: Not sure this is needed, Lucida already has a Detection dataclass
+class IndexedDetection(Detection):
     """
-    Lightweight container for detection results.
+    Extends Lucida's Detection to include frame index for the GUI workers.
     """
-    frame_idx: int
-    image_points: np.ndarray  # (N, 2) with NaN for undetected points
-    valid: bool  # True if enough points were detected
-
-    @property
-    def detected_mask(self) -> np.ndarray:
-        """Boolean mask of which points were detected."""
-        return ~np.isnan(self.image_points).any(axis=1)
-
-    @property
-    def detected_points(self) -> np.ndarray:
-        """Only the points that were actually detected."""
-        return self.image_points[self.detected_mask]
-
-    @property
-    def detected_ids(self) -> np.ndarray:
-        """Indices of detected points."""
-        return np.where(self.detected_mask)[0]
-
+    frame_idx: int = 0
 
 from .coordinator import CalibrationCoordinator
 from .detector_worker import DetectorWorker

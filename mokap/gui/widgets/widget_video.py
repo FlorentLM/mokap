@@ -538,10 +538,6 @@ class CalibrationVideoWindow(VideoWindowBase):
     # Signal to send frames to the detector
     frame_ready = Signal(np.ndarray, int)
 
-    # Signals for save/load operations
-    request_load = Signal(str)
-    request_save = Signal(str)
-
     def __init__(self, hw_cam, main_window_ref, board_params):
         super().__init__(hw_cam, main_window_ref)
 
@@ -585,10 +581,6 @@ class CalibrationVideoWindow(VideoWindowBase):
         self._worker.pose_updated.connect(self._on_pose_updated)
         self._worker.blocking.connect(self._on_worker_blocking)
         self._worker.stage_changed.connect(self._on_stage_changed)
-
-        # Save/load
-        self.request_load.connect(self._worker.load_intrinsics) # TODO: request_* step probably not needed
-        self.request_save.connect(self._worker.save_intrinsics)
 
         # Start threads
         self._detector_thread.start()
@@ -942,7 +934,7 @@ class CalibrationVideoWindow(VideoWindowBase):
         )
 
         if file_path:
-            self.request_save.emit(file_path)
+            self._worker.save_intrinsics(file_path)
             self.load_save_message.setText(f"Saved to\n{Path(file_path).name}")
 
     def _on_load_parameters(self):
@@ -955,7 +947,7 @@ class CalibrationVideoWindow(VideoWindowBase):
 
         if file_path:
             self._on_clear_intrinsics()
-            self.request_load.emit(file_path)
+            self._worker.load_intrinsics(file_path)
             self.load_save_message.setText(f"Loading from\n{Path(file_path).name}")
 
     @Slot()

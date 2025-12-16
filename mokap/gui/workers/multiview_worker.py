@@ -10,7 +10,7 @@ from PySide6.QtCore import QObject, QTimer, Signal, Slot
 from lucida import CameraRig
 from lucida.calibration import MultiviewCalibrationTool, CharucoBoard, ChessBoard
 from lucida.geometry import transform_points, rotate_points
-from mokap.gui.workers import DetectionResult
+from mokap.gui.workers import IndexedDetection
 
 logger = logging.getLogger(__name__)
 
@@ -66,15 +66,16 @@ class MultiviewWorker(QObject):
         self._current_stage = 0
 
         # Store latest detections for visualization (per camera)
-        self._latest_detections: Dict[str, Optional['DetectionResult']] = {
+        self._latest_detections: Dict[str, Optional['IndexedDetection']] = {
             cam.name: None for cam in self._rig
         }
 
-        # Precompute board points in homogeneous coords for transforms
-        self._object_points_hom = np.hstack([
-            self._board.object_points,
-            np.ones((self._board.object_points.shape[0], 1))
-        ])
+        # TODO: Use the rig's internal coord transform methods
+        self._T_disp = np.array([
+            [1.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, -1.0]
+        ], dtype=np.float32).T
 
         # Timer for 3D scene updates
         self._scene_timer = QTimer(self)
@@ -109,7 +110,9 @@ class MultiviewWorker(QObject):
         with self._rig.locked():
             C = len(self._rig)
             cam_centers = self._rig.centers
+            orig_cam_idx = self._rig.get_index(self._origin_cam)
             ready_mask = [cam.intrinsics.is_set for cam in self._rig]
+        ready_mask[orig_cam_idx] = True
 
         frustums_3d = np.zeros((C, 5, 3))
         optical_axes_3d = np.zeros((C, 2, 3))
@@ -152,13 +155,12 @@ class MultiviewWorker(QObject):
         }
         self.scene_updated.emit(scene_data)
 
-    # TODO: Prob better to use a T matrix instead of this
-    @staticmethod
-    def _to_gl(points: Optional[np.ndarray]) -> Optional[np.ndarray]:
-        """Convert to OpenGL coordinates (rotate 180° around X)."""
+    def _to_gl(self, points: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        """Convert to OpenGL coordinates (rotate 180° around X) using Matrix."""
         if points is None or points.size == 0:
             return points
-        return rotate_points(points, angle_degrees=180, axis=[1.0, 0.0, 0.0])
+
+        return points @ self._T_disp
 
     # ──────────────────────────────── Handle detections ────────────────────────────────
 
@@ -185,7 +187,7 @@ class MultiviewWorker(QObject):
         return detections
 
     @Slot(str, object)
-    def on_detection(self, camera_name: str, result: 'DetectionResult'):
+    def on_detection(self, camera_name: str, result: 'IndexedDetection'):
         """
         Receive detection from a DetectorThread.
         """
@@ -224,8 +226,9 @@ class MultiviewWorker(QObject):
         logger.info(f"[Multiview] Stage transition: {self._current_stage} -> {stage}")
 
         if stage == 0:
-            # Going back to Intrinsics stage: full reset    # TODO: Maybe delete it instead?
+            # Going back to Intrinsics stage: full reset
             self.reset()
+            self._tool = None
         else:
             # Entering Extrinsics stage: create the tool
             self._create_tool()
@@ -298,11 +301,6 @@ class MultiviewWorker(QObject):
         logger.debug("[Multiview] Board changed, resetting...")
 
         self._board = board
-
-        self._object_points_hom = np.hstack([
-            board.object_points,
-            np.ones((board.object_points.shape[0], 1))
-        ])
 
         # Reset tool if it exists
         if self._tool is not None:

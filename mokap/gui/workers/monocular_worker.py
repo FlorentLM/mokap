@@ -10,7 +10,7 @@ from typing import Union, Optional
 from PySide6.QtCore import QObject, Signal, Slot
 from lucida import CameraModel
 from lucida.calibration import MonocularCalibrationTool, CharucoBoard, ChessBoard
-from mokap.gui.workers import DetectionResult
+from mokap.gui.workers import IndexedDetection
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ class MonocularWorker(QObject):
         self._current_stage = 0
 
         # Store latest detection for UI access
-        self._latest_detection: Optional['DetectionResult'] = None
+        self._latest_detection: Optional['IndexedDetection'] = None
 
         # Policy settings (TODO: make configurable from GUI)
         self._auto_sample = True
@@ -78,12 +78,12 @@ class MonocularWorker(QObject):
     # ──────────────────────────────── Handle detections ────────────────────────────────
 
     @property
-    def latest_detection(self) -> Optional['DetectionResult']:
+    def latest_detection(self) -> Optional['IndexedDetection']:
         """Most recent detection result for UI display."""
         return self._latest_detection
 
     @Slot(object)
-    def on_detection(self, result: 'DetectionResult'):
+    def on_detection(self, result: 'IndexedDetection'):
         """
         Handle detection results from DetectorThread.
         This is called when a detection arrives.

@@ -17,7 +17,7 @@ from numpy.typing import ArrayLike
 from PySide6.QtCore import QObject, Signal, Slot
 from lucida import CameraModel
 from lucida.calibration import CharucoBoard, ChessBoard, CharucoDetector, ChessboardDetector
-from mokap.gui.workers import DetectionResult
+from mokap.gui.workers import IndexedDetection
 
 logger = logging.getLogger(__name__)
 
@@ -83,10 +83,10 @@ class DetectorWorker(QObject):
         )
 
         # Package result
-        result = DetectionResult(
-            frame_idx=frame_idx,
+        result = IndexedDetection(
             image_points=detection.image_points,
-            valid=detection.valid
+            valid=detection.valid,
+            frame_idx=frame_idx
         )
 
         self.detection_ready.emit(result)
