@@ -75,12 +75,12 @@ class MonocularWorker(QObject):
         # Flag to avoid looping over calibration failures
         self._last_calib_failed = False
 
+    # ──────────────────────────────── Handle detections ────────────────────────────────
+
     @property
     def latest_detection(self) -> Optional['DetectionResult']:
         """Most recent detection result for UI display."""
         return self._latest_detection
-
-    # ──────────────────────────────── Handle detections ────────────────────────────────
 
     @Slot(object)
     def on_detection(self, result: 'DetectionResult'):
@@ -110,8 +110,10 @@ class MonocularWorker(QObject):
 
             # Intrinsics calibration
             if self._current_stage == 0 and self._auto_compute and not self._last_calib_failed:
-                if self._should_compute_intrinsics():
-                    self._do_compute_intrinsics()
+
+                if (self._tool.current_coverage >= self._coverage_threshold and
+                        self._tool.sample_count >= self._tool._min_samples):
+                    self._compute_intrinsics()
 
             # Pose estimation (all stages)
             if self._tool.estimate_pose():
@@ -123,14 +125,7 @@ class MonocularWorker(QObject):
 
         self.finished.emit()
 
-    def _should_compute_intrinsics(self) -> bool:
-        """Check if we have enough data to attempt calibration."""
-        return (
-            self._tool.current_coverage >= self._coverage_threshold and
-            self._tool.sample_count >= self._tool._min_samples
-        )
-
-    def _do_compute_intrinsics(self):
+    def _compute_intrinsics(self):
         """Run intrinsics computation with UI blocking."""
 
         self.blocking.emit(True)
@@ -145,7 +140,7 @@ class MonocularWorker(QObject):
             self.intrinsics_updated.emit()
             self.coverage_updated.emit()  # Coverage was cleared
         else:
-            logger.debug(f"[{self.name}] Auto-computation failed. Waiting for new samples.")
+            logger.debug(f"[{self.name}] Intrinsics computation failed.")
 
     # ────────────────────────────────  Manual controls ────────────────────────────────
 
@@ -169,7 +164,7 @@ class MonocularWorker(QObject):
     @Slot()
     def compute_intrinsics(self):
         """Manually trigger intrinsics computation."""
-        self._do_compute_intrinsics()
+        self._compute_intrinsics()
 
     @Slot()
     def clear_intrinsics(self):
@@ -234,6 +229,23 @@ class MonocularWorker(QObject):
         self.intrinsics_updated.emit()
         self.coverage_updated.emit()
 
+    @Slot()
+    def refresh_from_rig(self):
+        """
+        Called when the CameraRig has been updated externally.
+        """
+
+        # Disable automation so we don't overwrite the loaded data
+        self._auto_sample = False
+        self._auto_compute = False
+
+        # Notify UI that intrinsics changed (updates plots)
+        self.intrinsics_updated.emit()
+
+        # Notify UI to update coverage (if samples exist)
+        if self._tool.sample_count > 0:
+            self.coverage_updated.emit()
+
     # ────────────────────────────────  Save / load ────────────────────────────────
 
     @Slot(str)
@@ -248,12 +260,7 @@ class MonocularWorker(QObject):
                 self._camera_model.intrinsics.rms = loaded_cam.intrinsics.rms
                 self._camera_model.intrinsics.stats = loaded_cam.intrinsics.stats.copy()
 
-            # Disable auto-logic to protect the loaded data
-            self.set_auto_sample(False)
-            self.set_auto_compute(False)
-
-            self.intrinsics_updated.emit()
-            self.coverage_updated.emit()
+            self.refresh_from_rig()
 
         except Exception as e:
             logger.error(f"[{self.name}] Failed to load intrinsics: {e}")
@@ -277,3 +284,9 @@ class MonocularWorker(QObject):
     @property
     def tool(self):
         return self._tool
+
+    @property
+    def current_coverage(self) -> float:
+        if self._tool is not None:
+            return self._tool.current_coverage
+        return 0.0

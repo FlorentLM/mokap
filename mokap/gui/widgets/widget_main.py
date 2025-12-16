@@ -1,15 +1,8 @@
 """
 Main control window for the application.
-
-Manages:
-- Mode switching (Recording/Calibration)
-- Secondary windows (CalibrationLiveView, RecordingLiveView, CentralCalibrationWindow)
-- Camera rig initialisation
-- Coordinator and multiview worker setup
 """
 import logging
 import os
-import platform
 import subprocess
 import sys
 import time
@@ -20,7 +13,7 @@ from PySide6.QtCore import QTimer, Qt, QThread
 from PySide6.QtGui import QFont, QBrush, QColor, QPen, QGuiApplication, QIcon
 from PySide6.QtWidgets import (QMainWindow, QVBoxLayout, QWidget, QFrame, QHBoxLayout, QLabel, QComboBox,
                                QPushButton, QGroupBox, QLineEdit, QCheckBox, QGraphicsView, QGraphicsScene,
-                               QProgressBar, QFileDialog, QApplication, QGraphicsRectItem, QGraphicsTextItem)
+                               QProgressBar, QApplication, QGraphicsRectItem, QGraphicsTextItem)
 from mokap.utils import hex_to_hls, pretty_size, get_size
 from mokap.gui import GUI_LOGGER
 from mokap.gui.style import *
@@ -355,6 +348,8 @@ class MainControls(QMainWindow):
         # Restart windows
         self._start_secondary_windows()
 
+    # ──────────────────────────────── Session name editing ────────────────────────────────
+
     def _toggle_text_editing(self, checked):
         """Toggle session name editing."""
         if checked:
@@ -451,14 +446,19 @@ class MainControls(QMainWindow):
     # ──────────────────────────────── Secondary windows ────────────────────────────────
 
     def _start_secondary_windows(self):
-        """Create and configure secondary windows."""
         self.calibration_views = {}
+
+        # Setup Multiview system (if calibrating)
+        if self.is_calibrating:
+            self._init_multiview_worker()
 
         # Create camera windows
         for i, cam in enumerate(self.controller.cameras):
             if self.is_calibrating:
                 w = CalibrationVideoWindow(cam, self, self.board_params)
                 self.calibration_views[cam.name] = w
+
+                self._wire_calibration_camera(w, cam.name)
             else:
                 w = RecordingVideoWindow(cam, self)
 
@@ -476,62 +476,52 @@ class MainControls(QMainWindow):
 
             w.show()
 
-        # Connect coordinator to workers (calibration mode only)
+        # Setup 3D viewer (if calibrating)
         if self.is_calibrating:
-            for cam_name, view in self.calibration_views.items():
-                self.coordinator.broadcast_stage.connect(view._worker.set_stage)
-                self.coordinator.broadcast_reset.connect(view._worker.reset)
-                self.coordinator.broadcast_parameters_loaded.connect(view._on_parameters_loaded)
-                self.coordinator.broadcast_board_changed.connect(
-                    view._detector.configure_new_board
-                )
-                self.coordinator.broadcast_board_changed.connect(
-                    view._worker.configure_new_board
-                )
-                self.coordinator.broadcast_parameters_loaded.connect(
-                    view._on_intrinsics_updated
-                )
-
-            # Create 3D view window
             self.viewer_3d = Viewer3D(self)
             self.viewer_3d.show()
 
-            # Create multiview worker
-            origin_cam = self.viewer_3d.origin_camera_combo.currentText()
-
-            self.multiview_worker = MultiviewWorker(
-                rig=self.rig,
-                calibration_board=self.board_params,
-                origin_cam=origin_cam
-            )
-            self.multiview_thread = QThread()
-            self.multiview_worker.moveToThread(self.multiview_thread)
-
-            # Connect coordinator to multiview
-            self.coordinator.broadcast_stage.connect(self.multiview_worker.set_stage)
-            self.coordinator.broadcast_reset.connect(self.multiview_worker.reset)
-            self.coordinator.broadcast_board_changed.connect(
-                self.multiview_worker.configure_new_board
-            )
-            self.coordinator.request_refinement.connect(
-                self.multiview_worker.trigger_refinement
-            )
-
-            # Connect detections to multiview
-            for cam_name, view in self.calibration_views.items():
-                view._detector.detection_ready.connect(
-                    lambda result, name=cam_name: self.multiview_worker.on_detection(name, result),
-                    Qt.QueuedConnection
-                )
-
-            # Connect 3D scene updates
-            self.multiview_worker.scene_updated.connect(
-                self.viewer_3d.update_3d_scene
-            )
-
-            self.multiview_thread.start()
+            # Connect Multiview output -> Viewer input
+            self.multiview_worker.scene_updated.connect(self.viewer_3d.update_3d_scene)
 
         self.cascade_windows()
+
+    def _init_multiview_worker(self):
+        """Helper to init the heavy multiview worker."""
+
+        # Create Worker
+        self.multiview_worker = MultiviewWorker(self.rig, self.board_params)
+        self.multiview_thread = QThread()
+        self.multiview_worker.moveToThread(self.multiview_thread)
+
+        # Connect Coordinator -> Multiview
+        self.coordinator.broadcast_stage.connect(self.multiview_worker.set_stage)
+        self.coordinator.broadcast_reset.connect(self.multiview_worker.reset)
+        self.coordinator.broadcast_board_changed.connect(self.multiview_worker.configure_new_board)
+        self.coordinator.request_refinement.connect(self.multiview_worker.trigger_refinement)
+
+        self.coordinator.broadcast_parameters_loaded.connect(self.multiview_worker.refresh_from_rig)
+
+        self.multiview_thread.start()
+
+    def _wire_calibration_camera(self, view_window, cam_name):
+        """Helper to wire a single camera's detector/worker."""
+
+        # Coordinator -> Window/Worker (global events)
+        self.coordinator.broadcast_stage.connect(view_window._worker.set_stage)
+        self.coordinator.broadcast_reset.connect(view_window._worker.reset)
+        self.coordinator.broadcast_board_changed.connect(view_window._detector.configure_new_board)
+        self.coordinator.broadcast_board_changed.connect(view_window._worker.configure_new_board)
+
+        self.coordinator.broadcast_parameters_loaded.connect(view_window._on_parameters_loaded)  # Updates UI checkboxes
+        self.coordinator.broadcast_parameters_loaded.connect(
+            view_window._worker.refresh_from_rig)  # Updates internal state
+
+        # Direct connections Detector -> Multiview worker
+        view_window._detector.detection_ready.connect(
+            lambda result, name=cam_name: self.multiview_worker.on_detection(name, result),
+            Qt.QueuedConnection
+        )
 
     def _stop_secondary_windows(self):
         """Close and clean up secondary windows."""
@@ -601,7 +591,7 @@ class MainControls(QMainWindow):
         # Default to primary screen
         geom = QGuiApplication.primaryScreen().availableGeometry()
 
-        # Try to find the matching QScreen for our selected monitor
+        # Try to find the matching QScreen for the selected monitor
         if self.selected_monitor:
             m = self.selected_monitor
             for screen in QGuiApplication.screens():

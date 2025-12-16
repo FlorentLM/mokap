@@ -82,7 +82,107 @@ class MultiviewWorker(QObject):
         self._scene_timer.timeout.connect(self._compute_3d_scene)
         self._scene_timer.start()
 
+    # ──────────────────────────────── Internal helpers ────────────────────────────────
+
+    def _create_tool(self):
+        logger.info("[Multiview] Creating MultiviewCalibrationTool...")
+
+        self._tool = MultiviewCalibrationTool(
+            rig=self._rig,
+            calibration_board=self._board,
+            origin_cam=self._origin_cam,
+            min_samples=self._min_samples,
+            max_samples=self._max_samples,
+        )
+
+    # ────────────────────────────────  3D scene computation ────────────────────────────────
+
+    def _compute_3d_scene(self):
+        """Compute 3D scene data for the OpenGL visualisation."""
+
+        if self._paused:
+            return
+
+        frustum_depth = self._board.diagonal * 5.0
+        axis_length = self._board.diagonal * 2.5
+
+        with self._rig.locked():
+            C = len(self._rig)
+            cam_centers = self._rig.centers
+            ready_mask = [cam.intrinsics.is_set for cam in self._rig]
+
+        frustums_3d = np.zeros((C, 5, 3))
+        optical_axes_3d = np.zeros((C, 2, 3))
+
+        for i, cam in enumerate(self._rig):
+            center = cam_centers[i]
+
+            if not ready_mask[i]:
+                frustums_3d[i] = center
+                optical_axes_3d[i] = center
+                continue
+
+            points_2d = np.vstack([cam.image_corners, cam.c])  # 4 image corners + image centre + principal point
+            _, directions = cam.raycast(points_2d)
+
+            # TODO: Use the image centre too
+
+            frustums_3d[i, 0] = center
+            frustums_3d[i, 1:] = center + directions[:4] * frustum_depth
+            optical_axes_3d[i, 0] = center
+            optical_axes_3d[i, 1] = center + directions[4] * axis_length
+
+        # Board position depends on stage
+        if self._current_stage == 0:
+            board_3d = self._board.object_points
+        elif self._tool is not None and self._tool.current_object_pose is not None:
+            board_3d = transform_points(self._board.object_points, self._tool.current_object_pose)
+        else:
+            board_3d = None
+
+        detections_3d = self._get_detections(board_3d) if board_3d is not None else [np.zeros((0, 3))] * C
+
+        scene_data = {
+            'ready_mask': ready_mask,
+            'cam_centers': self._to_gl(cam_centers),
+            'frustums_3d': self._to_gl(frustums_3d),
+            'optical_axes_3d': self._to_gl(optical_axes_3d),
+            'board_3d': self._to_gl(board_3d),
+            'detections_3d': [self._to_gl(d) for d in detections_3d],
+        }
+        self.scene_updated.emit(scene_data)
+
+    # TODO: Prob better to use a T matrix instead of this
+    @staticmethod
+    def _to_gl(points: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        """Convert to OpenGL coordinates (rotate 180° around X)."""
+        if points is None or points.size == 0:
+            return points
+        return rotate_points(points, angle_degrees=180, axis=[1.0, 0.0, 0.0])
+
     # ──────────────────────────────── Handle detections ────────────────────────────────
+
+    def _get_detections(self, board_3d: np.ndarray) -> List[np.ndarray]:
+        """Get 3D detection positions when board is at origin."""
+
+        # TODO: Use the tool's reproject method instead??
+
+        detections = []
+
+        for cam in self._rig:
+            det = self._latest_detections.get(cam.name)
+
+            if det is not None and det.valid:
+                # Detection IDs map directly to board points
+                ids = det.detected_ids
+                if len(ids) > 0:
+                    detections.append(board_3d[ids])
+                else:
+                    detections.append(np.zeros((0, 3)))
+            else:
+                detections.append(np.zeros((0, 3)))
+
+        return detections
 
     @Slot(str, object)
     def on_detection(self, camera_name: str, result: 'DetectionResult'):
@@ -92,7 +192,7 @@ class MultiviewWorker(QObject):
         if self._paused:
             return
 
-        # Store for visualization
+        # Store for visualisation
         self._latest_detections[camera_name] = result if result.valid else None
 
         # In Extrinsics Stage, register with the calibration tool
@@ -102,7 +202,7 @@ class MultiviewWorker(QObject):
             accepted = self._tool.register_detection(
                 cam_idx=cam_idx,
                 frame_idx=result.frame_idx,
-                points2d=result.image_points
+                detection=result.image_points
             )
             
             if accepted:
@@ -110,7 +210,51 @@ class MultiviewWorker(QObject):
 
         self.finished.emit()
 
-    # ────────────────────────────────  Bundle Adjustment ────────────────────────────────
+    # ──────────────────────────────── State management ────────────────────────────────
+
+    def set_paused(self, paused: bool):
+        self._paused = paused
+
+    @Slot(int)
+    def set_stage(self, stage: int):
+        """Handle stage transitions."""
+        if stage == self._current_stage:
+            return
+
+        logger.info(f"[Multiview] Stage transition: {self._current_stage} -> {stage}")
+
+        if stage == 0:
+            # Going back to Intrinsics stage: full reset    # TODO: Maybe delete it instead?
+            self.reset()
+        else:
+            # Entering Extrinsics stage: create the tool
+            self._create_tool()
+
+        self._current_stage = stage
+        self.stage_changed.emit(stage)
+
+    @Slot()
+    def reset(self):
+        """Full reset of worker state."""
+        logger.debug("[Multiview] Resetting worker...")
+
+        self._tool = None
+        self._latest_detections = {cam.name: None for cam in self._rig}
+        self._current_stage = 0
+
+        self.coverage_updated.emit()
+
+    @Slot()
+    def refresh_from_rig(self):
+        """
+        Called when the CameraRig has been updated externally.
+        """
+
+        self._compute_3d_scene()
+
+    # ────────────────────────────────  Manual controls ────────────────────────────────
+
+    # TODO: Should have clear_samples
 
     @Slot()
     def trigger_refinement(self):
@@ -144,136 +288,9 @@ class MultiviewWorker(QObject):
             logger.error("[Multiview] Bundle Adjustment failed.")
             self.refinement_complete.emit(False)
 
-    # ────────────────────────────────  3D scene computation ────────────────────────────────
-
-    def _compute_3d_scene(self):
-        """Compute 3D scene data for the OpenGL visualisation."""
-
-        if self._paused:
-            return
-
-        frustum_depth = self._board.diagonal * 5.0
-        axis_length = self._board.diagonal * 2.5
-
-        with self._rig.locked():
-            C = len(self._rig)
-            cam_centers = self._rig.centers
-            ready_mask = [cam.intrinsics.is_set for cam in self._rig]
-
-        frustums_3d = np.zeros((C, 5, 3))
-        optical_axes_3d = np.zeros((C, 2, 3))
-
-        for i, cam in enumerate(self._rig):
-            center = cam_centers[i]
-
-            if not ready_mask[i]:
-                frustums_3d[i] = center
-                optical_axes_3d[i] = center
-                continue
-
-            points_2d = np.vstack([cam.image_corners, cam.c])   # 4 image corners + image centre + principal point
-            _, directions = cam.raycast(points_2d)
-
-            # TODO: Use the image centre too
-
-            frustums_3d[i, 0] = center
-            frustums_3d[i, 1:] = center + directions[:4] * frustum_depth
-            optical_axes_3d[i, 0] = center
-            optical_axes_3d[i, 1] = center + directions[4] * axis_length
-
-        # Board position depends on stage
-        if self._current_stage == 0:
-            board_3d = self._board.object_points
-        elif self._tool is not None and self._tool.current_object_pose is not None:
-            board_3d = transform_points(self._board.object_points, self._tool.current_object_pose)
-        else:
-            board_3d = None
-
-        detections_3d = self._get_detections(board_3d) if board_3d is not None else [np.zeros((0, 3))] * C
-
-        scene_data = {
-            'ready_mask': ready_mask,
-            'cam_centers': self._to_gl(cam_centers),
-            'frustums_3d': self._to_gl(frustums_3d),
-            'optical_axes_3d': self._to_gl(optical_axes_3d),
-            'board_3d': self._to_gl(board_3d),
-            'detections_3d': [self._to_gl(d) for d in detections_3d],
-        }
-        self.scene_updated.emit(scene_data)
-
-    def _get_detections(self, board_3d: np.ndarray) -> List[np.ndarray]:
-        """Get 3D detection positions when board is at origin."""
-
-        # TODO: Use the tool's reproject method instead??
-
-        detections = []
-
-        for cam in self._rig:
-            det = self._latest_detections.get(cam.name)
-
-            if det is not None and det.valid:
-                # Detection IDs map directly to board points
-                ids = det.detected_ids
-                if len(ids) > 0:
-                    detections.append(board_3d[ids])
-                else:
-                    detections.append(np.zeros((0, 3)))
-            else:
-                detections.append(np.zeros((0, 3)))
-
-        return detections
-
-    # TODO: Prob better to use a T matrix instead of this
-    @staticmethod
-    def _to_gl(points: Optional[np.ndarray]) -> Optional[np.ndarray]:
-        """Convert to OpenGL coordinates (rotate 180° around X)."""
-        if points is None or points.size == 0:
-            return points
-        return rotate_points(points, angle_degrees=180, axis=[1.0, 0.0, 0.0])
-
-    # ──────────────────────────────── Stage management ────────────────────────────────
-
-    @Slot(int)
-    def set_stage(self, stage: int):
-        """Handle stage transitions."""
-        if stage == self._current_stage:
-            return
-
-        logger.info(f"[Multiview] Stage transition: {self._current_stage} -> {stage}")
-
-        if stage == 0:
-            # Going back to Intrinsics stage: full reset    # TODO: Maybe delete it instead?
-            self.reset()
-        else:
-            # Entering Extrinsics stage: create the tool
-            self._create_tool()
-
-        self._current_stage = stage
-        self.stage_changed.emit(stage)
-
-    def _create_tool(self):
-        logger.info("[Multiview] Creating MultiviewCalibrationTool...")
-
-        self._tool = MultiviewCalibrationTool(
-            rig=self._rig,
-            calibration_board=self._board,
-            origin_cam=self._origin_cam,
-            min_samples=self._min_samples,
-            max_samples=self._max_samples,
-        )
-
-    @Slot()
-    def reset(self):
-        """Full reset of worker state."""
-        logger.debug("[Multiview] Resetting worker...")
-
-        self._tool = None
-        self._latest_detections = {cam.name: None for cam in self._rig}
-        self._current_stage = 0
-
-        self.coverage_updated.emit()
-
     # ──────────────────────────────── Configuration ────────────────────────────────
+
+    # TODO: Should probably have set_auto_sample and set_auto_compute?
 
     @Slot(object)
     def configure_new_board(self, board: Union['ChessBoard', 'CharucoBoard']):
@@ -285,11 +302,6 @@ class MultiviewWorker(QObject):
         self._object_points_hom = np.hstack([
             board.object_points,
             np.ones((board.object_points.shape[0], 1))
-        ])
-
-        self._board_diagonal = np.linalg.norm([
-            self._board.cols * self._board.square_length,
-            self._board.rows * self._board.square_length
         ])
 
         # Reset tool if it exists
@@ -313,9 +325,6 @@ class MultiviewWorker(QObject):
 
         except KeyError:
             logger.error(f"[Multiview] Unknown camera: {camera_name}")
-
-    def set_paused(self, paused: bool):
-        self._paused = paused
 
     # ──────────────────────────────── Properties ────────────────────────────────
 

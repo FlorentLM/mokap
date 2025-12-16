@@ -1,5 +1,5 @@
 import logging
-from typing import List, Optional, Union
+from typing import Optional, Union
 from PySide6.QtCore import QObject, Signal, Slot
 from lucida import CameraRig
 from lucida.calibration import ChessBoard, CharucoBoard
@@ -10,11 +10,6 @@ logger = logging.getLogger(__name__)
 class CalibrationCoordinator(QObject):
     """
     Coordinates calibration stages across all workers.
-    
-    Responsibilities:
-    - Manage calibration stage transitions (Stage 0: Intrinsics, Stage 1: Extrinsics)
-    - Broadcast board parameter changes
-    - Track which camera is the origin for multiview calibration
     """
 
     # Broadcast signals
@@ -40,18 +35,6 @@ class CalibrationCoordinator(QObject):
     @property
     def rig(self) -> 'CameraRig':
         return self._rig
-
-    @property
-    def current_stage(self) -> int:
-        return self._current_stage
-
-    @property
-    def origin_camera(self) -> Optional[str]:
-        return self._origin_camera
-
-    @property
-    def camera_names(self) -> List[str]:
-        return [cam.name for cam in self._rig]
 
     # ────────────────────────────────  Stage management ────────────────────────────────
 

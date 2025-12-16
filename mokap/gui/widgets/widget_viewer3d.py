@@ -56,8 +56,20 @@ class Viewer3D(SharedBase):
 
         self._init_ui()
         self._create_gl_items()
+        self._connect_signals()
+        self._reset_view()
 
+    def _connect_signals(self):
+        """Internal signal wiring."""
+
+        # Coordinator -> UI
         self._mainwindow.coordinator.broadcast_stage.connect(self._on_stage_change)
+        self._mainwindow.coordinator.broadcast_reset.connect(self._reset_view)
+
+        # UI -> Coordinator
+        self.calibration_stage_combo.currentIndexChanged.connect(self._mainwindow.coordinator.set_stage)
+        self.origin_camera_combo.currentTextChanged.connect(self._mainwindow.coordinator.set_origin_camera)
+        self.run_ba_button.clicked.connect(self._mainwindow.coordinator.trigger_refinement)
 
     def _init_ui(self):
         main_layout = QHBoxLayout(self)
@@ -395,10 +407,20 @@ class Viewer3D(SharedBase):
                 logger.error(f"Failed to save board: {e}")
 
     @Slot(int)
-    def _on_stage_change(self, stage):
-        self.origin_camera_combo.setDisabled(stage == 1)
+    def _on_stage_change(self, stage: int):
+
+        self.calibration_stage_combo.blockSignals(True)
+        self.calibration_stage_combo.setCurrentIndex(stage)
+        self.calibration_stage_combo.blockSignals(False)
+
+        # Hide the board initially when switching stages until detected or solved
         if 'board_3d' in self.global_gl_items:
             self.global_gl_items['board_3d'].setVisible(False)
+
+    @Slot()
+    def _reset_view(self):
+        """Reset the camera position to look at the centre."""
+        self.view.setCameraPosition(distance=self._gridsize * 2, elevation=30, azimuth=45)
 
     @Slot()
     def _on_load_clicked(self):

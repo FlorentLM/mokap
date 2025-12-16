@@ -3,7 +3,6 @@ Live video view windows for Recording and Calibration modes.
 """
 import logging
 from collections import deque
-from pathlib import Path
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, Slot, Signal, QThread, QEvent
@@ -60,22 +59,22 @@ class RecordingVideoWindow(VideoWindowBase):
         self.v_line = pg.InfiniteLine(angle=90, movable=False, pen=crosshair_pen)
         self.h_line = pg.InfiniteLine(angle=0, movable=False, pen=crosshair_pen)
 
-        self.v_line.setPos(self.source_shape_hw[1] / 2)
-        self.h_line.setPos(self.source_shape_hw[0] / 2)
+        self.v_line.setPos(self._source_width / 2)
+        self.h_line.setPos(self._source_height / 2)
 
         self.view_box.addItem(self.v_line)
         self.view_box.addItem(self.h_line)
 
         # Recording indicator
         self.recording_text = pg.TextItem(anchor=(0.5, 0), color=(255, 0, 0))
-        self.recording_text.setPos(self.source_shape_hw[1] / 2, self.source_shape_hw[0] / 2)
+        self.recording_text.setPos(self._source_width / 2, self._source_height / 2)
         self.recording_text.setHtml('<span style="font-size: 16pt; font-weight: bold;">[ ⬤ RECORDING ]</span>')
         self.view_box.addItem(self.recording_text)
         self.recording_text.hide()
 
         # Warning indicator
         self.warning_text = pg.TextItem(anchor=(0.5, 0), color=(255, 165, 0))
-        self.warning_text.setPos(self.source_shape_hw[1] / 2, 10)
+        self.warning_text.setPos(self._source_width / 2, 10)
         self.warning_text.setHtml('<span style="font-size: 16pt; font-weight: bold;">[ ⚠ WARNING ]</span>')
         self.view_box.addItem(self.warning_text)
         self.warning_text.hide()
@@ -419,11 +418,9 @@ class RecordingVideoWindow(VideoWindowBase):
             mouse_x = image_pos.x()
             mouse_y = image_pos.y()
 
-            img_h, img_w = self.source_shape_hw
-
             # Clamp coordinates to image bounds
-            mouse_x = max(0, min(img_w, mouse_x))
-            mouse_y = max(0, min(img_h, mouse_y))
+            mouse_x = max(0, min(self._source_width, mouse_x))
+            mouse_y = max(0, min(self._source_height, mouse_y))
 
             buttons = event.buttons()
 
@@ -441,8 +438,8 @@ class RecordingVideoWindow(VideoWindowBase):
 
             if self.left_mouse_btn:
                 # Update target center (normalized 0.0 - 1.0)
-                self.magn_target_cx = mouse_x / img_w
-                self.magn_target_cy = mouse_y / img_h
+                self.magn_target_cx = mouse_x / self._source_width
+                self.magn_target_cy = mouse_y / self._source_height
 
             if self.right_mouse_btn:
                 # Move the QGraphicsItemGroup
@@ -590,7 +587,7 @@ class CalibrationVideoWindow(VideoWindowBase):
         self._worker.stage_changed.connect(self._on_stage_changed)
 
         # Save/load
-        self.request_load.connect(self._worker.load_intrinsics)
+        self.request_load.connect(self._worker.load_intrinsics) # TODO: request_* step probably not needed
         self.request_save.connect(self._worker.save_intrinsics)
 
         # Start threads
@@ -614,7 +611,7 @@ class CalibrationVideoWindow(VideoWindowBase):
 
         # Computing indicator
         self.computing_text = pg.TextItem(anchor=(0.5, 0.5), color=(255, 255, 255))
-        self.computing_text.setPos(self.source_shape_hw[1] / 2, self.source_shape_hw[0] / 2)
+        self.computing_text.setPos(self._source_width / 2, self._source_height / 2)
         self.computing_text.setHtml(
             '<span style="font-size: 16pt; font-weight: bold;">Computing...</span>'
         )
@@ -975,21 +972,23 @@ class CalibrationVideoWindow(VideoWindowBase):
         self.auto_sample_check.blockSignals(False)
         self.auto_compute_check.blockSignals(False)
 
-        # Update error plot to show the error of the already-collected samples against the new parameters
-        self._on_intrinsics_updated()
-
     def _on_clear_intrinsics(self):
         """Clear all calibration data and UI."""
+
         self.live_error_deque.clear()
         self.historical_errors_data.clear()
         self.live_error_curve.clear()
+
         self.historical_error_bars.setData(x=np.array([]), y=np.array([]))
+
         self.latest_detected_points = np.zeros((0, 2))
         self.latest_reprojected_points = np.zeros((0, 2))
+
         self.detection_points_item.clear()
         self.reprojection_points_item.clear()
         self.perimeter_item.clear()
         self.coverage_overlay_item.clear()
+
         self.load_save_message.setText('')
         self.stats_text.setHtml('')
 

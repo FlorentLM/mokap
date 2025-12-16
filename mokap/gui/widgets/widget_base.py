@@ -6,9 +6,8 @@ VideoWindowBase: Base for camera video windows with frame consumption and displa
 """
 import logging
 import time
-from collections import deque
 from threading import Thread
-from typing import Optional, Tuple
+from typing import Optional
 import cv2
 import numpy as np
 from PySide6.QtCore import Qt, QTimer, QRectF
@@ -243,7 +242,7 @@ class VideoWindowBase(SharedBase):
         self.temperature_value = QLabel()
 
         self.triggered_value.setText("Yes" if self._hw_camera.hardware_triggered else "No")
-        self.resolution_value.setText(f"{self.source_shape_hw[1]}×{self.source_shape_hw[0]} px")
+        self.resolution_value.setText(f"{self._source_width}×{self._source_height} px")
         self.capturefps_value.setText(f"Off")
         self.exposure_value.setText(f"{self._hw_camera.exposure} µs")
         self.brightness_value.setText(f"-")
@@ -569,10 +568,6 @@ class VideoWindowBase(SharedBase):
         return self._hw_cam_name
 
     @property
-    def idx(self) -> str:
-        return self._hw_cam_idx
-
-    @property
     def colour(self) -> str:
         return f'#{self._main_colour.lstrip("#")}'
 
@@ -583,14 +578,6 @@ class VideoWindowBase(SharedBase):
         return f'#{self._secondary_colour.lstrip("#")}'
 
     secondary_color = secondary_colour
-
-    @property
-    def source_shape_hw(self) -> Tuple[int, int]:
-        return (self._source_height, self._source_width)
-
-    @property
-    def aspect_ratio(self) -> float:
-        return float(self._source_width / self._source_height)
 
     # ──────────────────────────────── Other methods ────────────────────────────────
 
@@ -615,17 +602,19 @@ class VideoWindowBase(SharedBase):
 
         monitor = self._mainwindow.selected_monitor
 
+        aspect_ratio = float(self._source_width / self._source_height)
+
         if monitor.height < monitor.width:  # landscape
             available_h = (monitor.height - TASKBAR_H) // 2 - SPACING * 3
             video_max_h = available_h - self.BOTTOM_PANEL.height() - TOPBAR_H
-            video_max_w = video_max_h * self.aspect_ratio
+            video_max_w = video_max_h * aspect_ratio
 
             h = int(video_max_h + self.BOTTOM_PANEL.height())
             w = int(video_max_w * width_multiplier)
 
         else:  # portrait
             video_max_w = monitor.width // 2 - SPACING * 3
-            video_max_h = video_max_w / self.aspect_ratio
+            video_max_h = video_max_w / aspect_ratio
 
             h = int(video_max_h + self.BOTTOM_PANEL.height())
             w = int(video_max_w * width_multiplier)
@@ -638,11 +627,11 @@ class VideoWindowBase(SharedBase):
             override = not self.isVisible()
 
         if self.isVisible() and override is False:
-            self._mainwindow.secondary_windows_visibility_buttons[self.idx].setChecked(False)
+            self._mainwindow.secondary_windows_visibility_buttons[self._hw_cam_idx].setChecked(False)
             self.hide()
             self._pause_worker()
 
         elif not self.isVisible() and override is True:
-            self._mainwindow.secondary_windows_visibility_buttons[self.idx].setChecked(True)
+            self._mainwindow.secondary_windows_visibility_buttons[self._hw_cam_idx].setChecked(True)
             self.show()
             self._resume_worker()
