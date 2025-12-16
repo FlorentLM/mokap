@@ -21,9 +21,6 @@ logger = logging.getLogger(__name__)
 class Viewer3D(SharedBase):
     """3D visualisation window."""
 
-    request_load_calibration = Signal()
-    request_save_calibration = Signal()
-
     def __init__(self, main_window_ref):
         super().__init__(main_window_ref)
 
@@ -184,12 +181,15 @@ class Viewer3D(SharedBase):
         # I/O
         io_group = QGroupBox("Calibration I/O")
         io_layout = QVBoxLayout(io_group)
+
         self.load_calib_button = QPushButton("Load from File...")
-        self.load_calib_button.clicked.connect(self.request_load_calibration)
+        self.load_calib_button.clicked.connect(self._on_load_clicked)
         io_layout.addWidget(self.load_calib_button)
+
         self.save_calib_button = QPushButton("Save to File...")
-        self.save_calib_button.clicked.connect(self.request_save_calibration)
+        self.save_calib_button.clicked.connect(self._on_save_clicked)
         io_layout.addWidget(self.save_calib_button)
+
         panel_layout.addWidget(io_group)
 
         panel_layout.addStretch()
@@ -399,3 +399,30 @@ class Viewer3D(SharedBase):
         self.origin_camera_combo.setDisabled(stage == 1)
         if 'board_3d' in self.global_gl_items:
             self.global_gl_items['board_3d'].setVisible(False)
+
+    @Slot()
+    def _on_load_clicked(self):
+        start_dir = str(self._mainwindow.controller.full_path.parent)
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Load Calibration",
+            start_dir,
+            "TOML Files (*.toml)"
+        )
+
+        if file_path:
+            self._mainwindow.coordinator.load_calibration(file_path)
+
+    @Slot()
+    def _on_save_clicked(self):
+        """Handle save button click locally."""
+        start_dir = str(self._mainwindow.controller.full_path.resolve())
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Calibration",
+            start_dir,
+            "TOML Files (*.toml)"
+        )
+
+        if file_path:
+            self._mainwindow.coordinator.save_calibration(file_path)

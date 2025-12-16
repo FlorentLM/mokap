@@ -21,6 +21,7 @@ class CalibrationCoordinator(QObject):
     broadcast_stage = Signal(int)
     broadcast_board_changed = Signal(object)  # ChessBoard or CharucoBoard
     broadcast_reset = Signal()
+    broadcast_parameters_loaded = Signal()
 
     # Signal to request multiview refinement
     request_refinement = Signal()
@@ -118,3 +119,48 @@ class CalibrationCoordinator(QObject):
             
         logger.info("[Coordinator] Requesting multiview refinement...")
         self.request_refinement.emit()
+
+    # ──────────────────────────────── Calibration I/O ────────────────────────────────
+
+    @Slot(str)
+    def load_calibration(self, file_path: str):
+        """
+        Load calibration from a TOML file and update the CameraRig.
+        """
+        try:
+            loaded_rig = CameraRig.load(file_path)
+
+            with self._rig.locked():
+                for cam in self._rig:
+
+                    loaded_cam = loaded_rig[cam.name]
+
+                    with cam.locked():
+                        cam.intrinsics.K = loaded_cam.intrinsics.K
+                        cam.intrinsics.D = loaded_cam.intrinsics.D
+                        cam.intrinsics.rms = loaded_cam.intrinsics.rms
+                        cam.intrinsics.stats = loaded_cam.intrinsics.stats.copy()
+                        cam.extrinsics.T = loaded_cam.extrinsics.T
+
+            logger.info(f"[Coordinator] Loaded calibration from {file_path}")
+
+            # Notify everyone
+            self.broadcast_parameters_loaded.emit()
+
+            # If we are in Extrinsics mode, this might require a worker reset too
+            # usually loading a file implies we are 'done' or starting from a known state
+            self.broadcast_reset.emit()
+
+        except Exception as e:
+            logger.error(f"[Coordinator] Failed to load calibration: {e}")
+
+    @Slot(str)
+    def save_calibration(self, file_path: str):
+        """
+        Save the current CameraRig configuration to a TOML file.
+        """
+        try:
+            self._rig.save(file_path)
+            logger.info(f"[Coordinator] Saved calibration to {file_path}")
+        except Exception as e:
+            logger.error(f"[Coordinator] Failed to save calibration: {e}")

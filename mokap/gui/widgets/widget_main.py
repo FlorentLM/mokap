@@ -487,11 +487,13 @@ class MainControls(QMainWindow):
                 self.coordinator.broadcast_board_changed.connect(
                     view._worker.configure_new_board
                 )
+                self.coordinator.broadcast_parameters_loaded.connect(
+                    view._on_intrinsics_updated
+                )
 
             # Create 3D view window
             self.viewer_3d = Viewer3D(self)
             self.viewer_3d.show()
-            self.viewer_3d.request_load_calibration.connect(self._on_load_calibration)
 
             # Create multiview worker
             origin_cam = self.viewer_3d.origin_camera_combo.currentText()
@@ -609,45 +611,6 @@ class MainControls(QMainWindow):
                     break
 
         return geom.x(), geom.y(), geom.width(), geom.height()
-
-    # ──────────────────────────────── Calibration I/O ────────────────────────────────
-
-    def _on_load_calibration(self):
-        """Load calibration from file."""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Load Calibration",
-            str(self.controller.full_path.parent),
-            "TOML Files (*.toml)"
-        )
-
-        if not file_path:
-            return
-
-        try:
-            loaded_rig = CameraRig.load(file_path)
-
-            with self.rig.locked():
-                for i, cam in enumerate(self.rig):
-                    loaded_cam = loaded_rig[i]
-
-                    with cam.intrinsics.locked():
-                        cam.intrinsics.K = loaded_cam.intrinsics.K
-                        cam.intrinsics.D = loaded_cam.intrinsics.D
-                        cam.intrinsics.rms = loaded_cam.intrinsics.rms
-                        cam.intrinsics.stats = loaded_cam.intrinsics.stats.copy()
-
-                    with cam.extrinsics.locked():
-                        cam.extrinsics.T = loaded_cam.extrinsics.T
-
-            # Refresh views
-            if self.is_calibrating:
-                for view in self.calibration_views.values():
-                    view._on_intrinsics_updated()
-
-            logger.info(f"Loaded calibration from {file_path}")
-
-        except Exception as e:
-            logger.error(f"Failed to load calibration: {e}")
 
     # ──────────────────────────────── Other actions ────────────────────────────────
 
