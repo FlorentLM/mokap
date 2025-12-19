@@ -96,13 +96,13 @@ class Viewer3D(SharedBase):
         )
         controls_layout.addWidget(self.calibration_stage_combo, 0, 1)
 
-        controls_layout.addWidget(QLabel("Origin Cam:"), 1, 0)
-        self.origin_camera_combo = QComboBox()
-        self.origin_camera_combo.addItems(self._cameras_names)
-        self.origin_camera_combo.currentTextChanged.connect(
-            self._mainwindow.coordinator.set_origin_camera
+        controls_layout.addWidget(QLabel("Anchor Cam:"), 1, 0)
+        self.anchor_camera_combo = QComboBox()
+        self.anchor_camera_combo.addItems(self._cameras_names)
+        self.anchor_camera_combo.currentTextChanged.connect(
+            self._mainwindow.coordinator.set_anchor_camera
         )
-        controls_layout.addWidget(self.origin_camera_combo, 1, 1)
+        controls_layout.addWidget(self.anchor_camera_combo, 1, 1)
 
         self.run_ba_button = QPushButton("Refine All")
         self.run_ba_button.setStyleSheet(f"background-color: {col_darkgreen}; color: {col_white};")
@@ -227,7 +227,7 @@ class Viewer3D(SharedBase):
                     pos=np.zeros((2, 3)), color=color, width=2, antialias=self._antialiasing
                 ),
                 'detections': GLScatterPlotItem(
-                    pos=np.zeros((self._mainwindow.board_params.nb_points, 3)), color=color, size=7, pxMode=True
+                    pos=np.zeros((self._mainwindow.board_params.points_count, 3)), color=color, size=7, pxMode=True
                 )
             }
 
@@ -237,7 +237,7 @@ class Viewer3D(SharedBase):
             self._percamera_gl_items[cam_name] = items
 
         self.global_gl_items['board_3d'] = GLScatterPlotItem(
-            pos=np.zeros((self._mainwindow.board_params.nb_points, 3)), color=(1, 0, 1, 0.9), size=8, pxMode=True
+            pos=np.zeros((self._mainwindow.board_params.points_count, 3)), color=(1, 0, 1, 0.9), size=8, pxMode=True
         )
         self.global_gl_items['board_3d'].setVisible(False)
         self.view.addItem(self.global_gl_items['board_3d'])

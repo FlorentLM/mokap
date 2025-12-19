@@ -17,7 +17,7 @@ class CalibrationCoordinator(QObject):
     broadcast_board_changed = Signal(object)  # ChessBoard or CharucoBoard
     broadcast_reset = Signal()
     broadcast_parameters_loaded = Signal()
-    broadcast_origin_camera_changed = Signal(str)
+    broadcast_anchor_camera_changed = Signal(str)
 
     # Signal to request multiview refinement
     request_refinement = Signal()
@@ -28,10 +28,10 @@ class CalibrationCoordinator(QObject):
         self._rig = rig
         self._current_stage = 0
 
-        self._origin_cam: Optional[str] = rig.metadata.get('origin_camera')
+        self._anchor_cam: Optional[str] = rig.anchor_camera
 
-        if not self._origin_cam and len(rig) > 0:
-            self._origin_cam = rig[0].name
+        if not self._anchor_cam and len(rig) > 0:
+            self._anchor_cam = rig[0].name
 
     @property
     def rig(self) -> 'CameraRig':
@@ -79,17 +79,17 @@ class CalibrationCoordinator(QObject):
         self.broadcast_reset.emit()
         self.broadcast_board_changed.emit(new_board)
 
-    # ──────────────────────────────── Origin camera ────────────────────────────────
+    # ──────────────────────────────── Anchor camera ────────────────────────────────
 
     @Slot(str)
-    def set_origin_camera(self, camera_name: str):
-        """Set which camera serves as the world origin for multiview calibration."""
+    def set_anchor_camera(self, camera_name: str):
+        """Set which camera serves as the rig's origin for multiview calibration."""
         try:
             # Verify camera exists
             self._rig.get_index(camera_name)
-            self._origin_cam = camera_name
-            logger.info(f"[Coordinator] Origin camera set to: {camera_name}")
-            self.broadcast_origin_camera_changed.emit(camera_name)
+            self._anchor_cam = camera_name
+            logger.info(f"[Coordinator] Anchor camera set to: {camera_name}")
+            self.broadcast_anchor_camera_changed.emit(camera_name)
 
         except KeyError:
             logger.error(f"[Coordinator] Unknown camera: {camera_name}")
@@ -125,7 +125,7 @@ class CalibrationCoordinator(QObject):
 
                     self._rig[cam.name] = cam.copy()
 
-                    if not cam.extrinsics.is_set and not cam.name == self._origin_cam:
+                    if not cam.extrinsics.is_set and not cam.name == self._anchor_cam:
                         has_all_extrinsics = False
 
             del loaded_rig

@@ -500,7 +500,7 @@ class MainControls(QMainWindow):
         self.coordinator.broadcast_board_changed.connect(self.multiview_worker.configure_new_board)
         self.coordinator.request_refinement.connect(self.multiview_worker.trigger_refinement)
 
-        self.coordinator.broadcast_origin_camera_changed.connect(self.multiview_worker.set_origin_camera)
+        self.coordinator.broadcast_anchor_camera_changed.connect(self.multiview_worker.set_anchor_camera)
         self.coordinator.broadcast_parameters_loaded.connect(self.multiview_worker.refresh_from_rig)
 
         self.multiview_thread.start()

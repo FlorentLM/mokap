@@ -46,7 +46,7 @@ class MultiviewWorker(QObject):
             self,
             rig: 'CameraRig',
             calibration_board: Union['ChessBoard', 'CharucoBoard'],
-            origin_cam: Optional[Union[int, str]] = None,
+            anchor_cam: Optional[Union[int, str]] = None,
             min_samples: int = 100,
             max_samples: int = 300,
     ):
@@ -54,7 +54,7 @@ class MultiviewWorker(QObject):
 
         self._rig = rig
         self._board = calibration_board
-        self._origin_cam = self._rig.get_name(origin_cam if origin_cam is not None else 0)
+        self._anchor_cam = self._rig.get_name(anchor_cam) if anchor_cam is not None else None
         self._min_samples = min_samples
         self._max_samples = max_samples
 
@@ -91,7 +91,6 @@ class MultiviewWorker(QObject):
         self._tool = MultiviewCalibrationTool(
             rig=self._rig,
             calibration_board=self._board,
-            origin_cam=self._origin_cam,
             min_samples=self._min_samples,
             max_samples=self._max_samples,
         )
@@ -114,11 +113,11 @@ class MultiviewWorker(QObject):
             # TODO: Ready mask should be computed differently based on intrinsics or extrinsics stage...
             ready_mask = [cam.extrinsics.is_set for cam in self._rig]
 
-            # Ensure origin camera is always drawn as "ready" since it is implicitly at Identity
+            # Ensure anchor camera is always drawn as "ready" since it is implicitly at Identity
             try:
-                if self._origin_cam:
-                    origin_idx = self._rig.get_index(self._origin_cam)
-                    ready_mask[origin_idx] = True
+                if self._anchor_cam:
+                    anchor_cam_idx = self._rig.get_index(self._anchor_cam)
+                    ready_mask[anchor_cam_idx] = True
             except KeyError:
                 pass
 
@@ -318,18 +317,18 @@ class MultiviewWorker(QObject):
         self.coverage_updated.emit()
 
     @Slot(str)
-    def set_origin_camera(self, camera_name: str):
-        """Change which camera is the world origin."""
+    def set_anchor_camera(self, camera_name: str):
+        """Change which camera is the rig's anchor (origin during online estimation and refinement)."""
         try:
-            self._origin_cam = camera_name
+            self._anchor_cam = camera_name
 
             # If the tool exists, let it handle the rig update so it can preserve samples
             if self._tool is not None:
-                self._tool.update_origin(camera_name)
+                self._tool.rebase_to_anchor(camera_name)
             else:
                 # Fallback if no tool exists
                 self._rig.set_origin(camera_name)
-                logger.info(f"[Multiview] Origin camera set to: {camera_name}")
+                logger.info(f"[Multiview] Anchor camera set to: {camera_name}")
 
             # Force scene update
             self._compute_3d_scene()
