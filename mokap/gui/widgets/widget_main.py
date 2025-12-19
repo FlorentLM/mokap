@@ -494,6 +494,9 @@ class MainControls(QMainWindow):
         self.multiview_thread = QThread()
         self.multiview_worker.moveToThread(self.multiview_thread)
 
+        # Connect Multiview -> Coordinator
+        self.multiview_worker.anchor_rebased.connect(self.coordinator.notify_anchor_changed)
+
         # Connect Coordinator -> Multiview
         self.coordinator.broadcast_stage.connect(self.multiview_worker.set_stage)
         self.coordinator.broadcast_reset.connect(self.multiview_worker.reset)
@@ -514,7 +517,7 @@ class MainControls(QMainWindow):
         self.coordinator.broadcast_board_changed.connect(view_window._detector.configure_new_board)
         self.coordinator.broadcast_board_changed.connect(view_window._worker.configure_new_board)
 
-        self.coordinator.broadcast_parameters_loaded.connect(view_window._on_parameters_loaded)  # Updates UI checkboxes
+        self.coordinator.broadcast_parameters_loaded.connect(view_window._on_parameters_loaded) # Updates UI checkboxes
         self.coordinator.broadcast_parameters_loaded.connect(
             view_window._worker.refresh_from_rig)  # Updates internal state
 

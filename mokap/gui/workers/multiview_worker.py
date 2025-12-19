@@ -38,6 +38,7 @@ class MultiviewWorker(QObject):
     scene_updated = Signal(dict)  # 3D scene data for OpenGL view
     coverage_updated = Signal()  # Sample count changed
     refinement_complete = Signal(bool)  # BA finished (success/failure)
+    anchor_rebased = Signal(str)
 
     # Stage management
     stage_changed = Signal(int)
@@ -109,17 +110,13 @@ class MultiviewWorker(QObject):
         with self._rig.locked():
             C = len(self._rig)
             cam_centers = self._rig.centers
-
-            # TODO: Ready mask should be computed differently based on intrinsics or extrinsics stage...
             ready_mask = [cam.extrinsics.is_set for cam in self._rig]
+            # Check if we have a logical anchor cam (which might have changed during BA)
+            anchor = self._rig.anchor_camera
 
-            # Ensure anchor camera is always drawn as "ready" since it is implicitly at Identity
-            try:
-                if self._anchor_cam:
-                    anchor_cam_idx = self._rig.get_index(self._anchor_cam)
-                    ready_mask[anchor_cam_idx] = True
-            except KeyError:
-                pass
+        if anchor:
+            anchor_idx = self._rig.get_index(anchor)
+            ready_mask[anchor_idx] = True
 
         frustums_3d = np.zeros((C, 5, 3))
         optical_axes_3d = np.zeros((C, 2, 3))
@@ -278,8 +275,7 @@ class MultiviewWorker(QObject):
 
         if self._tool.sample_count < self._min_samples:
             logger.warning(
-                f"[Multiview] Cannot refine: not enough samples "
-                f"({self._tool.sample_count}/{self._min_samples})."
+                f"[Multiview] Cannot refine: not enough samples ({self._tool.sample_count}/{self._min_samples})."
             )
             return
 
@@ -290,9 +286,15 @@ class MultiviewWorker(QObject):
         self.blocking.emit(False)
 
         if success:
+            # Look up which camera Lucida decided was the best anchor
+            best_anchor = self._rig.metadata.get('refinement_anchor')
             logger.info("[Multiview] Bundle Adjustment successful.")
-            # Just notify the UI to refresh
+
+            # Notify the UI to refresh
             self.refinement_complete.emit(True)
+
+            if best_anchor:
+                self.anchor_rebased.emit(best_anchor)
         else:
             logger.error("[Multiview] Bundle Adjustment failed.")
             self.refinement_complete.emit(False)

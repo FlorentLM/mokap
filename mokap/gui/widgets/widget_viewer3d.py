@@ -7,7 +7,7 @@ from typing import Union
 import cv2
 import numpy as np
 from PySide6.QtCore import Signal, Qt, Slot
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QImage, QPixmap, QVector3D
 from PySide6.QtWidgets import (QHBoxLayout, QFrame, QVBoxLayout, QGroupBox, QGridLayout, QLabel,
                                QComboBox, QPushButton, QSpinBox, QDoubleSpinBox, QFileDialog, QWidget)
 from pyqtgraph.opengl import GLGridItem, GLViewWidget, GLScatterPlotItem, GLLinePlotItem, GLMeshItem
@@ -65,6 +65,7 @@ class Viewer3D(SharedBase):
         # Coordinator -> UI
         self._mainwindow.coordinator.broadcast_stage.connect(self._on_stage_change)
         self._mainwindow.coordinator.broadcast_reset.connect(self._reset_view)
+        self._mainwindow.coordinator.broadcast_anchor_camera_changed.connect(self._update_anchor_dropdown_ui)
 
         # UI -> Coordinator
         self.calibration_stage_combo.currentIndexChanged.connect(self._mainwindow.coordinator.set_stage)
@@ -96,13 +97,13 @@ class Viewer3D(SharedBase):
         )
         controls_layout.addWidget(self.calibration_stage_combo, 0, 1)
 
-        controls_layout.addWidget(QLabel("Anchor Cam:"), 1, 0)
-        self.anchor_camera_combo = QComboBox()
-        self.anchor_camera_combo.addItems(self._cameras_names)
-        self.anchor_camera_combo.currentTextChanged.connect(
-            self._mainwindow.coordinator.set_anchor_camera
+        controls_layout.addWidget(QLabel("Seed camera:"), 1, 0)
+        self.seed_camera_combo = QComboBox()
+        self.seed_camera_combo.addItems(self._cameras_names)
+        self.seed_camera_combo.currentTextChanged.connect(
+            self._mainwindow.coordinator.set_seed_camera
         )
-        controls_layout.addWidget(self.anchor_camera_combo, 1, 1)
+        controls_layout.addWidget(self.seed_camera_combo, 1, 1)
 
         self.run_ba_button = QPushButton("Refine All")
         self.run_ba_button.setStyleSheet(f"background-color: {col_darkgreen}; color: {col_white};")
@@ -299,6 +300,12 @@ class Viewer3D(SharedBase):
         items['detections'].setData(pos=detection_points)
         items['detections'].setVisible(detection_points.shape[0] > 0)
 
+    @Slot(str)
+    def _update_anchor_dropdown_ui(self, cam_name: str):
+        self.seed_camera_combo.blockSignals(True)
+        self.seed_camera_combo.setCurrentText(cam_name)
+        self.seed_camera_combo.blockSignals(False)
+
     def _create_board(self) -> Union['CharucoBoard', 'ChessBoard', None]:
 
         board_class = self.boards_map[self.board_type_combo.currentText()]
@@ -421,7 +428,33 @@ class Viewer3D(SharedBase):
     @Slot()
     def _reset_view(self):
         """Reset the camera position to look at the centre."""
-        self.view.setCameraPosition(distance=self._gridsize * 2, elevation=30, azimuth=45)
+
+        if not self._mainwindow or not self._mainwindow.coordinator:
+            return
+
+        rig = self._mainwindow.coordinator.rig
+
+        # Get convergence point
+        cp = rig.convergence_point
+
+        # Get subject bounds to scale view distance
+        bounds = rig.subject_bounds()
+        dx = bounds['x'][1] - bounds['x'][0]
+        dy = bounds['y'][1] - bounds['y'][0]
+        dz = bounds['z'][1] - bounds['z'][0]
+
+        # Calculate scale factor based on volume size
+        volume_max_dim = max(dx, dy, dz, self._gridsize)
+
+        self.view.opts['center'] = QVector3D(float(cp[0]), float(cp[1]), float(cp[2]))
+        self.view.setCameraPosition(
+            distance=volume_max_dim * 2.5,
+            elevation=30,
+            azimuth=45
+        )
+
+        # Force a redraw
+        self.view.update()
 
     @Slot()
     def _on_load_clicked(self):

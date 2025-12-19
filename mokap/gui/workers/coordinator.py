@@ -29,7 +29,6 @@ class CalibrationCoordinator(QObject):
         self._current_stage = 0
 
         self._anchor_cam: Optional[str] = rig.anchor_camera
-
         if not self._anchor_cam and len(rig) > 0:
             self._anchor_cam = rig[0].name
 
@@ -79,31 +78,36 @@ class CalibrationCoordinator(QObject):
         self.broadcast_reset.emit()
         self.broadcast_board_changed.emit(new_board)
 
-    # ──────────────────────────────── Anchor camera ────────────────────────────────
+    # ──────────────────────────────── Seed camera ────────────────────────────────
 
     @Slot(str)
-    def set_anchor_camera(self, camera_name: str):
-        """Set which camera serves as the rig's origin for multiview calibration."""
+    def set_seed_camera(self, camera_name: str):
+        """User manually changed the seed via UI."""
         try:
-            # Verify camera exists
             self._rig.get_index(camera_name)
             self._anchor_cam = camera_name
-            logger.info(f"[Coordinator] Anchor camera set to: {camera_name}")
+            logger.info(f"[Coordinator] Seed camera set to: {camera_name}")
             self.broadcast_anchor_camera_changed.emit(camera_name)
-
         except KeyError:
             logger.error(f"[Coordinator] Unknown camera: {camera_name}")
+
+    @Slot(str)
+    def notify_anchor_changed(self, new_anchor_name: str):
+        """The Worker/Tool automatically picked a better anchor."""
+        self._anchor_cam = new_anchor_name
+        self.broadcast_anchor_camera_changed.emit(new_anchor_name)
 
     # ──────────────────────────────── Multiview refinement ────────────────────────────────
 
     @Slot()
     def trigger_refinement(self):
-        """Request the multiview worker to run bundle adjustment."""
+        """Entry point for the GUI button."""
         if self._current_stage == 0:
             logger.warning("[Coordinator] Cannot refine in Intrinsics stage.")
             return
-            
-        logger.info("[Coordinator] Requesting multiview refinement...")
+
+        logger.info("[Coordinator] Triggering system-wide refinement...")
+        # Broadcast: all interested workers (Multiview) will react
         self.request_refinement.emit()
 
     # ──────────────────────────────── Calibration I/O ────────────────────────────────
