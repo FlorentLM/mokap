@@ -12,21 +12,13 @@ import numpy as np
 
 from lucida import CameraRig
 from lucida.geometry.backend import xp, jit, set_at
-from lucida.geometry import intersect_aabb, project
+from lucida.geometry import intersect_aabb
 
 from mokap.reconstruction.config import ReconstructorConfig
 from mokap.reconstruction.datatypes import SoupData
 from mokap.reconstruction.utils import solve_mwis_networkx, prepare_reconstruction_input
 
 logger = logging.getLogger(__name__)
-
-# JAX padding to prevent recompilation when running on GPU
-USE_PADDING = False
-MAX_DETS_PER_CAM = 32  # Max detections per view to consider for grouping
-PAD_BLOCK_SIZE = 64  # Pad hypothesis count to multiples of this
-
-
-# TODO: Time these two versions better
 
 
 class Reconstructor:
@@ -49,27 +41,20 @@ class Reconstructor:
         self.config = config
         self.rig = rig
         self.volume_bounds = volume_bounds
+        self.n_cams = len(rig)
 
         # Setup bounding box for intersection checks
         self.aabb_min = xp.array([self.volume_bounds[axis][0] for axis in ['x', 'y', 'z']])
         self.aabb_max = xp.array([self.volume_bounds[axis][1] for axis in ['x', 'y', 'z']])
 
-        # Pre-allocate empty arrays to avoid overhead
-        self._init_emptys()
+        self._init_empty_arrays()
 
-    def _init_emptys(self):
-        """Initialise reusable empty arrays/tuples to reduce garbage collection overhead."""
-
-        self.EMPTY_F32_XP = xp.array([], dtype=xp.float32)
-
-        self.NULL_POINT2D_XP = xp.empty((0, 2), dtype=xp.float32)
-        self.NULL_POINT3D_XP = xp.empty((0, 3), dtype=xp.float32)
-
+    def _init_empty_arrays(self):
+        """Initialise reusable empty arrays to reduce allocation overhead."""
         self.EMPTY_F32_NP = np.array([], dtype=np.float32)
         self.EMPTY_U32_NP = np.array([], dtype=np.uint32)
         self.EMPTY_I16_NP = np.array([], dtype=np.int16)
         self.EMPTY_I32_NP = np.array([], dtype=np.int32)
-
         self.NULL_POINT3D_NP = np.empty((0, 3), dtype=np.float32)
 
         # Standard empty return tuple for _reconstruct_keypoint
@@ -87,9 +72,8 @@ class Reconstructor:
         Returns the theoretical maximum score a single 3D point can achieve.
         Assumes visibility in all cameras with perfect confidence and zero error.
         """
-        # Score = (Views * W_views) + (Sum_Conf * W_conf) + (Error * W_error)
-        return (len(self.rig) * self.config.view_count_weight) + \
-            (len(self.rig) * 1.0 * self.config.detection_confidence_weight)
+        return (self.n_cams * self.config.view_count_weight) + \
+            (self.n_cams * 1.0 * self.config.detection_confidence_weight)
 
     def reconstruct_batch(self, inputs: Dict[str, np.ndarray], keypoint_names: List[str]) -> SoupData:
         """
@@ -109,38 +93,27 @@ class Reconstructor:
         unique_frames = np.unique(inputs['frame_indices'])
 
         for frame_idx in unique_frames:
-            # Searchsorted to slice this frame (input data must be sorted ofc!)
             start = np.searchsorted(inputs['frame_indices'], frame_idx, side='left')
             end = np.searchsorted(inputs['frame_indices'], frame_idx, side='right')
 
-            # Views into the large arrays for this frame
             f_kp_ids = inputs['kp_type_ids'][start:end]
             f_cam_ids = inputs['cam_ids'][start:end]
             f_coords = inputs['coords'][start:end]
             f_scores = inputs['scores'][start:end]
             f_global_indices = np.arange(start, end)
 
-            present_kps = np.unique(f_kp_ids)
-
-            for kp_id in present_kps:
+            for kp_id in np.unique(f_kp_ids):
                 kp_mask = (f_kp_ids == kp_id)
                 if np.sum(kp_mask) < self.config.min_views:
                     continue
 
-                # Data for this specific keypoint
-                curr_cam_ids_np = f_cam_ids[kp_mask]
-                curr_coords_np = f_coords[kp_mask]
-                curr_scores_np = f_scores[kp_mask]
-                curr_indices_np = f_global_indices[kp_mask]
+                curr_cam_ids = f_cam_ids[kp_mask]
+                curr_coords = f_coords[kp_mask]
+                curr_scores = f_scores[kp_mask]
+                curr_indices = f_global_indices[kp_mask]
 
-                # Convert to JAX once
-                curr_coords_xp = xp.array(curr_coords_np)
-                curr_scores_xp = xp.array(curr_scores_np)
-
-                # Core reconstruction
                 final_pts, final_confs, final_errors, used_indices_list, cam_masks = self._reconstruct_keypoint(
-                    curr_coords_np, curr_cam_ids_np, curr_indices_np,
-                    curr_coords_xp, curr_scores_xp
+                    curr_coords, curr_cam_ids, curr_indices, curr_scores
                 )
 
                 if final_pts.shape[0] > 0:
@@ -171,19 +144,17 @@ class Reconstructor:
             soup_frame = self.EMPTY_I32_NP
             soup_mask = self.EMPTY_U32_NP
 
-        # Handle Orphan Rays (Unused detections)
+        # Handle Orphan Rays (unused detections)
         has_valid_coords = ~np.isnan(inputs['coords'][:, 0])
         orphan_mask = (~is_used) & has_valid_coords
 
         if np.any(orphan_mask):
-            # Batch compute rays
-            ray_origins, ray_dirs = self._compute_rays(
-                inputs['cam_ids'][orphan_mask],
-                inputs['coords'][orphan_mask]
+            ray_origins, ray_dirs = self._compute_orphan_rays(
+                xp.asarray(inputs['cam_ids'][orphan_mask]),
+                xp.asarray(inputs['coords'][orphan_mask])
             )
             ray_origins = np.asarray(ray_origins)
             ray_dirs = np.asarray(ray_dirs)
-
             ray_confs = inputs['scores'][orphan_mask]
             ray_kp = inputs['kp_type_ids'][orphan_mask]
             ray_frame = inputs['frame_indices'][orphan_mask]
@@ -213,416 +184,307 @@ class Reconstructor:
         )
 
     @partial(jit, static_argnums=(0,))
-    def _compute_rays(self, cam_ids, coords):
-        """
-        Computes 3D rays.
-        """
+    def _compute_orphan_rays(self, cam_ids: xp.ndarray, coords: xp.ndarray) -> Tuple[xp.ndarray, xp.ndarray]:
+        """Computes 3D rays for orphan (single-view) detections."""
         N = coords.shape[0]
-        C = len(self.rig)
 
-        # Create a dense array (C, N, 2)
-        dense_uvs = xp.full((C, N, 2), xp.nan, dtype=xp.float32)    # TODO This can be instanciated once
-
+        # Build dense (C, N, 2) array and raycast through rig
+        dense_uvs = xp.full((self.n_cams, N, 2), xp.nan, dtype=xp.float32)
         point_indices = xp.arange(N)
         dense_uvs = set_at(dense_uvs, (cam_ids, point_indices), coords)
 
-        # origins: (C, 3) - camera centers
-        # directions: (C, N, 3) - ray directions
-        origins_map, dirs_map = self.rig.raycast(dense_uvs)
+        origins_all, dirs_all = self.rig.raycast(dense_uvs)  # (C, 3), (C, N, 3)
 
-        # For point k, we want the ray from camera cam_ids[k]
-        out_origins = origins_map[cam_ids]
-        out_dirs = dirs_map[cam_ids, point_indices]
+        # Extract per-point: origin and direction from the camera that saw it
+        out_origins = origins_all[cam_ids]  # (N, 3)
+        out_dirs = dirs_all[cam_ids, point_indices]  # (N, 3)
 
         return out_origins, out_dirs
 
     def _reconstruct_keypoint(self,
-                              coords_np: np.ndarray,
-                              cam_ids_np: np.ndarray,
-                              indices_np: np.ndarray,
-                              coords_xp: xp.ndarray,
-                              scores_xp: xp.ndarray
+                              coords: np.ndarray,
+                              cam_ids: np.ndarray,
+                              indices: np.ndarray,
+                              scores: np.ndarray
                               ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[List[int]], np.ndarray]:
-        """
-        Runs reconstruction pipeline for a keypoint.
-        Accepts both numpy (for Graph logic) and JAX (for geometry logic).
-        """
+        """Runs the full reconstruction pipeline for a single keypoint type."""
 
-        all_pts_xp, all_groups, view_counts, summed_confs, all_errors = self._generate_hypotheses(
-            coords_np, cam_ids_np, coords_xp, scores_xp
-        )
-
-        if all_pts_xp.shape[0] == 0:
+        # Generate hypothesis groups via epipolar matching
+        groups = self._group_detections(coords, cam_ids)
+        if not groups:
             return self.EMPTY_RESULT
 
-        # Filter hypotheses and merge redundancies
-        final_pts, final_confs, final_errors, final_indices, final_masks = self._filter_and_merge(
-            all_pts_xp, view_counts, summed_confs, all_errors, all_groups,
-            cam_ids_np, indices_np
+        # Triangulate all hypotheses and compute reprojection errors
+        points3d, view_counts, summed_confs, reproj_errors, valid_mask = self._triangulate_hypotheses(
+            coords, cam_ids, scores, groups
         )
 
-        return final_pts, final_confs, final_errors, final_indices, final_masks
+        # Filter to valid hypotheses
+        valid_idx = np.where(valid_mask)[0]
+        if len(valid_idx) == 0:
+            return self.EMPTY_RESULT
 
-    def _generate_hypotheses(self,
-                             coords_np: np.ndarray,
-                             cam_ids_np: np.ndarray,
-                             coords_xp: xp.ndarray,
-                             scores_xp: xp.ndarray
-                             ) -> Tuple[xp.ndarray, List[List[int]], xp.ndarray, xp.ndarray, xp.ndarray]:
-        """
-        Generates all plausible 3D points hypotheses from 2D detections.
-        """
+        points3d = points3d[valid_idx]
+        view_counts = view_counts[valid_idx]
+        summed_confs = summed_confs[valid_idx]
+        reproj_errors = reproj_errors[valid_idx]
+        groups = [groups[i] for i in valid_idx]
 
-        # Grouping (graph logic is on CPU)
-        # groups is a list of lists of integers (indices into coords_np)
-
-        if USE_PADDING:
-            groups = self._group_points_pad(coords_np, cam_ids_np, coords_xp)
-        else:
-            groups = self._group_points(coords_np, cam_ids_np, coords_xp)
-
-        M = len(groups)
-        if M == 0:
-            return self.NULL_POINT3D_XP, [], self.EMPTY_F32_XP, self.EMPTY_F32_XP, self.EMPTY_F32_XP
-
-        # Convert List[List[int]] to flat index arrays for scattering
-        group_lengths = [len(g) for g in groups]
-        idx_group = np.repeat(np.arange(M), group_lengths)
-        idx_val = np.fromiter(itertools.chain.from_iterable(groups), dtype=np.int32)
-        idx_cam = cam_ids_np[idx_val]
-
-        # Pad triangulation batch to prevent JIT recompilation
-        # We pad M to the next multiple of PAD_BLOCK_SIZE
-        M_padded = ((M + PAD_BLOCK_SIZE - 1) // PAD_BLOCK_SIZE) * PAD_BLOCK_SIZE
-
-        matched_uvs = xp.full((len(self.rig), M_padded, 2), xp.nan, dtype=xp.float32)
-        matched_uvs = set_at(matched_uvs, (idx_cam, idx_group), coords_xp[idx_val])
-
-        tri_weights = xp.zeros((len(self.rig), M_padded), dtype=xp.float32)
-        tri_weights = set_at(tri_weights, (idx_cam, idx_group), scores_xp[idx_val])
-
-        # Run geometry kernels (JIT compiled for M_padded sizes)
-        points3d, view_counts, summed_confs, reproj_errors, valid_mask = self._triangulate_and_check(
-            matched_uvs, tri_weights
+        # Filter conflicts and merge duplicates
+        return self._filter_and_merge(
+            points3d, view_counts, summed_confs, reproj_errors, groups, cam_ids, indices
         )
 
-        # Slice back to original M size and filter valid
-        points3d = points3d[:M]
-        view_counts = view_counts[:M]
-        summed_confs = summed_confs[:M]
-        reproj_errors = reproj_errors[:M]
-        valid_mask = valid_mask[:M]
-
-        valid_indices_xp = xp.where(valid_mask)[0]
-        valid_indices_np = np.array(valid_indices_xp)
-
-        if valid_indices_np.size == 0:
-            return self.NULL_POINT3D_XP, [], self.EMPTY_F32_XP, self.EMPTY_F32_XP, self.EMPTY_F32_XP
-
-        valid_groups = [groups[i] for i in valid_indices_np]
-
-        return (points3d[valid_indices_xp], valid_groups, view_counts[valid_indices_xp],
-                summed_confs[valid_indices_xp], reproj_errors[valid_indices_xp])
-
-    @partial(jit, static_argnums=(0,))
-    def _triangulate_and_check(self, matched_uvs, tri_weights):
-
-        undistorted_uvs = self.rig.undistort(matched_uvs)
-
-        points3d = self.rig.triangulate(undistorted_uvs, weights=tri_weights)
-
-        # Validation
-        valid_triangulation = ~xp.any(xp.isnan(points3d), axis=1)
-
-        all_reprojected, proj_validity = self.rig.project(points3d)
-
-        # Errors
-        orig_vis_mask = ~xp.isnan(matched_uvs[:, :, 0])
-        combined_mask = orig_vis_mask.astype(xp.float32) * proj_validity
-
-        diffs = all_reprojected - matched_uvs
-        valid_diffs = xp.where(combined_mask[..., None], diffs, 0.0)
-        distances = xp.linalg.norm(valid_diffs, axis=-1)
-
-        num_views = xp.sum(combined_mask, axis=0)
-        reproj_errors = xp.sum(distances, axis=0) / xp.maximum(num_views, 1)
-
-        # Aggregates
-        view_counts = xp.sum(orig_vis_mask, axis=0)
-        summed_confs = xp.sum(xp.where(orig_vis_mask, tri_weights, 0), axis=0)
-
-        final_mask = valid_triangulation & (reproj_errors < self.config.repro_thresh) & (num_views > 0)
-
-        return points3d, view_counts, summed_confs, reproj_errors, final_mask
-
-    def _group_points(self, coords_np, cam_ids_np, coords_xp):
-        """CPU-friendly version of points grouping (no padding)"""
-
-        total_dets = len(coords_np)
-        if total_dets < self.config.min_views:
+    def _group_detections(self, coords: np.ndarray, cam_ids: np.ndarray) -> List[List[int]]:
+        """
+        Groups 2D detections across cameras based on epipolar constraints.
+        Returns list of groups, where each group is a list of detection indices.
+        """
+        n_dets = len(coords)
+        if n_dets < self.config.min_views:
             return []
 
-        cam_indices_map = [np.where(cam_ids_np == i)[0] for i in range(len(self.rig))]
+        # Index detections by camera
+        cam_indices = [np.where(cam_ids == c)[0] for c in range(self.n_cams)]
+
+        # Find epipolar matches between all camera pairs
         source_indices, target_indices = [], []
 
-        # We access the JAX array directly (no padding)
-        for i in range(len(self.rig)):
-            idxs_i = cam_indices_map[i]
-            n_i = len(idxs_i)
-
-            if n_i == 0:
+        for i in range(self.n_cams):
+            if len(cam_indices[i]) == 0:
                 continue
 
-            # On CPU it is faster to slice the JAX array directly than to pad it
-            d_i = coords_xp[idxs_i]
+            coords_i = coords[cam_indices[i]]
 
-            for j in range(i + 1, len(self.rig)):
-                idxs_j = cam_indices_map[j]
-                n_j = len(idxs_j)
-                if n_j == 0:
+            for j in range(i + 1, self.n_cams):
+                if len(cam_indices[j]) == 0:
                     continue
 
-                d_j = coords_xp[idxs_j]
-
-                # JAX will compile a version for (1,1), (2,2), (4,4) etc
-                # When n_i and n_j are small (1-5), this hits the cache 99% of the time
-                cost_mat = self._compute_cost_matrix(d_i, d_j, i, j)
-
-                if cost_mat.size == 0:
-                    continue
-
-                # We transfer only the small result matrix back to CPU
-                cost_mat_np = np.array(cost_mat)
-
-                match_rows, match_cols = np.where(cost_mat_np < self.config.T_epi)
-                source_indices.extend(idxs_i[match_rows])
-                target_indices.extend(idxs_j[match_cols])
-
-        if not source_indices:
-            return []
-
-        return self._resolve_graph(source_indices, target_indices, total_dets, cam_ids_np)
-
-    def _group_points_pad(self, coords_np, cam_ids_np, coords_xp):
-        """GPU-friendly version of points grouping (with padding)"""
-
-        total_dets = len(coords_np)
-        if total_dets < self.config.min_views:
-            return []
-
-        cam_indices_map = [np.where(cam_ids_np == i)[0] for i in range(len(self.rig))]
-        source_indices, target_indices = [], []
-
-        # JAX Padding: Create buffers for cost matrix inputs
-        # so that _compute_cost_matrix_padded is compiled only once
-        for i in range(len(self.rig)):
-
-            idxs_i = cam_indices_map[i]
-
-            if len(idxs_i) == 0:
-                continue
-
-            # Pad i input
-            n_i = len(idxs_i)
-            if n_i > MAX_DETS_PER_CAM:
-                # Fallback: if we exceed bucket, we slice. Rare case.
-                idxs_i = idxs_i[:MAX_DETS_PER_CAM]
-                n_i = MAX_DETS_PER_CAM
-
-            pad_i = MAX_DETS_PER_CAM - n_i
-
-            d_i = coords_xp[idxs_i]
-            if pad_i > 0:
-                d_i = xp.pad(d_i, ((0, pad_i), (0, 0)), constant_values=xp.nan)
-
-            for j in range(i + 1, len(self.rig)):
-                idxs_j = cam_indices_map[j]
-                if len(idxs_j) == 0:
-                    continue
-
-                n_j = len(idxs_j)
-                if n_j > MAX_DETS_PER_CAM:
-                    idxs_j = idxs_j[:MAX_DETS_PER_CAM]
-                    n_j = MAX_DETS_PER_CAM
-
-                pad_j = MAX_DETS_PER_CAM - n_j
-                d_j = coords_xp[idxs_j]
-                if pad_j > 0:
-                    d_j = xp.pad(d_j, ((0, pad_j), (0, 0)), constant_values=xp.nan)
-
-                # JIT function with the fixed shapes (MAX_DETS, 2)
-                cost_mat_padded = self._compute_cost_matrix_pad(d_i, d_j, i, j)
-
-                # Transfer back and unpad
-                cost_mat_full = np.asarray(cost_mat_padded)  # GPU -> CPU
-                cost_mat = cost_mat_full[:n_i, :n_j]  # slice relevant part
-
-                if cost_mat.size == 0:
-                    continue
+                coords_j = coords[cam_indices[j]]
+                cost_mat = self._epipolar_cost(coords_i, coords_j, i, j)
 
                 match_rows, match_cols = np.where(cost_mat < self.config.T_epi)
-                source_indices.extend(idxs_i[match_rows])
-                target_indices.extend(idxs_j[match_cols])
+                source_indices.extend(cam_indices[i][match_rows])
+                target_indices.extend(cam_indices[j][match_cols])
 
         if not source_indices:
             return []
 
-        return self._resolve_graph(source_indices, target_indices, total_dets, cam_ids_np)
+        return self._resolve_groups(source_indices, target_indices, n_dets, cam_ids)
 
-    def _resolve_graph(self, source_indices, target_indices, total_dets, cam_ids_np):
-        """Common graph logic for both grouping methods."""
+    def _resolve_groups(self, source_indices, target_indices, n_dets, cam_ids) -> List[List[int]]:
+        """Resolves epipolar matches into consistent detection groups via graph analysis."""
 
-        adj_matrix = csr_matrix((np.ones(len(source_indices)), (source_indices, target_indices)),
-                                shape=(total_dets, total_dets))
+        adj_matrix = csr_matrix(
+            (np.ones(len(source_indices)), (source_indices, target_indices)),
+            shape=(n_dets, n_dets)
+        )
         n_components, labels = connected_components(csgraph=adj_matrix, directed=False, return_labels=True)
 
-        all_final_groups = []
-        processed_groups = set()
+        all_groups = []
+        seen_groups = set()
 
-        for i in range(n_components):
-            component_indices = np.where(labels == i)[0]
-            if len(component_indices) < self.config.min_views: continue
+        for comp_id in range(n_components):
+            component_indices = np.where(labels == comp_id)[0]
+            if len(component_indices) < self.config.min_views:
+                continue
 
+            # Build subgraph and find cliques
             subgraph_adj = adj_matrix[component_indices, :][:, component_indices]
             component_graph = nx.from_scipy_sparse_array(subgraph_adj)
             mapping = {local: global_idx for local, global_idx in enumerate(component_indices)}
             nx.relabel_nodes(component_graph, mapping, copy=False)
 
-            # Find cliques (ambiguity handling)
-            cliques = find_cliques(component_graph)
-
-            for clique_indices in cliques:
-                if len(clique_indices) < self.config.min_views:
+            for clique in find_cliques(component_graph):
+                if len(clique) < self.config.min_views:
                     continue
 
-                clique_cams = cam_ids_np[clique_indices]
+                clique_cams = cam_ids[clique]
                 if len(np.unique(clique_cams)) < self.config.min_views:
                     continue
 
-                # Conflict graph
+                # Build conflict graph (same-camera detections conflict)
                 conflict_graph = nx.Graph()
-                conflict_graph.add_nodes_from(clique_indices)
+                conflict_graph.add_nodes_from(clique)
 
-                # Connect same-camera detections (mutually exclusive)
-                # (this nested loop should be fine for small cliques < 10 nodes)
-                for idx_a in range(len(clique_indices)):
-                    node_a = clique_indices[idx_a]
-                    cam_a = cam_ids_np[node_a]
-                    for idx_b in range(idx_a + 1, len(clique_indices)):
-                        node_b = clique_indices[idx_b]
-                        if cam_a == cam_ids_np[node_b]:
+                for idx_a, node_a in enumerate(clique):
+                    for node_b in clique[idx_a + 1:]:
+                        if cam_ids[node_a] == cam_ids[node_b]:
                             conflict_graph.add_edge(node_a, node_b)
 
-                # Solve independent sets on the clique
+                # Find maximum independent sets (non-conflicting groups)
                 complement_g = nx.complement(conflict_graph)
                 for group in find_cliques(complement_g):
                     if len(group) >= self.config.min_views:
-                        sorted_group = sorted(group)
-                        frozen_group = frozenset(sorted_group)
-                        if frozen_group not in processed_groups:
-                            all_final_groups.append(sorted_group)
-                            processed_groups.add(frozen_group)
+                        sorted_group = tuple(sorted(group))
+                        if sorted_group not in seen_groups:
+                            all_groups.append(list(sorted_group))
+                            seen_groups.add(sorted_group)
 
-        return all_final_groups
-
-    @partial(jit, static_argnums=(0, 3, 4))
-    def _compute_cost_matrix(self, dets_i, dets_j, i, j):
-        """
-        Dynamic shape cost matrix. No padding computations, a bit more CPU-friendly.
-        """
-        return self._epipolar_cost(dets_i, dets_j, i, j)
+        return all_groups
 
     @partial(jit, static_argnums=(0, 3, 4))
-    def _compute_cost_matrix_pad(self, dets_i_padded, dets_j_padded, i, j):
+    def _epipolar_distances(self, coords_i: xp.ndarray, coords_j: xp.ndarray, cam_i: int, cam_j: int) -> xp.ndarray:
         """
-        Calculates cost matrix on fixed size arrays (MAX_DETS x MAX_DETS).
-        NaNs in input result in large costs, which are filtered later.
+        Returns cost matrix (Ni, Nj) of distances from points in j to epipolar lines from i.
         """
-        cost = self._epipolar_cost(dets_i_padded, dets_j_padded, i, j)
-        return xp.nan_to_num(cost, nan=1e6)
+        Ni = coords_i.shape[0]
 
-    def _epipolar_cost(self, dets_i, dets_j, i, j):
-        """Geometry logic shared between padded and unpadded calls."""
-        Ni, Nj = dets_i.shape[0], dets_j.shape[0]
+        # Undistort target points (camera j) for comparison in linear space
+        udets_j = self.rig.undistort(coords_j[None, :, :], cameras=[cam_j])[0]  # (Nj, 2)
 
-        # Undistort points in J (target camera)
-        udets_j = self.rig[j].undistort(dets_j)
+        # Get rays from camera i
+        origins_i, dirs_i = self.rig.raycast(coords_i[None, :, :], cameras=[cam_i])
+        origin_i = origins_i[0]  # (3,) - single camera origin
+        dirs_i = dirs_i[0]  # (Ni, 3)
 
-        # Back project points in I (source camera) to rays
-        orig_i, dirs_i = self.rig[i].raycast(dets_i)
-
-        # Intersect rays from I with the scene bounding box
-        p_near_3d, p_far_3d, has_intersection = intersect_aabb(
-            orig_i, dirs_i, self.aabb_min, self.aabb_max
-        )
-        segments_3d = xp.vstack([p_near_3d, p_far_3d])
-        segments_3d = xp.nan_to_num(segments_3d)  # Prevent projection issues
-
-        # Project segments to camera J
-        # Linear projection (distortion='none') here because
-        # we are comparing against 'udets_j' which are already undistorted.
-        # Epipolar lines are straight only in linear projection space.
-        segments_2d, _ = project(
-            segments_3d,
-            self.rig.T_w2c[j],
-            self.rig.K[j],
-            xp.zeros_like(self.rig.D[j]),
-            'none'
+        # Intersect rays with scene bounding box
+        origins_broadcast = xp.broadcast_to(origin_i, (Ni, 3))
+        p_near, p_far, has_intersection = intersect_aabb(
+            origins_broadcast, dirs_i, self.aabb_min, self.aabb_max
         )
 
-        a_pts = segments_2d[:Ni]
-        b_pts = segments_2d[Ni:]
+        # Stack near/far for batch projection
+        segments_3d = xp.vstack([p_near, p_far])  # (2*Ni, 3)
+        segments_3d = xp.nan_to_num(segments_3d)
 
+        # Project to camera j and undistort for straight epipolar lines
+        segments_2d = self.rig.project(segments_3d, cameras=[cam_j])[0]  # (2*Ni, 2)
+        segments_2d_undist = self.rig.undistort(segments_2d[None, :, :], cameras=[cam_j])[0]
+
+        a_pts = segments_2d_undist[:Ni]  # near points
+        b_pts = segments_2d_undist[Ni:]  # far points
+
+        # Compute point-to-segment distances
         p = udets_j[None, :, :]  # (1, Nj, 2)
-        a = a_pts[:, None, :]    # (Ni, 1, 2)
+        a = a_pts[:, None, :]  # (Ni, 1, 2)
         b = b_pts[:, None, :]
+
         ab = b - a
         ap = p - a
-
-        denom = xp.sum(ab * ab, axis=-1)
-        numer = xp.sum(ap * ab, axis=-1)
-        t = numer / (denom + 1e-6)
+        t = xp.sum(ap * ab, axis=-1) / (xp.sum(ab * ab, axis=-1) + 1e-6)
         t_clamped = xp.clip(t, 0.0, 1.0)
-        closest_points = a + t_clamped[..., None] * ab
-        dists = xp.linalg.norm(p - closest_points, axis=-1)
+        closest = a + t_clamped[..., None] * ab
+        dists = xp.linalg.norm(p - closest, axis=-1)
 
-        # Filter rays that didn't intersect AABB or were padded nans
-        final_costs = xp.where(has_intersection[:, None], dists, 1e6)
+        # Mask invalid rays
+        has_intersection = xp.atleast_1d(has_intersection)
+        costs = xp.where(has_intersection[:, None], dists, 1e6)
+        costs = xp.nan_to_num(costs, nan=1e6)
 
-        # Also ensure nan inputs (padding) result in high cost
-        final_costs = xp.nan_to_num(final_costs, nan=1e6)
+        return costs
 
-        return final_costs
+    def _epipolar_cost(self, coords_i: np.ndarray, coords_j: np.ndarray, cam_i: int, cam_j: int) -> np.ndarray:
+        """
+        Computes epipolar distance cost matrix between detections in two cameras.
+        """
+        costs = self._epipolar_distances(
+            xp.asarray(coords_i),
+            xp.asarray(coords_j),
+            cam_i,
+            cam_j
+        )
+        return np.asarray(costs)
 
-    def _filter_and_merge(self, points3d, view_counts, summed_confs, errors, groups, cam_ids_np, indices_np):
-        points3d_np = np.asarray(points3d)
-        view_counts_np = np.asarray(view_counts)
-        summed_confs_np = np.asarray(summed_confs)
-        errors_np = np.asarray(errors)
+    def _triangulate_hypotheses(self,
+                                coords: np.ndarray,
+                                cam_ids: np.ndarray,
+                                scores: np.ndarray,
+                                groups: List[List[int]]
+                                ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Triangulates all hypothesis groups and computes quality metrics."""
 
-        num_points = points3d_np.shape[0]
+        M = len(groups)
+        coords_xp = xp.asarray(coords)
+        scores_xp = xp.asarray(scores)
+
+        # Build dense (C, M, 2) observation array (Python loop, can't JIT)
+        # TODO: Maybe improve this
+        group_lengths = [len(g) for g in groups]
+        idx_group = np.repeat(np.arange(M), group_lengths)
+        idx_val = np.fromiter(itertools.chain.from_iterable(groups), dtype=np.int32)
+        idx_cam = cam_ids[idx_val]
+
+        matched_uvs = xp.full((self.n_cams, M, 2), xp.nan, dtype=xp.float32)
+        matched_uvs = set_at(matched_uvs, (idx_cam, idx_group), coords_xp[idx_val])
+
+        weights = xp.zeros((self.n_cams, M), dtype=xp.float32)
+        weights = set_at(weights, (idx_cam, idx_group), scores_xp[idx_val])
+
+        points3d, view_counts, summed_confs, reproj_errors, valid_mask = self._triangulate_and_validate(
+            matched_uvs, weights
+        )
+
+        return (
+            np.asarray(points3d),
+            np.asarray(view_counts),
+            np.asarray(summed_confs),
+            np.asarray(reproj_errors),
+            np.asarray(valid_mask)
+        )
+
+    @partial(jit, static_argnums=(0,))
+    def _triangulate_and_validate(self, matched_uvs: xp.ndarray, weights: xp.ndarray):
+        """JIT-compiled triangulation and validation core."""
+
+        points3d = self.rig.triangulate(matched_uvs, weights=weights)  # (M, 3)
+        valid_triangulation = ~xp.any(xp.isnan(points3d), axis=1)
+
+        reprojected = self.rig.project(points3d)  # (C, M, 2)
+
+        obs_valid = ~xp.isnan(matched_uvs[:, :, 0])  # (C, M)
+        reproj_valid = ~xp.isnan(reprojected[:, :, 0])  # (C, M)
+        both_valid = obs_valid & reproj_valid
+
+        diffs = reprojected - matched_uvs
+        diffs = xp.where(both_valid[..., None], diffs, 0.0)
+        distances = xp.linalg.norm(diffs, axis=-1)  # (C, M)
+
+        n_valid_views = xp.sum(both_valid, axis=0)  # (M,)
+        reproj_errors = xp.sum(distances, axis=0) / xp.maximum(n_valid_views, 1)  # (M,)
+
+        view_counts = xp.sum(obs_valid, axis=0)  # (M,)
+        summed_confs = xp.sum(xp.where(obs_valid, weights, 0), axis=0)  # (M,)
+
+        valid_mask = valid_triangulation & (reproj_errors < self.config.repro_thresh) & (n_valid_views > 0)
+
+        return points3d, view_counts, summed_confs, reproj_errors, valid_mask
+
+    def _filter_and_merge(self,
+                          points3d: np.ndarray,
+                          view_counts: np.ndarray,
+                          summed_confs: np.ndarray,
+                          reproj_errors: np.ndarray,
+                          groups: List[List[int]],
+                          cam_ids: np.ndarray,
+                          indices: np.ndarray
+                          ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[List[int]], np.ndarray]:
+        """Filters conflicting hypotheses and merges near-duplicates."""
+
+        num_points = len(points3d)
         if num_points == 0:
             return self.EMPTY_RESULT
 
-        float_scores = (
-                (view_counts_np * self.config.view_count_weight) +
-                (summed_confs_np * self.config.detection_confidence_weight) +
-                (errors_np * self.config.repro_error_weight)
+        # Compute hypothesis scores
+        scores = (
+            view_counts * self.config.view_count_weight +
+            summed_confs * self.config.detection_confidence_weight +
+            reproj_errors * self.config.repro_error_weight
         )
 
-        # Build conflict graph and solve MWIS to get the best non-conflicting set
-        conflict_graph = self._build_conflict_graph(num_points, groups, float_scores)
+        # Build conflict graph and solve MWIS
+        conflict_graph = self._build_conflict_graph(num_points, groups, scores)
         winner_indices = np.array(solve_mwis_networkx(conflict_graph))
 
         if winner_indices.size == 0:
             return self.EMPTY_RESULT
 
-        # Cluster the winning points by proximity to find candidates for merging
-        winner_points_3d = points3d_np[winner_indices]
-        winner_scores = float_scores[winner_indices]
+        winner_points = points3d[winner_indices]
+        winner_scores = scores[winner_indices]
         winner_groups = [groups[i] for i in winner_indices]
 
-        clustering = DBSCAN(eps=self.config.cluster_radius, min_samples=1).fit(winner_points_3d)
+        # Cluster nearby winners for potential merging
+        clustering = DBSCAN(eps=self.config.cluster_radius, min_samples=1).fit(winner_points)
         labels = clustering.labels_
 
         final_points = []
@@ -632,82 +494,73 @@ class Reconstructor:
         final_cam_masks = []
 
         def process_group(group_idxs):
-            """Helper to get global indices and mask from a local group list"""
-            g_idxs = []
-            cam_bitmask = 0
-            for idx in group_idxs:
-                # idx is the local index in the SoA batch
-                g_idxs.append(indices_np[idx])
-                cam_bitmask |= (1 << cam_ids_np[idx])
+            """Convert local indices to global indices and compute camera bitmask."""
+            g_idxs = [indices[idx] for idx in group_idxs]
+            cam_bitmask = sum(1 << cam_ids[idx] for idx in group_idxs)
             return g_idxs, cam_bitmask
 
         for label in np.unique(labels):
-            local_indices = np.where(labels == label)[0]
-
-            # Merging logic
+            cluster_idx = np.where(labels == label)[0]
             merged = False
 
-            # Check Jaccard similarity for merge
-            if len(local_indices) > 1 and self.config.filter_method == 'average':
-                # Check if points in this cluster should be merged
-                cluster_groups_sets = [set(winner_groups[i]) for i in local_indices]
-                avg_jaccard = self._calculate_average_jaccard(cluster_groups_sets)
+            # Try merging if multiple hypotheses in cluster
+            if len(cluster_idx) > 1 and self.config.filter_method == 'average':
+                cluster_groups = [set(winner_groups[i]) for i in cluster_idx]
+                avg_jaccard = self._calculate_average_jaccard(cluster_groups)
 
                 if avg_jaccard > self.config.jaccard_threshold_for_merge:
-                    # High Jaccard similarity -> they are duplicate hypotheses, merge them
-                    cluster_pts = winner_points_3d[local_indices]
-                    cluster_scores = winner_scores[local_indices]
+                    # High overlap -> merge via weighted average
+                    cluster_pts = winner_points[cluster_idx]
+                    cluster_scores = winner_scores[cluster_idx]
+                    w = self._softmax_weights(cluster_scores, self.config.softmax_temperature)
 
-                    weights = self._softmax_weights(cluster_scores, self.config.softmax_temperature)
+                    merged_point = np.sum(cluster_pts * w[:, None], axis=0)
+                    merged_score = np.sum(cluster_scores * w)
+                    merged_error = np.sum(reproj_errors[winner_indices[cluster_idx]] * w)
 
-                    averaged_point = np.sum(cluster_pts * weights[:, np.newaxis], axis=0)
-                    averaged_score = np.sum(cluster_scores * weights)
-
-                    merged_global_indices = []
+                    merged_indices = []
                     merged_mask = 0
-
-                    # Merge indices and masks
-                    for idx in local_indices:
+                    for idx in cluster_idx:
                         g_idxs, mask = process_group(winner_groups[idx])
-                        merged_global_indices.extend(g_idxs)
+                        merged_indices.extend(g_idxs)
                         merged_mask |= mask
 
-                    # Calculate weighted average of errors too
-                    averaged_error = np.sum(errors_np[winner_indices[local_indices]] * weights)
-
-                    final_points.append(averaged_point)
-                    final_scores.append(averaged_score)
-                    final_errors.append(averaged_error)
-                    final_indices_list.append(merged_global_indices)
+                    final_points.append(merged_point)
+                    final_scores.append(merged_score)
+                    final_errors.append(merged_error)
+                    final_indices_list.append(merged_indices)
                     final_cam_masks.append(merged_mask)
                     merged = True
 
             if not merged:
-                for idx in local_indices:
-                    final_points.append(winner_points_3d[idx])
+                for idx in cluster_idx:
+                    final_points.append(winner_points[idx])
                     final_scores.append(winner_scores[idx])
-                    final_errors.append(errors_np[winner_indices[idx]])
+                    final_errors.append(reproj_errors[winner_indices[idx]])
                     g_idxs, mask = process_group(winner_groups[idx])
                     final_indices_list.append(g_idxs)
                     final_cam_masks.append(mask)
 
-        return (np.array(final_points, dtype=np.float32),
-                np.array(final_scores, dtype=np.float32),
-                np.array(final_errors, dtype=np.float32),
-                final_indices_list,
-                np.array(final_cam_masks, dtype=np.uint32))
+        return (
+            np.array(final_points, dtype=np.float32),
+            np.array(final_scores, dtype=np.float32),
+            np.array(final_errors, dtype=np.float32),
+            final_indices_list,
+            np.array(final_cam_masks, dtype=np.uint32)
+        )
 
-    def _build_conflict_graph(self, num_points, groups, scores):
-        """Builds conflict graph where an edge represents a conflict between two hypotheses."""
-
+    def _build_conflict_graph(self, num_points: int, groups: List[List[int]], scores: np.ndarray) -> nx.Graph:
+        """Builds conflict graph where edges represent mutually exclusive hypotheses."""
         conflict_graph = nx.Graph()
         groups_as_sets = [set(g) for g in groups]
+
+        # Normalise scores to non-negative integers for MWIS solver
         min_score = np.min(scores) if scores.size > 0 else 0
-        scores_non_negative = scores - min_score if min_score < 0 else scores
-        integer_scores = (scores_non_negative * 1000).astype(int)
+        scores_shifted = scores - min_score if min_score < 0 else scores
+        int_scores = (scores_shifted * 1000).astype(int)
 
         for i in range(num_points):
-            conflict_graph.add_node(i, weight=int(integer_scores[i]))
+            conflict_graph.add_node(i, weight=int(int_scores[i]))
 
         for i in range(num_points):
             for j in range(i + 1, num_points):
@@ -739,53 +592,13 @@ class Reconstructor:
         pair_count = 0
 
         for i in range(len(sets)):
-
             for j in range(i + 1, len(sets)):
-                intersection = len(sets[i].intersection(sets[j]))
-                union = len(sets[i].union(sets[j]))
+                intersection = len(sets[i] & sets[j])
+                union = len(sets[i] | sets[j])
                 jaccard_sum += intersection / union if union > 0 else 0
                 pair_count += 1
 
         return jaccard_sum / pair_count if pair_count > 0 else 0
-
-    @staticmethod
-    def _proximity_merging(
-            points: np.ndarray,
-            scores: np.ndarray,
-            indices: List[List[int]],
-            masks: np.ndarray,
-            radius: float
-    ) -> Tuple[np.ndarray, np.ndarray, List[List[int]], np.ndarray]:
-        """
-        Merges (aggressively) geometrically close points, keeping the best one.
-        """
-        if points.shape[0] < 2:
-            return points, scores, indices, masks
-
-        clustering = DBSCAN(eps=radius, min_samples=1).fit(points)
-        labels = clustering.labels_
-
-        final_points = []
-        final_scores = []
-        final_indices = []
-        final_masks = []
-
-        for label in np.unique(labels):
-            cluster_idxs = np.where(labels == label)[0]
-
-            # Pick the best point in the cluster (hard max)
-            best_local_idx = np.argmax(scores[cluster_idxs])
-            best_global_idx = cluster_idxs[best_local_idx]
-
-            final_points.append(points[best_global_idx])
-            final_scores.append(scores[best_global_idx])
-            final_indices.append(indices[best_global_idx])
-            final_masks.append(masks[best_global_idx])
-
-        return (np.asarray(final_points, dtype=np.float32),
-                np.asarray(final_scores, dtype=np.float32),
-                final_indices,
-                np.asarray(final_masks, dtype=np.uint32))
 
 
 if __name__ == '__main__':
@@ -804,7 +617,6 @@ if __name__ == '__main__':
     output_file = folder / prefix / 'outputs' / f'points_soup_session{session}.pkl'
     rig_file = folder / prefix / 'calibration' / 'camera_rig.toml'
 
-    # Load calibration & skeleton
     print("Loading metadata...")
     rig = CameraRig.load(rig_file)
     print(f"Loaded rig with {len(rig)} cameras.")
@@ -817,7 +629,6 @@ if __name__ == '__main__':
     print("Loading 2D detections...")
     df = fileio.load_session(input_dir, session=session, use_polars=True)
 
-    # Initialise Reconstructor
     reconstructor = Reconstructor(
         rig=rig,
         volume_bounds=volume_bounds,
@@ -838,10 +649,8 @@ if __name__ == '__main__':
     total_points_found = 0
 
     print(f"Starting reconstruction of {total_frames} frames...")
-
     start_time = time.time()
 
-    # Create batch ranges
     for i in range(0, total_frames, BATCH_SIZE):
         batch_frames = all_frame_indices[i: i + BATCH_SIZE]
         min_f, max_f = batch_frames[0], batch_frames[-1]
@@ -851,7 +660,6 @@ if __name__ == '__main__':
         if df_batch.is_empty():
             continue
 
-        # Convert to SoA inputs and reconstruct batch
         inputs = prepare_reconstruction_input(df_batch, camera_names, keypoints)
         batch_soup = reconstructor.reconstruct_batch(inputs, keypoints)
 
@@ -863,8 +671,7 @@ if __name__ == '__main__':
 
         frames_done = min(i + BATCH_SIZE, total_frames)
         curr_time = time.time() - start_time
-        print(
-            f"  Processed {frames_done}/{total_frames} frames in {curr_time:.2f} seconds... ({total_points_found} points found so far)")
+        print(f"  Processed {frames_done}/{total_frames} frames in {curr_time:.2f}s ({total_points_found} points)")
 
     total_time = time.time() - start_time
     print(f"Reconstruction finished in {total_time:.2f} seconds.")
