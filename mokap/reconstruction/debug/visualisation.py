@@ -16,13 +16,18 @@ def plot_cameras_rays(reconstructor, dets_per_cam: List[np.ndarray]):
     """Visualises 3D rays cast from 2D detections."""
 
     ax = _init_plot(figsize=(12, 12))
-
     draw_cameras(reconstructor.rig, ax=ax, title="Ray Casting Sanity Check")
 
-    # Draw rays manually (ragged data structure doesn't fit draw_rays)
+    # Draw rays manually
     for c, cam in enumerate(reconstructor.rig):
         dets = dets_per_cam[c]
         if len(dets) == 0:
+            continue
+
+        dets = np.array(dets)
+
+        # Raycast expects (N, 2)
+        if dets.ndim != 2:
             continue
 
         origins, directions = cam.raycast(dets)
@@ -41,7 +46,7 @@ def plot_cameras_rays(reconstructor, dets_per_cam: List[np.ndarray]):
 
 
 def plot_epipolar_segments(reconstructor, dets_i, dets_j, img_j, cam_idx_i, cam_idx_j):
-    """Visualizes epipolar segments from cam_i projected onto cam_j."""
+    """Visualises epipolar segments from cam_i projected onto cam_j."""
 
     if len(dets_i) == 0:
         return
@@ -50,7 +55,7 @@ def plot_epipolar_segments(reconstructor, dets_i, dets_j, img_j, cam_idx_i, cam_
     cam_j = reconstructor.rig[cam_idx_j]
     h, w = img_j.shape[:2]
 
-    # Undistort image J
+    # Undistort image J for visualisation
     K_j_np = np.array(cam_j.K)
     D_j_np = np.array(cam_j.D)
     new_K_j, _ = cv2.getOptimalNewCameraMatrix(K_j_np, D_j_np, (w, h), 1, (w, h))
@@ -60,16 +65,17 @@ def plot_epipolar_segments(reconstructor, dets_i, dets_j, img_j, cam_idx_i, cam_
     # Undistort detections on J to match the remapped image
     udets_j = None
     if len(dets_j) > 0:
-        udets_j = cv2.undistortPoints(dets_j.reshape(-1, 1, 2), K_j_np, D_j_np, P=new_K_j).reshape(-1, 2)
+        udets_j = cv2.undistortPoints(np.array(dets_j).reshape(-1, 1, 2), K_j_np, D_j_np, P=new_K_j).reshape(-1, 2)
 
     # Raycast from I and Intersect AABB
-    origins, directions = cam_i.raycast(dets_i)
+    origins, directions = cam_i.raycast(xp.asarray(dets_i))
     p_near, p_far, hit = intersect_aabb(origins, directions, reconstructor.aabb_min, reconstructor.aabb_max)
+
+    hit = np.asarray(hit, dtype=bool)
 
     # Project segments to J using the "New K" (undistorted view)
     segments_3d = xp.concatenate([p_near, p_far], axis=0)  # (2N, 3)
 
-    # Using Lucida project with 'none' distortion model since image is rectified
     segments_2d, _ = project(
         segments_3d,
         cam_j.T,
@@ -77,6 +83,7 @@ def plot_epipolar_segments(reconstructor, dets_i, dets_j, img_j, cam_idx_i, cam_
         xp.zeros_like(cam_j.D),
         distortion_model='none'
     )
+    segments_2d = np.asarray(segments_2d)
 
     # Plot
     plt.figure(figsize=(12, 9))
@@ -102,14 +109,14 @@ def plot_epipolar_segments(reconstructor, dets_i, dets_j, img_j, cam_idx_i, cam_
     plt.ylim(h, 0)
     plt.show()
 
+
 def plot_reprojection(reconstructor, point3d, group_indices, all_dets, images):
     """Visualises a specific 3D hypothesis reprojected onto all views."""
 
     C = len(reconstructor.rig)
 
-    reproj, mask = reconstructor.rig.project(point3d)
-    reproj[~mask.astype(bool)] = np.nan
-    reproj_pts = reproj.squeeze()
+    reproj = reconstructor.rig.project(point3d)
+    reproj = np.asarray(reproj).squeeze()  # (C, 2)
 
     fig, axes = plt.subplots(1, C, figsize=(5 * C, 5))
     if C == 1:
@@ -131,11 +138,12 @@ def plot_reprojection(reconstructor, point3d, group_indices, all_dets, images):
             det = all_dets[j][u_idx]
             ax.scatter(det[0], det[1], facecolors='none', edgecolors='lime', s=80, lw=2, label='Used')
 
-        ax.scatter(reproj_pts[j, 0], reproj_pts[j, 1], c='red', marker='+', s=100, lw=2, label='Reproj')
+        ax.scatter(reproj[j, 0], reproj[j, 1], c='red', marker='+', s=100, lw=2, label='Reproj')
         ax.axis('off')
 
     plt.tight_layout()
     plt.show()
+
 
 def plot_reconstructed_frame(reconstructor, soup: SoupData, bones: List[Tuple[str, str]], ax=None):
     """Plots the final reconstructed soup for a frame."""
@@ -146,7 +154,7 @@ def plot_reconstructed_frame(reconstructor, soup: SoupData, bones: List[Tuple[st
     if soup.num_points == 0:
         return ax
 
-    # Group by KP for consistent coloring
+    # Group by KP for coloring
     kp_dict = defaultdict(list)
     for i in range(soup.num_points):
         name = soup.keypoint_names[soup.kp_types[i]]
@@ -158,7 +166,6 @@ def plot_reconstructed_frame(reconstructor, soup: SoupData, bones: List[Tuple[st
         if name in kp_dict:
             pts = np.array(np.stack(kp_dict[name]))
             draw_points(pts, default_color=colors(i), ax=ax)
-            # Proxy artist for legend
             ax.scatter([], [], [], color=colors(i), label=name)
 
     # Plot bones
@@ -224,7 +231,7 @@ def view_soup_frame(soup: SoupData, frame_idx: int, rig=None):
     if rig:
         draw_cameras(rig, ax=ax)
 
-    # Plot real points
+    # Plot points
     if f_slice.num_points > 0:
         draw_points(f_slice.positions, default_color='blue', ax=ax, title=f"Frame {frame_idx}")
 
@@ -232,11 +239,11 @@ def view_soup_frame(soup: SoupData, frame_idx: int, rig=None):
     if len(f_slice.ray_origins) > 0:
         n_rays = min(50, len(f_slice.ray_origins))
         starts = f_slice.ray_origins[:n_rays]
+
         directions = f_slice.ray_directions[:n_rays]
-
         ends = starts + directions * 250.0
-
         segments = np.stack([starts, ends], axis=1)
+
         lc = Line3DCollection(segments, colors='red', linewidths=0.5, alpha=0.3)
         ax.add_collection3d(lc)
 

@@ -1,6 +1,8 @@
 import pickle
 import polars as pl
 from pathlib import Path
+import matplotlib.pyplot as plt
+
 from lucida import CameraRig
 from mokap.utils import fileio
 from mokap.reconstruction.config import ReconstructorConfig
@@ -8,10 +10,9 @@ from mokap.reconstruction.reconstruction import Reconstructor
 from mokap.reconstruction.utils import prepare_reconstruction_input
 from mokap.reconstruction.debug.visualisation import *
 
-
 # ================= CONFIGURATION =================
 # Options: "RAYS", "EPIPOLAR", "HYPOTHESIS", "SOUP", "RAW_SOUP", "TRACKLETS", "LINKED_TRACKS"
-MODE = "RAW_SOUP"
+MODE = "HYPOTHESIS"
 
 FOLDER = Path().home() / 'Desktop' / '3d_ant_data'
 PREFIX = '240905-1616'
@@ -71,22 +72,43 @@ if __name__ == "__main__":
         df_frame = df.filter(pl.col('frame') == FRAME)
         inputs = prepare_reconstruction_input(df_frame, cam_names, keypoints)
 
-        # Prepare raw data arrays
+        # Prepare raw data arrays for visualisation
         kp_idx = keypoints.index(DEBUG_KEYPOINT)
         mask = inputs['kp_type_ids'] == kp_idx
 
-        # Regroup by camera for plotting
         raw_dets = []
         raw_confs = []
 
+        curr_coords = inputs['coords'][mask]
+        curr_cam_ids = inputs['cam_ids'][mask]
+        curr_scores = inputs['scores'][mask]
+
+        # mapping: flat_index -> (cam_id, local_index_within_camera)
+        flat_to_local_map = {}
+
+        current_cam_counts = {c: 0 for c in range(len(rig))}
+
+        for _ in range(len(rig)):
+            raw_dets.append([])
+            raw_confs.append([])
+
+        # Fill with data
+        for i, (c_id, coord, score) in enumerate(zip(curr_cam_ids, curr_coords, curr_scores)):
+            c_id = int(c_id)
+            local_idx = current_cam_counts[c_id]
+            flat_to_local_map[i] = (c_id, local_idx)
+
+            raw_dets[c_id].append(coord)
+            raw_confs[c_id].append(score)
+            current_cam_counts[c_id] += 1
+
         for c in range(len(rig)):
-            c_mask = (inputs['cam_ids'][mask] == c)
-            if np.any(c_mask):
-                raw_dets.append(inputs['coords'][mask][c_mask])
-                raw_confs.append(inputs['scores'][mask][c_mask])
+            if len(raw_dets[c]) > 0:
+                raw_dets[c] = np.array(raw_dets[c])
+                raw_confs[c] = np.array(raw_confs[c])
             else:
-                raw_dets.append(rec.NULL_POINT2D_XP)
-                raw_confs.append(rec.EMPTY_F32_NP)
+                raw_dets[c] = np.empty((0, 2), dtype=np.float32)
+                raw_confs[c] = np.array([], dtype=np.float32)
 
         images = load_images(FOLDER, PREFIX, SESSION, cam_names, FRAME)
 
@@ -106,41 +128,40 @@ if __name__ == "__main__":
         elif MODE == "HYPOTHESIS":
             print(f"Generating hypotheses for '{DEBUG_KEYPOINT}'...")
 
-            flat_dets = xp.concatenate(raw_dets)
-            flat_confs = xp.concatenate(raw_confs)
+            groups = rec._group_detections(curr_coords, curr_cam_ids)
 
-            # Map global index back to (cam, local)
-            counts = [len(d) for d in raw_dets]
-            offsets = np.cumsum([0] + counts[:-1])
-
-
-            def unflatten_index(global_idx):
-                cam_idx = np.searchsorted(offsets, global_idx, side='right') - 1
-                local_idx = global_idx - offsets[cam_idx]
-                return int(cam_idx), int(local_idx)
-
-
-            pts, groups, _, _, errors = rec._generate_hypotheses(
-                inputs['coords'][mask], inputs['cam_ids'][mask],
-                flat_dets, flat_confs
-            )
-
-            if len(pts) > 0:
-                best_idx = np.argmin(errors)
-                flat_group = groups[best_idx]
-                mapped_group = [unflatten_index(idx) for idx in flat_group]
-
-                print(f"Visualising best hypothesis (Error: {errors[best_idx]:.2f})...")
-                plot_reprojection(rec, pts[best_idx], mapped_group, raw_dets, images)
+            if not groups:
+                print("No hypotheses generated (grouping failed or min_views not met).")
             else:
-                print("No hypotheses generated.")
+                pts, view_counts, summed_confs, errors, valid_mask = rec._triangulate_hypotheses(
+                    curr_coords, curr_cam_ids, curr_scores, groups
+                )
+
+                # Filter to valid ones only
+                valid_idx = np.where(valid_mask)[0]
+                pts = pts[valid_idx]
+                errors = errors[valid_idx]
+                valid_groups = [groups[i] for i in valid_idx]
+
+                if len(pts) > 0:
+                    best_idx = np.argmin(errors)
+                    best_point = pts[best_idx]
+                    best_group_flat_indices = valid_groups[best_idx]
+
+                    # Map flat indices back to (cam, local) for the visualisation
+                    mapped_group = [flat_to_local_map[idx] for idx in best_group_flat_indices]
+
+                    print(f"Visualising best hypothesis (Error: {errors[best_idx]:.2f})...")
+                    plot_reprojection(rec, best_point, mapped_group, raw_dets, images)
+                else:
+                    print("Hypotheses generated but all failed validation (e.g. high reprojection error).")
 
         elif MODE == "SOUP":
             print("Running full frame reconstruction...")
             soup = rec.reconstruct_batch(inputs, keypoints)
             print(f"Reconstructed {soup.num_points} points.")
+
             plot_reconstructed_frame(rec, soup, bones)
-            import matplotlib.pyplot as plt
 
             plt.show()
 

@@ -38,8 +38,6 @@ def stage1_reconstruction(
         config=config.reconstruction
     )
 
-    camera_names = sorted(camera_rig)
-
     # Sort frames for slicing
     all_frame_indices = np.sort(df["frame"].unique().to_numpy())
     total_frames = len(all_frame_indices)
@@ -59,7 +57,7 @@ def stage1_reconstruction(
         if df_batch.is_empty():
             continue
 
-        inputs = prepare_reconstruction_input(df_batch, camera_names, keypoints)
+        inputs = prepare_reconstruction_input(df_batch, rig.names, keypoints)
 
         # Run reconstruction
         batch_soup = reconstructor.reconstruct_batch(inputs, keypoints)
@@ -237,6 +235,7 @@ if __name__ == '__main__':
     config = PipelineConfig()
 
     BATCH_SIZE = 500
+    SKIP_RECONSTRUCTION = True # reconstruction is the slowest part
 
     # Paths
     input_dir = folder / prefix / 'inputs' / 'tracking'
@@ -258,24 +257,19 @@ if __name__ == '__main__':
     # Execution
 
     # Reconstruction
-    if not points_soup_file.exists():
-        points_soup = stage1_reconstruction(
-            df, keypoints, rig, volume_bounds, config, BATCH_SIZE, points_soup_file
-        )
-    else:
+    if SKIP_RECONSTRUCTION and points_soup_file.exists():
         print(f"Loading existing soup from {points_soup_file}")
         with open(points_soup_file, 'rb') as f:
             points_soup = pickle.load(f)
+    else:
+        points_soup = stage1_reconstruction(
+            df, keypoints, rig, volume_bounds, config, BATCH_SIZE, points_soup_file
+        )
 
     # Tracking
-    if not tracklets_file.exists():
-        tracked_data = stage2_tracking(
-            points_soup, bones, symmetry, config, None, stats_file, tracklets_file
-        )
-    else:
-        print(f"Loading existing tracklets from {tracklets_file}")
-        with open(tracklets_file, 'rb') as f:
-            tracked_data = pickle.load(f)
+    tracked_data = stage2_tracking(
+        points_soup, bones, symmetry, config, stats_file, stats_file, tracklets_file
+    )
 
     # Linking
     stage3_linking(tracked_data, keypoints, bones, symmetry, config, stats_file, final_tracks_file)
