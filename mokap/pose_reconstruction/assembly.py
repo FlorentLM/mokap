@@ -15,7 +15,7 @@ from scipy.stats import median_abs_deviation
 from lucida.geometry import align_rigid
 
 from mokap.utils import fileio
-from mokap.pose_reconstruction.datatypes import Bone, AssembledSkeleton, CandidateSkeleton, SoupData
+from mokap.pose_reconstruction.datatypes import Bone, AssembledSkeleton, CandidateSkeleton, PointSoup
 from mokap.pose_reconstruction.configs import AnatomyConfig, AssemblerConfig, TrackerConfig
 from mokap.pose_reconstruction.utils import solve_mwis
 
@@ -112,7 +112,6 @@ class Tracklet:
                 inferred = True
             else:
                 self.skeleton = skeleton
-                self.score = skeleton.score
                 self.time_since_update = 0
                 self.last_update_frame = frame_idx
                 return
@@ -225,11 +224,8 @@ class SkeletonAssembler:
         self.central_kp = max(degrees, key=degrees.get)
 
         # Temporary storage for the current frame
-        self._current_soup: Optional[SoupData] = None
+        self._current_soup: Optional[PointSoup] = None
         self._current_virtual_points: Dict[int, Dict] = {}  # negative indices -> {pos, conf, kp_type}
-        self._current_kdtree: Optional[cKDTree] = None
-        self._kp_to_indices: Dict[str, List[int]] = defaultdict(list)
-        self._kp_to_rays: Dict[str, List[int]] = defaultdict(list)
 
     def update_bone_stats(self, stats_dict: Dict):
         if 'anatomy' in stats_dict:
@@ -239,31 +235,6 @@ class SkeletonAssembler:
         self.median_ref_len = stats_dict['median_reference_length']
         self.bones_ratios = {frozenset(k.split(';')): v for k, v in stats_dict['bones_ratios'].items()}
 
-    def _reset_frame_context(self, soup: SoupData):
-        """Prepares lookup structures for the current frame."""
-
-        self._current_soup = soup
-        self._current_virtual_points = {}
-
-        # Index map for 3D points
-        self._kp_to_indices.clear()
-        for i in range(soup.num_points):
-            kp_name = soup.keypoint_names[soup.kp_types[i]]
-            self._kp_to_indices[kp_name].append(i)
-
-        # Index map for Rays (Orphan views)
-        self._kp_to_rays.clear()
-        num_rays = len(soup.ray_origins)
-        for i in range(num_rays):
-            kp_name = soup.keypoint_names[soup.ray_kp_types[i]]
-            self._kp_to_rays[kp_name].append(i)
-
-        # KDTree
-        if soup.num_points > 0:
-            self._current_kdtree = cKDTree(soup.positions)
-        else:
-            self._current_kdtree = None
-
     def _get_pos_conf(self, idx: int) -> Tuple[np.ndarray, float]:
         """Abstracts retrieval of position/confidence for Real (>= 0) vs Virtual (< 0) points."""
         if idx >= 0:
@@ -272,12 +243,12 @@ class SkeletonAssembler:
             vp = self._current_virtual_points[idx]
             return vp['pos'], vp['conf']
 
-    def assemble_frame(self, soup: SoupData) -> Tuple[List[CandidateSkeleton], Dict[int, Dict]]:
+    def assemble_frame(self, soup: PointSoup) -> Tuple[List[CandidateSkeleton], Dict[int, Dict]]:
         """
         Main assembly entry point.
         Returns candidates and the registry of virtual points created during rescue.
         """
-        self._reset_frame_context(soup)
+        self._current_soup = soup
 
         # Generate initial fragments (including orphan rescue)
         initial_fragments = self._generate_candidates()
@@ -300,7 +271,7 @@ class SkeletonAssembler:
 
         for anchor_type in all_anchor_types:
             # Iterate over all real 3D points of this type
-            for seed_idx in self._kp_to_indices[anchor_type]:
+            for seed_idx in self._current_soup.points_by_name[anchor_type]:
                 if seed_idx in used_as_seed_indices:
                     continue
 
@@ -318,7 +289,7 @@ class SkeletonAssembler:
 
         # Seed from leaves (cleanup)
         for leaf_type in self.leaf_nodes:
-            for seed_idx in self._kp_to_indices[leaf_type]:
+            for seed_idx in self._current_soup.points_by_name[leaf_type]:
                 if seed_idx in used_as_seed_indices:
                     continue
 
@@ -365,10 +336,10 @@ class SkeletonAssembler:
                 if not neighbor_kp_types: continue
 
                 # Standard 3D search
-                if self._current_kdtree:
-                    nearby_indices = self._current_kdtree.query_ball_point(node_pos, r=max_search_radius)
+                if self._current_soup.tree:
+                    nearby_indices = self._current_soup.tree.query_ball_point(node_pos, r=max_search_radius)
                     for idx in nearby_indices:
-                        cand_type_idx = self._current_soup.kp_types[idx]
+                        cand_type_idx = self._current_soup.keypoint_indices[idx]
                         cand_type = self._current_soup.keypoint_names[cand_type_idx]
 
                         if cand_type in neighbor_kp_types:
@@ -499,8 +470,8 @@ class SkeletonAssembler:
         r = self.median_ref_len * self.bones_ratios[bone]['median_ratio']
 
         # Get orphan rays
-        ray_indices = self._kp_to_rays[target_kp]
-        if not ray_indices:
+        ray_indices = self._current_soup.rays_by_name[target_kp]
+        if not bool(np.any(ray_indices)):
             return []
 
         ray_indices_arr = np.array(ray_indices)
@@ -581,7 +552,8 @@ class SkeletonAssembler:
         best_cand_data = None  # stores (idx, pos, is_virtual)
 
         # Check for real parent points
-        parent_indices = self._kp_to_indices[parent_kp]
+        parent_indices = self._current_soup.points_by_name[parent_kp]
+
         for p_idx in parent_indices:
             p_pos, _ = self._get_pos_conf(p_idx)
 
@@ -871,7 +843,7 @@ class MultiObjectTracker:
         self.tracklets: List[Tracklet] = []
         self.next_track_idx = 0
 
-    def update(self, soup: SoupData, frame_idx: int) -> List[Tracklet]:
+    def update(self, soup: PointSoup, frame_idx: int) -> List[Tracklet]:
         self.frame_idx = frame_idx
 
         for tracklet in self.tracklets:
@@ -1105,7 +1077,7 @@ if __name__ == '__main__':
     import json
     from pathlib import Path
     import numpy as np
-    from mokap.pose_reconstruction.datatypes import SoupData
+    from mokap.pose_reconstruction.datatypes import PointSoup
 
     # Configuration
     BASE_DIR = Path.home() / 'Desktop' / '3d_ant_data'
@@ -1127,9 +1099,9 @@ if __name__ == '__main__':
 
     print(f"Loading soup from {soup_file}...")
     with open(soup_file, 'rb') as f:
-        soup: SoupData = pickle.load(f)
+        soup: PointSoup = pickle.load(f)
 
-    if soup.num_points == 0:
+    if soup.nb_points == 0:
         print("Soup is empty (no 3D points). Exiting.")
         exit()
 
@@ -1161,16 +1133,16 @@ if __name__ == '__main__':
     tracklets_by_id = defaultdict(list)
 
     print(f"Tracking from frame {min_frame} to {max_frame}...")
-    with alive_bar(total=(max_frame - min_frame + 1), force_tty=True) as bar:
+    with alive_bar(total=(max_frame - min_frame + 1), length=20, force_tty=True) as bar:
         for frame_idx in range(min_frame, max_frame + 1):
 
             current_stats = anatomy_learner.get_stats()
             assembler.update_bone_stats(current_stats)
 
-            frame_soup = soup.get_frame(frame_idx)
+            frame_soup = soup[frame_idx]
 
-            # Check if we have any data (Points or Rays) to process
-            if frame_soup.num_points > 0 or len(frame_soup.ray_origins) > 0:
+            # Check if we have any data (points or rays) to process
+            if frame_soup.nb_points > 0 or len(frame_soup.ray_origins) > 0:
                 active_tracklets = tracker.update(frame_soup, frame_idx)
             else:
                 # Coasting / prediction only

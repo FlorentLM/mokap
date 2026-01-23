@@ -24,7 +24,7 @@ from lucida.geometry import (
     project_full, px_to_norm, triangulate_linear, epipolar_line_distance
 )
 
-from mokap.pose_reconstruction.datatypes import SoupData
+from mokap.pose_reconstruction.datatypes import PointSoup
 
 logger = logging.getLogger(__name__)
 
@@ -77,24 +77,7 @@ class Reconstructor:
             np.empty((0,), dtype=np.int32)
         )
 
-        self._empty_orphan_data = {
-                'ray_origins': np.empty((0, 3), dtype=np.float32),
-                'ray_directions': np.empty((0, 3), dtype=np.float32),
-                'ray_confidences': np.empty((0,), dtype=np.float32),
-                'ray_kp_types': np.empty((0,), dtype=np.int16),
-                'ray_frame_indices': np.empty((0,), dtype=np.int32)
-            }
-
-        self._empty_soup = {
-                'positions': np.empty((0, 3), dtype=np.float32),
-                'confidences': np.empty((0,), dtype=np.float32),
-                'reprojection_errors': np.empty((0,), dtype=np.float32),
-                'kp_types': np.empty((0,), dtype=np.int16),
-                'frame_indices': np.empty((0,), dtype=np.int32),
-                'camera_masks': np.empty((0,), dtype=np.uint64)
-            }
-
-    def reconstruct(self, inputs: Dict[str, np.ndarray]) -> SoupData:
+    def reconstruct(self, inputs: Dict[str, np.ndarray]) -> PointSoup:
         """Processes a chunk of frames."""
 
         coords = xp.asarray(inputs['coords'])
@@ -160,26 +143,19 @@ class Reconstructor:
                 for det_idx in det_indices[i]:
                     used[det_idx] = True
 
-        if out_pts:
-            soup_data = {
-                'positions': np.array(out_pts, dtype=np.float32).reshape(-1, 3),
-                'confidences': np.array(out_conf, dtype=np.float32),
-                'reprojection_errors': np.array(out_err, dtype=np.float32),
-                'kp_types': np.array(out_kp, dtype=np.int16),
-                'frame_indices': np.array(out_frame, dtype=np.int32),
-                'camera_masks': np.array(out_mask, dtype=np.uint64)
-            }
-        else:
-            soup_data = self._empty_soup
-
         # Orphan rays for unused detections
-        orphan_mask = ~used & ~np.isnan(inputs['coords'][:, 0])
-        orphan_data = self._compute_orphans(inputs, undist, orphan_mask)
+        orphan_rays_mask = ~used & ~np.isnan(inputs['coords'][:, 0])
+        orphan_rays = self._get_rays(inputs, undist, orphan_rays_mask)
 
-        return SoupData(
-            **soup_data,
-            **orphan_data,
-            camera_names=[c.name for c in self.rig],
+        return PointSoup(
+            positions=np.array(out_pts, dtype=np.float32).reshape(-1, 3),
+            confidences=np.array(out_conf, dtype=np.float32),
+            reprojection_errors=np.array(out_err, dtype=np.float32),
+            keypoint_indices=np.array(out_kp, dtype=np.int16),
+            frame_indices=np.array(out_frame, dtype=np.int32),
+            camera_masks=np.array(out_mask, dtype=np.uint64),
+            **orphan_rays,
+            camera_names=self.rig.names,
             keypoint_names=self.keypoint_names
         )
 
@@ -424,7 +400,7 @@ class Reconstructor:
 
         return pts3d_np, rmse_np, cluster_dets, merged_masks, cluster_frames_np
 
-    def _compute_orphans(
+    def _get_rays(
             self,
             inputs: Dict[str, np.ndarray],
             undist: xp.ndarray,
@@ -433,7 +409,7 @@ class Reconstructor:
         """Make 3D rays for unused detections."""
 
         if not np.any(orphan_mask):
-            return self._empty_orphan_data
+            return {}
 
         pts = undist[orphan_mask]
         cams = inputs['cam_ids'][orphan_mask]
@@ -457,9 +433,9 @@ class Reconstructor:
         return {
             'ray_origins': all_origins,
             'ray_directions': all_dirs,
-            'ray_confidences': inputs['scores'][orphan_mask].astype(np.float32),
-            'ray_kp_types': inputs['kp_type_ids'][orphan_mask].astype(np.int16),
-            'ray_frame_indices': inputs['frame_indices'][orphan_mask].astype(np.int32)
+            'ray_confidences': inputs['scores'][orphan_mask],
+            'ray_keypoint_indices': inputs['kp_type_ids'][orphan_mask],
+            'ray_frame_indices': inputs['frame_indices'][orphan_mask]
         }
 
 
@@ -480,7 +456,7 @@ if __name__ == "__main__":
     output_dir = BASE_DIR / PREFIX / 'outputs'
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    rig = CameraRig.load(BASE_DIR / PREFIX / 'calibration' / 'rig.toml')
+    rig = CameraRig.load(BASE_DIR / PREFIX / 'calibration' / 'camera_rig.toml')
     keypoints, bones, symmetry = fileio.load_skeleton_SLEAP(input_dir, symmetry=True)
     df = fileio.load_session(input_dir, session=SESSION)
 
@@ -503,27 +479,27 @@ if __name__ == "__main__":
 
     for i in range(0, len(all_frames), CHUNK_SIZE):
         chunk = all_frames[i: i + CHUNK_SIZE]
-        df_chunk = df.filter(pl.col("frame").is_in(chunk))
 
+        df_chunk = df.filter(pl.col("frame").is_in(chunk))
         inputs = prepare_reconstruction_input(
-            df_chunk, [c.name for c in rig], keypoints
+            df_chunk, rig.names, keypoints
         )
 
         soup = reconstructor.reconstruct(inputs)
 
-        if soup.num_points > 0 or len(soup.ray_origins) > 0:
+        if soup.nb_points > 0 or len(soup.ray_origins) > 0:
             batches.append(soup)
-            total_pts += soup.num_points
+            total_pts += soup.nb_points
             total_rays += len(soup.ray_origins)
 
         elapsed = time.time() - t0
         frames_done = min(i + CHUNK_SIZE, len(all_frames))
         fps = frames_done / elapsed if elapsed > 0 else 0
-        print(f"  Chunk {i // CHUNK_SIZE}: {soup.num_points} pts, {len(soup.ray_origins)} rays "
+        print(f"  Chunk {i // CHUNK_SIZE}: {soup.nb_points} pts, {len(soup.ray_origins)} rays "
               f"({frames_done}/{len(all_frames)} frames, {fps:.1f} fps)")
 
     if batches:
-        final_soup = SoupData.concatenate(batches)
+        final_soup = PointSoup.concatenate(batches)
         out_path = output_dir / f"soup_session{SESSION}.pkl"
 
         with open(out_path, 'wb') as f:

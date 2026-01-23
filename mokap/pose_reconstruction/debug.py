@@ -14,8 +14,8 @@ class SkeletonViewer:
         if bones_def and isinstance(bones_def[0][0], int):
             for u_idx, v_idx in bones_def:
                 try:
-                    u = soup.keypoint_names[u_idx]
-                    v = soup.keypoint_names[v_idx]
+                    u = soup.keypoints[u_idx]
+                    v = soup.keypoints[v_idx]
                     self.skel_graph.add_edge(u, v)
                 except:
                     pass
@@ -50,7 +50,7 @@ class SkeletonViewer:
         # Draw soup
         try:
             s = self.soup.get_frame(f_idx)
-            if s.num_points > 0:
+            if s.nb_points > 0:
                 self.ax.scatter(s.positions[:, 0], s.positions[:, 1], s.positions[:, 2], c='k', alpha=0.1, s=5)
         except:
             pass

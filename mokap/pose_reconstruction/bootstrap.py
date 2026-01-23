@@ -5,16 +5,15 @@ from typing import Dict, List, Tuple, Any, Optional, Sequence
 
 import numpy as np
 import pandas as pd
-import trackpy as tp
 import networkx as nx
 import matplotlib.pyplot as plt
 from scipy.stats import median_abs_deviation
 
-from mokap.pose_reconstruction.datatypes import SoupData
+from mokap.pose_reconstruction.datatypes import PointSoup
 from mokap.pose_reconstruction.utils import create_canonical_map, plot_tracks_3d, robust_stats
 
 
-# TODO: The trackpy linking should be done once and used by both classes
+# TODO: Trackpy linking should be done once as it is used by both classes
 
 
 class AnatomyBootstrapper:
@@ -27,7 +26,7 @@ class AnatomyBootstrapper:
     1. For each bone, track both endpoint keypoints independently using trackpy
     2. Find co-occurring tracklet pairs (same frames, spatially close)
     3. Measure bone lengths within each co-occurring pair
-    4. Compute variance WITHIN each pair, then pool across pairs
+    4. Compute variance within each pair, then pool across pairs
     5. Use symmetry to double the sample pool
     """
 
@@ -78,7 +77,7 @@ class AnatomyBootstrapper:
             key=lambda e: self._degrees[e[0]] + self._degrees[e[1]]
         )
 
-    def process(self, soup: SoupData, max_frames: int = 2000) -> Dict[str, Any]:
+    def process(self, soup: PointSoup, max_frames: int = 5000) -> Dict[str, Any]:
         """
         1. Track individual keypoints across frames
         2. For each bone find co-occurring tracklet pairs
@@ -86,120 +85,66 @@ class AnatomyBootstrapper:
         4. Pool intra-individual variances (using symmetry)
         """
 
-        frames = np.unique(soup.frame_indices)
-        if len(frames) > max_frames:
-            # Take a contiguous chunk for continuity
-            start_idx = np.random.randint(0, max(1, len(frames) - max_frames))
-            frames = np.sort(frames)[start_idx:start_idx + max_frames]
-
-        frame_set = set(frames)
-
-        print(f"[Anatomy] Processing {len(frames)} frames...")
-
-        # Track each keypoint type independently
-        print("[Anatomy] Tracking keypoints...")
-        kp_tracklets = {}  # kp_name -> list of tracklets, each tracklet is dict {frame: position}
-
+        import trackpy as tp
         tp.quiet()
 
-        for kp_idx, kp_name in enumerate(self.keypoint_names):
-            mask = (soup.kp_types == kp_idx) & np.isin(soup.frame_indices, list(frame_set))
-            if mask.sum() < self.min_tracklet_length:
+        df = soup.to_df()
+
+        print("[Anatomy] Tracking keypoints...")
+
+        # Subset frames for speed if needed
+        if df['frame'].nunique() > max_frames:
+            f_min = df['frame'].min()
+            df = df[df['frame'] < f_min + max_frames]
+
+        # Link (per keypoint type of course)
+        df['particle'] = -1
+        for name, group in df.groupby('keypoint'):
+            linked = tp.link_df(group, search_range=self.tracklet_search_range, pos_columns=['x', 'y', 'z'], memory=1)
+            df.loc[linked.index, 'particle'] = linked['particle']
+
+        # Bone measurement
+        canon_all_lengths = defaultdict(list)
+        canon_pair_stats = defaultdict(list)
+
+        for u, v in self.bones:
+            # inner-join the dataframe with itself on 'frame' to find pairs
+            df_u = df[df['keypoint'] == u][['frame', 'x', 'y', 'z', 'particle']]
+            df_v = df[df['keypoint'] == v][['frame', 'x', 'y', 'z', 'particle']]
+            pairs = df_u.merge(df_v, on='frame', suffixes=('_u', '_v'))
+
+            if pairs.empty:
                 continue
 
-            df = pd.DataFrame({
-                "frame": soup.frame_indices[mask],
-                "x": soup.positions[mask, 0],
-                "y": soup.positions[mask, 1],
-                "z": soup.positions[mask, 2],
-            })
+            # Calculate distances for all pairs
+            dist = np.linalg.norm(pairs[['x_u', 'y_u', 'z_u']].values - pairs[['x_v', 'y_v', 'z_v']].values, axis=1)
+            pairs['dist'] = dist
 
-            try:
-                linked = tp.link_df(
-                    df,
-                    search_range=self.tracklet_search_range,
-                    memory=1,
-                    pos_columns=["x", "y", "z"],
-                )
-            except Exception:
-                continue
+            # Filter sane lengths
+            pairs = pairs[pairs['dist'] < self.max_bone_length]
 
-            tracklets = []
-            for pid, group in linked.groupby("particle"):
+            # Group by unique tracklet pairs (particle_u + particle_v) to get intra-individual stats
+            canon_key = ";".join(sorted((self.canon_map[u], self.canon_map[v])))
 
+            for (p_u, p_v), group in pairs.groupby(['particle_u', 'particle_v']):
                 if len(group) < self.min_tracklet_length:
                     continue
 
-                # Stored as {frame: position}
-                tracklet = {
-                    int(row["frame"]): np.array([row["x"], row["y"], row["z"]])
-                    for _, row in group.iterrows()
-                }
-                tracklets.append(tracklet)
+                lengths = group['dist'].values
+                mad = median_abs_deviation(lengths)
 
-            if tracklets:
-                kp_tracklets[kp_name] = tracklets
+                canon_pair_stats[canon_key].append((np.median(lengths), mad))
+                canon_all_lengths[canon_key].extend(lengths)
+                self.debug_intra_individual_stds[canon_key].append(mad)
 
-        print(f"[Anatomy] Tracked {len(kp_tracklets)} keypoint types")
-
-        # For each bone find co-occurring tracklet pairs and measure
-
-        # Canonical bone -> list of (median_length, intra_mad) per tracklet pair
-        canon_pair_stats = defaultdict(list)
-        # Canonical bone -> all individual length measurements
-        canon_all_lengths = defaultdict(list)
-
-        for u, v in self.bones:
-            if u not in kp_tracklets or v not in kp_tracklets:
-                continue
-
-            cu, cv = self.canon_map[u], self.canon_map[v]
-            canon_key = ";".join(sorted((cu, cv)))
-
-            # Find co-occurring tracklet pairs
-            for tracklet_u in kp_tracklets[u]:
-                for tracklet_v in kp_tracklets[v]:
-                    # Find overlapping frames
-                    common_frames = set(tracklet_u.keys()) & set(tracklet_v.keys())
-
-                    if len(common_frames) < self.min_tracklet_length:
-                        continue
-
-                    # Measure bone lengths at each common frame
-                    lengths = []
-                    for f in common_frames:
-                        pos_u = tracklet_u[f]
-                        pos_v = tracklet_v[f]
-                        d = np.linalg.norm(pos_u - pos_v)
-
-                        if 0 < d < self.max_bone_length:
-                            lengths.append(d)
-
-                    if len(lengths) < 3:
-                        continue
-
-                    # This pair likely represents the same individual
-                    # Compute per-pair statistics
-                    med = np.median(lengths)
-                    mad = median_abs_deviation(lengths)
-
-                    canon_pair_stats[canon_key].append((med, mad))
-                    canon_all_lengths[canon_key].extend(lengths)
-                    self.debug_intra_individual_stds[canon_key].append(mad)
-
-        # Store for debug plots
+        # Aggregation
         self.debug_histograms = {k: np.array(v) for k, v in canon_all_lengths.items()}
-
-        for k, v in canon_pair_stats.items():
-            self.debug_n_tracklet_pairs[k] = len(v)
-
-        # Compute reference length
         ref_canon_key = ";".join(sorted([self.canon_map[k] for k in self.ref_bone]))
 
+        # Calculate reference length
         if ref_canon_key in canon_all_lengths and len(canon_all_lengths[ref_canon_key]) >= self.min_samples:
             ref_length = float(np.median(canon_all_lengths[ref_canon_key]))
         else:
-            # Fallback: use median of all bone lengths
             all_lens = [l for lens in canon_all_lengths.values() for l in lens]
             ref_length = float(np.median(all_lens)) if all_lens else 1.0
             print(f"[Anatomy] Warning: Reference bone has insufficient data. Using fallback: {ref_length:.3f}")
@@ -209,54 +154,31 @@ class AnatomyBootstrapper:
 
         print(f"[Anatomy] Reference length: {ref_length:.3f}")
 
-        # Compute final bone ratios with intra-individual MAD
+        # Calculate ratios
         bones_ratios = {}
-
         for u, v in self.bones:
-            cu, cv = self.canon_map[u], self.canon_map[v]
-            canon_key = ";".join(sorted((cu, cv)))
+            out_key = ";".join(sorted((u, v)))
+            canon_key = ";".join(sorted((self.canon_map[u], self.canon_map[v])))
 
-            pair_data = canon_pair_stats.get(canon_key, [])
             all_lengths = canon_all_lengths.get(canon_key, [])
+            pair_data = canon_pair_stats.get(canon_key, [])
 
             if len(pair_data) < 2 or len(all_lengths) < self.min_samples:
-                print(
-                    f"[Anatomy] Bone {u}-{v}: insufficient data ({len(pair_data)} pairs, {len(all_lengths)} samples). Using fallback.")
-                med_ratio = 1.0
-                mad_ratio = self.MAD_ratio
-                count = len(all_lengths)
-                n_pairs = len(pair_data)
+                med_ratio, mad_ratio = 1.0, self.MAD_ratio
+
             else:
-                # Population median for the ratio
                 med_ratio = float(np.median(all_lengths)) / ref_length
+                # Pooled uncertainty: median of the intra-individual variances
+                mad_ratio = float(np.median([mad for (_, mad) in pair_data])) / ref_length
+                mad_ratio = max(mad_ratio, med_ratio * 0.001)  # floor
 
-                # Pool intra-individual MADs
-                intra_mads = [mad for (med, mad) in pair_data]
-
-                # Use median of the intra-individual MADs as uncertainty estimate
-                pooled_intra_mad = float(np.median(intra_mads))
-                mad_ratio = pooled_intra_mad / ref_length
-
-                # Floor to prevent zero variance
-                if mad_ratio < 1e-4:
-                    mad_ratio = med_ratio * self.MAD_ratio
-
-                count = len(all_lengths)
-                n_pairs = len(pair_data)
-
-            out_key = ";".join(sorted((u, v)))
             bones_ratios[out_key] = {
-                "median_ratio": float(med_ratio),
-                "mad_ratio": float(mad_ratio),
-                "count": count,
-                "n_pairs": n_pairs,
+                "median_ratio": med_ratio, "mad_ratio": mad_ratio,
+                "count": len(all_lengths), "n_pairs": len(pair_data)
             }
 
-        return {
-            "reference_bone": list(self.ref_bone),
-            "median_reference_length": ref_length,
-            "bones_ratios": bones_ratios,
-        }
+        return {"reference_bone": list(self.ref_bone), "median_reference_length": ref_length,
+                "bones_ratios": bones_ratios}
 
     def _fallback_stats(self) -> Dict[str, Any]:
         """Return fallback statistics when no data is available."""
@@ -316,106 +238,85 @@ class DynamicsBootstrapper:
         self.debug_tracks = defaultdict(list)
         self.debug_velocities = defaultdict(list)
 
-    def process(self, soup: SoupData) -> Dict[str, Any]:
-
+    def process(self, soup: PointSoup) -> Dict[str, Any]:
+        """
+        1. Link detections into tracks.
+        2. Vectorized velocity/acceleration calculation.
+        3. Populate debug info for plotting.
+        """
+        import trackpy as tp
         tp.quiet()
+
+        df = soup.to_df()
+
+        # Ensure tracking is performed
+        df['particle'] = -1
+        for name, group in df.groupby('keypoint'):
+            linked = tp.link_df(group, search_range=self.max_displacement, pos_columns=['x', 'y', 'z'], memory=0)
+            df.loc[linked.index, 'particle'] = linked['particle']
+
+        # Clear debug storage for new run
+        self.debug_velocities.clear()
+        self.debug_tracks.clear()
+
         canon_stats = defaultdict(lambda: {"vel": [], "acc": []})
 
-        for kp_id in np.unique(soup.kp_types):
-            if kp_id < 0:
+        # Group by keypoint and particle (tracklet)
+        for (name, particle), track in df.groupby(['keypoint', 'particle']):
+            if particle == -1 or len(track) < self.min_track_length:
                 continue
 
-            name = self.keypoint_names[kp_id]
-            cname = self.canon_map[name]
+            track = track.sort_values('frame')
 
-            mask = soup.kp_types == kp_id
-            df = pd.DataFrame({
-                "frame": soup.frame_indices[mask],
-                "x": soup.positions[mask, 0],
-                "y": soup.positions[mask, 1],
-                "z": soup.positions[mask, 2],
-            })
+            # Split into contiguous segments (no jumps in frame indices)
+            frame_diffs = np.diff(track['frame'].values)
+            jump_indices = np.where(frame_diffs > 1)[0] + 1
+            segments = np.split(track[['x', 'y', 'z']].values, jump_indices)
 
-            if len(df) < self.min_track_length:
-                continue
-
-            try:
-                linked = tp.link_df(
-                    df,
-                    search_range=self.max_displacement,
-                    memory=0,
-                    pos_columns=["x", "y", "z"],
-                )
-            except Exception:
-                continue
-
-            for pid, track in linked.groupby("particle"):
-                if len(track) < self.min_track_length:
+            for seg_pos in segments:
+                if len(seg_pos) < 4:
                     continue
 
-                track = track.sort_values("frame")
-                pos = track[["x", "y", "z"]].values
-                frames = track["frame"].values
+                # Velocity (dx/dt)
+                vel_vec = np.diff(seg_pos, axis=0)
+                vel = np.linalg.norm(vel_vec, axis=1)
 
-                # Split track into contiguous segments for calculation
-                gaps = np.where(np.diff(frames) > 1)[0]
-                start_indices = np.concatenate(([0], gaps + 1))
-                end_indices = np.concatenate((gaps + 1, [len(frames)]))
+                # Acceleration (dv/dt)
+                acc_vec = np.diff(vel_vec, axis=0)
+                acc = np.linalg.norm(acc_vec, axis=1)
 
-                for start, end in zip(start_indices, end_indices):
-                    if end - start < 4:
-                        continue
+                cname = self.canon_map.get(name, name)
+                canon_stats[cname]["vel"].extend(vel)
+                canon_stats[cname]["acc"].extend(acc)
 
-                    seg_pos = pos[start:end]
-                    vel_vec = np.diff(seg_pos, axis=0)
-                    vel = np.linalg.norm(vel_vec, axis=1)
+                self.debug_velocities[cname].extend(vel)
 
-                    acc_vec = np.diff(vel_vec, axis=0)
-                    acc = np.linalg.norm(acc_vec, axis=1)
-
-                    canon_stats[cname]["vel"].extend(vel)
-                    canon_stats[cname]["acc"].extend(acc)
-                    self.debug_velocities[cname].extend(vel)
-
-                # Store track for visualisation
                 if len(self.debug_tracks[cname]) < 200:
                     self.debug_tracks[cname].append(track)
 
+        # Derive final KF parameters
         final_params = {}
-
         for name in self.keypoint_names:
             cname = self.canon_map.get(name, name)
             data = canon_stats.get(cname, {"vel": [], "acc": []})
 
             if len(data["vel"]) < 50:
                 dist = self.graph_dist.get(cname, 2)
-                q = max(self.min_q, 0.5 * dist)
-                params = {
-                    "process_noise": q,
-                    "measurement_noise": self.base_measurement_noise * 2.0,
-                    "association_weight": 0.5,
-                    "source": "topology_prior",
-                }
+                q, w, src = max(self.min_q, 0.5 * dist), 0.5, "topology_prior"
             else:
                 vel_med, vel_mad = robust_stats(data["vel"])
                 acc_med, acc_mad = robust_stats(data["acc"])
-
-                q_robust = acc_med + 2.0 * acc_mad
-                q = max(self.min_q, q_robust)
-
+                q = max(self.min_q, float(acc_med + 2.0 * acc_mad))
                 jitter = vel_mad / self.ref_bone_length
-                jitter_fact = 30.0
-                w = 1.0 / (1.0 + (jitter * jitter_fact) ** 2)
+                w = float(1.0 / (1.0 + (jitter * 30.0) ** 2))
+                src = "data"
 
-                params = {
-                    "process_noise": float(q),
-                    "measurement_noise": self.base_measurement_noise,
-                    "association_weight": float(w),
-                    "source": "data",
-                }
-
-            final_params[name] = params
-
+            final_params[name] = {
+                "process_noise": q,
+                "measurement_noise": self.base_measurement_noise,
+                "association_weight": w,
+                "source": src
+            }
         return final_params
 
 
@@ -440,7 +341,7 @@ if __name__ == "__main__":
 
     # Anatomy
     anat = AnatomyBootstrapper(
-        keypoint_names=soup.keypoint_names,
+        keypoint_names=soup.keypoints,
         bones=bones,
         symmetry_pairs=symmetry,
         MAD_ratio=0.1,
@@ -455,7 +356,7 @@ if __name__ == "__main__":
 
     # Dynamics
     dyn = DynamicsBootstrapper(
-        keypoint_names=soup.keypoint_names,
+        keypoint_names=soup.keypoints,
         bones=bones,
         symmetry_pairs=symmetry,
         fps=100.0,
