@@ -1,8 +1,14 @@
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import Dict, List, Set, Tuple, FrozenSet, Optional, Union, Sequence
+from typing import Dict, List, Tuple, FrozenSet, Optional, Union, Sequence
 import numpy as np
+from filterpy.common import Q_discrete_white_noise
+from filterpy.kalman import KalmanFilter
+from lucida.geometry import align_rigid
+from scipy.linalg import block_diag
 from scipy.spatial import cKDTree
+
+from mokap.pose_reconstruction.configs import TrackerConfig
 
 
 class PointSoup:
@@ -134,9 +140,9 @@ class PointSoup:
             all_frames.extend([self.ray_frame_indices[0], self.ray_frame_indices[-1]])
 
         if not all_frames:
-            return (0, 0)
+            return 0, 0
 
-        return (min(all_frames), max(all_frames))
+        return min(all_frames), max(all_frames)
 
     def __len__(self) -> int:
         """Returns the number of points (standard for SoA objects)."""
@@ -266,47 +272,6 @@ class PointSoup:
 
 ##
 
-# TODO: Improve the datatypes below
-
-@dataclass
-class AssemblyNode:
-    """A node in a candidate skeleton."""
-    kp_name: str
-    point_idx: int  # >=0 for real, <0 for virtual
-    position: np.ndarray
-    confidence: float
-
-    def __eq__(self, other):
-        if not isinstance(other, AssemblyNode):
-            return NotImplemented
-        # Nodes are equal if they refer to the same source point and same role
-        return self.point_idx == other.point_idx and self.kp_name == other.kp_name
-
-    def __hash__(self):
-        # Hash based on unique ID of the point and the role name
-        return hash((self.point_idx, self.kp_name))
-
-
-@dataclass
-class CandidateSkeleton:
-    """Output from assembly stage."""
-
-    nodes: List[AssemblyNode]
-    score: float
-    scale: float
-
-    # For lineage tracking during merges
-    constituent_ids: Tuple[int, ...] = field(default_factory=tuple)
-
-    @property
-    def keypoints(self) -> Dict[str, np.ndarray]:
-        return {n.kp_name: n.position for n in self.nodes}
-
-    @property
-    def point_indices(self) -> Set[int]:
-        return {n.point_idx for n in self.nodes}
-
-
 Bone = FrozenSet[str]
 
 
@@ -337,4 +302,167 @@ class AssembledSkeleton:
             'scale': self.scale,
             'point_indices': self.point_indices,
             'track_idx': self.track_idx
+        }
+
+
+class Tracklet:
+    """
+    Stateful class for a single skeleton in a tracklet.
+    Manages state estimation (position, velocity, scale) wtith a Kalman Filter.
+    """
+
+    def __init__(self,
+                 track_idx: int,
+                 initial_skeleton: AssembledSkeleton,
+                 frame_idx: int,
+                 central_kp: str,
+                 config: TrackerConfig
+                 ):
+
+        self.config = config
+        self.track_idx = track_idx
+        self.age = 0
+        self.time_since_update = 0
+        self.last_update_frame = frame_idx
+
+        # Tracklet health and score metrics
+        self.health = 1.0
+        self.anatomical_integrity = initial_skeleton.score
+
+        self.skeleton: AssembledSkeleton = initial_skeleton
+        self.central_kp = central_kp
+
+        # Kalman Filter for 3D position (x, y, z), 3D velocity (vx, vy, vz), and scale (s)
+        # State vector (dim_x = 7): [x, y, z, vx, vy, vz, s]
+        self.kf = KalmanFilter(dim_x=7, dim_z=4)
+
+        dt = 1.0
+
+        self.kf.F = np.array([[1.0, 0.0, 0.0, dt, 0.0, 0.0, 0.0],
+                              [0.0, 1.0, 0.0, 0.0, dt, 0.0, 0.0],
+                              [0.0, 0.0, 1.0, 0.0, 0.0, dt, 0.0],
+                              [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+                              [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                              [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                              [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]])
+
+        # Measurement function: we measure position (x, y, z) and scale (s)
+        self.kf.H = np.array([[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                              [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                              [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+                              [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]])
+
+        # Process noise
+        pos_vel_q = Q_discrete_white_noise(dim=2, dt=dt, var=self.config.kf_process_noise_pos, block_size=3)
+        scale_q = np.array([[self.config.kf_process_noise_scale]])
+        self.kf.Q = block_diag(pos_vel_q, scale_q)
+
+        # Measurement noise
+        self.kf.R = np.diag([self.config.kf_measurement_noise_pos, self.config.kf_measurement_noise_pos,
+                             self.config.kf_measurement_noise_pos, self.config.kf_measurement_noise_scale])
+
+        # Initial state covariance
+        self.kf.P[3:6, 3:6] *= 1.0
+        self.kf.P[6, 6] = 1.0
+
+        # Initial state
+        self.kf.x[:3] = self.skeleton.keypoints[self.central_kp].reshape(3, 1)
+        self.kf.x[6] = self.skeleton.scale
+
+    def predict(self, current_frame_idx: int):
+        """Predicts the state of the tracklet for the current frame."""
+
+        steps_to_predict = current_frame_idx - self.last_update_frame
+
+        for _ in range(steps_to_predict):
+            self.kf.predict()
+            self.age += 1
+            self.time_since_update += 1
+            self.health *= self.config.health_decay_rate
+
+    def update(self, skeleton: AssembledSkeleton, frame_idx: int):
+        """Updates the tracklet's state with a new skeleton measurement."""
+
+        update_skeleton = skeleton
+        inferred = False
+
+        # If the primary keypoint is missing, try to infer it
+        if self.central_kp not in skeleton.keypoints:
+            inferred_skeleton = self._infer_missing_central_kp(skeleton)
+            if inferred_skeleton:
+                update_skeleton = inferred_skeleton
+                inferred = True
+            else:
+                self.skeleton = skeleton
+                self.time_since_update = 0
+                self.last_update_frame = frame_idx
+                return
+
+        self.skeleton = update_skeleton
+        self.time_since_update = 0
+        self.last_update_frame = frame_idx
+
+        measurement = np.array([*update_skeleton.keypoints[self.central_kp], update_skeleton.scale])
+
+        if inferred:
+            original_R = self.kf.R.copy()
+            self.kf.R[:3, :3] *= self.config.kf_inference_uncertainty_factor
+            self.kf.update(measurement)
+            self.kf.R = original_R
+        else:
+            self.kf.update(measurement)
+
+        # Update health metrics
+        self.anatomical_integrity = self.config.anatomical_score_alpha * skeleton.score + (
+                1 - self.config.anatomical_score_alpha) * self.anatomical_integrity
+
+        if inferred:
+            self.health = 1.0 - self.config.inferred_health_penalty
+        else:
+            self.health = 1.0
+
+    def _infer_missing_central_kp(self, fragment: AssembledSkeleton) -> Optional[AssembledSkeleton]:
+        prev_kps, curr_kps = self.skeleton.keypoints, fragment.keypoints
+        common_names = list(prev_kps.keys() & curr_kps.keys())
+
+        if len(common_names) < self.config.min_kps_for_inference:
+            return None
+
+        points_A = np.array([prev_kps[name] for name in common_names])
+        points_B = np.array([curr_kps[name] for name in common_names])
+
+        R_mat, t_vec = align_rigid(points_A, points_B)
+        inferred_pos = np.array(R_mat) @ prev_kps[self.central_kp] + np.array(t_vec)
+
+        completed_skeleton = AssembledSkeleton(
+            keypoints=fragment.keypoints.copy(),
+            score=fragment.score,
+            scale=fragment.scale,
+            point_indices=fragment.point_indices
+        )
+        completed_skeleton.keypoints[self.central_kp] = inferred_pos
+        return completed_skeleton
+
+    @property
+    def predicted_pose(self) -> Optional[Dict[str, np.ndarray]]:
+        if self.central_kp not in self.skeleton.keypoints:
+            return None
+        translation = self.predicted_position - self.skeleton.keypoints[self.central_kp]
+        return {kp_name: pos + translation for kp_name, pos in self.skeleton.keypoints.items()}
+
+    @property
+    def predicted_position(self) -> np.ndarray:
+        return self.kf.x[:3].flatten()
+
+    @property
+    def predicted_scale(self) -> float:
+        return self.kf.x[6, 0]
+
+    @property
+    def uncertainty(self) -> Dict[str, np.ndarray]:
+        diag_P = self.kf.P.diagonal()
+        return {
+            'position': diag_P[0:3],
+            'velocity': diag_P[3:6],
+            'scale': diag_P[6]
         }
