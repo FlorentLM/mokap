@@ -25,6 +25,7 @@ from lucida.geometry import (
 )
 
 from mokap.pose_reconstruction.datatypes import PointSoup
+from mokap.pose_reconstruction.skeleton import Skeleton
 
 logger = logging.getLogger(__name__)
 
@@ -457,12 +458,12 @@ if __name__ == "__main__":
     output_dir.mkdir(parents=True, exist_ok=True)
 
     rig = CameraRig.load(BASE_DIR / PREFIX / 'calibration' / 'camera_rig.toml')
-    keypoints, bones, symmetry = fileio.load_skeleton_SLEAP(input_dir, symmetry=True)
     df = fileio.load_session(input_dir, session=SESSION)
+    skeleton = Skeleton.from_sleap(input_dir)
 
     reconstructor = Reconstructor(
-        rig,
-        keypoint_names=keypoints,  # TODO: not really needed (just for the soup metadata)
+        rig=rig,
+        keypoint_names=skeleton.keypoints,  # TODO: not really needed (just for the soup metadata)
         min_views=2,
         epipolar_threshold=10.0,
         reprojection_threshold=5.0,
@@ -482,7 +483,7 @@ if __name__ == "__main__":
 
         df_chunk = df.filter(pl.col("frame").is_in(chunk))
         inputs = prepare_reconstruction_input(
-            df_chunk, rig.names, keypoints
+            df_chunk, rig.names, skeleton.keypoints
         )
 
         soup = reconstructor.reconstruct(inputs)
@@ -493,6 +494,7 @@ if __name__ == "__main__":
             total_rays += len(soup.ray_origins)
 
         elapsed = time.time() - t0
+
         frames_done = min(i + CHUNK_SIZE, len(all_frames))
         fps = frames_done / elapsed if elapsed > 0 else 0
         print(f"  Chunk {i // CHUNK_SIZE}: {soup.nb_points} pts, {len(soup.ray_origins)} rays "

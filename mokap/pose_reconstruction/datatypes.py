@@ -192,20 +192,20 @@ class PointSoup:
             return soups[0]
 
         # Combine all unique names from all soups while preserving order as much as possible
-        all_kp_names = []
+        kp_names_union = []
         seen_kp = set()
         for s in soups:
             for name in s.keypoint_names:
                 if name not in seen_kp:
-                    all_kp_names.append(name)
+                    kp_names_union.append(name)
                     seen_kp.add(name)
 
-        all_cam_names = []
+        cam_names_union = []
         seen_cam = set()
         for s in soups:
             for name in s.camera_names:
                 if name not in seen_cam:
-                    all_cam_names.append(name)
+                    cam_names_union.append(name)
                     seen_cam.add(name)
 
         # Prepare concatenated arrays
@@ -226,20 +226,20 @@ class PointSoup:
                 return local_indices
 
             # Create a translation table: map[local_id] = global_id
-            lookup = np.array([global_names.index(name) for name in soup.keypoints], dtype=np.int16)
+            lookup = np.array([global_names.index(name) for name in soup.keypoint_names], dtype=np.int16)
             return lookup[local_indices]
 
         concatenated_data['keypoint_indices'] = np.concatenate([
-            remap_indices(s, 'keypoint_indices', all_kp_names) for s in soups
+            remap_indices(s, 'keypoint_indices', kp_names_union) for s in soups
         ])
         concatenated_data['ray_keypoint_indices'] = np.concatenate([
-            remap_indices(s, 'ray_keypoint_indices', all_kp_names) for s in soups
+            remap_indices(s, 'ray_keypoint_indices', kp_names_union) for s in soups
         ])
 
         return cls(
             **concatenated_data,
-            keypoint_names=all_kp_names,
-            camera_names=all_cam_names,
+            keypoint_names=kp_names_union,
+            camera_names=cam_names_union,
             sort=True
         )
 
