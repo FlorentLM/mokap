@@ -1,60 +1,57 @@
-import logging
 import re
+import numpy as np
 import polars as pl
+import pandas as pd
 import networkx as nx
 from typing import List, Optional, Tuple, Dict
+from scipy.stats import median_abs_deviation
 from mokap.utils import common_prefix_suffix
 
 
-logger = logging.getLogger(__name__)
-
-
-# TODO: Profile the two MWIS solvers a bit more (looks like NX is faster for many calls on small graphs)
-
-def solve_mwis_networkx(graph: nx.Graph) -> List[int]:
+def solve_mwis_networkx(G: nx.Graph) -> List[int]:
     """ Solves the Maximum Weight Independent Set problem using NetworkX """
 
-    if graph.number_of_nodes() == 0:
+    if not G.nodes:
         return []
 
     # The MWC of the complement graph is equivalent to MWIS of the original graph
-    complement_graph = nx.complement(graph)
+    complement_graph = nx.complement(G)
 
     # taking the complement does not copy weights so we have to do it explicitely
-    node_weights = nx.get_node_attributes(graph, 'weight')
+    node_weights = nx.get_node_attributes(G, 'weight')
     nx.set_node_attributes(complement_graph, node_weights, name='weight')
 
     winner_indices, _ = nx.algorithms.clique.max_weight_clique(complement_graph, weight='weight')
     return winner_indices
 
 
-def solve_mwis_SCIP(graph: nx.Graph) -> List[int]:
+def solve_mwis_SCIP(G: nx.Graph) -> List[int]:
     """ Solves the Maximum Weight Independent Set problem using SCIP ILP solver """
+
+    if not G.nodes:
+        return []
 
     from pyscipopt import Model
 
     model = Model("mwis")
     model.hideOutput()
 
-    # Create a binary variable for each node in the graph
-    # The variable will be 1 if the node is in the solution, 0 otherwise
-    nodes = list(graph.nodes())
+    # Create binary variable for each node in the graph
+    # (1 if the node is in the solution, 0 if not)
+    nodes = list(G.nodes())
     variables = {node: model.addVar(vtype="B", name=f"x_{node}") for node in nodes}
 
-    # Set the objective function: Maximize the sum of the weights of the selected nodes
-    objective_terms = [graph.nodes[node]['weight'] * variables[node] for node in nodes]
+    # Objective function: maximize sum of weights of selected nodes
+    objective_terms = [G.nodes[node]['weight'] * variables[node] for node in nodes]
     model.setObjective(sum(objective_terms), "maximize")
 
-    # Add constraints: For every edge (u, v) in the conflict graph, the two nodes
-    # cannot be chosen together. This is the "independent set" constraint
+    # Constraints: for every edge (u, v) in the conflict graph, u and v cannot be chosen together
     # x_u + x_v <= 1
-    for u, v in graph.edges():
+    for u, v in G.edges():
         model.addCons(variables[u] + variables[v] <= 1)
 
-    # Solve the model
     model.optimize()
 
-    # Extract the solution
     solution_nodes = []
     if model.getStatus() == "optimal":
         for node in nodes:
@@ -64,6 +61,42 @@ def solve_mwis_SCIP(graph: nx.Graph) -> List[int]:
 
     return solution_nodes
 
+
+def solve_mwis_greedy(G: nx.Graph) -> List[int]:
+    """
+    Approximation of MWIS: iteratively picks the highest weight node and removes its neighbours.
+    Much faster, but might miss the optimal combination.
+    """
+    if not G.nodes:
+        return []
+
+    # Sort nodes by weight (highest first)
+    nodes_sorted = sorted(G.nodes, key=lambda n: G.nodes[n].get('weight', 0), reverse=True)
+
+    solution = []
+    forbidden = set()
+
+    for node in nodes_sorted:
+        if node not in forbidden:
+            solution.append(node)
+            # Once a node is picked, its neighbuors can't be (conflict)
+            forbidden.update(G.neighbors(node))
+
+    return solution
+
+
+def solve_mwis(G: nx.Graph, method='networkx') -> List[int]:
+    if method == 'greedy':
+        return solve_mwis_greedy(G)
+    elif method == 'scip':
+        return solve_mwis_SCIP(G)
+    else:
+        return solve_mwis_networkx(G)
+
+
+##
+
+# TODO: would probably be good to have a Skeleton class that keeps the canonical map with all the bones info (and stats)
 
 def create_canonical_map(
         keypoint_names: List[str],
@@ -106,13 +139,47 @@ def create_canonical_map(
             canonical_name = names_delimiter_regex.sub('', kp_name).lower()
             canonical_map[kp_name] = canonical_name
 
-    logger.debug("Generated Canonical Keypoint Map for Smoother:")
-    unique_types = sorted(list(set(canonical_map.values())))
-    logger.debug(f"  -> Found types: {unique_types}")
-    example_kp = keypoint_names[2]
-    logger.debug(f"  -> Example: '{example_kp}' maps to '{canonical_map.get(example_kp)}'")
+    # print("Generated Canonical keypoint map:")
+    # unique_types = sorted(list(set(canonical_map.values())))
+    # print(f"  -> Found types: {unique_types}")
+    # example_kp = keypoint_names[2]
+    # print(f"  -> Example: '{example_kp}' maps to '{canonical_map.get(example_kp)}'")
 
     return canonical_map
+
+
+def robust_stats(data: List[float], fallback_val: float = np.nan) -> Tuple[float, float]:
+    """Returns median and MAD, safe for empty lists."""
+    if len(data) == 0:
+        return fallback_val, fallback_val
+    arr = np.asarray(data)
+    # scale 'normal' approximates std dev consistency
+    return float(np.median(arr)), float(median_abs_deviation(arr, scale="normal"))
+
+
+def plot_tracks_3d(ax, tracks_df: pd.DataFrame, title: str):
+    ax.set_title(title)
+    pids = tracks_df["particle"].unique()
+    if len(pids) > 200:
+        pids = np.random.choice(pids, 200, replace=False)
+    for pid in pids:
+        t = tracks_df[tracks_df["particle"] == pid].sort_values("frame")
+        ax.plot(t.x, t.y, t.z, linewidth=0.5, alpha=0.6)
+
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z")
+
+    limits = np.array([
+        ax.get_xlim3d(),
+        ax.get_ylim3d(),
+        ax.get_zlim3d(),
+    ])
+    centers = limits.mean(axis=1)
+    radius = 0.5 * np.max(limits[:, 1] - limits[:, 0])
+    ax.set_xlim3d(centers[0] - radius, centers[0] + radius)
+    ax.set_ylim3d(centers[1] - radius, centers[1] + radius)
+    ax.set_zlim3d(centers[2] - radius, centers[2] + radius)
 
 
 # TODO: This will be removed once fileio is cleaned and uses polars for all disk-persistent data

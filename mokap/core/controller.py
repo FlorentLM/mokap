@@ -16,7 +16,7 @@ from PIL import Image
 from mokap.core.cameras import CameraFactory, AbstractCamera, CAMERAS_COLOURS
 from mokap.core.triggers import AbstractTrigger, CameraTrigger, RaspberryTrigger, ArduinoTrigger, FTDITrigger
 from mokap.core.writers import FrameWriter, ImageSequenceWriter, FFmpegWriter
-from mokap.utils import fileio
+from mokap.utils import fileio, general
 from mokap.utils.system import setup_ulimit, safe_replace
 
 logger = logging.getLogger(__name__)
@@ -428,7 +428,7 @@ class CameraController:
             self._trigger_instance.stop()
 
         # Clean up session folder if it's empty
-        fileio.rm_if_empty(self.full_path)
+        general.rm_if_empty(self.full_path)
 
         logger.info("Acquisition stopped.")
 
@@ -796,7 +796,7 @@ class CameraController:
         if not name:
             name = datetime.now().strftime('%y%m%d-%H%M%S')
 
-        new_folder = fileio.exists_check(self._base_folder / name)
+        new_folder = general.exists_check(self._base_folder / name)
         new_folder.mkdir(parents=True, exist_ok=False)
         self._session_name = new_folder.name
 

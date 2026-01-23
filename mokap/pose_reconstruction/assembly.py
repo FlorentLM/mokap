@@ -3,22 +3,21 @@ from typing import Tuple, Optional, Dict, List, FrozenSet
 from itertools import combinations
 from collections import defaultdict
 import networkx as nx
-
 import numpy as np
-
 from alive_progress import alive_bar
 from filterpy.common import Q_discrete_white_noise
 from filterpy.kalman import KalmanFilter
 from scipy.linalg import block_diag
 from scipy.optimize import linear_sum_assignment
 from scipy.spatial import cKDTree
+from scipy.stats import median_abs_deviation
 
-from mokap.utils import fileio
 from lucida.geometry import align_rigid
 
-from mokap.reconstruction.config import AssemblerConfig, TrackerConfig, AnatomyConfig
-from mokap.reconstruction.datatypes import Bone, AssembledSkeleton, CandidateSkeleton, SoupData
-from mokap.reconstruction.utils import solve_mwis_networkx
+from mokap.utils import fileio
+from mokap.pose_reconstruction.datatypes import Bone, AssembledSkeleton, CandidateSkeleton, SoupData
+from mokap.pose_reconstruction.configs import AnatomyConfig, AssemblerConfig, TrackerConfig
+from mokap.pose_reconstruction.utils import solve_mwis
 
 
 logger = logging.getLogger(__name__)
@@ -26,8 +25,8 @@ logger = logging.getLogger(__name__)
 
 class Tracklet:
     """
-    Stateful class that represents a single skeleton in a tracklet
-    Manages state estimation (position, velocity, scale) using a Kalman Filter
+    Stateful class for a single skeleton in a tracklet.
+    Manages state estimation (position, velocity, scale) wtith a Kalman Filter.
     """
 
     def __init__(self,
@@ -72,13 +71,13 @@ class Tracklet:
                               [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]])
 
         # Process noise
-        pos_vel_q = Q_discrete_white_noise(dim=2, dt=dt, var=self.config.KF_PROCESS_NOISE_POS, block_size=3)
-        scale_q = np.array([[self.config.KF_PROCESS_NOISE_SCALE]])
+        pos_vel_q = Q_discrete_white_noise(dim=2, dt=dt, var=self.config.kf_process_noise_pos, block_size=3)
+        scale_q = np.array([[self.config.kf_process_noise_scale]])
         self.kf.Q = block_diag(pos_vel_q, scale_q)
 
         # Measurement noise
-        self.kf.R = np.diag([self.config.KF_MEASUREMENT_NOISE_POS, self.config.KF_MEASUREMENT_NOISE_POS,
-                             self.config.KF_MEASUREMENT_NOISE_POS, self.config.KF_MEASUREMENT_NOISE_SCALE])
+        self.kf.R = np.diag([self.config.kf_measurement_noise_pos, self.config.kf_measurement_noise_pos,
+                             self.config.kf_measurement_noise_pos, self.config.kf_measurement_noise_scale])
 
         # Initial state covariance
         self.kf.P[3:6, 3:6] *= 1.0
@@ -97,7 +96,7 @@ class Tracklet:
             self.kf.predict()
             self.age += 1
             self.time_since_update += 1
-            self.health *= self.config.HEALTH_DECAY_RATE
+            self.health *= self.config.health_decay_rate
 
     def update(self, skeleton: AssembledSkeleton, frame_idx: int):
         """Updates the tracklet's state with a new skeleton measurement."""
@@ -126,18 +125,18 @@ class Tracklet:
 
         if inferred:
             original_R = self.kf.R.copy()
-            self.kf.R[:3, :3] *= self.config.KF_INFERENCE_UNCERTAINTY_FACTOR
+            self.kf.R[:3, :3] *= self.config.kf_inference_uncertainty_factor
             self.kf.update(measurement)
             self.kf.R = original_R
         else:
             self.kf.update(measurement)
 
         # Update health metrics
-        self.anatomical_integrity = self.config.ANATOMICAL_SCORE_ALPHA * skeleton.score + (
-                1 - self.config.ANATOMICAL_SCORE_ALPHA) * self.anatomical_integrity
+        self.anatomical_integrity = self.config.anatomical_score_alpha * skeleton.score + (
+                1 - self.config.anatomical_score_alpha) * self.anatomical_integrity
 
         if inferred:
-            self.health = 1.0 - self.config.INFERRED_HEALTH_PENALTY
+            self.health = 1.0 - self.config.inferred_health_penalty
         else:
             self.health = 1.0
 
@@ -145,7 +144,7 @@ class Tracklet:
         prev_kps, curr_kps = self.skeleton.keypoints, fragment.keypoints
         common_names = list(prev_kps.keys() & curr_kps.keys())
 
-        if len(common_names) < self.config.MIN_KPS_FOR_INFERENCE:
+        if len(common_names) < self.config.min_kps_for_inference:
             return None
 
         points_A = np.array([prev_kps[name] for name in common_names])
@@ -217,7 +216,7 @@ class SkeletonAssembler:
         non_leaf_nodes = set(degrees.keys()) - self.leaf_nodes
         if non_leaf_nodes:
             sorted_anchors = sorted(list(non_leaf_nodes), key=lambda node: degrees[node], reverse=True)
-            self.central_anchors = set(sorted_anchors[:self.config.MIN_CENTRAL_ANCHORS])
+            self.central_anchors = set(sorted_anchors[:self.config.min_central_anchors])
             self.secondary_anchors = non_leaf_nodes - self.central_anchors
         else:
             self.central_anchors = set()
@@ -227,18 +226,22 @@ class SkeletonAssembler:
 
         # Temporary storage for the current frame
         self._current_soup: Optional[SoupData] = None
-        self._current_virtual_points: Dict[int, Dict] = {}  # Negative indices -> {pos, conf, kp_type}
+        self._current_virtual_points: Dict[int, Dict] = {}  # negative indices -> {pos, conf, kp_type}
         self._current_kdtree: Optional[cKDTree] = None
         self._kp_to_indices: Dict[str, List[int]] = defaultdict(list)
         self._kp_to_rays: Dict[str, List[int]] = defaultdict(list)
 
-    def update_bone_stats(self, new_stats: Dict):
-        self.reference_bone: Bone = frozenset(new_stats['reference_bone'])
-        self.median_ref_len = new_stats['median_reference_length']
-        self.bones_ratios = {frozenset(k.split(';')): v for k, v in new_stats['bones_ratios'].items()}
+    def update_bone_stats(self, stats_dict: Dict):
+        if 'anatomy' in stats_dict:
+            stats_dict = stats_dict['anatomy']
+
+        self.reference_bone: Bone = frozenset(stats_dict['reference_bone'])
+        self.median_ref_len = stats_dict['median_reference_length']
+        self.bones_ratios = {frozenset(k.split(';')): v for k, v in stats_dict['bones_ratios'].items()}
 
     def _reset_frame_context(self, soup: SoupData):
         """Prepares lookup structures for the current frame."""
+
         self._current_soup = soup
         self._current_virtual_points = {}
 
@@ -303,7 +306,7 @@ class SkeletonAssembler:
 
                 candidate = self._grow_skeleton(
                     (anchor_type, seed_idx),
-                    score_debt_tol=self.config.SCORE_DEBT_TOLERANCE
+                    score_debt_tol=self.config.score_debt_tolerance
                 )
 
                 if candidate:
@@ -329,9 +332,9 @@ class SkeletonAssembler:
         return candidate_skeletons
 
     def _grow_skeleton(self,
-            anchor_node: Tuple[str, int],
-            score_debt_tol: float
-        ) -> Optional[CandidateSkeleton]:
+                       anchor_node: Tuple[str, int],
+                       score_debt_tol: float
+                       ) -> Optional[CandidateSkeleton]:
         """
         Grows a skeleton from an anchor and tries to rescue single view observations.
         """
@@ -347,7 +350,7 @@ class SkeletonAssembler:
         num_bones = 0
 
         # Heuristic: don't search infinitely far
-        max_search_radius = self.median_ref_len * self.config.MAX_BONE_LEN
+        max_search_radius = self.median_ref_len * self.config.max_bone_len
 
         while True:
             current_kp_names = {node[0] for node in current_nodes}
@@ -389,15 +392,16 @@ class SkeletonAssembler:
 
             # Scale
             current_step_scale = self._get_skeleton_scale(current_kps)
-            if not (self.config.MIN_SANE_SCALE < current_step_scale < self.config.MAX_SANE_SCALE):
+            if not (self.config.min_sane_scale < current_step_scale < self.config.max_sane_scale):
                 break
 
             # Baseline scores
             current_avg_score = (total_bone_score_sum / num_bones) if num_bones > 0 else 0
             current_base_score = current_avg_score * len(current_nodes)
             current_quality_bonus = 0.0
-            if current_avg_score > self.config.HIGH_QUALITY_THRESHOLD:
-                current_quality_bonus = current_base_score * (self.config.QUALITY_BONUS_FACTOR - 1.0)
+
+            if current_avg_score > self.config.high_quality_threshold:
+                current_quality_bonus = current_base_score * (self.config.quality_bonus_factor - 1.0)
             current_growth_score = current_base_score + current_quality_bonus
 
             best_extension = None
@@ -439,7 +443,7 @@ class SkeletonAssembler:
                 new_base_score = new_avg_score * new_num_nodes
 
                 # Quality bonus
-                bonus_factor = self.config.QUALITY_BONUS_FACTOR - 1.0
+                bonus_factor = self.config.quality_bonus_factor - 1.0
                 normalized_quality = max(0, (new_avg_score - 75.0) / 25.0)
                 new_quality_bonus = new_base_score * bonus_factor * normalized_quality
 
@@ -467,7 +471,7 @@ class SkeletonAssembler:
                 break
 
         # Finish
-        if len(current_nodes) < self.config.MIN_KPS_FOR_SKELETON:
+        if len(current_nodes) < self.config.min_kps_for_skeleton:
             return None
 
         final_avg_score = (total_bone_score_sum / num_bones) if num_bones > 0 else 0.0
@@ -479,10 +483,10 @@ class SkeletonAssembler:
         return self._create_candidate(frozenset(current_nodes), final_avg_score, final_scale)
 
     def _single_view_rescue(self,
-            anchor_pos: np.ndarray,
-            anchor_kp: str,
-            target_kp: str
-        ) -> List[Tuple[int, str]]:
+                            anchor_pos: np.ndarray,
+                            anchor_kp: str,
+                            target_kp: str
+                            ) -> List[Tuple[int, str]]:
         """
         Intersects rays for target_kp with sphere around anchor_pos.
         Returns list of (virtual_idx, kp_type) tuples.
@@ -504,7 +508,6 @@ class SkeletonAssembler:
         dirs = self._current_soup.ray_directions[ray_indices_arr]
 
         # Ray-sphere intersection
-        # TODO: Maybe make a jitted version
         V = origins - anchor_pos
         b = 2.0 * np.einsum('ij,ij->i', V, dirs)
         c = np.einsum('ij,ij->i', V, V) - (r ** 2)
@@ -561,7 +564,7 @@ class SkeletonAssembler:
             'pos': pos,
             'conf': conf * 0.8,  # penalty for being inferred from single view
             'kp_type': kp_type,
-            'source_ray_idx': source_ray_idx    # ray source index (needed to make the candidates mutually exclusive)
+            'source_ray_idx': source_ray_idx  # ray source index (needed to make the candidates mutually exclusive)
         }
         return next_idx
 
@@ -584,7 +587,7 @@ class SkeletonAssembler:
 
             kps = {leaf_kp: leaf_pos, parent_kp: p_pos}
             scale = self._get_skeleton_scale(kps)
-            if not (self.config.MIN_SANE_SCALE < scale < self.config.MAX_SANE_SCALE):
+            if not (self.config.min_sane_scale < scale < self.config.max_sane_scale):
                 continue
 
             # Score it
@@ -598,7 +601,7 @@ class SkeletonAssembler:
 
         # Check for orphan parent points
         # (only if we didn't find a high-quality real connection)
-        if best_score < self.config.MIN_BONE_SCORE_FOR_FRAGMENT:
+        if best_score < self.config.min_bone_score_for_fragment:
             orphans = self._single_view_rescue(leaf_pos, leaf_kp, parent_kp)
 
             for vp_idx, _ in orphans:
@@ -606,7 +609,7 @@ class SkeletonAssembler:
 
                 kps = {leaf_kp: leaf_pos, parent_kp: vp_pos}
                 scale = self._get_skeleton_scale(kps)  # estimate scale
-                if not (self.config.MIN_SANE_SCALE < scale < self.config.MAX_SANE_SCALE):
+                if not (self.config.min_sane_scale < scale < self.config.max_sane_scale):
                     continue
 
                 nodes = frozenset([(leaf_kp, leaf_idx), (parent_kp, vp_idx)])
@@ -617,7 +620,7 @@ class SkeletonAssembler:
                     best_score = score
                     best_cand_data = (vp_idx, vp_pos)
 
-        if best_cand_data and best_score > self.config.MIN_BONE_SCORE_FOR_FRAGMENT:
+        if best_cand_data and best_score > self.config.min_bone_score_for_fragment:
             p_idx, p_pos = best_cand_data
             nodes = frozenset([(leaf_kp, leaf_idx), (parent_kp, p_idx)])
 
@@ -660,7 +663,7 @@ class SkeletonAssembler:
             return None
 
         # Scale consistency
-        if abs(skel_A.scale - skel_B.scale) > self.config.MERGE_SCALE_TOLERANCE:
+        if abs(skel_A.scale - skel_B.scale) > self.config.merge_scale_tolerance:
             return None
         combined_scale = (skel_A.scale + skel_B.scale) / 2.0
 
@@ -682,7 +685,7 @@ class SkeletonAssembler:
                     if score > best_link_score:
                         best_link_score = score
 
-        if best_link_score < self.config.MERGE_LINKING_BONE_THRESHOLD:
+        if best_link_score < self.config.merge_linking_bone_threshold:
             return None
 
         # Construct merged
@@ -698,10 +701,10 @@ class SkeletonAssembler:
         return self._create_candidate(combined_nodes, new_avg_score, combined_scale)
 
     def _create_candidate(self,
-            nodes: FrozenSet[Tuple[str, int]],
-            avg_score: float,
-            scale: float
-         ) -> CandidateSkeleton:
+                          nodes: FrozenSet[Tuple[str, int]],
+                          avg_score: float,
+                          scale: float
+                          ) -> CandidateSkeleton:
 
         if avg_score <= 0:
             return CandidateSkeleton(nodes=nodes, competition_score=0.0, anatomical_score=0.0, scale=scale)
@@ -710,8 +713,8 @@ class SkeletonAssembler:
         base_score = avg_score * num_nodes
 
         quality_bonus = 0.0
-        if avg_score > self.config.HIGH_QUALITY_THRESHOLD:
-            quality_bonus = base_score * (self.config.QUALITY_BONUS_FACTOR - 1.0)
+        if avg_score > self.config.high_quality_threshold:
+            quality_bonus = base_score * (self.config.quality_bonus_factor - 1.0)
 
         competition_score = base_score + quality_bonus
         anatomical_score = avg_score * num_nodes
@@ -741,16 +744,16 @@ class SkeletonAssembler:
         if not scales:
             return 1.0
 
-        sane_scales = [s for s in scales if self.config.MIN_SANE_SCALE <= s <= self.config.MAX_SANE_SCALE]
+        sane_scales = [s for s in scales if self.config.min_sane_scale <= s <= self.config.max_sane_scale]
 
         return float(np.median(sane_scales)) if sane_scales else 1.0
 
     def _score_bone(self,
-            bone: Bone,
-            keypoints: Dict[str, np.ndarray],
-            nodes: FrozenSet[Tuple[str, int]],
-            scale: float
-        ) -> float:
+                    bone: Bone,
+                    keypoints: Dict[str, np.ndarray],
+                    nodes: FrozenSet[Tuple[str, int]],
+                    scale: float
+                    ) -> float:
 
         if bone not in self.bones_ratios:
             return 0.0
@@ -767,18 +770,95 @@ class SkeletonAssembler:
         _, conf2 = self._get_pos_conf(node2[1])
 
         expected_len = self.median_ref_len * stats['median_ratio'] * scale
-        expected_mad = self.median_ref_len * stats['mad_ratio'] * scale + self.config.BONE_SCORE_MAD_EPSILON
+        expected_mad = self.median_ref_len * stats['mad_ratio'] * scale + self.config.bone_score_mad_epsilon
         distance = np.linalg.norm(p1 - p2)
 
         num_mads_away = abs(distance - expected_len) / (expected_mad + 1e-6)
 
-        if num_mads_away > self.config.BONE_SCORE_MAD_THRESH:
+        if num_mads_away > self.config.bone_score_mad_thresh:
             return -1000.0
 
         length_score = np.exp(-0.5 * num_mads_away ** 2)
         confidence_score = (conf1 + conf2) / 2.0
 
         return length_score * confidence_score
+
+
+class AnatomyLearner:
+    """
+    Online learner that refines bone lengths based on high-confidence tracked skeletons.
+    """
+
+    def __init__(self, initial_stats: dict, config: AnatomyConfig):
+
+        self.reference_bone: FrozenSet[str] = frozenset(initial_stats['reference_bone'])
+        self.config = config
+
+        self.ref_lengths = []
+        self.bones_ratios: Dict[FrozenSet[str], List[float]] = defaultdict(list)
+
+        self.current_stats = initial_stats
+        self.is_stale = True
+        self.measurements_count = 0
+
+    def add_sample(self, skeleton: AssembledSkeleton):
+        """Adds a new high-quality skeleton to the measurement pool."""
+
+        # Only learn from high quality skeletons
+        if skeleton.score < self.config.learner_min_score_for_learning:
+            return
+
+        if not self.reference_bone.issubset(skeleton.keypoints):
+            return
+
+        kp1_name, kp2_name = tuple(self.reference_bone)
+        p1, p2 = skeleton.keypoints[kp1_name], skeleton.keypoints[kp2_name]
+        ref_len = np.linalg.norm(p1 - p2)
+
+        # Sanity check on reference length
+        if not (self.config.learner_min_ref_bone_len < ref_len < self.config.learner_max_ref_bone_len):
+            return
+
+        self.ref_lengths.append(ref_len)
+
+        # Collect ratios for all present bones
+        for bone_str in self.current_stats['bones_ratios']:
+            kp1, kp2 = bone_str.split(';')
+            if kp1 in skeleton.keypoints and kp2 in skeleton.keypoints:
+                bone_len = np.linalg.norm(skeleton.keypoints[kp1] - skeleton.keypoints[kp2])
+                self.bones_ratios[frozenset((kp1, kp2))].append(bone_len / ref_len)
+
+        self.measurements_count += 1
+        if self.measurements_count >= self.config.learner_min_samples_for_update:
+            self.is_stale = True
+
+    def get_stats(self) -> dict:
+        """Returns the current best stats, re-computing them if enough new data has arrived."""
+        if not self.is_stale:
+            return self.current_stats
+
+        # Recompute stats
+        new_bones_ratios = {}
+        for b, r in self.bones_ratios.items():
+            if len(r) > self.config.learner_min_samples_for_update:
+                bone_key = ';'.join(sorted(list(b)))
+                new_bones_ratios[bone_key] = {
+                    'median_ratio': float(np.median(r)),
+                    'mad_ratio': float(median_abs_deviation(r))
+                }
+
+        if not new_bones_ratios:
+            self.is_stale = False
+            return self.current_stats
+
+        self.current_stats['bones_ratios'].update(new_bones_ratios)
+
+        if self.ref_lengths:
+            self.current_stats['median_reference_length'] = float(np.median(self.ref_lengths))
+
+        self.is_stale = False
+        self.measurements_count = 0
+        return self.current_stats
 
 
 class MultiObjectTracker:
@@ -813,11 +893,11 @@ class MultiObjectTracker:
         # Association bonus
         bonuses = self._calculate_association_bonuses(all_candidates, get_pos)
         for i, cand in enumerate(all_candidates):
-            cand.competition_score += bonuses[i] * self.config.CONTINUITY_BONUS
+            cand.competition_score += bonuses[i] * self.config.continuity_bonus
 
         # Conflict solver
         conflict_graph = self._build_conflict_graph(all_candidates, get_pos, virtual_registry)
-        winner_indices = solve_mwis_networkx(conflict_graph)
+        winner_indices = solve_mwis(conflict_graph, method='networkx')
 
         # Reify winners into AssembledSkeletons
         winning_skeletons = []
@@ -871,15 +951,15 @@ class MultiObjectTracker:
     def prune_tracklets(self):
         self.tracklets = [
             t for t in self.tracklets
-            if t.time_since_update <= self.config.MAX_TRACKLET_AGE and not np.sum(
-                t.uncertainty['position']) > self.config.UNCERTAINTY_THRESHOLD
+            if t.time_since_update <= self.config.max_tracklet_age and not np.sum(
+                t.uncertainty['position']) > self.config.uncertainty_threshold
         ]
 
     def _build_conflict_graph(self,
-            candidates: List[CandidateSkeleton],
-            pos_lookup,
-            virtual_registry: Dict[int, Dict]
-        ) -> nx.Graph:
+                              candidates: List[CandidateSkeleton],
+                              pos_lookup,
+                              virtual_registry: Dict[int, Dict]
+                              ) -> nx.Graph:
 
         conflict_graph = nx.Graph()
         num_candidates = len(candidates)
@@ -933,7 +1013,7 @@ class MultiObjectTracker:
             # Jaccard similarity: if most of the points are in the same positions then they're likely clones
             dist_sq = np.sum((centroids[i] - centroids[j]) ** 2)
 
-            if dist_sq < self.config.CONFLICT_SOLVER_BROAD_RADIUS ** 2:
+            if dist_sq < self.config.conflict_solver_broad_radius ** 2:
                 kps_i = {node[0]: pos_lookup(node[1]) for node in cand_i.nodes}
                 kps_j = {node[0]: pos_lookup(node[1]) for node in cand_j.nodes}
 
@@ -945,10 +1025,10 @@ class MultiObjectTracker:
 
                 proximal_count = sum(
                     1 for name in common if
-                    np.linalg.norm(kps_i[name] - kps_j[name]) < self.config.CONFLICT_SOLVER_PROXIMITY_RADIUS
+                    np.linalg.norm(kps_i[name] - kps_j[name]) < self.config.conflict_solver_proximity_radius
                 )
 
-                if proximal_count / len(union) > self.config.CONFLICT_SOLVER_JACCARD_THRESHOLD:
+                if proximal_count / len(union) > self.config.conflict_solver_jaccard_threshold:
                     conflict_graph.add_edge(i, j)
 
         return conflict_graph
@@ -975,11 +1055,11 @@ class MultiObjectTracker:
                     continue
 
                 common_kps = pred_pose.keys() & skel_kps.keys()
-                if len(common_kps) < self.config.ASSOCIATION_MIN_KPS:
+                if len(common_kps) < self.config.association_min_kps:
                     continue
 
                 mean_dist_sq = sum(np.sum((pred_pose[kp] - skel_kps[kp]) ** 2) for kp in common_kps) / len(common_kps)
-                bonus = np.exp(-0.5 * mean_dist_sq / (self.config.ASSOCIATION_RADIUS ** 2))
+                bonus = np.exp(-0.5 * mean_dist_sq / (self.config.association_radius ** 2))
 
                 if bonus > max_bonus:
                     max_bonus = bonus
@@ -989,9 +1069,9 @@ class MultiObjectTracker:
         return bonuses
 
     def _build_final_assignment_cost_matrix(self,
-            tracklets: List[Tracklet],
-            skeletons: List[AssembledSkeleton]
-        ) -> np.ndarray:
+                                            tracklets: List[Tracklet],
+                                            skeletons: List[AssembledSkeleton]
+                                            ) -> np.ndarray:
 
         cost_matrix = np.full((len(tracklets), len(skeletons)), 1e9)
 
@@ -1004,17 +1084,17 @@ class MultiObjectTracker:
             for j, skel in enumerate(skeletons):
                 common_kps = pred_pose.keys() & skel.keypoints.keys()
 
-                if len(common_kps) < self.config.ASSOCIATION_MIN_KPS:
+                if len(common_kps) < self.config.association_min_kps:
                     continue
 
                 mean_dist_sq = sum(np.sum((pred_pose[kp] - skel.keypoints[kp]) ** 2) for kp in common_kps) / len(
                     common_kps)
 
-                if mean_dist_sq > self.config.ASSOCIATION_RADIUS ** 2:
+                if mean_dist_sq > self.config.association_radius ** 2:
                     continue
 
-                cost = (self.config.COST_POSE_DISTANCE_WEIGHT * mean_dist_sq +
-                        self.config.COST_SKELETON_SCORE_WEIGHT * skel.score)
+                cost = (self.config.cost_pose_distance_weight * mean_dist_sq +
+                        self.config.cost_skeleton_score_weight * skel.score)
                 cost_matrix[i, j] = cost
 
         return cost_matrix
@@ -1025,46 +1105,42 @@ if __name__ == '__main__':
     import json
     from pathlib import Path
     import numpy as np
-
-    from mokap.reconstruction.anatomy import StatsBootstrapper, AnatomyLearner
-    from mokap.reconstruction.datatypes import SoupData
+    from mokap.pose_reconstruction.datatypes import SoupData
 
     # Configuration
-    folder = Path().home() / 'Desktop' / '3d_ant_data'
-    prefix = '240905-1616'
-    session = 22
+    BASE_DIR = Path.home() / 'Desktop' / '3d_ant_data'
+    PREFIX = '240905-1616'
+    SESSION = 22
+
+    DEBUG_PLOT = True
+
+    input_dir = BASE_DIR / PREFIX / 'inputs' / 'tracking'
+    output_dir = BASE_DIR / PREFIX / 'outputs'
+
+    soup_file = output_dir / f"soup_session{SESSION}.pkl"
+    bone_stats_file = output_dir / "skeleton_stats.json"
+    tracklets_file = output_dir / f'tracklets_session{SESSION}.pkl'
 
     anatomy_cfg = AnatomyConfig()
     assembler_cfg = AssemblerConfig()
     tracker_cfg = TrackerConfig()
 
-    stats_output_file = folder / prefix / 'outputs' / f'bone_stats_session{session}.json'
-    points_soup_file = folder / prefix / 'outputs' / f'points_soup_session{session}.pkl'
-    skeleton_input_file = folder / prefix / 'inputs' / 'tracking'
-    tracklets_output_file = folder / prefix / 'outputs' / f'tracklets_session{session}.pkl'
-
-    # Load data
-    print(f"Loading soup from {points_soup_file}...")
-    with open(points_soup_file, 'rb') as f:
+    print(f"Loading soup from {soup_file}...")
+    with open(soup_file, 'rb') as f:
         soup: SoupData = pickle.load(f)
 
     if soup.num_points == 0:
         print("Soup is empty (no 3D points). Exiting.")
         exit()
 
-    # Load metadata
-    keypoints, bones, symmetry = fileio.load_skeleton_SLEAP(skeleton_input_file, symmetry=True)
+    keypoints, bones, symmetry = fileio.load_skeleton_SLEAP(input_dir, symmetry=True)
 
-    # Bootstrap anatomy
-    bootstrapper = StatsBootstrapper(
-        output_path=stats_output_file,
-        bones_list=bones,
-        symmetry_map=symmetry,
-        prior_stats_path=None,
-        bootstrap_data=soup,
-        config=anatomy_cfg
-    )
-    bone_stats = bootstrapper.get_initial_stats()
+    print(f"Loading stats from {bone_stats_file}...")
+    with open(bone_stats_file, 'r') as f:
+        full_stats = json.load(f)
+
+    # Extract only the anatomy part for the Assembler
+    bone_stats = full_stats.get('anatomy', full_stats)
 
     # Initialise pipeline
     anatomy_learner = AnatomyLearner(initial_stats=bone_stats, config=anatomy_cfg)
@@ -1082,34 +1158,31 @@ if __name__ == '__main__':
 
     unique_frames = np.unique(soup.frame_indices)
     min_frame, max_frame = int(unique_frames[0]), int(unique_frames[-1])
-
     tracklets_by_id = defaultdict(list)
 
     print(f"Tracking from frame {min_frame} to {max_frame}...")
-
     with alive_bar(total=(max_frame - min_frame + 1), force_tty=True) as bar:
         for frame_idx in range(min_frame, max_frame + 1):
 
-            # Update anatomical model with learning
             current_stats = anatomy_learner.get_stats()
             assembler.update_bone_stats(current_stats)
 
-            frame_soup = soup.get_frame_slice(frame_idx)
+            frame_soup = soup.get_frame(frame_idx)
 
             # Check if we have any data (Points or Rays) to process
             if frame_soup.num_points > 0 or len(frame_soup.ray_origins) > 0:
                 active_tracklets = tracker.update(frame_soup, frame_idx)
             else:
-                # Coasting / Prediction only
+                # Coasting / prediction only
                 active_tracklets = tracker.predict_only(frame_idx)
 
             # Store results
             for tracklet in active_tracklets:
-                # Feed higher quality skeletons to the learner
+
+                # Only learn if the tracklet was actually updated this frame (not just predicted)
                 if tracklet.last_update_frame == frame_idx:
                     anatomy_learner.add_sample(tracklet.skeleton)
 
-                # Serialize to dictionary for Stage 3 (Linking)
                 skel_dict = tracklet.skeleton.to_dict()
                 skel_dict.update({
                     'track_idx': tracklet.track_idx,
@@ -1129,13 +1202,39 @@ if __name__ == '__main__':
     print(f"Generated {len(tracklets_by_id)} unique tracklets.")
 
     # Save Tracklets
-    tracklets_output_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(tracklets_output_file, 'wb') as f:
+    tracklets_file.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(tracklets_file, 'wb') as f:
         pickle.dump(dict(tracklets_by_id), f)
-    print(f"Tracklet results saved to '{tracklets_output_file}'")
 
-    # Save updated anatomy stats
-    with open(stats_output_file, 'w') as f:
-        json.dump(anatomy_learner.get_stats(), f, indent=2)
-    print(f"Refined bone stats saved to '{stats_output_file}'")
+    print(f"Tracklet results saved to '{tracklets_file}'")
 
+    if DEBUG_PLOT:
+        try:
+            from mokap.pose_reconstruction.debug import SkeletonViewer
+
+            class DebugWrapper:
+                def __init__(self, data_dict):
+                    self.keypoints = data_dict['keypoints']
+                    self.scale = data_dict['scale']
+
+            # Re-organise data
+            #    from: Dict[track_id, List[skel_dict]]
+            #    to: Dict[frame_idx, List[DebugWrapper]]
+            frames_for_debug = defaultdict(list)
+
+            for track_id, history in tracklets_by_id.items():
+                for skel_dict in history:
+                    f_idx = skel_dict['frame_idx']
+                    frames_for_debug[f_idx].append(DebugWrapper(skel_dict))
+
+            print(f"Visualizing {len(frames_for_debug)} frames...")
+            viewer = SkeletonViewer(soup, frames_for_debug, bones)
+
+        except ImportError:
+            print("Error: Could not import 'debug.py'. Ensure it is in the same directory.")
+        except Exception as e:
+            print(f"Error running debug viewer: {e}")
+            import traceback
+
+            traceback.print_exc()

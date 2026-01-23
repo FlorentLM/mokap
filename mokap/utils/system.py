@@ -7,6 +7,55 @@ import errno
 import platform
 
 
+def exists_check(path):
+    """
+    Checks if a file or folder of the given name exists.
+    If so, create a safe (suffixed) version of the name.
+    """
+    i = 2
+    while path.exists():
+        if bool(re.match('.+_[0-9]+$', path.stem)):
+            # ends with a '_X' number so let's check if there is also a non-suffixed siblings
+            parts = path.stem.split('_')
+            original_name = ('_').join(parts[:-1])
+            suffix = int(parts[-1])
+
+            if (path.parent / f"{original_name}{path.suffix}").exists():
+                new_name = f"{original_name}_{suffix + 1}{path.suffix}"
+            else:
+                new_name = f"{path.stem}_{i}{path.suffix}"
+        else:
+            new_name = f"{path.stem}_{i}{path.suffix}"
+
+        path = path.parent / new_name
+        i += 1
+    return path
+
+
+def rm_if_empty(path):
+    path = Path(path)
+    if not path.exists():
+        # if it doesn't exist, nothing to do.
+        return
+    else:
+        # if it exists
+        if not any(path.iterdir()):
+            # ...and already empty, delete it, done.
+            path.rmdir()
+        # if not empty, recursively check again
+        else:
+            for f in path.glob('*'):
+                if f.is_file():
+                    return
+                rm_if_empty(f)
+
+
+def clean_root_folder(path):
+    path = Path(path)
+    [rm_if_empty(f) for f in path.glob('*') if f.is_dir()]
+    print(f"Cleaned {path}")
+
+
 def setup_ulimit(wanted_value=8192, silent=True):
     """
     Sets up the maximum number of open file descriptors for nofile processes
