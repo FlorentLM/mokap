@@ -1,17 +1,6 @@
 from dataclasses import dataclass
 
-
 # TODO: This is too many parameters
-
-@dataclass
-class AnatomyConfig:
-    """Configuration for anatomical model bootstrapping and learning."""
-
-    # anatomy learner parameters
-    learner_min_samples_for_update: int = 30  # how many new skeletons before re-calculating anatomy stats
-    learner_min_score_for_learning: float = 5.0  # minimum score of a tracked skeleton to be used for learning
-    learner_min_ref_bone_len: float = 1.0  # min plausible length (mm) of reference bone for learning
-    learner_max_ref_bone_len: float = 15.0  # max plausible length (mm) of reference bone for learning
 
 
 @dataclass

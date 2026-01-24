@@ -1,10 +1,8 @@
 """
 Skeleton assembly and multi-object tracking pipeline.
 
-Classes:
-    SkeletonAssembler: Assembles skeleton hypotheses from 3D point soup
-    AnatomyLearner: Online refinement of bone length statistics
-    MultiObjectTracker: Tracks multiple skeletons over time
+SkeletonAssembler: Assembles skeleton hypotheses from 3D point soup
+MultiObjectTracker: Tracks multiple skeletons over time
 """
 import logging
 from typing import Tuple, Optional, Dict, List, FrozenSet, Callable
@@ -15,12 +13,12 @@ import numpy as np
 import networkx as nx
 from alive_progress import alive_bar
 from scipy.optimize import linear_sum_assignment
-from scipy.stats import median_abs_deviation
 
 from mokap.pose_reconstruction.skeleton import Bone, Skeleton, SkeletonStats
 from mokap.pose_reconstruction.datatypes import Pose3D, SkeletonHypothesis, PointSoup, Tracklet
-from mokap.pose_reconstruction.configs import AnatomyConfig, AssemblerConfig, TrackerConfig
+from mokap.pose_reconstruction.configs import AssemblerConfig, TrackerConfig
 from mokap.pose_reconstruction.utils import solve_mwis
+
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +29,6 @@ PositionLookup = Callable[[int], np.ndarray]
 class SkeletonAssembler:
     """
     Assembles skeleton hypotheses from a PointSoup frame slice.
-
-    Uses Skeleton for topology and SkeletonStats for anatomical validation.
     """
 
     def __init__(
@@ -45,33 +41,35 @@ class SkeletonAssembler:
         self.skeleton = skeleton
         self.skeleton_stats = skeleton_stats
         self.config = config
-
         self.soup = soup
 
         # Temporary storage for the current frame
+        self._soup_slice_idx: int = -1
+        self._soup_slice: Optional[PointSoup] = None
         self._current_virtual_points: Dict[int, Dict] = {}
 
-    def _get_pos_conf(self, idx: int) -> Tuple[np.ndarray, float]:
+    def _get_soup_element(self, idx: int):
         """Retrieve position/confidence for real (>= 0) or virtual (< 0) points."""
+
         if idx >= 0:
-            return self.soup[frame_idx].positions[idx], self.soup[frame_idx].confidences[idx]
+            pos, conf = self._soup_slice.positions[idx], self._soup_slice.confidences[idx]
         else:
             vp = self._current_virtual_points[idx]
-            return vp['pos'], vp['conf']
+            pos, conf = vp['pos'], vp['conf']
+        return pos, conf
 
     def assemble_frame(self, frame_idx: int) -> Tuple[List[SkeletonHypothesis], Dict[int, Dict]]:
         """
         Main assembly entry point.
-
         Returns:
             Tuple of (candidate hypotheses, virtual point registry)
         """
-        # TODO: passing a per-frame soup is not super intuitive
-
+        self._soup_slice_idx = frame_idx
+        self._soup_slice = self.soup[frame_idx]
         self._current_virtual_points = {}
 
         # Generate initial fragments (including orphan rescue)
-        initial_fragments = self._generate_hypotheses(frame_idx)
+        initial_fragments = self._generate_hypotheses()
         if not initial_fragments:
             return [], self._current_virtual_points
 
@@ -81,7 +79,7 @@ class SkeletonAssembler:
 
         return all_hypotheses, self._current_virtual_points
 
-    def _generate_hypotheses(self, frame_idx: int) -> List[SkeletonHypothesis]:
+    def _generate_hypotheses(self) -> List[SkeletonHypothesis]:
         """
         Generate skeleton hypotheses.
         """
@@ -89,9 +87,8 @@ class SkeletonAssembler:
         used_as_seed_indices = set()
 
         # Seed from anchors
-        for anchor_type in skeleton.anchor_keypoints:
-            for seed_idx in self.soup[frame_idx].points_by_name[anchor_type]:
-
+        for anchor_type in self.skeleton.anchor_keypoints:
+            for seed_idx in self._soup_slice.points_by_name[anchor_type]:
                 if seed_idx in used_as_seed_indices:
                     continue
 
@@ -104,12 +101,12 @@ class SkeletonAssembler:
                             used_as_seed_indices.add(idx)
 
         # Then seed from leaves
-        for leaf_type in skeleton.leaf_keypoints:
-            for seed_idx in self.soup[frame_idx].points_by_name[leaf_type]:
+        for leaf_type in self.skeleton.leaf_keypoints:
+            for seed_idx in self._soup_slice.points_by_name[leaf_type]:
                 if seed_idx in used_as_seed_indices:
                     continue
 
-                fragment = self._find_leaf_fragment(frame_idx=frame_idx, leaf_kp=leaf_type, leaf_idx=seed_idx)
+                fragment = self._find_leaf_fragment(leaf_kp=leaf_type, leaf_idx=seed_idx)
                 if fragment:
                     candidate_skeletons.append(fragment)
                     for _, idx in fragment.nodes:
@@ -118,12 +115,12 @@ class SkeletonAssembler:
 
         return candidate_skeletons
 
-    def _grow_skeleton(self, anchor_kp, anchor_idx) -> Optional[SkeletonHypothesis]:
+    def _grow_skeleton(self, anchor_kp: str, anchor_idx: int) -> Optional[SkeletonHypothesis]:
         """
         Grow a skeleton from an anchor, rescuing single-view observations.
         """
 
-        anchor_pos, _ = self._get_pos_conf(anchor_idx)
+        anchor_pos, _ = self._get_soup_element(anchor_idx)
 
         # Initialize
         current_nodes = {(anchor_kp, anchor_idx)}
@@ -140,7 +137,7 @@ class SkeletonAssembler:
 
             # Find candidates via graph topology + spatial proximity
             for node_kp, node_idx in current_nodes:
-                node_pos, _ = self._get_pos_conf(node_idx)
+                node_pos, _ = self._get_soup_element(node_idx)
 
                 neighbor_kp_types = {
                     n for n in self.skeleton.neighbours(node_kp)
@@ -150,16 +147,14 @@ class SkeletonAssembler:
                     continue
 
                 # Standard 3D search
-                tree = self.soup[frame_idx].tree
+                tree = self._soup_slice.tree
                 # TODO: Should probably use the global soup tree instead of per-frame tree
 
                 if tree:
-                    nearby_indices = tree.query_ball_point(
-                        node_pos, r=max_search_radius
-                    )
+                    nearby_indices = tree.query_ball_point(node_pos, r=max_search_radius)
                     for idx in nearby_indices:
-                        cand_type_idx = self.soup[frame_idx].keypoint_indices[idx]
-                        cand_type = self.soup[frame_idx].keypoint_names[cand_type_idx]
+                        cand_type_idx = self._soup_slice.keypoint_indices[idx]
+                        cand_type = self._soup_slice.keypoint_names[cand_type_idx]
 
                         if cand_type in neighbor_kp_types:
                             nodes_to_evaluate.add((cand_type, int(idx)))
@@ -169,7 +164,11 @@ class SkeletonAssembler:
                     has_3d_candidates = any(n[0] == target_type for n in nodes_to_evaluate)
 
                     if not has_3d_candidates:
-                        orphans = self._single_view_rescue(frame_idx=frame_idx, anchor_pos=node_pos, anchor_kp=node_kp, target_kp=target_type)
+                        orphans = self._single_view_rescue(
+                            anchor_pos=node_pos,
+                            anchor_kp=node_kp,
+                            target_kp=target_type
+                        )
                         for vp_idx, vp_type in orphans:
                             nodes_to_evaluate.add((vp_type, vp_idx))
 
@@ -200,7 +199,7 @@ class SkeletonAssembler:
             # Evaluate extensions
             for cand_node in nodes_to_evaluate:
                 cand_kp_name, cand_idx = cand_node
-                cand_pos, _ = self._get_pos_conf(cand_idx)
+                cand_pos, _ = self._get_soup_element(cand_idx)
 
                 temp_kps = current_kps.copy()
                 temp_kps[cand_kp_name] = cand_pos
@@ -276,16 +275,15 @@ class SkeletonAssembler:
 
     def _single_view_rescue(
             self,
-            frame_idx: int,
             anchor_pos: np.ndarray,
             anchor_kp: str,
             target_kp: str
     ) -> List[Tuple[int, str]]:
         """
         Intersect rays for target_kp with sphere around anchor_pos.
-
         Returns list of (virtual_idx, kp_type) tuples.
         """
+
         bone = Bone(anchor_kp, target_kp)
         if bone not in self.skeleton:
             return []
@@ -294,12 +292,12 @@ class SkeletonAssembler:
         r = self.skeleton_stats.expected_length(bone)
 
         # Get orphan rays
-        ray_indices = self.soup[frame_idx].rays_by_name[target_kp]
+        ray_indices = self._soup_slice.rays_by_name[target_kp]
         if not len(ray_indices):
             return []
 
-        origins = self.soup[frame_idx].ray_origins[ray_indices]
-        dirs = self.soup[frame_idx].ray_directions[ray_indices]
+        origins = self._soup_slice.ray_origins[ray_indices]
+        dirs = self._soup_slice.ray_directions[ray_indices]
 
         # Ray-sphere intersection
         V = origins - anchor_pos
@@ -332,7 +330,7 @@ class SkeletonAssembler:
 
         for i in range(len(valid_indices)):
             ray_idx = source_ray_ids[i]
-            conf = self.soup[frame_idx].ray_confidences[ray_idx]
+            conf = self._soup_slice.ray_confidences[ray_idx]
 
             # Add both solutions as candidates
             vid1 = self._register_virtual_point(p1s[i], conf, target_kp, ray_idx)
@@ -350,7 +348,9 @@ class SkeletonAssembler:
             kp_type: str,
             source_ray_idx: int
     ) -> int:
-        """Store a computed 3D point and return a unique negative index."""
+        """
+        Store a computed 3D point and return a unique negative index.
+        """
 
         next_idx = -1 * (len(self._current_virtual_points) + 1)
 
@@ -364,25 +364,27 @@ class SkeletonAssembler:
 
     def _find_leaf_fragment(
             self,
-            frame_idx: int,
             leaf_kp: str,
             leaf_idx: int
     ) -> Optional[SkeletonHypothesis]:
-        """Find a two-node fragment starting from a leaf keypoint."""
+        """
+        Find a two-node fragment starting from a leaf keypoint.
+        """
+
         neighbours = self.skeleton.neighbours(leaf_kp)
         if not neighbours:
             return None
 
         parent_kp = neighbours[0]
-        leaf_pos, _ = self._get_pos_conf(leaf_idx)
+        leaf_pos, _ = self._get_soup_element(leaf_idx)
         best_score = -1.0
         best_cand_data = None
 
         # Check real parent points
-        parent_indices = self.soup[frame_idx].points_by_name.get(parent_kp, [])
+        parent_indices = self._soup_slice.points_by_name.get(parent_kp, [])
 
         for p_idx in parent_indices:
-            p_pos, _ = self._get_pos_conf(p_idx)
+            p_pos, _ = self._get_soup_element(p_idx)
 
             kps = {leaf_kp: leaf_pos, parent_kp: p_pos}
             scale = self.skeleton_stats.estimate_scale(
@@ -403,10 +405,14 @@ class SkeletonAssembler:
 
         # Try orphan rescue if no good real connection
         if best_score < self.config.min_bone_score_for_fragment:
-            orphans = self._single_view_rescue(frame_idx=frame_idx, anchor_pos=leaf_pos, anchor_kp=leaf_kp, target_kp=parent_kp)
+            orphans = self._single_view_rescue(
+                anchor_pos=leaf_pos,
+                anchor_kp=leaf_kp,
+                target_kp=parent_kp
+            )
 
             for vp_idx, _ in orphans:
-                vp_pos, _ = self._get_pos_conf(vp_idx)
+                vp_pos, _ = self._get_soup_element(vp_idx)
 
                 kps = {leaf_kp: leaf_pos, parent_kp: vp_pos}
                 scale = self.skeleton_stats.estimate_scale(
@@ -443,7 +449,10 @@ class SkeletonAssembler:
             self,
             fragments: List[SkeletonHypothesis]
     ) -> List[SkeletonHypothesis]:
-        """Generate hypotheses by merging compatible fragments."""
+        """
+        Generate hypotheses by merging compatible fragments.
+        """
+
         if len(fragments) < 2:
             return []
 
@@ -465,7 +474,10 @@ class SkeletonAssembler:
             skel_A: SkeletonHypothesis,
             skel_B: SkeletonHypothesis
     ) -> Optional[SkeletonHypothesis]:
-        """Attempt to merge two skeleton hypotheses."""
+        """
+        Attempt to merge two skeleton hypotheses.
+        """
+
         # Disjoint check (indices)
         nodes_A = {n[1] for n in skel_A.nodes}
         nodes_B = {n[1] for n in skel_B.nodes}
@@ -486,8 +498,8 @@ class SkeletonAssembler:
         # Find linking bone
         best_link_score = -1.0
 
-        kps_map_A = {n[0]: self._get_pos_conf(n[1])[0] for n in skel_A.nodes}
-        kps_map_B = {n[0]: self._get_pos_conf(n[1])[0] for n in skel_B.nodes}
+        kps_map_A = {n[0]: self._get_soup_element(n[1])[0] for n in skel_A.nodes}
+        kps_map_B = {n[0]: self._get_soup_element(n[1])[0] for n in skel_B.nodes}
 
         combined_kps_map = {**kps_map_A, **kps_map_B}
         combined_nodes = skel_A.nodes | skel_B.nodes
@@ -521,7 +533,9 @@ class SkeletonAssembler:
             avg_score: float,
             scale: float
     ) -> SkeletonHypothesis:
-        """Create a SkeletonHypothesis with computed scores."""
+        """
+        Create a SkeletonHypothesis with computed scores.
+        """
 
         if avg_score <= 0:
             return SkeletonHypothesis(
@@ -555,7 +569,10 @@ class SkeletonAssembler:
             nodes: FrozenSet[Tuple[str, int]],
             scale: float
     ) -> float:
-        """Score a bone using SkeletonStats, incorporating point confidences."""
+        """
+        Score a bone using SkeletonStats, incorporating point confidences.
+        """
+
         if bone not in self.skeleton:
             return 0.0
 
@@ -565,8 +582,8 @@ class SkeletonAssembler:
         node1 = next(n for n in nodes if n[0] == bone.k1)
         node2 = next(n for n in nodes if n[0] == bone.k2)
 
-        _, conf1 = self._get_pos_conf(node1[1])
-        _, conf2 = self._get_pos_conf(node2[1])
+        _, conf1 = self._get_soup_element(node1[1])
+        _, conf2 = self._get_soup_element(node2[1])
 
         return self.skeleton_stats.score_bone(
             bone,
@@ -579,90 +596,9 @@ class SkeletonAssembler:
         )
 
 
-class AnatomyLearner:
-    """
-    Online learner that refines bone statistics from high-confidence tracked poses.
-
-    This is a wrapper around SkeletonStats that implements batch-style
-    learning with periodic updates.
-    """
-
-    def __init__(self, stats: SkeletonStats, config: AnatomyConfig):
-        self.stats = stats
-        self.config = config
-
-        self.ref_lengths: List[float] = []
-        self.bone_ratios: Dict[Bone, List[float]] = defaultdict(list)
-
-        self.measurements_count = 0
-        self.is_stale = True
-
-    def add_sample(self, pose: Pose3D):
-        """Add a high-quality pose observation to the learning pool."""
-        if pose.score < self.config.learner_min_score_for_learning:
-            return
-
-        ref_bone = self.stats.reference_bone
-        if ref_bone.k1 not in pose.keypoints or ref_bone.k2 not in pose.keypoints:
-            return
-
-        ref_len = float(np.linalg.norm(
-            pose.keypoints[ref_bone.k1] - pose.keypoints[ref_bone.k2]
-        ))
-
-        # Sanity check
-        if not (self.config.learner_min_ref_bone_len < ref_len < self.config.learner_max_ref_bone_len):
-            return
-
-        self.ref_lengths.append(ref_len)
-
-        # Collect ratios for all present bones
-        for bone in self.stats.skeleton.bones:
-            if bone.k1 in pose.keypoints and bone.k2 in pose.keypoints:
-                bone_len = float(np.linalg.norm(
-                    pose.keypoints[bone.k1] - pose.keypoints[bone.k2]
-                ))
-                self.bone_ratios[bone].append(bone_len / ref_len)
-
-        self.measurements_count += 1
-        if self.measurements_count >= self.config.learner_min_samples_for_update:
-            self.is_stale = True
-
-    def update_stats(self) -> bool:
-        """
-        Update the underlying SkeletonStats if enough new data has arrived.
-
-        Returns True if stats were updated.
-        """
-        if not self.is_stale:
-            return False
-
-        updated = False
-
-        # Update reference length
-        if self.ref_lengths:
-            self.stats.reference_length_world = float(np.median(self.ref_lengths))
-            updated = True
-
-        # Update bone stats
-        for bone, ratios in self.bone_ratios.items():
-            if len(ratios) >= self.config.learner_min_samples_for_update:
-                if bone in self.stats.bone_stats:
-                    self.stats.bone_stats[bone].ratio_length = float(np.median(ratios))
-                    self.stats.bone_stats[bone].variability = float(median_abs_deviation(ratios))
-                    self.stats.bone_stats[bone].count += len(ratios)
-                    updated = True
-
-        self.is_stale = False
-        self.measurements_count = 0
-
-        return updated
-
-
 class MultiObjectTracker:
     """
     Tracks multiple skeletons over time.
-
     Combines skeleton assembly with temporal association using Kalman filtering.
     """
 
@@ -684,12 +620,16 @@ class MultiObjectTracker:
     def update(self, frame_idx: int) -> List[Tracklet]:
         """Process a new frame and update tracklets."""
 
-        if not (self.soup[frame_idx].nb_points > 0 or len(self.soup[frame_idx].ray_origins) > 0):
-            self._predict_only(frame_idx)
+        soup_slice = self.soup[frame_idx]
 
-        # Predict all existing tracklets
+        # Predict all existing tracklets in all cases
         for tracklet in self.tracklets:
             tracklet.predict(frame_idx)
+
+        # Current slice has no data, so just coast forward
+        if soup_slice.nb_points == 0 and soup_slice.nb_rays == 0:
+            self._prune_tracklets()
+            return self.get_active_tracklets()
 
         # Generate hypotheses
         all_candidates, virtual_registry = self.assembler.assemble_frame(frame_idx)
@@ -701,7 +641,7 @@ class MultiObjectTracker:
         # Position lookup helper
         def get_pos(idx: int) -> np.ndarray:
             if idx >= 0:
-                return self.soup[frame_idx].positions[idx]
+                return soup_slice.positions[idx]
             return virtual_registry[idx]['pos']
 
         # Association bonus for temporal continuity
@@ -757,15 +697,6 @@ class MultiObjectTracker:
         self._prune_tracklets()
         return self.get_active_tracklets()
 
-    def _predict_only(self, frame_idx: int) -> List[Tracklet]:
-        """Predict tracklets without new observations."""
-
-        for tracklet in self.tracklets:
-            tracklet.predict(frame_idx)
-
-        self._prune_tracklets()
-        return self.get_active_tracklets()
-
     def get_active_tracklets(self) -> List[Tracklet]:
         """Get tracklets that were updated this frame."""
         return [t for t in self.tracklets if t.time_since_update == 0]
@@ -785,6 +716,7 @@ class MultiObjectTracker:
             virtual_registry: Dict[int, Dict]
     ) -> nx.Graph:
         """Build graph where edges represent mutually exclusive hypotheses."""
+
         conflict_graph = nx.Graph()
         num_candidates = len(candidates)
 
@@ -947,7 +879,6 @@ if __name__ == '__main__':
     stats_file = output_dir / "skeleton_stats.json"
     tracklets_file = output_dir / f'tracklets_session{SESSION}.pkl'
 
-    anatomy_cfg = AnatomyConfig()
     assembler_cfg = AssemblerConfig()
     tracker_cfg = TrackerConfig()
 
@@ -970,8 +901,6 @@ if __name__ == '__main__':
         config=assembler_cfg,
     )
 
-    anatomy_learner = AnatomyLearner(stats=stats, config=anatomy_cfg)
-
     tracker = MultiObjectTracker(
         soup=soup,
         skeleton=skeleton,
@@ -989,16 +918,15 @@ if __name__ == '__main__':
 
         for frame_idx in range(min_frame, max_frame + 1):
 
-            # Periodically update stats from learner
-            anatomy_learner.update_stats()
-
             # Process frame
             active_tracklets = tracker.update(frame_idx)
 
             # Store results and learn from high-quality poses
             for tracklet in active_tracklets:
+
+                # Online learning
                 if tracklet.last_update_frame == frame_idx:
-                    anatomy_learner.add_sample(tracklet.pose)
+                    stats.update(tracklet.pose.keypoints)
 
                 pose_dict = tracklet.pose.to_dict()
                 pose_dict.update({
@@ -1029,5 +957,5 @@ if __name__ == '__main__':
     print(f"Updated stats saved to '{stats_file}'")
 
     if DEBUG_PLOT:
-        from mokap.pose_reconstruction.debug import SkeletonViewer, TrackletViewer
+        from mokap.pose_reconstruction.debug import TrackletViewer
         viewer = TrackletViewer(soup, tracklets_by_id, skeleton)
