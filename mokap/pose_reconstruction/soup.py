@@ -1,5 +1,5 @@
 """
-Stage 1: 3D Point soup reconstruction
+3D Point soup reconstruction
 
 Pipeline:
   1. Undistort all 2D detections
@@ -79,7 +79,7 @@ class Reconstructor:
         )
 
     def reconstruct(self, inputs: Dict[str, np.ndarray]) -> PointSoup:
-        """Processes a chunk of frames."""
+        """Processes a frame (or a chunk of)."""
 
         coords = xp.asarray(inputs['coords'])
         cam_ids = inputs['cam_ids']
@@ -160,6 +160,23 @@ class Reconstructor:
             keypoint_names=self.keypoint_names
         )
 
+    def _triangulate_reproj_wrapper(self, pixel_coords, weights):
+        """Just a tiny internal wrapper for px->norm->3d->reproj because this is used twice."""
+
+        obs_px_normalised = px_to_norm(pixel_coords, self.Ks[:, None])
+
+        pts3d = triangulate_linear(obs_px_normalised, self.Ts, weights=weights)
+
+        reproj = project_full(
+            pts3d[None],
+            self.Ts[:, None],
+            self.Ks[:, None],
+            self.Ds[:, None],
+            self.dist_model
+        )
+
+        return pts3d, reproj
+
     def _triangulate_epipolar_pairs(
             self,
             undist: xp.ndarray,
@@ -233,18 +250,8 @@ class Reconstructor:
         weights = set_at(weights, (cam_ids[ii], pair_indices), xp.asarray(scores[ii]))
         weights = set_at(weights, (cam_ids[jj], pair_indices), xp.asarray(scores[jj]))
 
-        # Triangulate
-        obs_norm = px_to_norm(obs, self.Ks[:, None])
-        pts3d = triangulate_linear(obs_norm, self.Ts, weights=weights)
-
-        # Reprojection error
-        reproj = project_full(
-            pts3d[None],
-            self.Ts[:, None],
-            self.Ks[:, None],
-            self.Ds[:, None],
-            self.dist_model
-        )
+        # Triangulate and reproject
+        pts3d, reproj = self._triangulate_reproj_wrapper(obs, weights)
 
         raw_tensor = xp.full((self.nb_cams, nb_pairs, 2), xp.nan, dtype=xp_float)
         raw_tensor = set_at(raw_tensor, (cam_ids[ii], pair_indices), raw[ii])
@@ -305,7 +312,7 @@ class Reconstructor:
             frame_ids.astype(np.float32) * frame_shift
         ])
 
-        # Find neighbours within merge_radius (but in 4D space)
+        # Find neighbours within merge radius (but in 4D space)
         tree = cKDTree(pts_with_frame)
         pairs = tree.query_pairs(r=self.merge_radius)
 
@@ -369,17 +376,7 @@ class Reconstructor:
             merged_masks[cluster_idx] = cluster_mask
 
         # Re-triangulate all
-        obs_norm = px_to_norm(obs, self.Ks[:, None])
-        pts3d = triangulate_linear(obs_norm, self.Ts, weights=weights)
-
-        # Reprojection error
-        reproj = project_full(
-            pts3d[None],
-            self.Ts[:, None],
-            self.Ks[:, None],
-            self.Ds[:, None],
-            self.dist_model
-        )
+        pts3d, reproj = self._triangulate_reproj_wrapper(obs, weights)
 
         raw_tensor = xp.full((self.nb_cams, n_clusters, 2), xp.nan, dtype=xp.float32)
 

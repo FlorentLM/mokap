@@ -1,278 +1,280 @@
+"""
+Bootstrap skeleton statistics from 3D point soup.
+
+Classes:
+    AnatomyBootstrapper: Learns bone length statistics (ratios, variability)
+    DynamicsBootstrapper: Learns motion dynamics (process noise, association weights)
+
+Both classes produce data that can be used to initialize SkeletonStats.
+"""
 import json
 from pathlib import Path
 from collections import defaultdict
-from typing import Dict, Tuple, Any, Optional, Sequence
+from typing import Dict, Tuple, Any, Optional, List
 
 import numpy as np
 import pandas as pd
-import networkx as nx
+import trackpy as tp
 import matplotlib.pyplot as plt
 from scipy.stats import median_abs_deviation
 
 from mokap.pose_reconstruction.datatypes import PointSoup
-from mokap.pose_reconstruction.skeleton import Skeleton
+from mokap.pose_reconstruction.skeleton import Bone, Skeleton, SkeletonStats, BoneStats
 from mokap.pose_reconstruction.utils import plot_tracks_3d, robust_stats
 
 
-# TODO: Trackpy linking should be done once as it is used by both classes
+def _run_trackpy(
+        soup: PointSoup,
+        search_range: float,
+        memory: int = 0,
+        max_frames: int = 4000
+) -> pd.DataFrame:
+    """
+    Run trackpy linking on point soup (per keypoint type independently).
+    """
+    tp.quiet()
+
+    df = soup.to_df()
+
+    # Subset frames for speed if needed
+    if df['frame'].nunique() > max_frames:
+        f_min = df['frame'].min()
+        df = df[df['frame'] < f_min + max_frames]
+
+    # Link per keypoint type
+    df['particle'] = -1
+    for name, group in df.groupby('keypoint'):
+        linked = tp.link_df(
+            group,
+            search_range=search_range,
+            pos_columns=['x', 'y', 'z'],
+            memory=memory
+        )
+        df.loc[linked.index, 'particle'] = linked['particle']
+
+    return df
 
 
 class AnatomyBootstrapper:
     """
     Bootstrap bone length statistics from 3D point soup.
 
-    We need to separate population variation (different subject sizes) from
-    intra-individual variation (measurement noise + articulation).
-
-    1. For each bone, track both endpoint keypoints independently using trackpy
+    Strategy:
+    1. Track individual keypoints across frames using trackpy
     2. Find co-occurring tracklet pairs (same frames, spatially close)
-    3. Measure bone lengths within each co-occurring pair
-    4. Compute variance within each pair, then pool across pairs
-    5. Use symmetry to double the sample pool
+    3. Measure bone lengths within each pair
+    4. Compute intra-individual variance per pair, then pool across pairs
+    5. Use symmetry (canonical names) to increase sample size
+
+    Produces a SkeletonStats object with learned bone ratios and variabilities.
     """
 
     def __init__(
             self,
             skeleton: Skeleton,
-            MAD_ratio: float = 0.1,
+            default_variability: float = 0.1,
             min_samples: int = 10,
             max_bone_length: float = np.inf,
-            reference_bone: Optional[Sequence[str]] = None,
+            reference_bone: Optional[Bone] = None,
             min_tracklet_length: int = 5,
-            tracklet_search_range: float = 2.0,
+            max_displacement: float = 1.0,
+            store_debug_data: bool = False
     ):
+        self._debug = store_debug_data
 
-        # TODO: These aliases are not needed anymore
-        self.keypoint_names = skeleton.keypoints
-        self.bones = [tuple(sorted(b)) for b in skeleton.bones]
-        self.canon_map = skeleton.canonical_map
+        self.skeleton = skeleton
 
         # Config
-        self.MAD_ratio = MAD_ratio
+        self.default_variability = default_variability
         self.min_samples = min_samples
         self.max_bone_length = max_bone_length
         self.min_tracklet_length = min_tracklet_length
-        self.tracklet_search_range = tracklet_search_range
+        self.max_displacement = max_displacement
 
-        # TODO: All this now lives inside skeleton class. Needs to be removed from here.
-        # Build skeleton graph for stability scoring
-        self._skeleton_graph = nx.Graph()
-        self._skeleton_graph.add_edges_from(self.bones)
-        self._degrees = dict(self._skeleton_graph.degree())
-        if reference_bone is not None:
-            self.ref_bone = tuple(sorted(reference_bone))
-        else:
-            self.ref_bone = self._auto_select_ref_bone()
-        print(f"[Anatomy] Reference bone: {self.ref_bone}")
+        self.reference_bone = reference_bone or skeleton.central_bone
+        print(f"[Anatomy] Reference bone: {self.reference_bone}")
 
-        # Debug storage
-        self.debug_histograms = {}
-        self.debug_intra_individual_stds = defaultdict(list)
-        self.debug_n_tracklet_pairs = defaultdict(int)
+        # Debug data storage
+        self.debug_histograms: Dict[str, np.ndarray] = {}
+        self.debug_intra_individual_mads: Dict[str, List[float]] = defaultdict(list)
 
-    # TODO: Should probably be done by skeleton class by default
-    def _auto_select_ref_bone(self) -> Tuple[str, str]:
-        """Select the most stable bone based on graph connectivity."""
+    def process(self, soup: PointSoup, max_frames: int = 5000) -> SkeletonStats:
+        """
+        Process point soup and return learned SkeletonStats.
 
-        return max(
-            self._skeleton_graph.edges,
-            key=lambda e: self._degrees[e[0]] + self._degrees[e[1]]
+        Steps:
+        1. Track individual keypoints across frames
+        2. For each bone, find co-occurring tracklet pairs
+        3. Measure bone lengths within pairs, compute per-pair variance
+        4. Pool intra-individual variances using symmetry (canonical names)
+        """
+        df = _run_trackpy(
+            soup=soup,
+            search_range=self.max_displacement,
+            memory=1,
+            max_frames=max_frames
         )
 
-    def process(self, soup: PointSoup, max_frames: int = 5000) -> Dict[str, Any]:
-        """
-        1. Track individual keypoints across frames
-        2. For each bone find co-occurring tracklet pairs
-        3. Measure bone lengths within pairs, compute per-pair variance
-        4. Pool intra-individual variances (using symmetry)
-        """
+        # Collect measurements grouped by canonical bone name
+        canon_all_lengths: Dict[str, List[float]] = defaultdict(list)
+        canon_pair_stats: Dict[str, List[Tuple[float, float]]] = defaultdict(list)
 
-        import trackpy as tp
-        tp.quiet()
-
-        df = soup.to_df()
-
-        print("[Anatomy] Tracking keypoints...")
-
-        # Subset frames for speed if needed
-        if df['frame'].nunique() > max_frames:
-            f_min = df['frame'].min()
-            df = df[df['frame'] < f_min + max_frames]
-
-        # Link (per keypoint type of course)
-        df['particle'] = -1
-        for name, group in df.groupby('keypoint'):
-            linked = tp.link_df(group, search_range=self.tracklet_search_range, pos_columns=['x', 'y', 'z'], memory=1)
-            df.loc[linked.index, 'particle'] = linked['particle']
-
-        # Bone measurement
-        canon_all_lengths = defaultdict(list)
-        canon_pair_stats = defaultdict(list)
-
-        for u, v in self.bones:
-            # inner-join the dataframe with itself on 'frame' to find pairs
-            df_u = df[df['keypoint'] == u][['frame', 'x', 'y', 'z', 'particle']]
-            df_v = df[df['keypoint'] == v][['frame', 'x', 'y', 'z', 'particle']]
-            pairs = df_u.merge(df_v, on='frame', suffixes=('_u', '_v'))
+        for bone in self.skeleton.bones:
+            # Inner-join dataframe on 'frame' to find co-occurring detections
+            df_k1 = df[df['keypoint'] == bone.k1][['frame', 'x', 'y', 'z', 'particle']]
+            df_k2 = df[df['keypoint'] == bone.k2][['frame', 'x', 'y', 'z', 'particle']]
+            pairs = df_k1.merge(df_k2, on='frame', suffixes=('_1', '_2'))
 
             if pairs.empty:
                 continue
 
-            # Calculate distances for all pairs
-            dist = np.linalg.norm(pairs[['x_u', 'y_u', 'z_u']].values - pairs[['x_v', 'y_v', 'z_v']].values, axis=1)
-            pairs['dist'] = dist
+            # Calculate distances
+            pos1 = pairs[['x_1', 'y_1', 'z_1']].values
+            pos2 = pairs[['x_2', 'y_2', 'z_2']].values
+            pairs['dist'] = np.linalg.norm(pos1 - pos2, axis=1)
 
-            # Filter sane lengths
+            # Filter by max bone length
             pairs = pairs[pairs['dist'] < self.max_bone_length]
 
-            # Group by unique tracklet pairs (particle_u + particle_v) to get intra-individual stats
-            canon_key = ";".join(sorted((self.canon_map[u], self.canon_map[v])))
+            # Canonical key for symmetry pooling
+            canon_key = self.skeleton.canonical(bone)
 
-            for (p_u, p_v), group in pairs.groupby(['particle_u', 'particle_v']):
+            # Group by tracklet pairs to get intra-individual stats
+            for (p1, p2), group in pairs.groupby(['particle_1', 'particle_2']):
                 if len(group) < self.min_tracklet_length:
                     continue
 
                 lengths = group['dist'].values
-                mad = median_abs_deviation(lengths)
+                median_len = float(np.median(lengths))
+                mad = float(median_abs_deviation(lengths))
 
-                canon_pair_stats[canon_key].append((np.median(lengths), mad))
-                canon_all_lengths[canon_key].extend(lengths)
-                self.debug_intra_individual_stds[canon_key].append(mad)
+                canon_pair_stats[canon_key].append((median_len, mad))
+                canon_all_lengths[canon_key].extend(lengths.tolist())
 
-        # Aggregation
-        self.debug_histograms = {k: np.array(v) for k, v in canon_all_lengths.items()}
-        ref_canon_key = ";".join(sorted([self.canon_map[k] for k in self.ref_bone]))
+                if self._debug:
+                    self.debug_intra_individual_mads[canon_key].append(mad)
+
+        # Store debug histograms
+        if self._debug:
+            self.debug_histograms = {k: np.array(v) for k, v in canon_all_lengths.items()}
 
         # Calculate reference length
-        if ref_canon_key in canon_all_lengths and len(canon_all_lengths[ref_canon_key]) >= self.min_samples:
-            ref_length = float(np.median(canon_all_lengths[ref_canon_key]))
+        ref_canon_key = self.skeleton.canonical(self.reference_bone)
+
+        if (ref_canon_key in canon_all_lengths and len(canon_all_lengths[ref_canon_key]) >= self.min_samples):
+            reference_length = float(np.median(canon_all_lengths[ref_canon_key]))
         else:
-            all_lens = [l for lens in canon_all_lengths.values() for l in lens]
-            ref_length = float(np.median(all_lens)) if all_lens else 1.0
-            print(f"[Anatomy] Warning: Reference bone has insufficient data. Using fallback: {ref_length:.3f}")
+            # Fallback: median of all bone lengths
+            all_lengths = [l for lengths in canon_all_lengths.values() for l in lengths]
+            reference_length = float(np.median(all_lengths)) if all_lengths else 1.0
+            print(f"[Anatomy] Warning: Reference bone has insufficient data. "
+                  f"Using fallback: {reference_length:.3f}")
 
-        if np.isnan(ref_length) or ref_length <= 0:
-            ref_length = 1.0
+        if np.isnan(reference_length) or reference_length <= 0:
+            reference_length = 1.0
 
-        print(f"[Anatomy] Reference length: {ref_length:.3f}")
+        print(f"[Anatomy] Reference length: {reference_length:.3f}")
 
-        # Calculate ratios
-        bones_ratios = {}
-        for u, v in self.bones:
-            out_key = ";".join(sorted((u, v)))
-            canon_key = ";".join(sorted((self.canon_map[u], self.canon_map[v])))
+        # Build SkeletonStats
+        stats = SkeletonStats(self.skeleton)
+        stats.reference_bone = self.reference_bone
+        stats.reference_length_world = reference_length
+
+        # Populate bone stats
+        for bone in self.skeleton.bones:
+            canon_key = self.skeleton.canonical(bone)
 
             all_lengths = canon_all_lengths.get(canon_key, [])
             pair_data = canon_pair_stats.get(canon_key, [])
 
             if len(pair_data) < 2 or len(all_lengths) < self.min_samples:
-                med_ratio, mad_ratio = 1.0, self.MAD_ratio
-
+                # Insufficient data: use defaults
+                ratio = 1.0
+                variability = self.default_variability
             else:
-                med_ratio = float(np.median(all_lengths)) / ref_length
-                # Pooled uncertainty: median of the intra-individual variances
-                mad_ratio = float(np.median([mad for (_, mad) in pair_data])) / ref_length
-                mad_ratio = max(mad_ratio, med_ratio * 0.001)  # floor
+                ratio = float(np.median(all_lengths)) / reference_length
+                # Pooled uncertainty: median of intra-individual MADs
+                variability = float(np.median([mad for (_, mad) in pair_data])) / reference_length
+                variability = max(variability, ratio * 0.001)  # floor
 
-            bones_ratios[out_key] = {
-                "median_ratio": med_ratio, "mad_ratio": mad_ratio,
-                "count": len(all_lengths), "n_pairs": len(pair_data)
-            }
+            stats.bone_stats[bone] = BoneStats(
+                ratio_length=ratio,
+                variability=variability,
+                count=len(all_lengths),
+                pairs=len(pair_data),
+                length_world=ratio * reference_length
+            )
 
-        return {"reference_bone": list(self.ref_bone), "median_reference_length": ref_length,
-                "bones_ratios": bones_ratios}
-
-    def _fallback_stats(self) -> Dict[str, Any]:
-        """Return fallback statistics when no data is available."""
-
-        bones_ratios = {}
-        for u, v in self.bones:
-            out_key = ";".join(sorted((u, v)))
-            bones_ratios[out_key] = {
-                "median_ratio": 1.0,
-                "mad_ratio": self.MAD_ratio,
-                "count": 0,
-                "n_pairs": 0,
-            }
-
-        return {
-            "reference_bone": list(self.ref_bone),
-            "median_reference_length": 1.0,
-            "bones_ratios": bones_ratios,
-        }
+        return stats
 
 
 class DynamicsBootstrapper:
-    """Bootstrap dynamics parameters (process noise, measurement noise) from 3D soup."""
+    """
+    Bootstrap dynamics parameters from 3D point soup.
+
+    Learns per-keypoint:
+    - Process noise (from acceleration statistics)
+    - Association weight (from velocity jitter)
+
+    Uses graph distance as prior for keypoints with insufficient data.
+    """
 
     def __init__(
             self,
             skeleton: Skeleton,
             fps: float = 30.0,
-            max_displacement: float = 5.0,
-            min_track_length: float = 15,
+            max_displacement: float = 1.0,
+            min_track_length: int = 15,
             reference_bone_length: float = 1.0,
             min_process_noise: float = 0.01,
-            measurement_noise: float = 0.5
+            measurement_noise: float = 0.5,
+            store_debug_data: bool = False
     ):
-
-        # TODO: These aliases are not needed anymore
-        self.keypoint_names = skeleton.keypoints
-        self.bones = [tuple(sorted(b)) for b in skeleton.bones]
-        self.canon_map = skeleton.canonical_map
+        self._debug = store_debug_data
+        self.skeleton = skeleton
 
         # Config
         self.fps = fps
         self.max_displacement = max_displacement
         self.min_track_length = min_track_length
-        self.ref_bone_length = reference_bone_length
-        self.min_q = min_process_noise
+        self.reference_bone_length = reference_bone_length
+        self.min_process_noise = min_process_noise
         self.base_measurement_noise = measurement_noise
 
-        # TODO: Graph logic now lives inside skeleton class
-        G = nx.Graph()
-        G.add_edges_from(bones)
-        try:
-            self.centroid = max(G.degree, key=lambda x: x[1])[0]
-            self.graph_dist = nx.single_source_shortest_path_length(G, self.centroid)
-        except (ValueError, IndexError):
-            self.centroid = self.keypoint_names[0]
-            self.graph_dist = {k: 1 for k in self.keypoint_names}
+        # Debug storage
+        self.debug_tracks: Dict[str, List[pd.DataFrame]] = defaultdict(list)
+        self.debug_velocities: Dict[str, List[float]] = defaultdict(list)
 
-        self.debug_tracks = defaultdict(list)
-        self.debug_velocities = defaultdict(list)
-
-    def process(self, soup: PointSoup) -> Dict[str, Any]:
+    def process(self, soup: PointSoup, max_frames: int = 4000) -> Dict[str, Any]:
         """
-        1. Link detections into tracks.
-        2. Vectorized velocity/acceleration calculation.
-        3. Populate debug info for plotting.
+        Process point soup and return dynamics parameters per keypoint.
+
+        Returns dict mapping keypoint name -> {process_noise, measurement_noise,
+                                                association_weight, source}
         """
-        import trackpy as tp
-        tp.quiet()
+        df = _run_trackpy(
+            soup=soup,
+            search_range=self.max_displacement,
+            memory=0,
+            max_frames=max_frames
+        )
 
-        df = soup.to_df()
+        if self._debug:
+            self.debug_velocities.clear()
+            self.debug_tracks.clear()
 
-        # Ensure tracking is performed
-        df['particle'] = -1
-        for name, group in df.groupby('keypoint'):
-            linked = tp.link_df(group, search_range=self.max_displacement, pos_columns=['x', 'y', 'z'], memory=0)
-            df.loc[linked.index, 'particle'] = linked['particle']
+        # Collect velocity/acceleration stats per canonical keypoint
+        canon_stats: Dict[str, Dict[str, List[float]]] = defaultdict(
+            lambda: {"vel": [], "acc": []}
+        )
 
-        # Clear debug storage for new run
-        self.debug_velocities.clear()
-        self.debug_tracks.clear()
-
-        canon_stats = defaultdict(lambda: {"vel": [], "acc": []})
-
-        # Group by keypoint and particle (tracklet)
         for (name, particle), track in df.groupby(['keypoint', 'particle']):
             if particle == -1 or len(track) < self.min_track_length:
                 continue
 
             track = track.sort_values('frame')
 
-            # Split into contiguous segments (no jumps in frame indices)
+            # Split into contiguous segments (no frame jumps)
             frame_diffs = np.diff(track['frame'].values)
             jump_indices = np.where(frame_diffs > 1)[0] + 1
             segments = np.split(track[['x', 'y', 'z']].values, jump_indices)
@@ -289,261 +291,264 @@ class DynamicsBootstrapper:
                 acc_vec = np.diff(vel_vec, axis=0)
                 acc = np.linalg.norm(acc_vec, axis=1)
 
-                cname = self.canon_map.get(name, name)
-                canon_stats[cname]["vel"].extend(vel)
-                canon_stats[cname]["acc"].extend(acc)
+                canon_name = self.skeleton.canonical(name)
+                canon_stats[canon_name]["vel"].extend(vel.tolist())
+                canon_stats[canon_name]["acc"].extend(acc.tolist())
 
-                self.debug_velocities[cname].extend(vel)
+                if self._debug:
+                    self.debug_velocities[canon_name].extend(vel.tolist())
+                    if len(self.debug_tracks[canon_name]) < 200:
+                        self.debug_tracks[canon_name].append(track)
 
-                if len(self.debug_tracks[cname]) < 200:
-                    self.debug_tracks[cname].append(track)
-
-        # Derive final KF parameters
+        # Derive final parameters per keypoint
         final_params = {}
-        for name in self.keypoint_names:
-            cname = self.canon_map.get(name, name)
-            data = canon_stats.get(cname, {"vel": [], "acc": []})
+
+        for keypoint in self.skeleton.keypoints:
+            canon_name = self.skeleton.canonical(keypoint)
+            data = canon_stats.get(canon_name, {"vel": [], "acc": []})
 
             if len(data["vel"]) < 50:
-                dist = self.graph_dist.get(cname, 2)
-                q, w, src = max(self.min_q, 0.5 * dist), 0.5, "topology_prior"
+                # Insufficient data: use topology-based prior
+                graph_dist = self.skeleton.graph_distance(keypoint)
+                process_noise = max(self.min_process_noise, 0.5 * graph_dist)
+                weight = 0.5
+                source = "topology_prior"
             else:
+                # Compute from data
                 vel_med, vel_mad = robust_stats(data["vel"])
                 acc_med, acc_mad = robust_stats(data["acc"])
-                q = max(self.min_q, float(acc_med + 2.0 * acc_mad))
-                jitter = vel_mad / self.ref_bone_length
-                w = float(1.0 / (1.0 + (jitter * 30.0) ** 2))
-                src = "data"
 
-            final_params[name] = {
-                "process_noise": q,
+                process_noise = max(self.min_process_noise, float(acc_med + 2.0 * acc_mad))
+
+                # Weight based on velocity consistency
+                jitter = vel_mad / self.reference_bone_length
+                weight = float(1.0 / (1.0 + (jitter * 30.0) ** 2))
+                source = "data"
+
+            final_params[keypoint] = {
+                "process_noise": process_noise,
                 "measurement_noise": self.base_measurement_noise,
-                "association_weight": w,
-                "source": src
+                "association_weight": weight,
+                "source": source
             }
+
         return final_params
 
 
 if __name__ == "__main__":
     import pickle
-    from mokap.utils import fileio
 
     BASE_DIR = Path.home() / 'Desktop' / '3d_ant_data'
     PREFIX = '240905-1616'
     SESSION = 22
+    PLOT = True
 
     input_dir = BASE_DIR / PREFIX / 'inputs' / 'tracking'
     output_dir = BASE_DIR / PREFIX / 'outputs'
 
     soup_file = output_dir / f"soup_session{SESSION}.pkl"
-    bone_stats_file = output_dir / "skeleton_stats.json"
+    stats_file = output_dir / "skeleton_stats.json"
 
+    # Load stuff
     skeleton = Skeleton.from_sleap(input_dir)
+    print(f"Loaded skeleton: {len(skeleton.keypoints)} keypoints, {len(skeleton.bones)} bones")
 
     with open(soup_file, "rb") as f:
         soup = pickle.load(f)
+    print(f"Loaded soup: {soup.nb_points} points")
 
-    # Anatomy
+    # Run anatomy bootstrap
     anat = AnatomyBootstrapper(
         skeleton=skeleton,
-        MAD_ratio=0.1,
+        default_variability=0.1,
         min_samples=10,
         max_bone_length=2.5,
-        reference_bone=None,  # auto-detected
+        reference_bone=None,  # auto-select
         min_tracklet_length=5,
-        tracklet_search_range=1.5,
+        max_displacement=1.5,
+        store_debug_data=PLOT
     )
-    anat_res = anat.process(soup)
-    ref_len = anat_res["median_reference_length"]
+    stats = anat.process(soup)
 
-    # Dynamics
+    # Save anatomy stats
+    stats.to_json(stats_file)
+    print(f"Saved skeleton stats to {stats_file}")
+
+    # Run dynamics bootstrap
     dyn = DynamicsBootstrapper(
         skeleton=skeleton,
         fps=100.0,
         max_displacement=1.5,
         min_track_length=5,
-        reference_bone_length=ref_len,
+        reference_bone_length=stats.reference_length_world,
         min_process_noise=0.01,
-        measurement_noise=0.1
+        measurement_noise=0.1,
+        store_debug_data=PLOT
     )
-    dyn_res = dyn.process(soup)
+    dynamics = dyn.process(soup)
 
-    # Save
-
-    combined_result = {
-        "anatomy": anat_res,
-        "dynamics": dyn_res
-    }
-    bone_stats_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(bone_stats_file, "w") as f:
-        json.dump(combined_result, f, indent=2)
-    print(f"Saved bootstrap stats to {bone_stats_file}")
+    # Add dynamics stats # TODO: This needs to be encapsulated in the class
+    reloaded_stats = json.loads(stats_file.read_text())
+    reloaded_stats['dynamics'] = dynamics
+    with open(stats_file, 'w') as f:
+        json.dump(reloaded_stats, f, indent=2)
+    print(f"Saved dynamics stats to {stats_file}")
 
     ##
 
-    # Visualisation
+    # Visualization
+    if PLOT:
+        ref_len = stats.reference_length_world
 
-    fig = plt.figure(figsize=(18, 12))
-    fig.suptitle(
-        f"Bootstrap results (reference length: {ref_len:.2f} mm)",
-        fontsize=16
-    )
-
-    # Plot 1: Reference bone length distribution
-    ax1 = fig.add_subplot(331)
-    ax1.set_title("Reference bone length distribution")
-    ref_bone_canon = ";".join(sorted([anat.canon_map[k] for k in anat.ref_bone]))
-
-    if ref_bone_canon in anat.debug_histograms:
-        lengths = anat.debug_histograms[ref_bone_canon]
-        ax1.hist(lengths, bins=50, color="gray", alpha=0.7)
-        ax1.axvline(ref_len, color="red", linestyle="--", label="Median")
-        ax1.legend()
-    else:
-        ax1.text(0.5, 0.5, "Ref bone data not in hist", ha='center')
-    ax1.set_xlabel("Length (mm)")
-    ax1.grid(True, alpha=0.3)
-
-    # Plot 2: Bone length ratios
-    ax2 = fig.add_subplot(332)
-    ax2.set_title("Bone length ratios (population)")
-    colors = ["r", "g", "b", "orange", "purple", "cyan"]
-    for i, (bone, lengths) in enumerate(list(anat.debug_histograms.items())[:6]):
-        ratios = np.asarray(lengths) / ref_len
-        ax2.hist(
-            ratios,
-            bins=50,
-            alpha=0.3,
-            density=True,
-            label=bone,
-            color=colors[i % len(colors)],
+        fig = plt.figure(figsize=(18, 12))
+        fig.suptitle(
+            f"Bootstrap results (reference length: {ref_len:.2f} mm)",
+            fontsize=16
         )
-    ax2.legend(fontsize="x-small")
-    ax2.set_xlabel("Ratio to reference")
-    ax2.grid(True, alpha=0.3)
+        colors = ["r", "g", "b", "orange", "purple", "cyan"]
 
-    # Plot 3: Intra-individual MAD distribution
-    ax3 = fig.add_subplot(333)
-    ax3.set_title("Intra-individual MAD per tracklet")
-    for i, (bone, mads) in enumerate(list(anat.debug_intra_individual_stds.items())[:6]):
-        if len(mads) < 3:
-            continue
-        ax3.hist(
-            mads,
-            bins=30,
-            alpha=0.4,
-            density=True,
-            label=bone,
-            color=colors[i % len(colors)],
+        # Plot 1: Reference bone length distribution
+        ax1 = fig.add_subplot(331)
+        ax1.set_title("Reference bone length distribution")
+        ref_canon_key = anat.skeleton.canonical(anat.reference_bone)
+
+        if ref_canon_key in anat.debug_histograms:
+            lengths = anat.debug_histograms[ref_canon_key]
+            ax1.hist(lengths, bins=50, color="gray", alpha=0.7)
+            ax1.axvline(ref_len, color="red", linestyle="--", label="Median")
+            ax1.legend()
+        else:
+            ax1.text(0.5, 0.5, "Ref bone data not available", ha='center', transform=ax1.transAxes)
+        ax1.set_xlabel("Length (mm)")
+        ax1.grid(True, alpha=0.3)
+
+        # Plot 2: Bone length ratios
+        ax2 = fig.add_subplot(332)
+        ax2.set_title("Bone length ratios (population)")
+        for i, (bone_key, lengths) in enumerate(list(anat.debug_histograms.items())[:6]):
+            ratios = np.asarray(lengths) / ref_len
+            ax2.hist(
+                ratios, bins=50, alpha=0.3, density=True,
+                label=bone_key, color=colors[i % len(colors)]
+            )
+        ax2.legend(fontsize="x-small")
+        ax2.set_xlabel("Ratio to reference")
+        ax2.grid(True, alpha=0.3)
+
+        # Plot 3: Intra-individual MAD distribution
+        ax3 = fig.add_subplot(333)
+        ax3.set_title("Intra-individual MAD per tracklet")
+        for i, (bone_key, mads) in enumerate(list(anat.debug_intra_individual_mads.items())[:6]):
+            if len(mads) < 3:
+                continue
+            ax3.hist(
+                mads, bins=30, alpha=0.4, density=True,
+                label=bone_key, color=colors[i % len(colors)]
+            )
+            ax3.axvline(np.median(mads), color=colors[i % len(colors)], linestyle="--", alpha=0.8)
+        ax3.set_xlabel("MAD within tracklet (mm)")
+        ax3.legend(fontsize="x-small")
+        ax3.grid(True, alpha=0.3)
+
+        # Plot 4: Velocity distributions
+        ax4 = fig.add_subplot(334)
+        ax4.set_title("Velocity distributions")
+        for i, (kp, vels) in enumerate(dyn.debug_velocities.items()):
+            if i >= len(colors) or len(vels) < 50:
+                continue
+            med = np.median(vels)
+            ax4.hist(
+                vels, bins=50, alpha=0.3, density=True,
+                label=kp, color=colors[i % len(colors)]
+            )
+            ax4.axvline(med, color=colors[i % len(colors)], linestyle="--")
+        ax4.set_xlabel("Speed (mm / frame)")
+        ax4.legend(fontsize="x-small")
+        ax4.grid(True, alpha=0.3)
+
+        # Plot 5: Table of anatomy stats
+        ax5 = fig.add_subplot(335)
+        ax5.axis("off")
+        ax5.set_title("Bone statistics (intra-individual MAD)")
+
+        table_data = []
+        seen_canon = set()
+
+        for bone, bone_stats in stats.bone_stats.items():
+            canon_key = anat.skeleton.canonical(bone)
+            if canon_key in seen_canon:
+                continue
+            seen_canon.add(canon_key)
+
+            table_data.append([
+                canon_key[:20],
+                f"{bone_stats.ratio_length:.3f}",
+                f"{bone_stats.variability:.4f}",
+                f"{bone_stats.pairs}",
+            ])
+            if len(table_data) >= 10:
+                break
+
+        if table_data:
+            table = ax5.table(
+                cellText=table_data,
+                colLabels=["Bone", "Med. Ratio", "Variability", "Pairs"],
+                loc="center",
+                cellLoc="center",
+            )
+            table.scale(1, 1.3)
+
+        # Plot 6: Table of learned KF parameters
+        ax6 = fig.add_subplot(336)
+        ax6.axis("off")
+        ax6.set_title("Learned KF parameters")
+
+        table_data = []
+        seen_canon = set()
+
+        # Sort by association weight
+        sorted_items = sorted(
+            dynamics.items(),
+            key=lambda x: x[1]["association_weight"],
+            reverse=True,
         )
-        ax3.axvline(np.median(mads), color=colors[i % len(colors)], linestyle="--", alpha=0.8)
-    ax3.set_xlabel("MAD within tracklet (mm)")
-    ax3.legend(fontsize="x-small")
-    ax3.grid(True, alpha=0.3)
 
-    # Plot 4: Velocity distributions
-    ax4 = fig.add_subplot(334)
-    ax4.set_title("Velocity distributions")
-    for i, (kp, vels) in enumerate(dyn.debug_velocities.items()):
-        if i >= len(colors) or len(vels) < 50:
-            continue
-        med = np.median(vels)
-        ax4.hist(
-            vels,
-            bins=50,
-            alpha=0.3,
-            density=True,
-            label=kp,
-            color=colors[i % len(colors)],
+        for name, params in sorted_items:
+            canon_name = skeleton.canonical(name)
+            if canon_name in seen_canon:
+                continue
+            seen_canon.add(canon_name)
+
+            src = " (prior)" if params["source"] != "data" else ""
+            table_data.append([
+                canon_name[:15] + src,
+                f"{params['process_noise']:.3f}",
+                f"{params['association_weight']:.2f}",
+            ])
+            if len(table_data) >= 12:
+                break
+
+        if table_data:
+            table = ax6.table(
+                cellText=table_data,
+                colLabels=["Keypoint", "Q (process noise)", "Weight"],
+                loc="center",
+                cellLoc="center",
+            )
+            table.scale(1, 1.2)
+
+        # Plot 7: Example 3D tracks
+        ax7 = fig.add_subplot(338, projection="3d")
+        preferred = ["thorax", "neck", "head"]
+        chosen = next(
+            (p for p in preferred if p in dyn.debug_tracks),
+            next(iter(dyn.debug_tracks), None),
         )
-        ax4.axvline(med, color=colors[i % len(colors)], linestyle="--")
-    ax4.set_xlabel("Speed (mm / frame)")
-    ax4.legend(fontsize="x-small")
-    ax4.grid(True, alpha=0.3)
+        if chosen and dyn.debug_tracks[chosen]:
+            tracks_df = pd.concat(dyn.debug_tracks[chosen])
+            plot_tracks_3d(ax7, tracks_df, f"Tracks: {chosen}")
+        else:
+            ax7.text(0, 0, 0, "No long tracks")
 
-    # Plot 5: Table of anatomy stats (showing intra-individual MAD)
-    ax5 = fig.add_subplot(335)
-    ax5.axis("off")
-    ax5.set_title("Bone statistics (intra-individual MAD)")
-
-    table_data = []
-    seen_canon = set()
-
-    for bone_key, stats in sorted(anat_res["bones_ratios"].items()):
-        parts = bone_key.split(";")
-        canon_key = ";".join(sorted([anat.canon_map.get(p, p) for p in parts]))
-
-        if canon_key in seen_canon:
-            continue
-        seen_canon.add(canon_key)
-
-        table_data.append([
-            canon_key[:20],
-            f"{stats['median_ratio']:.3f}",
-            f"{stats['mad_ratio']:.4f}",
-            f"{stats.get('n_pairs', stats.get('n_tracklets', 0))}",
-        ])
-        if len(table_data) >= 10:
-            break
-
-    table = ax5.table(
-        cellText=table_data,
-        colLabels=["Bone", "Med. Ratio", "MAD Ratio", "Pairs"],
-        loc="center",
-        cellLoc="center",
-    )
-    table.scale(1, 1.3)
-
-    # Plot 6: Table of learned KF parameters
-    ax6 = fig.add_subplot(336)
-    ax6.axis("off")
-    ax6.set_title("Learned KF parameters")
-
-    table_data = []
-    seen_canon = set()
-
-    # Sort by confidence (weight)
-    sorted_items = sorted(
-        dyn_res.items(),
-        key=lambda x: x[1]["association_weight"],
-        reverse=True,
-    )
-
-    for name, p in sorted_items:
-        cname = dyn.canon_map.get(name, name)
-        if cname in seen_canon:
-            continue
-        seen_canon.add(cname)
-
-        src = " (prior)" if p["source"] != "data" else ""
-        table_data.append([
-            cname[:15] + src,
-            f"{p['process_noise']:.3f}",
-            f"{p['association_weight']:.2f}",
-        ])
-        if len(table_data) >= 12:
-            break
-
-    table = ax6.table(
-        cellText=table_data,
-        colLabels=["Keypoint", "Q (Noise)", "Weight"],
-        loc="center",
-        cellLoc="center",
-    )
-    table.scale(1, 1.2)
-
-    # Plot 5: Example 3D tracks
-    ax8 = fig.add_subplot(338, projection="3d")
-    preferred = ["thorax", "neck", "head"]
-    chosen = next(
-        (p for p in preferred if p in dyn.debug_tracks),
-        next(iter(dyn.debug_tracks), None),
-    )
-    if chosen:
-        tracks_df = pd.concat(dyn.debug_tracks[chosen])
-        plot_tracks_3d(ax8, tracks_df, f"Tracks: {chosen}")
-    else:
-        ax8.text(0, 0, 0, "No long tracks")
-
-    plt.tight_layout()
-    plt.show()
+        plt.tight_layout()
+        plt.show()

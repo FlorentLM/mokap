@@ -272,27 +272,29 @@ class PointSoup:
 
 ##
 
-Bone = FrozenSet[str]
-
 
 @dataclass
-class CandidateSkeleton:
-    """Assembler's internal representation for a potential skeleton during the assembly process."""
-
-    nodes: FrozenSet[Tuple[str, int]]
+class SkeletonHypothesis:
+    """
+    A candidate skeleton during assembly.
+    References points by index (into current frame's PointSoup).
+    """
+    nodes: FrozenSet[Tuple[str, int]]  # (keypoint name, soup point index)
     scale: float
     competition_score: float
     anatomical_score: float
 
 
 @dataclass
-class AssembledSkeleton:
-    """Represents a final assembled skeleton for a frame."""
-
-    keypoints: Dict[str, np.ndarray]
-    score: float
+class Pose3D:
+    """
+    A resolved 3D pose for a single frame.
+    Contains actual positions (not indices).
+    """
+    keypoints: Dict[str, np.ndarray]  # keypoint name -> (3,) position
     scale: float
-    point_indices: Dict[str, int] = field(default_factory=dict)
+    score: float
+    soup_point_indices: Dict[str, int] = field(default_factory=dict)  # provenance
     track_idx: int = -1
 
     def to_dict(self) -> dict:
@@ -300,7 +302,7 @@ class AssembledSkeleton:
             'keypoints': self.keypoints,
             'score': self.score,
             'scale': self.scale,
-            'point_indices': self.point_indices,
+            'soup_points_indices': self.soup_point_indices,
             'track_idx': self.track_idx
         }
 
@@ -313,7 +315,7 @@ class Tracklet:
 
     def __init__(self,
                  track_idx: int,
-                 initial_skeleton: AssembledSkeleton,
+                 initial_pose: Pose3D,
                  frame_idx: int,
                  central_kp: str,
                  config: TrackerConfig
@@ -325,12 +327,12 @@ class Tracklet:
         self.time_since_update = 0
         self.last_update_frame = frame_idx
 
+        self.pose: Pose3D = initial_pose
+        self.central_kp = central_kp
+
         # Tracklet health and score metrics
         self.health = 1.0
-        self.anatomical_integrity = initial_skeleton.score
-
-        self.skeleton: AssembledSkeleton = initial_skeleton
-        self.central_kp = central_kp
+        self.anatomical_integrity = self.pose.score
 
         # Kalman Filter for 3D position (x, y, z), 3D velocity (vx, vy, vz), and scale (s)
         # State vector (dim_x = 7): [x, y, z, vx, vy, vz, s]
@@ -366,8 +368,8 @@ class Tracklet:
         self.kf.P[6, 6] = 1.0
 
         # Initial state
-        self.kf.x[:3] = self.skeleton.keypoints[self.central_kp].reshape(3, 1)
-        self.kf.x[6] = self.skeleton.scale
+        self.kf.x[:3] = self.pose.keypoints[self.central_kp].reshape(3, 1)
+        self.kf.x[6] = self.pose.scale
 
     def predict(self, current_frame_idx: int):
         """Predicts the state of the tracklet for the current frame."""
@@ -380,29 +382,29 @@ class Tracklet:
             self.time_since_update += 1
             self.health *= self.config.health_decay_rate
 
-    def update(self, skeleton: AssembledSkeleton, frame_idx: int):
-        """Updates the tracklet's state with a new skeleton measurement."""
+    def update(self, pose: Pose3D, frame_idx: int):
+        """Updates the tracklet's state with a new pose."""
 
-        update_skeleton = skeleton
         inferred = False
 
         # If the primary keypoint is missing, try to infer it
-        if self.central_kp not in skeleton.keypoints:
-            inferred_skeleton = self._infer_missing_central_kp(skeleton)
-            if inferred_skeleton:
-                update_skeleton = inferred_skeleton
+        if self.central_kp not in pose.keypoints:
+            inferred_pose = self._infer_missing_central_kp(pose)
+
+            if inferred_pose:
+                pose = inferred_pose
                 inferred = True
             else:
-                self.skeleton = skeleton
+                self.pose = pose
                 self.time_since_update = 0
                 self.last_update_frame = frame_idx
                 return
 
-        self.skeleton = update_skeleton
+        self.pose = pose
         self.time_since_update = 0
         self.last_update_frame = frame_idx
 
-        measurement = np.array([*update_skeleton.keypoints[self.central_kp], update_skeleton.scale])
+        measurement = np.array([*pose.keypoints[self.central_kp], pose.scale])
 
         if inferred:
             original_R = self.kf.R.copy()
@@ -413,7 +415,7 @@ class Tracklet:
             self.kf.update(measurement)
 
         # Update health metrics
-        self.anatomical_integrity = self.config.anatomical_score_alpha * skeleton.score + (
+        self.anatomical_integrity = self.config.anatomical_score_alpha * pose.score + (
                 1 - self.config.anatomical_score_alpha) * self.anatomical_integrity
 
         if inferred:
@@ -421,8 +423,8 @@ class Tracklet:
         else:
             self.health = 1.0
 
-    def _infer_missing_central_kp(self, fragment: AssembledSkeleton) -> Optional[AssembledSkeleton]:
-        prev_kps, curr_kps = self.skeleton.keypoints, fragment.keypoints
+    def _infer_missing_central_kp(self, fragment: Pose3D) -> Optional[Pose3D]:
+        prev_kps, curr_kps = self.pose.keypoints, fragment.keypoints
         common_names = list(prev_kps.keys() & curr_kps.keys())
 
         if len(common_names) < self.config.min_kps_for_inference:
@@ -434,21 +436,21 @@ class Tracklet:
         R_mat, t_vec = align_rigid(points_A, points_B)
         inferred_pos = np.array(R_mat) @ prev_kps[self.central_kp] + np.array(t_vec)
 
-        completed_skeleton = AssembledSkeleton(
+        completed_skeleton = Pose3D(
             keypoints=fragment.keypoints.copy(),
             score=fragment.score,
             scale=fragment.scale,
-            point_indices=fragment.point_indices
+            soup_point_indices=fragment.soup_point_indices
         )
         completed_skeleton.keypoints[self.central_kp] = inferred_pos
         return completed_skeleton
 
     @property
     def predicted_pose(self) -> Optional[Dict[str, np.ndarray]]:
-        if self.central_kp not in self.skeleton.keypoints:
+        if self.central_kp not in self.pose.keypoints:
             return None
-        translation = self.predicted_position - self.skeleton.keypoints[self.central_kp]
-        return {kp_name: pos + translation for kp_name, pos in self.skeleton.keypoints.items()}
+        translation = self.predicted_position - self.pose.keypoints[self.central_kp]
+        return {kp_name: pos + translation for kp_name, pos in self.pose.keypoints.items()}
 
     @property
     def predicted_position(self) -> np.ndarray:
