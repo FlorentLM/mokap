@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 from collections import defaultdict
-from typing import Dict, List, Tuple, Any, Optional, Sequence
+from typing import Dict, Tuple, Any, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -10,7 +10,8 @@ import matplotlib.pyplot as plt
 from scipy.stats import median_abs_deviation
 
 from mokap.pose_reconstruction.datatypes import PointSoup
-from mokap.pose_reconstruction.utils import create_canonical_map, plot_tracks_3d, robust_stats
+from mokap.pose_reconstruction.skeleton import Skeleton
+from mokap.pose_reconstruction.utils import plot_tracks_3d, robust_stats
 
 
 # TODO: Trackpy linking should be done once as it is used by both classes
@@ -32,9 +33,7 @@ class AnatomyBootstrapper:
 
     def __init__(
             self,
-            keypoint_names: List[str],
-            bones: List[Tuple[str, str]],
-            symmetry_pairs: Optional[List[Tuple[str, str]]] = None,
+            skeleton: Skeleton,
             MAD_ratio: float = 0.1,
             min_samples: int = 10,
             max_bone_length: float = np.inf,
@@ -42,9 +41,11 @@ class AnatomyBootstrapper:
             min_tracklet_length: int = 5,
             tracklet_search_range: float = 2.0,
     ):
-        self.keypoint_names = keypoint_names
-        self.bones = [tuple(sorted(b)) for b in bones]
-        self.canon_map = create_canonical_map(keypoint_names, symmetry_pairs)
+
+        # TODO: These aliases are not needed anymore
+        self.keypoint_names = skeleton.keypoints
+        self.bones = [tuple(sorted(b)) for b in skeleton.bones]
+        self.canon_map = skeleton.canonical_map
 
         # Config
         self.MAD_ratio = MAD_ratio
@@ -53,11 +54,11 @@ class AnatomyBootstrapper:
         self.min_tracklet_length = min_tracklet_length
         self.tracklet_search_range = tracklet_search_range
 
+        # TODO: All this now lives inside skeleton class. Needs to be removed from here.
         # Build skeleton graph for stability scoring
         self._skeleton_graph = nx.Graph()
         self._skeleton_graph.add_edges_from(self.bones)
         self._degrees = dict(self._skeleton_graph.degree())
-
         if reference_bone is not None:
             self.ref_bone = tuple(sorted(reference_bone))
         else:
@@ -69,6 +70,7 @@ class AnatomyBootstrapper:
         self.debug_intra_individual_stds = defaultdict(list)
         self.debug_n_tracklet_pairs = defaultdict(int)
 
+    # TODO: Should probably be done by skeleton class by default
     def _auto_select_ref_bone(self) -> Tuple[str, str]:
         """Select the most stable bone based on graph connectivity."""
 
@@ -205,9 +207,7 @@ class DynamicsBootstrapper:
 
     def __init__(
             self,
-            keypoint_names: List[str],
-            bones: List[Tuple[str, str]],
-            symmetry_pairs: Optional[List[Tuple[str, str]]] = None,
+            skeleton: Skeleton,
             fps: float = 30.0,
             max_displacement: float = 5.0,
             min_track_length: float = 15,
@@ -215,8 +215,11 @@ class DynamicsBootstrapper:
             min_process_noise: float = 0.01,
             measurement_noise: float = 0.5
     ):
-        self.keypoint_names = keypoint_names
-        self.canon_map = create_canonical_map(keypoint_names, symmetry_pairs)
+
+        # TODO: These aliases are not needed anymore
+        self.keypoint_names = skeleton.keypoints
+        self.bones = [tuple(sorted(b)) for b in skeleton.bones]
+        self.canon_map = skeleton.canonical_map
 
         # Config
         self.fps = fps
@@ -226,14 +229,15 @@ class DynamicsBootstrapper:
         self.min_q = min_process_noise
         self.base_measurement_noise = measurement_noise
 
+        # TODO: Graph logic now lives inside skeleton class
         G = nx.Graph()
         G.add_edges_from(bones)
         try:
             self.centroid = max(G.degree, key=lambda x: x[1])[0]
             self.graph_dist = nx.single_source_shortest_path_length(G, self.centroid)
         except (ValueError, IndexError):
-            self.centroid = keypoint_names[0]
-            self.graph_dist = {k: 1 for k in keypoint_names}
+            self.centroid = self.keypoint_names[0]
+            self.graph_dist = {k: 1 for k in self.keypoint_names}
 
         self.debug_tracks = defaultdict(list)
         self.debug_velocities = defaultdict(list)
@@ -334,16 +338,14 @@ if __name__ == "__main__":
     soup_file = output_dir / f"soup_session{SESSION}.pkl"
     bone_stats_file = output_dir / "skeleton_stats.json"
 
-    keypoints, bones, symmetry = fileio.load_skeleton_SLEAP(input_dir, symmetry=True)
+    skeleton = Skeleton.from_sleap(input_dir)
 
     with open(soup_file, "rb") as f:
         soup = pickle.load(f)
 
     # Anatomy
     anat = AnatomyBootstrapper(
-        keypoint_names=soup.keypoints,
-        bones=bones,
-        symmetry_pairs=symmetry,
+        skeleton=skeleton,
         MAD_ratio=0.1,
         min_samples=10,
         max_bone_length=2.5,
@@ -356,9 +358,7 @@ if __name__ == "__main__":
 
     # Dynamics
     dyn = DynamicsBootstrapper(
-        keypoint_names=soup.keypoints,
-        bones=bones,
-        symmetry_pairs=symmetry,
+        skeleton=skeleton,
         fps=100.0,
         max_displacement=1.5,
         min_track_length=5,

@@ -8,6 +8,7 @@ from alive_progress import alive_bar
 from scipy.optimize import linear_sum_assignment
 from scipy.stats import median_abs_deviation
 
+from mokap.pose_reconstruction.skeleton import Skeleton
 from mokap.utils import fileio
 from mokap.pose_reconstruction.datatypes import Bone, AssembledSkeleton, CandidateSkeleton, PointSoup, Tracklet
 from mokap.pose_reconstruction.configs import AnatomyConfig, AssemblerConfig, TrackerConfig
@@ -936,7 +937,9 @@ if __name__ == '__main__':
         print("Soup is empty (no 3D points). Exiting.")
         exit()
 
-    keypoints, bones, symmetry = fileio.load_skeleton_SLEAP(input_dir, symmetry=True)
+    skeleton = Skeleton.from_sleap(input_dir)
+    bones = skeleton.bones
+    # TODO: Use skeleton class directly, everywhere possible
 
     print(f"Loading stats from {bone_stats_file}...")
     with open(bone_stats_file, 'r') as f:

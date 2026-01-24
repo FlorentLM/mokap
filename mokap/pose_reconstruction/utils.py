@@ -96,58 +96,6 @@ def solve_mwis(G: nx.Graph, method='networkx') -> List[int]:
 
 ##
 
-# TODO: would probably be good to have a Skeleton class that keeps the canonical map with all the bones info (and stats)
-
-def create_canonical_map(
-        keypoint_names: List[str],
-        symmetry_map:   Optional[List[Tuple[str, str]]]
-) -> Dict[str, str]:
-    """
-    Creates a map from each keypoint name to a generalized "canonical type"
-    This is used to assign per-type Kalman Filter parameters:
-    {'leg_f_L1': 'legf1', 'leg_f_R2': 'legf2', 'thorax': 'thorax'}
-
-    Args:
-        keypoint_names: The full list of keypoint names
-        symmetry_map: (Optional) a list of tuples, where each tuple is a symmetric pair of names
-
-    Returns:
-        A dictionary mapping each keypoint name to its canonical type string
-    """
-    canonical_map = {}
-    names_delimiter_regex = re.compile(r'[-_. ]')
-
-    # Process symmetric pairs first
-    if symmetry_map:
-        for name1, name2 in symmetry_map:
-            prefix, suffix = common_prefix_suffix(name1, name2)
-
-            # The part of the string that is different is the side identifier
-            side1 = name1[len(prefix):len(name1) - len(suffix)]
-
-            # The canonical name is the original name without the side identifier and cleaned up
-            canonical_name = name1.replace(side1, '')
-            canonical_name = names_delimiter_regex.sub('', canonical_name).lower()
-
-            canonical_map[name1] = canonical_name
-            canonical_map[name2] = canonical_name
-
-    # any remaining non-symmetric keypoints
-    for kp_name in keypoint_names:
-        if kp_name not in canonical_map:
-            # canonical name is just the name itself but cleaned up
-            canonical_name = names_delimiter_regex.sub('', kp_name).lower()
-            canonical_map[kp_name] = canonical_name
-
-    # print("Generated Canonical keypoint map:")
-    # unique_types = sorted(list(set(canonical_map.values())))
-    # print(f"  -> Found types: {unique_types}")
-    # example_kp = keypoint_names[2]
-    # print(f"  -> Example: '{example_kp}' maps to '{canonical_map.get(example_kp)}'")
-
-    return canonical_map
-
-
 def robust_stats(data: List[float], fallback_val: float = np.nan) -> Tuple[float, float]:
     """Returns median and MAD, safe for empty lists."""
     if len(data) == 0:

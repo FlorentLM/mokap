@@ -29,26 +29,6 @@ def read_config(config_file='config.yaml'):
 
 ##
 
-def load_skeleton_SLEAP(slp_path, symmetry=False, indices=False):
-    import sleap_io
-
-    slp_path = Path(slp_path)
-
-    if slp_path.is_dir():
-        slp_content = sleap_io.load_file(next(slp_path.glob('*.slp')))
-    else:
-        slp_content = sleap_io.load_file(slp_path)
-
-    keypoints = slp_content.skeleton.node_names
-    bones = slp_content.skeleton.edge_inds if indices else slp_content.skeleton.edge_names
-    symmetry_names = slp_content.skeleton.symmetry_names
-
-    # TODO: this is for backward-compatibility, but we prob want to always return symmetry
-    if symmetry:
-        return keypoints, bones, symmetry_names
-    else:
-        return keypoints, bones
-
 
 def SLP_to_polars(slp_content, camera_name: str, session: str) -> pl.DataFrame:
 
