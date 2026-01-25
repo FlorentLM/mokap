@@ -267,21 +267,21 @@ class TrackletViewer:
             if not relevant:
                 continue
 
-            # Draw trail (centroids of recent poses)
-            trail_poses = relevant[-self.trail_length:]
-            trail_points = []
-            for pose_dict in trail_poses:
-                kps = pose_dict.get('keypoints', {})
-                if kps:
-                    cent = np.mean(list(kps.values()), axis=0)
-                    trail_points.append(cent)
+            # # Draw trail (centroids of recent poses)
+            # trail_poses = relevant[-self.trail_length:]
+            # trail_points = []
+            # for pose_dict in trail_poses:
+            #     kps = pose_dict.get('keypoints', {})
+            #     if kps:
+            #         cent = np.mean(list(kps.values()), axis=0)
+            #         trail_points.append(cent)
 
-            if len(trail_points) > 1:
-                trail_arr = np.array(trail_points)
-                self.ax.plot(
-                    trail_arr[:, 0], trail_arr[:, 1], trail_arr[:, 2],
-                    color=color, alpha=0.5, lw=1
-                )
+            # if len(trail_points) > 1:
+            #     trail_arr = np.array(trail_points)
+            #     self.ax.plot(
+            #         trail_arr[:, 0], trail_arr[:, 1], trail_arr[:, 2],
+            #         color=color, alpha=0.5, lw=1
+            #     )
 
             # Draw current pose if it's this frame
             current = relevant[-1]

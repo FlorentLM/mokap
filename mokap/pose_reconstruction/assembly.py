@@ -41,12 +41,9 @@ class SkeletonAssembler:
         self.soup = soup
 
         # Temporary storage for the current frame
-        self._curr_frame_idx: int = -1
+        self._soup_slice_idx: int = -1
+        self._soup_slice: Optional[PointSoup] = None
         self._curr_virtual_points: Dict[int, Dict] = {}
-
-    @property
-    def _soup_slice(self):
-        return self.soup[self._curr_frame_idx]
 
     def _get_point_coords(self, idx: int):
         """Retrieve position for real (>= 0) or virtual (< 0) points."""
@@ -62,9 +59,9 @@ class SkeletonAssembler:
         Returns:
             Tuple of (candidate hypotheses, virtual point registry)
         """
-
-        self._curr_frame_idx = frame_idx
-        self._curr_virtual_points = {}
+        self._soup_slice_idx = frame_idx
+        self._soup_slice = self.soup[frame_idx]
+        self._current_virtual_points = {}
 
         # Generate initial fragments (including orphan rescue)
         initial_fragments = self._generate_hypotheses()
