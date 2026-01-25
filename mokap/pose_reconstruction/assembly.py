@@ -588,10 +588,10 @@ class SkeletonAssembler:
             bone,
             coords_p1=p1,
             coords_p2=p2,
-            conf1=conf1,
-            conf2=conf2,
+            conf_p1=conf1,
+            conf_p2=conf2,
             scale=scale,
-            mad_threshold=self.config.MAD_threshold
+            MAD_threshold=self.config.MAD_threshold
         )
 
 

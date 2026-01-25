@@ -11,7 +11,6 @@ class AssemblerConfig:
     min_kps_for_skeleton: int = 3  # min keypoints to be considered a valid skeleton fragment
     min_central_anchors: int = 2  # min number of most-connected keypoints to be primary anchors
     MAD_threshold: float = 5.0  # how far a bone's length can deviate (in mads) before its score is zero
-    bone_score_mad_epsilon: float = 0.05  # small constant added to mad for numerical stability
     min_sane_scale: float = 0.7  # min plausible scale estimate for a skeleton fragment
     max_sane_scale: float = 1.5  # max plausible scale estimate for a skeleton fragment
     score_debt_tolerance: float = 10.0  # how much of a score hit is allowed to add one more part during growth

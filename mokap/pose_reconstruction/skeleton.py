@@ -288,10 +288,11 @@ class SkeletonStats:
             bone: Bone | str | Sequence[str],
             coords_p1: ArrayLike,
             coords_p2: ArrayLike,
-            conf1: float = 1.0,
-            conf2: float = 1.0,
+            conf_p1: float = 1.0,
+            conf_p2: float = 1.0,
             scale: float = 1.0,
-            mad_threshold: float = 5.0
+            MAD_threshold: float = 5.0,
+            MAD_floor: float = 0.05
     ) -> float:
         """
         Score a proposed bone based on consistency with learned statistics.
@@ -302,13 +303,14 @@ class SkeletonStats:
         proposed_length = float(np.linalg.norm(coords_p1 - coords_p2))
         expected = self.expected_length(bone) * scale
 
-        n_mads = abs(proposed_length - expected) / max(1e-6, self.length_variability(bone))
+        variability = self.length_variability(bone) * scale + MAD_floor
+        n_mads = abs(proposed_length - expected) / max(1e-6, variability)
 
-        if n_mads > mad_threshold:
+        if n_mads > MAD_threshold:
             return -1000.0
 
         length_score = np.exp(-0.5 * n_mads ** 2)
-        confidence_score = (conf1 + conf2) / 2.0
+        confidence_score = (conf_p1 + conf_p2) / 2.0
         return length_score * confidence_score
 
     def estimate_scale(self,
