@@ -1,11 +1,8 @@
 """
 Skeleton assembly and multi-object tracking pipeline.
-
-SkeletonAssembler: Assembles skeleton hypotheses from 3D point soup
-MultiObjectTracker: Tracks multiple skeletons over time
 """
 import logging
-from typing import Tuple, Optional, Dict, List, FrozenSet, Callable
+from typing import Tuple, Optional, Dict, List, FrozenSet
 from itertools import combinations
 from collections import defaultdict
 
@@ -15,7 +12,7 @@ from alive_progress import alive_bar
 from scipy.optimize import linear_sum_assignment
 
 from mokap.pose_reconstruction.skeleton import Bone, Skeleton, SkeletonStats
-from mokap.pose_reconstruction.datatypes import Pose3D, SkeletonHypothesis, PointSoup, Tracklet
+from mokap.pose_reconstruction.datatypes import Pose3D, SkeletonHypothesis, PointSoup, Tracklet, FrameData
 from mokap.pose_reconstruction.configs import AssemblerConfig, TrackerConfig
 from mokap.pose_reconstruction.utils import solve_mwis
 
@@ -25,12 +22,11 @@ logger = logging.getLogger(__name__)
 
 class SkeletonAssembler:
     """
-    Assembles skeleton hypotheses from a PointSoup frame slice.
+    Assembles skeleton hypotheses in a frame view.
     """
 
     def __init__(
             self,
-            soup: PointSoup,
             skeleton: Skeleton,
             skeleton_stats: SkeletonStats,
             config: AssemblerConfig,
@@ -38,43 +34,26 @@ class SkeletonAssembler:
         self.skeleton = skeleton
         self.skeleton_stats = skeleton_stats
         self.config = config
-        self.soup = soup
 
-        # Temporary storage for the current frame
-        self._soup_slice_idx: int = -1
-        self._soup_slice: Optional[PointSoup] = None
-        self._curr_virtual_points: Dict[int, Dict] = {}
-
-    def _get_point_coords(self, idx: int):
-        """Retrieve position for real (>= 0) or virtual (< 0) points."""
-        return self._soup_slice.positions[idx] if idx >= 0 else self._curr_virtual_points[idx]['pos']
-
-    def _get_point_conf(self, idx: int):
-        """Retrieve position for real (>= 0) or virtual (< 0) points."""
-        return self._soup_slice.confidences[idx] if idx >= 0 else self._curr_virtual_points[idx]['conf']
-
-    def assemble_frame(self, frame_idx: int) -> Tuple[List[SkeletonHypothesis], Dict[int, Dict]]:
+    def assemble(self, frame_data: FrameData) -> List[SkeletonHypothesis]:
         """
         Main assembly entry point.
-        Returns:
-            Tuple of (candidate hypotheses, virtual point registry)
         """
-        self._soup_slice_idx = frame_idx
-        self._soup_slice = self.soup[frame_idx]
-        self._current_virtual_points = {}
+
+        if not frame_data:
+            return []
 
         # Generate initial fragments (including orphan rescue)
-        initial_fragments = self._generate_hypotheses()
+        initial_fragments = self._generate_hypotheses(frame_data)
         if not initial_fragments:
-            return [], self._curr_virtual_points
+            return []
 
         # Generate merge hypotheses
-        merge_hypotheses = self._generate_merge_hypotheses(initial_fragments)
-        all_hypotheses = initial_fragments + merge_hypotheses
+        merge_hypotheses = self._generate_merge_hypotheses(initial_fragments, frame_data)
 
-        return all_hypotheses, self._curr_virtual_points
+        return initial_fragments + merge_hypotheses
 
-    def _generate_hypotheses(self) -> List[SkeletonHypothesis]:
+    def _generate_hypotheses(self, frame_data: FrameData) -> List[SkeletonHypothesis]:
         """
         Generate skeleton hypotheses.
         """
@@ -83,11 +62,12 @@ class SkeletonAssembler:
 
         # Seed from anchors
         for anchor_type in self.skeleton.anchor_keypoints:
-            for seed_idx in self._soup_slice.points_by_name[anchor_type]:
+            # Only seed from real points
+            for seed_idx in frame_data.get_indices(anchor_type):
                 if seed_idx in used_as_seed_indices:
                     continue
 
-                candidate = self._grow_skeleton(anchor_kp=anchor_type, anchor_idx=seed_idx)
+                candidate = self._grow_skeleton(frame_data, anchor_kp=anchor_type, anchor_idx=seed_idx)
 
                 if candidate:
                     candidate_skeletons.append(candidate)
@@ -97,11 +77,11 @@ class SkeletonAssembler:
 
         # Then seed from leaves
         for leaf_type in self.skeleton.leaf_keypoints:
-            for seed_idx in self._soup_slice.points_by_name[leaf_type]:
+            for seed_idx in frame_data.get_indices(leaf_type):
                 if seed_idx in used_as_seed_indices:
                     continue
 
-                fragment = self._find_leaf_fragment(leaf_kp=leaf_type, leaf_idx=seed_idx)
+                fragment = self._find_leaf_fragment(frame_data, leaf_kp=leaf_type, leaf_idx=seed_idx)
 
                 if fragment:
                     candidate_skeletons.append(fragment)
@@ -111,14 +91,39 @@ class SkeletonAssembler:
 
         return candidate_skeletons
 
-    def _grow_skeleton(self, anchor_kp: str, anchor_idx: int) -> Optional[SkeletonHypothesis]:
+    def _generate_merge_hypotheses(
+            self,
+            fragments: List[SkeletonHypothesis],
+            frame_data: FrameData
+    ) -> List[SkeletonHypothesis]:
         """
-        Grow a skeleton from an anchor, rescuing single-view observations.
+        Generate hypotheses by merging compatible fragments.
         """
+        if len(fragments) < 2:
+            return []
 
-        anchor_pos = self._get_point_coords(anchor_idx)
+        for i, frag in enumerate(fragments):
+            frag.constituent_indices = frozenset([i])
 
-        # Initialize
+        merge_hypotheses = []
+
+        for i, j in combinations(range(len(fragments)), 2):
+            skel_A, skel_B = fragments[i], fragments[j]
+
+            merged = self._try_merge(skel_A, skel_B, frame_data)
+
+            if merged:
+                merged.constituent_indices = skel_A.constituent_indices | skel_B.constituent_indices
+                merge_hypotheses.append(merged)
+
+        return merge_hypotheses
+
+    def _grow_skeleton(self, frame_data: FrameData, anchor_kp: str, anchor_idx: int) -> Optional[SkeletonHypothesis]:
+        """
+        Grow a skeleton from an anchor using FrameData for geometric lookups.
+        """
+        anchor_pos = frame_data.position(anchor_idx)
+
         current_nodes = {(anchor_kp, anchor_idx)}
         current_kps = {anchor_kp: anchor_pos}
         total_bone_score_sum = 0.0
@@ -133,7 +138,7 @@ class SkeletonAssembler:
 
             # Find candidates via graph topology + spatial proximity
             for node_kp, node_idx in current_nodes:
-                node_pos = self._get_point_coords(node_idx)
+                node_pos = frame_data.position(node_idx)
 
                 neighbor_kp_types = {
                     n for n in self.skeleton.neighbours(node_kp)
@@ -142,31 +147,35 @@ class SkeletonAssembler:
                 if not neighbor_kp_types:
                     continue
 
-                # Standard 3D search
-                tree = self._soup_slice.tree
-                # TODO: Should probably use the global soup tree instead of per-frame tree
+                # Standard 3D search (real points)
+                nearby_indices = frame_data.nearby(node_pos, max_search_radius)
 
-                if tree:
-                    nearby_indices = tree.query_ball_point(node_pos, r=max_search_radius)
-                    for idx in nearby_indices:
-                        cand_type_idx = self._soup_slice.keypoint_indices[idx]
-                        cand_type = self._soup_slice.keypoint_names[cand_type_idx]
+                for idx in nearby_indices:
+                    cand_type_idx = frame_data.soup.keypoint_indices[idx]
+                    cand_type = frame_data.soup.keypoint_names[cand_type_idx]
 
-                        if cand_type in neighbor_kp_types:
-                            nodes_to_evaluate.add((cand_type, int(idx)))
+                    if cand_type in neighbor_kp_types:
+                        nodes_to_evaluate.add((cand_type, int(idx)))
 
                 # Orphan ray rescue (single view observations)
                 for target_type in neighbor_kp_types:
+                    # Check if we already found real candidates for this type
                     has_3d_candidates = any(n[0] == target_type for n in nodes_to_evaluate)
 
                     if not has_3d_candidates:
-                        orphans = self._single_view_rescue(
-                            anchor_pos=node_pos,
-                            anchor_kp=node_kp,
-                            target_kp=target_type
-                        )
-                        for vp_idx, vp_type in orphans:
-                            nodes_to_evaluate.add((vp_type, vp_idx))
+                        # Determine expected bone length
+                        bone = Bone(node_kp, target_type)
+                        if bone in self.skeleton:
+                            expected_len = self.skeleton_stats.expected_length(bone)
+
+                            virtual_indices = frame_data.intersect_rays(
+                                keypoint_name=target_type,
+                                center=node_pos,
+                                radius=expected_len
+                            )
+
+                            for vp_idx in virtual_indices:
+                                nodes_to_evaluate.add((target_type, vp_idx))
 
             if not nodes_to_evaluate:
                 break
@@ -194,8 +203,9 @@ class SkeletonAssembler:
 
             # Evaluate extensions
             for cand_node in nodes_to_evaluate:
+
                 cand_kp_name, cand_idx = cand_node
-                cand_pos = self._get_point_coords(cand_idx)
+                cand_pos = frame_data.position(cand_idx)
 
                 temp_kps = current_kps.copy()
                 temp_kps[cand_kp_name] = cand_pos
@@ -209,7 +219,7 @@ class SkeletonAssembler:
 
                     if bone in self.skeleton:
                         temp_nodes = frozenset(current_nodes | {cand_node})
-                        score = self._score_bone(bone, temp_kps, temp_nodes, current_step_scale)
+                        score = self._score_bone(bone, temp_kps, temp_nodes, current_step_scale, frame_data)
 
                         if score < -500:
                             new_bone_score_sum = -float('inf')
@@ -238,7 +248,7 @@ class SkeletonAssembler:
                     best_new_growth_score = new_growth_score
                     best_extension = {
                         "node": cand_node,
-                        "pos": cand_pos,
+                        "position": cand_pos,
                         "score_contribution": new_bone_score_sum,
                         "bone_count_increase": new_bone_count
                     }
@@ -247,7 +257,7 @@ class SkeletonAssembler:
             if best_extension and best_new_growth_score > (current_growth_score - self.config.score_debt_tolerance):
                 best_node = best_extension["node"]
                 current_nodes.add(best_node)
-                current_kps[best_node[0]] = best_extension["pos"]
+                current_kps[best_node[0]] = best_extension["position"]
                 total_bone_score_sum += best_extension["score_contribution"]
                 num_bones += best_extension["bone_count_increase"]
             else:
@@ -269,97 +279,9 @@ class SkeletonAssembler:
 
         return self._create_candidate(frozenset(current_nodes), final_avg_score, final_scale)
 
-    def _single_view_rescue(
-            self,
-            anchor_pos: np.ndarray,
-            anchor_kp: str,
-            target_kp: str
-    ) -> List[Tuple[int, str]]:
-        """
-        Intersect rays for target_kp with sphere around anchor_pos.
-        Returns list of (virtual_idx, kp_type) tuples.
-        """
-
-        bone = Bone(anchor_kp, target_kp)
-        if bone not in self.skeleton:
-            return []
-
-        # Expected radius from stats
-        r = self.skeleton_stats.expected_length(bone)
-
-        # Get orphan rays
-        ray_indices = self._soup_slice.rays_by_name[target_kp]
-        if not len(ray_indices):
-            return []
-
-        origins = self._soup_slice.ray_origins[ray_indices]
-        dirs = self._soup_slice.ray_directions[ray_indices]
-
-        # Ray-sphere intersection
-        V = origins - anchor_pos
-        b = 2.0 * np.einsum('ij,ij->i', V, dirs)
-        c = np.einsum('ij,ij->i', V, V) - (r ** 2)
-        discriminant = b ** 2 - 4 * c
-
-        valid_mask = discriminant >= 0
-        if not np.any(valid_mask):
-            return []
-
-        valid_indices = np.where(valid_mask)[0]
-
-        # Calculate intersection points
-        sqrt_delta = np.sqrt(discriminant[valid_indices])
-        b_valid = b[valid_indices]
-
-        t1 = (-b_valid - sqrt_delta) / 2.0
-        t2 = (-b_valid + sqrt_delta) / 2.0
-
-        orig_valid = origins[valid_indices]
-        dirs_valid = dirs[valid_indices]
-
-        p1s = orig_valid + t1[:, np.newaxis] * dirs_valid
-        p2s = orig_valid + t2[:, np.newaxis] * dirs_valid
-
-        # Register virtual points
-        result = []
-        source_ray_ids = ray_indices[valid_indices]
-
-        for i in range(len(valid_indices)):
-            ray_idx = source_ray_ids[i]
-            conf = self._soup_slice.ray_confidences[ray_idx]
-
-            # Add both solutions as candidates
-            vid1 = self._register_virtual_point(p1s[i], conf, target_kp, ray_idx)
-            result.append((vid1, target_kp))
-
-            vid2 = self._register_virtual_point(p2s[i], conf, target_kp, ray_idx)
-            result.append((vid2, target_kp))
-
-        return result
-
-    def _register_virtual_point(
-            self,
-            pos: np.ndarray,
-            conf: float,
-            kp_type: str,
-            source_ray_idx: int
-    ) -> int:
-        """
-        Store a computed 3D point and return a unique negative index.
-        """
-
-        next_idx = -1 * (len(self._curr_virtual_points) + 1)
-
-        self._curr_virtual_points[next_idx] = {
-            'pos': pos,
-            'conf': conf * 0.8,  # penalty for single-view inference
-            'kp_type': kp_type,
-            'source_ray_idx': source_ray_idx
-        }
-        return next_idx
-
     def _find_leaf_fragment(
             self,
+            frame_data: FrameData,
             leaf_kp: str,
             leaf_idx: int
     ) -> Optional[SkeletonHypothesis]:
@@ -372,28 +294,24 @@ class SkeletonAssembler:
             return None
 
         parent_kp = neighbours[0]
-        leaf_pos = self._get_point_coords(leaf_idx)
+        leaf_pos = frame_data.position(leaf_idx)
         best_score = -1.0
         best_cand_data = None
 
-        # Check real parent points
-        parent_indices = self._soup_slice.points_by_name.get(parent_kp, [])
+        # Check real points
+        parent_indices = frame_data.get_indices(parent_kp)
 
         for p_idx in parent_indices:
-            p_pos = self._get_point_coords(p_idx)
-
+            p_pos = frame_data.position(p_idx)
             kps = {leaf_kp: leaf_pos, parent_kp: p_pos}
-            scale = self.skeleton_stats.estimate_scale(
-                kps,
-                min_scale=self.config.min_sane_scale,
-                max_scale=self.config.max_sane_scale
-            )
+
+            scale = self.skeleton_stats.estimate_scale(kps, self.config.min_sane_scale, self.config.max_sane_scale)
             if not (self.config.min_sane_scale < scale < self.config.max_sane_scale):
                 continue
 
             nodes = frozenset([(leaf_kp, leaf_idx), (parent_kp, p_idx)])
             bone = Bone(leaf_kp, parent_kp)
-            score = self._score_bone(bone, kps, nodes, scale)
+            score = self._score_bone(bone, kps, nodes, scale, frame_data)
 
             if score > best_score:
                 best_score = score
@@ -401,27 +319,25 @@ class SkeletonAssembler:
 
         # Try orphan rescue if no good real connection
         if best_score < self.config.min_bone_score_for_fragment:
-            orphans = self._single_view_rescue(
-                anchor_pos=leaf_pos,
-                anchor_kp=leaf_kp,
-                target_kp=parent_kp
-            )
+            bone = Bone(leaf_kp, parent_kp)
+            expected_len = self.skeleton_stats.expected_length(bone)
 
-            for vp_idx, _ in orphans:
-                vp_pos = self._get_point_coords(vp_idx)
+            vp_indices = frame_data.intersect_rays(parent_kp, leaf_pos, expected_len)
+
+            for vp_idx in vp_indices:
+                vp_pos = frame_data.position(vp_idx)
 
                 kps = {leaf_kp: leaf_pos, parent_kp: vp_pos}
                 scale = self.skeleton_stats.estimate_scale(
                     kps,
-                    min_scale=self.config.min_sane_scale,
-                    max_scale=self.config.max_sane_scale
+                    self.config.min_sane_scale,
+                    self.config.max_sane_scale
                 )
                 if not (self.config.min_sane_scale < scale < self.config.max_sane_scale):
                     continue
 
                 nodes = frozenset([(leaf_kp, leaf_idx), (parent_kp, vp_idx)])
-                bone = Bone(leaf_kp, parent_kp)
-                score = self._score_bone(bone, kps, nodes, scale)
+                score = self._score_bone(bone, kps, nodes, scale, frame_data)
 
                 if score > best_score:
                     best_score = score
@@ -431,44 +347,22 @@ class SkeletonAssembler:
             p_idx, p_pos = best_cand_data
             nodes = frozenset([(leaf_kp, leaf_idx), (parent_kp, p_idx)])
 
+            # Re-estimate final scale
             final_kps = {leaf_kp: leaf_pos, parent_kp: p_pos}
             final_scale = self.skeleton_stats.estimate_scale(
                 final_kps,
-                min_scale=self.config.min_sane_scale,
-                max_scale=self.config.max_sane_scale
+                self.config.min_sane_scale,
+                self.config.max_sane_scale
             )
             return self._create_candidate(nodes, best_score, final_scale)
 
         return None
 
-    def _generate_merge_hypotheses(
-            self,
-            fragments: List[SkeletonHypothesis]
-    ) -> List[SkeletonHypothesis]:
-        """
-        Generate hypotheses by merging compatible fragments.
-        """
-
-        if len(fragments) < 2:
-            return []
-
-        for i, frag in enumerate(fragments):
-            frag.constituent_indices = frozenset([i])
-
-        merge_hypotheses = []
-        for i, j in combinations(range(len(fragments)), 2):
-            skel_A, skel_B = fragments[i], fragments[j]
-            merged = self._attempt_merge(skel_A, skel_B)
-            if merged:
-                merged.constituent_indices = skel_A.constituent_indices | skel_B.constituent_indices
-                merge_hypotheses.append(merged)
-
-        return merge_hypotheses
-
-    def _attempt_merge(
+    def _try_merge(
             self,
             skel_A: SkeletonHypothesis,
-            skel_B: SkeletonHypothesis
+            skel_B: SkeletonHypothesis,
+            frame_data: FrameData
     ) -> Optional[SkeletonHypothesis]:
         """
         Attempt to merge two skeleton hypotheses.
@@ -494,8 +388,8 @@ class SkeletonAssembler:
         # Find linking bone
         best_link_score = -1.0
 
-        kps_map_A = {n[0]: self._get_point_coords(n[1]) for n in skel_A.nodes}
-        kps_map_B = {n[0]: self._get_point_coords(n[1]) for n in skel_B.nodes}
+        kps_map_A = {n[0]: frame_data.position(n[1]) for n in skel_A.nodes}
+        kps_map_B = {n[0]: frame_data.position(n[1]) for n in skel_B.nodes}
 
         combined_kps_map = {**kps_map_A, **kps_map_B}
         combined_nodes = skel_A.nodes | skel_B.nodes
@@ -504,7 +398,7 @@ class SkeletonAssembler:
             for kp_b in kps_B:
                 bone = Bone(kp_a, kp_b)
                 if bone in self.skeleton:
-                    score = self._score_bone(bone, combined_kps_map, combined_nodes, combined_scale)
+                    score = self._score_bone(bone, combined_kps_map, combined_nodes, combined_scale, frame_data)
                     if score > best_link_score:
                         best_link_score = score
 
@@ -563,30 +457,22 @@ class SkeletonAssembler:
             bone: Bone,
             keypoints: Dict[str, np.ndarray],
             nodes: FrozenSet[Tuple[str, int]],
-            scale: float
+            scale: float,
+            frame_data: FrameData
     ) -> float:
         """
         Score a bone using SkeletonStats, incorporating point confidences.
         """
 
-        if bone not in self.skeleton:
-            return 0.0
-
-        p1, p2 = keypoints[bone.k1], keypoints[bone.k2]
-
-        # Retrieve confidences from nodes
         node1 = next(n for n in nodes if n[0] == bone.k1)
         node2 = next(n for n in nodes if n[0] == bone.k2)
 
-        conf1 = self._get_point_conf(node1[1])
-        conf2 = self._get_point_conf(node2[1])
-
         return self.skeleton_stats.score_bone(
             bone,
-            coords_p1=p1,
-            coords_p2=p2,
-            conf_p1=conf1,
-            conf_p2=conf2,
+            coords_p1=keypoints[bone.k1],
+            coords_p2=keypoints[bone.k2],
+            conf_p1=frame_data.confidence(node1[1]),
+            conf_p2=frame_data.confidence(node2[1]),
             scale=scale,
             MAD_threshold=self.config.MAD_threshold
         )
@@ -616,44 +502,33 @@ class MultiObjectTracker:
     def update(self, frame_idx: int) -> List[Tracklet]:
         """Process a new frame and update tracklets."""
 
-        soup_slice = self.soup[frame_idx]
+        frame_data = FrameData(self.soup[frame_idx])
 
-        # Predict all existing tracklets in all cases
         for tracklet in self.tracklets:
             tracklet.predict(frame_idx)
 
-        # Current slice has no data, so just coast forward
-        if soup_slice.nb_points == 0 and soup_slice.nb_rays == 0:
-            self._prune_tracklets()
-            return self.get_active_tracklets()
-
         # Generate hypotheses
-        all_candidates, virtual_registry = self.assembler.assemble_frame(frame_idx)
+        frame_candidates = self.assembler.assemble(frame_data)
 
-        if not all_candidates:
+        if not frame_candidates:
             self._prune_tracklets()
             return self.get_active_tracklets()
-
-        # Position lookup helper
-        def get_pos(idx: int) -> np.ndarray:
-            if idx >= 0:
-                return soup_slice.positions[idx]
-            return virtual_registry[idx]['pos']
 
         # Association bonus for temporal continuity
-        bonuses = self._association_bonuses(all_candidates, get_pos)
-        for i, cand in enumerate(all_candidates):
+        bonuses = self._association_bonuses(frame_candidates, frame_data)
+        for i, cand in enumerate(frame_candidates):
             cand.competition_score += bonuses[i] * self.config.continuity_bonus
 
         # Solve conflicts
-        conflict_graph = self._build_conflict_graph(all_candidates, get_pos, virtual_registry)
+        conflict_graph = self._build_conflict_graph(frame_candidates, frame_data)
         winner_indices = solve_mwis(conflict_graph, method='networkx')
 
         # Reify winners into Pose3D
         winning_poses = []
         for i in winner_indices:
-            cand = all_candidates[i]
-            kps = {node[0]: get_pos(node[1]) for node in cand.nodes}
+            cand = frame_candidates[i]
+
+            kps = {node[0]: frame_data.position(node[1]) for node in cand.nodes}
             pt_indices = {node[0]: node[1] for node in cand.nodes}
 
             winning_poses.append(Pose3D(
@@ -708,8 +583,7 @@ class MultiObjectTracker:
     def _build_conflict_graph(
             self,
             candidates: List[SkeletonHypothesis],
-            pos_lookup,
-            virtual_registry: Dict[int, Dict]
+            frame_data: FrameData
     ) -> nx.Graph:
         """Build graph where edges represent mutually exclusive hypotheses."""
 
@@ -721,7 +595,7 @@ class MultiObjectTracker:
             conflict_graph.add_node(i, weight=weight)
 
         centroids = np.array([
-            np.mean([pos_lookup(node[1]) for node in cand.nodes], axis=0)
+            np.mean([frame_data.position(node[1]) for node in cand.nodes], axis=0)
             if cand.nodes else np.array([np.nan] * 3)
             for cand in candidates
         ])
@@ -731,9 +605,9 @@ class MultiObjectTracker:
         for cand in candidates:
             rays = set()
             for kp_name, idx in cand.nodes:
-                if idx < 0:  # virtual point
-                    source_ray = virtual_registry[idx]['source_ray_idx']
-                    rays.add(source_ray)
+                ray_idx = frame_data.get_ray_index(idx)
+                if ray_idx >= 0:
+                    rays.add(ray_idx)
             cand_ray_sources.append(rays)
 
         for i, j in combinations(range(num_candidates), 2):
@@ -762,8 +636,8 @@ class MultiObjectTracker:
             dist_sq = np.sum((centroids[i] - centroids[j]) ** 2)
 
             if dist_sq < self.config.conflict_solver_broad_radius ** 2:
-                kps_i = {node[0]: pos_lookup(node[1]) for node in cand_i.nodes}
-                kps_j = {node[0]: pos_lookup(node[1]) for node in cand_j.nodes}
+                kps_i = {node[0]: frame_data.position(node[1]) for node in cand_i.nodes}
+                kps_j = {node[0]: frame_data.position(node[1]) for node in cand_j.nodes}
 
                 common = kps_i.keys() & kps_j.keys()
                 union = kps_i.keys() | kps_j.keys()
@@ -782,10 +656,10 @@ class MultiObjectTracker:
     def _association_bonuses(
             self,
             candidates: List[SkeletonHypothesis],
-            pos_lookup
+            frame_data: FrameData
     ) -> np.ndarray:
         """
-        Calculate temporal association bonuses for candidates.
+        Calculate temporal association bonuses.
         """
 
         if not self.tracklets or not candidates:
@@ -794,7 +668,7 @@ class MultiObjectTracker:
         bonuses = np.zeros(len(candidates))
 
         for j, cand_skel in enumerate(candidates):
-            skel_kps = {node[0]: pos_lookup(node[1]) for node in cand_skel.nodes}
+            skel_kps = {node[0]: frame_data.position(node[1]) for node in cand_skel.nodes}
 
             if not skel_kps:
                 continue
@@ -891,7 +765,6 @@ if __name__ == '__main__':
 
     # Initialize pipeline
     assembler = SkeletonAssembler(
-        soup=soup,
         skeleton=skeleton,
         skeleton_stats=stats,
         config=assembler_cfg,
@@ -913,14 +786,9 @@ if __name__ == '__main__':
     with alive_bar(total=(max_frame - min_frame + 1), length=20, force_tty=True) as bar:
 
         for frame_idx in range(min_frame, max_frame + 1):
-
-            # Process frame
             active_tracklets = tracker.update(frame_idx)
 
-            # Store results and learn from high-quality poses
             for tracklet in active_tracklets:
-
-                # Online learning
                 if tracklet.last_update_frame == frame_idx:
                     stats.update(tracklet.pose.keypoints)
 
@@ -936,7 +804,6 @@ if __name__ == '__main__':
                     'frame_idx': frame_idx
                 })
                 tracklets_by_id[tracklet.track_idx].append(pose_dict)
-
             bar()
 
     print("Tracking complete.")
@@ -954,4 +821,5 @@ if __name__ == '__main__':
 
     if DEBUG_PLOT:
         from mokap.pose_reconstruction.debug import TrackletViewer
+
         viewer = TrackletViewer(soup, tracklets_by_id, skeleton)

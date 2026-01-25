@@ -270,6 +270,103 @@ class PointSoup:
         })
 
 
+class FrameData:
+    # TODO: This class should probably return a Point object with a 'virtual' flag
+
+    def __init__(self, soup_slice: PointSoup):
+        self.soup = soup_slice
+
+        # {virtual_idx: {'position': array, 'confidence': float, 'keypoint_name': str, 'ray_index': int}}
+        self._virtual_registry: Dict[int, Dict] = {}
+        self._next_virt_id = -1
+
+    def __bool__(self) -> bool:
+        return self.soup.nb_points > 0 or self.soup.nb_rays > 0
+
+    def position(self, idx: int) -> np.ndarray:
+        return self.soup.positions[idx] if idx >= 0 else self._virtual_registry[idx]['position']
+
+    def confidence(self, idx: int) -> float:
+        return self.soup.confidences[idx] if idx >= 0 else self._virtual_registry[idx]['confidence']
+
+    def get_indices(self, keypoint_name: str) -> np.ndarray:
+        """Get indices of real 3D points for a specific keypoint type."""
+        return self.soup.points_by_name[keypoint_name]
+    
+    def get_ray_index(self, virtual_idx: int) -> int:
+        """Returns the ray index used to generate a virtual point (or -1 if real)."""
+        return self._virtual_registry[virtual_idx]['ray_index'] if virtual_idx < 0 else -1
+    
+    def nearby(self, center: np.ndarray, radius: float) -> List[int]:
+        if not self.soup.tree:
+            return []
+        return list(self.soup.tree.query_ball_point(center, r=radius))
+
+    def intersect_rays(self, keypoint_name: str, center: np.ndarray, radius: float) -> List[int]:
+        """
+        Intersect rays of type `keypoint_name` with a sphere (center, radius).
+        Registers resulting points as virtual points.
+        Returns: List of new virtual point indices (negative integers).
+        """
+        # TODO: Move the actual ray-sphere intersection to lucida.geometry module
+
+        ray_indices = self.soup.rays_by_name[keypoint_name]
+
+        if len(ray_indices) == 0:
+            return []
+
+        origins = self.soup.ray_origins[ray_indices]
+        dirs = self.soup.ray_directions[ray_indices]
+
+        # Ray-sphere intersection
+        V = origins - center
+        b = 2.0 * np.einsum('ij,ij->i', V, dirs)
+        c = np.einsum('ij,ij->i', V, V) - (radius ** 2)
+        discriminant = b ** 2 - 4 * c
+
+        valid_mask = discriminant >= 0
+        if not np.any(valid_mask):
+            return []
+
+        valid_locs = np.where(valid_mask)[0]
+
+        # Calculate intersection points t1 and t2
+        sqrt_delta = np.sqrt(discriminant[valid_locs])
+        t1 = (-b[valid_locs] - sqrt_delta) / 2.0
+        t2 = (-b[valid_locs] + sqrt_delta) / 2.0
+
+        # Retrieve valid ray attributes
+        valid_ray_indices = ray_indices[valid_locs]
+        valid_origins = origins[valid_locs]
+        valid_dirs = dirs[valid_locs]
+        valid_confs = self.soup.ray_confidences[valid_ray_indices]
+
+        new_indices = []
+
+        def _register(p, c, r_idx):
+            vid = self._next_virt_id
+            self._virtual_registry[vid] = {
+                'position': p,
+                'confidence': c * 0.8,  # Virtual penalty # TODO: This value should not live here
+                'keypoint_name': keypoint_name,
+                'ray_index': r_idx
+            }
+            self._next_virt_id -= 1
+            return vid
+
+        # Register both solutions
+        for i in range(len(valid_locs)):
+            p1 = valid_origins[i] + t1[i] * valid_dirs[i]
+            p2 = valid_origins[i] + t2[i] * valid_dirs[i]
+            ray_idx = valid_ray_indices[i]
+            conf = valid_confs[i]
+
+            new_indices.append(_register(p1, conf, ray_idx))
+            new_indices.append(_register(p2, conf, ray_idx))
+
+        return new_indices
+
+
 ##
 
 
@@ -283,6 +380,7 @@ class SkeletonHypothesis:
     scale: float
     competition_score: float
     anatomical_score: float
+    constituent_indices: Optional[FrozenSet[int]] = None
 
 
 @dataclass
