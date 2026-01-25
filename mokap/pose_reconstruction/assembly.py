@@ -22,9 +22,6 @@ from mokap.pose_reconstruction.utils import solve_mwis
 
 logger = logging.getLogger(__name__)
 
-# Type alias for position lookup functions
-PositionLookup = Callable[[int], np.ndarray]
-
 
 class SkeletonAssembler:
     """
@@ -44,19 +41,20 @@ class SkeletonAssembler:
         self.soup = soup
 
         # Temporary storage for the current frame
-        self._soup_slice_idx: int = -1
-        self._soup_slice: Optional[PointSoup] = None
-        self._current_virtual_points: Dict[int, Dict] = {}
+        self._curr_frame_idx: int = -1
+        self._curr_virtual_points: Dict[int, Dict] = {}
 
-    def _get_soup_element(self, idx: int):
-        """Retrieve position/confidence for real (>= 0) or virtual (< 0) points."""
+    @property
+    def _soup_slice(self):
+        return self.soup[self._curr_frame_idx]
 
-        if idx >= 0:
-            pos, conf = self._soup_slice.positions[idx], self._soup_slice.confidences[idx]
-        else:
-            vp = self._current_virtual_points[idx]
-            pos, conf = vp['pos'], vp['conf']
-        return pos, conf
+    def _get_point_coords(self, idx: int):
+        """Retrieve position for real (>= 0) or virtual (< 0) points."""
+        return self._soup_slice.positions[idx] if idx >= 0 else self._curr_virtual_points[idx]['pos']
+
+    def _get_point_conf(self, idx: int):
+        """Retrieve position for real (>= 0) or virtual (< 0) points."""
+        return self._soup_slice.confidences[idx] if idx >= 0 else self._curr_virtual_points[idx]['conf']
 
     def assemble_frame(self, frame_idx: int) -> Tuple[List[SkeletonHypothesis], Dict[int, Dict]]:
         """
@@ -64,20 +62,20 @@ class SkeletonAssembler:
         Returns:
             Tuple of (candidate hypotheses, virtual point registry)
         """
-        self._soup_slice_idx = frame_idx
-        self._soup_slice = self.soup[frame_idx]
-        self._current_virtual_points = {}
+
+        self._curr_frame_idx = frame_idx
+        self._curr_virtual_points = {}
 
         # Generate initial fragments (including orphan rescue)
         initial_fragments = self._generate_hypotheses()
         if not initial_fragments:
-            return [], self._current_virtual_points
+            return [], self._curr_virtual_points
 
         # Generate merge hypotheses
         merge_hypotheses = self._generate_merge_hypotheses(initial_fragments)
         all_hypotheses = initial_fragments + merge_hypotheses
 
-        return all_hypotheses, self._current_virtual_points
+        return all_hypotheses, self._curr_virtual_points
 
     def _generate_hypotheses(self) -> List[SkeletonHypothesis]:
         """
@@ -107,6 +105,7 @@ class SkeletonAssembler:
                     continue
 
                 fragment = self._find_leaf_fragment(leaf_kp=leaf_type, leaf_idx=seed_idx)
+
                 if fragment:
                     candidate_skeletons.append(fragment)
                     for _, idx in fragment.nodes:
@@ -120,7 +119,7 @@ class SkeletonAssembler:
         Grow a skeleton from an anchor, rescuing single-view observations.
         """
 
-        anchor_pos, _ = self._get_soup_element(anchor_idx)
+        anchor_pos = self._get_point_coords(anchor_idx)
 
         # Initialize
         current_nodes = {(anchor_kp, anchor_idx)}
@@ -137,7 +136,7 @@ class SkeletonAssembler:
 
             # Find candidates via graph topology + spatial proximity
             for node_kp, node_idx in current_nodes:
-                node_pos, _ = self._get_soup_element(node_idx)
+                node_pos = self._get_point_coords(node_idx)
 
                 neighbor_kp_types = {
                     n for n in self.skeleton.neighbours(node_kp)
@@ -199,7 +198,7 @@ class SkeletonAssembler:
             # Evaluate extensions
             for cand_node in nodes_to_evaluate:
                 cand_kp_name, cand_idx = cand_node
-                cand_pos, _ = self._get_soup_element(cand_idx)
+                cand_pos = self._get_point_coords(cand_idx)
 
                 temp_kps = current_kps.copy()
                 temp_kps[cand_kp_name] = cand_pos
@@ -352,9 +351,9 @@ class SkeletonAssembler:
         Store a computed 3D point and return a unique negative index.
         """
 
-        next_idx = -1 * (len(self._current_virtual_points) + 1)
+        next_idx = -1 * (len(self._curr_virtual_points) + 1)
 
-        self._current_virtual_points[next_idx] = {
+        self._curr_virtual_points[next_idx] = {
             'pos': pos,
             'conf': conf * 0.8,  # penalty for single-view inference
             'kp_type': kp_type,
@@ -376,7 +375,7 @@ class SkeletonAssembler:
             return None
 
         parent_kp = neighbours[0]
-        leaf_pos, _ = self._get_soup_element(leaf_idx)
+        leaf_pos = self._get_point_coords(leaf_idx)
         best_score = -1.0
         best_cand_data = None
 
@@ -384,7 +383,7 @@ class SkeletonAssembler:
         parent_indices = self._soup_slice.points_by_name.get(parent_kp, [])
 
         for p_idx in parent_indices:
-            p_pos, _ = self._get_soup_element(p_idx)
+            p_pos = self._get_point_coords(p_idx)
 
             kps = {leaf_kp: leaf_pos, parent_kp: p_pos}
             scale = self.skeleton_stats.estimate_scale(
@@ -412,7 +411,7 @@ class SkeletonAssembler:
             )
 
             for vp_idx, _ in orphans:
-                vp_pos, _ = self._get_soup_element(vp_idx)
+                vp_pos = self._get_point_coords(vp_idx)
 
                 kps = {leaf_kp: leaf_pos, parent_kp: vp_pos}
                 scale = self.skeleton_stats.estimate_scale(
@@ -498,8 +497,8 @@ class SkeletonAssembler:
         # Find linking bone
         best_link_score = -1.0
 
-        kps_map_A = {n[0]: self._get_soup_element(n[1])[0] for n in skel_A.nodes}
-        kps_map_B = {n[0]: self._get_soup_element(n[1])[0] for n in skel_B.nodes}
+        kps_map_A = {n[0]: self._get_point_coords(n[1]) for n in skel_A.nodes}
+        kps_map_B = {n[0]: self._get_point_coords(n[1]) for n in skel_B.nodes}
 
         combined_kps_map = {**kps_map_A, **kps_map_B}
         combined_nodes = skel_A.nodes | skel_B.nodes
@@ -582,8 +581,8 @@ class SkeletonAssembler:
         node1 = next(n for n in nodes if n[0] == bone.k1)
         node2 = next(n for n in nodes if n[0] == bone.k2)
 
-        _, conf1 = self._get_soup_element(node1[1])
-        _, conf2 = self._get_soup_element(node2[1])
+        conf1 = self._get_point_conf(node1[1])
+        conf2 = self._get_point_conf(node2[1])
 
         return self.skeleton_stats.score_bone(
             bone,
@@ -592,7 +591,7 @@ class SkeletonAssembler:
             conf1=conf1,
             conf2=conf2,
             scale=scale,
-            mad_threshold=self.config.bone_score_mad_thresh
+            mad_threshold=self.config.MAD_threshold
         )
 
 
@@ -712,7 +711,7 @@ class MultiObjectTracker:
     def _build_conflict_graph(
             self,
             candidates: List[SkeletonHypothesis],
-            pos_lookup: PositionLookup,
+            pos_lookup,
             virtual_registry: Dict[int, Dict]
     ) -> nx.Graph:
         """Build graph where edges represent mutually exclusive hypotheses."""
@@ -786,7 +785,7 @@ class MultiObjectTracker:
     def _association_bonuses(
             self,
             candidates: List[SkeletonHypothesis],
-            pos_lookup: PositionLookup
+            pos_lookup
     ) -> np.ndarray:
         """
         Calculate temporal association bonuses for candidates.
@@ -805,8 +804,8 @@ class MultiObjectTracker:
 
             max_bonus = 0.0
 
-            for tracklet in self.tracklets:
-                pred_pose = tracklet.predicted_pose
+            for t in self.tracklets:
+                pred_pose = t.predicted_pose
 
                 if not pred_pose:
                     continue
