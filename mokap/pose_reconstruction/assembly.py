@@ -20,6 +20,9 @@ from mokap.pose_reconstruction.utils import solve_mwis
 logger = logging.getLogger(__name__)
 
 
+# TODO: "node" tuples / frozensets are annoying to deal with, this need to be improved
+
+
 class SkeletonAssembler:
     """
     Assembles skeleton hypotheses in a frame view.
@@ -463,6 +466,8 @@ class SkeletonAssembler:
         """
         Score a bone using SkeletonStats, incorporating point confidences.
         """
+
+        # TODO: This method is a useless wrapper
 
         node1 = next(n for n in nodes if n[0] == bone.k1)
         node2 = next(n for n in nodes if n[0] == bone.k2)
