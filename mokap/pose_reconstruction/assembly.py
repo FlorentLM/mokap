@@ -740,7 +740,8 @@ if __name__ == '__main__':
     input_dir = BASE_DIR / PREFIX / 'inputs' / 'tracking'
     output_dir = BASE_DIR / PREFIX / 'outputs'
 
-    soup_file = output_dir / f"soup_session{SESSION}.pkl"
+    # soup_file = output_dir / f"soup_session{SESSION}.pkl"
+    soup_file = output_dir / f"soup2_session{SESSION}.pkl"
     stats_file = output_dir / "skeleton_stats.json"
     tracklets_file = output_dir / f'tracklets_session{SESSION}.pkl'
 
