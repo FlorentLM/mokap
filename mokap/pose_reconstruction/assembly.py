@@ -679,17 +679,17 @@ class MultiObjectTracker:
 
             max_bonus = 0.0
             for t in all_tracklets:
-                pred_pose = t.predicted_pose
+                pred_kps = t.predicted_keypoints
 
-                if not pred_pose:
+                if not pred_kps:
                     continue
 
-                common_kps = pred_pose.keys() & skel_kps.keys()
+                common_kps = pred_kps.keys() & skel_kps.keys()
                 if len(common_kps) < self.config.association_min_kps:
                     continue
 
                 mean_dist_sq = sum(
-                    np.sum((pred_pose[kp] - skel_kps[kp]) ** 2) for kp in common_kps
+                    np.sum((pred_kps[kp] - skel_kps[kp]) ** 2) for kp in common_kps
                 ) / len(common_kps)
 
                 bonus = np.exp(-0.5 * mean_dist_sq / (self.config.association_radius ** 2))
@@ -716,7 +716,7 @@ if __name__ == '__main__':
     BASE_DIR = Path.home() / 'Desktop' / '3d_ant_data'
     PREFIX = '240905-1616'
     SESSION = 22
-    DEBUG_PLOT = True
+    DEBUG_PLOT = False
 
     input_dir = BASE_DIR / PREFIX / 'inputs' / 'tracking'
     output_dir = BASE_DIR / PREFIX / 'outputs'
