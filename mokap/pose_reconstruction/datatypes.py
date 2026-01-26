@@ -1,5 +1,7 @@
+import pickle
 from dataclasses import dataclass, field
 from functools import cached_property
+from pathlib import Path
 from typing import Dict, List, FrozenSet, Optional, Union, Sequence, Iterator, Set
 import numpy as np
 import pandas as pd
@@ -384,6 +386,16 @@ class PointSoup:
             "confidence": self.confidences[mask]
         })
 
+    @classmethod
+    def from_file(cls, file_path: Path | str) -> 'PointSoup':
+        file_path = Path(file_path)
+        return pickle.load(file_path.open('rb'))    # TODO: soup should be saved in a human readable format, not pickle
+
+    def to_file(self, save_path: Path | str):
+        save_path = Path(save_path)
+        with open(save_path, 'wb') as f:
+            pickle.dump(self, f)
+
 
 class FrameData:
     """
@@ -483,9 +495,7 @@ class FrameData:
 @dataclass
 class Pose3D:
     """
-    A resolved 3D pose for a single frame.
-    This is the output format containing actual positions (not indices).
-    # TODO: This class should be replaced / removed
+    A resolved 3D pose (actual coordinates) for a single frame.
     """
     keypoints: Dict[str, np.ndarray]  # keypoint name -> (3,) position
     scale: float
@@ -493,20 +503,11 @@ class Pose3D:
     soup_point_indices: Dict[str, int] = field(default_factory=dict)  # provenance
     track_idx: int = -1
 
-    def to_dict(self) -> dict:
-        return {
-            'keypoints': self.keypoints,
-            'score': self.score,
-            'scale': self.scale,
-            'soup_points_indices': self.soup_point_indices,
-            'track_idx': self.track_idx
-        }
-
 
 class Tracklet:
     """
     Stateful class for a single skeleton in a tracklet.
-    Manages state estimation (position, velocity, scale) with a Kalman Filter.
+    Manages state estimation (position, velocity, scale).
     """
 
     def __init__(
@@ -538,18 +539,19 @@ class Tracklet:
 
     def _init_kalman_filter(self, initial_pose: Pose3D) -> KalmanFilter:
         """Initialise Kalman filter for position, velocity, and scale tracking."""
+
         kf = KalmanFilter(dim_x=7, dim_z=4)
         dt = 1.0
 
         # State transition: constant velocity model
         kf.F = np.array([
-            [1, 0, 0, dt, 0, 0, 0],
-            [0, 1, 0, 0, dt, 0, 0],
-            [0, 0, 1, 0, 0, dt, 0],
-            [0, 0, 0, 1, 0, 0, 0],
-            [0, 0, 0, 0, 1, 0, 0],
-            [0, 0, 0, 0, 0, 1, 0],
-            [0, 0, 0, 0, 0, 0, 1],
+            [1,  0,  0, dt,  0,  0,  0],
+            [0,  1,  0,  0, dt,  0,  0],
+            [0,  0,  1,  0,  0, dt,  0],
+            [0,  0,  0,  1,  0,  0,  0],
+            [0,  0,  0,  0,  1,  0,  0],
+            [0,  0,  0,  0,  0,  1,  0],
+            [0,  0,  0,  0,  0,  0,  1],
         ], dtype=float)
 
         # Measurement: observe position and scale

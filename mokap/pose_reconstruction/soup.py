@@ -10,7 +10,6 @@ Pipeline:
      - Merge nearby points by re-triangulating with all contributing views
   3. Collect orphan rays for unused detections
 """
-
 import logging
 from itertools import combinations
 from typing import List, Dict, Tuple
@@ -19,10 +18,8 @@ from scipy.spatial import cKDTree
 
 from lucida import CameraRig
 from lucida.geometry.backend import xp, set_at, xp_float
-from lucida.geometry import (
-    undistort_points, px_to_ray, transform_vectors,
-    project_full, px_to_norm, triangulate_linear, epipolar_line_distance
-)
+from lucida.geometry import (undistort_points, px_to_ray, transform_vectors, project_full,
+                             px_to_norm, triangulate_linear, epipolar_line_distance)
 
 from mokap.pose_reconstruction.datatypes import PointSoup
 from mokap.pose_reconstruction.skeleton import Skeleton
@@ -439,7 +436,6 @@ class Reconstructor:
 
 if __name__ == "__main__":
     import time
-    import pickle
     import polars as pl
     from pathlib import Path
     from mokap.utils import fileio
@@ -450,11 +446,15 @@ if __name__ == "__main__":
     SESSION = 22
     CHUNK_SIZE = 500
 
+    calib_dir = BASE_DIR / PREFIX / 'inputs' / 'calibration'
     input_dir = BASE_DIR / PREFIX / 'inputs' / 'tracking'
     output_dir = BASE_DIR / PREFIX / 'outputs'
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    rig = CameraRig.load(BASE_DIR / PREFIX / 'calibration' / 'camera_rig.toml')
+    rig_file = calib_dir / 'camera_rig.toml'
+    soup_file = output_dir / f"soup_session{SESSION}.pkl"
+
+    rig = CameraRig.load(rig_file)
     df = fileio.load_session(input_dir, session=SESSION)
     skeleton = Skeleton.from_sleap(input_dir)
 
@@ -479,6 +479,8 @@ if __name__ == "__main__":
         chunk = all_frames[i: i + CHUNK_SIZE]
 
         df_chunk = df.filter(pl.col("frame").is_in(chunk))
+
+        # TODO: `prepare_reconstruction_input` will be removed once the I/O formats are unified with CATAR
         inputs = prepare_reconstruction_input(
             df_chunk, rig.names, skeleton.keypoints
         )
@@ -494,18 +496,18 @@ if __name__ == "__main__":
 
         frames_done = min(i + CHUNK_SIZE, len(all_frames))
         fps = frames_done / elapsed if elapsed > 0 else 0
+
         print(f"  Chunk {i // CHUNK_SIZE}: {soup.nb_points} pts, {len(soup.ray_origins)} rays "
               f"({frames_done}/{len(all_frames)} frames, {fps:.1f} fps)")
 
     if batches:
         final_soup = PointSoup.concatenate(batches)
-        out_path = output_dir / f"soup_session{SESSION}.pkl"
-
-        with open(out_path, 'wb') as f:
-            pickle.dump(final_soup, f)
+        final_soup.to_file(soup_file)
 
         total_time = time.time() - t0
-        print(f"\nDone. Saved {total_pts} points and {total_rays} rays to {out_path}")
+
+        print(f"\nDone. Saved {total_pts} points and {total_rays} rays to {soup_file}")
         print(f"Total time: {total_time:.2f}s ({len(all_frames) / total_time:.2f} fps)")
+
     else:
         print("No points reconstructed.")

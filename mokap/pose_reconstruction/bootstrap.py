@@ -8,7 +8,6 @@ Classes:
 Both classes produce data that can be used to initialize SkeletonStats.
 """
 import json
-from pathlib import Path
 from collections import defaultdict
 from typing import Dict, Tuple, Any, Optional, List
 
@@ -23,6 +22,7 @@ from mokap.pose_reconstruction.skeleton import Bone, Skeleton, SkeletonStats, Bo
 from mokap.pose_reconstruction.utils import plot_tracks_3d, robust_stats
 
 
+# TODO: This should ideally be done just once and reused
 def _run_trackpy(
         soup: PointSoup,
         search_range: float,
@@ -336,12 +336,12 @@ class DynamicsBootstrapper:
 
 
 if __name__ == "__main__":
-    import pickle
+    from pathlib import Path
 
     BASE_DIR = Path.home() / 'Desktop' / '3d_ant_data'
     PREFIX = '240905-1616'
     SESSION = 22
-    PLOT = True
+    DEBUG_PLOT = True
 
     input_dir = BASE_DIR / PREFIX / 'inputs' / 'tracking'
     output_dir = BASE_DIR / PREFIX / 'outputs'
@@ -350,12 +350,11 @@ if __name__ == "__main__":
     stats_file = output_dir / "skeleton_stats.json"
 
     # Load stuff
+    soup = PointSoup.from_file(soup_file)
     skeleton = Skeleton.from_sleap(input_dir)
-    print(f"Loaded skeleton: {len(skeleton.keypoints)} keypoints, {len(skeleton.bones)} bones")
 
-    with open(soup_file, "rb") as f:
-        soup = pickle.load(f)
-    print(f"Loaded soup: {soup.nb_points} points")
+    print(f"Loaded point soup from {soup_file}")
+    print(f"Loaded skeleton with {len(skeleton.keypoints)} keypoints, {len(skeleton.bones)} bones")
 
     # Run anatomy bootstrap
     anat = AnatomyBootstrapper(
@@ -366,7 +365,7 @@ if __name__ == "__main__":
         reference_bone=None,  # auto-select
         min_tracklet_length=5,
         max_displacement=1.5,
-        store_debug_data=PLOT
+        store_debug_data=DEBUG_PLOT
     )
     stats = anat.process(soup)
 
@@ -383,13 +382,15 @@ if __name__ == "__main__":
         reference_bone_length=stats.reference_length_world,
         min_process_noise=0.01,
         measurement_noise=0.1,
-        store_debug_data=PLOT
+        store_debug_data=DEBUG_PLOT
     )
     dynamics = dyn.process(soup)
 
-    # Add dynamics stats # TODO: This needs to be encapsulated in the class
+    # Add dynamics stats
+    # TODO: This needs to be encapsulated in the class
     reloaded_stats = json.loads(stats_file.read_text())
     reloaded_stats['dynamics'] = dynamics
+
     with open(stats_file, 'w') as f:
         json.dump(reloaded_stats, f, indent=2)
     print(f"Saved dynamics stats to {stats_file}")
@@ -397,7 +398,7 @@ if __name__ == "__main__":
     ##
 
     # Visualization
-    if PLOT:
+    if DEBUG_PLOT:
         ref_len = stats.reference_length_world
 
         fig = plt.figure(figsize=(18, 12))
