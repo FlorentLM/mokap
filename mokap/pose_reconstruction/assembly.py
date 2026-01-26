@@ -435,23 +435,54 @@ class MultiObjectTracker:
         self.config = config
         self.soup = soup
 
-        self.tracklets: List[Tracklet] = []
-        self.next_track_idx = 0
+        self._active: Dict[int, Tracklet] = {}   # track_idx -> Tracklet (updated this frame)
+        self._pending: Dict[int, Tracklet] = {}  # track_idx -> Tracklet (coasting)
+        self._next_track_idx = 0
 
-    def update(self, frame_idx: int) -> List[Tracklet]:
-        """Process a new frame and update tracklets."""
+        self._current_frame = -1
 
-        frame_data = FrameData(self.soup[frame_idx])
+    @property
+    def active(self) -> List[Tracklet]:
+        """Tracklets that were updated this frame."""
+        return list(self._active.values())
 
-        for tracklet in self.tracklets:
+    @property
+    def pending(self) -> List[Tracklet]:
+        """Tracklets that are coasting (not updated this frame)."""
+        return list(self._pending.values())
+
+    @property
+    def all_tracklets(self) -> List[Tracklet]:
+        """All tracklets (active + pending)."""
+        return self.active + self.pending
+
+    @property
+    def current_frame(self) -> int:
+        """Current frame index."""
+        return self._current_frame
+
+    def update(self, frame_idx: int):
+        """
+        Process a new frame and update tracklets.
+        (after calling this access results via .active and .pending properties)
+        """
+        self._current_frame = frame_idx
+
+        # Move all active tracklets to pending at start of frame
+        self._pending.update(self._active)
+        self._active.clear()
+
+        # Predict all tracklets forward
+        for tracklet in self._pending.values():
             tracklet.predict(frame_idx)
 
-        # Generate hypotheses
+        # Generate and resolve hypotheses
+        frame_data = FrameData(self.soup[frame_idx])
         frame_candidates = self.assembler.assemble(frame_data)
 
         if not frame_candidates:
-            self._prune_tracklets()
-            return self.get_active_tracklets()
+            self._prune_pending()
+            return
 
         # Association bonus for temporal continuity
         bonuses = self._association_bonuses(frame_candidates)
@@ -465,48 +496,69 @@ class MultiObjectTracker:
         # Convert winners to Pose3D
         winning_poses = [frame_candidates[i].to_pose() for i in winner_indices]
 
-        # Update existing tracklets
-        matched_winner_indices = set()
-        if self.tracklets and winning_poses:
+        # Match poses to existing tracklets
+        self._assign_poses(winning_poses, frame_idx)
+        self._prune_pending()
 
-            cost_matrix = self._assignment_cost_matrix(self.tracklets, winning_poses)
+    def collect_records(self, frame_idx: int) -> List[dict]:
+        """
+        Collect serialisable records for all active tracklets.
+        Use this for building output data structures.
+        """
+        return [t.to_record(frame_idx) for t in self.active]
 
-            tracklet_inds, winner_inds = linear_sum_assignment(cost_matrix)
+    def _assign_poses(self, poses: List[Pose3D], frame_idx: int):
+        """Assign poses to existing tracklets or create new ones."""
 
-            for t_idx, w_idx in zip(tracklet_inds, winner_inds):
-                if cost_matrix[t_idx, w_idx] < 1e9:
-                    self.tracklets[t_idx].update(pose=winning_poses[w_idx], frame_idx=frame_idx)
-                    matched_winner_indices.add(w_idx)
+        if not poses:
+            return
+
+        pending_list = list(self._pending.values())
+        matched_pose_indices = set()
+
+        if pending_list:
+            cost_matrix = self._assignment_cost_matrix(pending_list, poses)
+            tracklet_inds, pose_inds = linear_sum_assignment(cost_matrix)
+
+            for t_idx, p_idx in zip(tracklet_inds, pose_inds):
+                if cost_matrix[t_idx, p_idx] < 1e9:
+                    tracklet = pending_list[t_idx]
+                    tracklet.update(pose=poses[p_idx], frame_idx=frame_idx)
+
+                    # Move from pending to active
+                    del self._pending[tracklet.track_idx]
+                    self._active[tracklet.track_idx] = tracklet
+                    matched_pose_indices.add(p_idx)
 
         # Create new tracklets for unmatched poses
-        for i, pose in enumerate(winning_poses):
-            if i not in matched_winner_indices and self.skeleton.central_keypoint in pose.keypoints:
+        for i, pose in enumerate(poses):
+            if i in matched_pose_indices:
+                continue
+            if self.skeleton.central_keypoint not in pose.keypoints:
+                continue
 
-                new_tracklet = Tracklet(
-                    track_idx=self.next_track_idx,
-                    initial_pose=pose,
-                    frame_idx=frame_idx,
-                    central_kp=self.skeleton.central_keypoint,
-                    config=self.config
-                )
-                self.tracklets.append(new_tracklet)
-                self.next_track_idx += 1
+            tracklet = Tracklet(
+                track_idx=self._next_track_idx,
+                initial_pose=pose,
+                frame_idx=frame_idx,
+                central_kp=self.skeleton.central_keypoint,
+                config=self.config
+            )
+            self._active[tracklet.track_idx] = tracklet
+            self._next_track_idx += 1
 
-        self._prune_tracklets()
-        return self.get_active_tracklets()
+    def _prune_pending(self):
+        """Remove stale or uncertain tracklets from pending."""
 
-    def get_active_tracklets(self) -> List[Tracklet]:
-        """Get tracklets that were updated this frame."""
-        # TODO: This method awkward, there should be two internal tracklets stores (active and stale) with properties getters
-        return [t for t in self.tracklets if t.time_since_update == 0]
+        to_remove = []
+        for track_idx, t in self._pending.items():
+            if t.time_since_update > self.config.max_tracklet_age:
+                to_remove.append(track_idx)
+            elif np.sum(t.position_uncertainty) > self.config.uncertainty_threshold:
+                to_remove.append(track_idx)
 
-    def _prune_tracklets(self):
-        """Remove stale or uncertain tracklets."""
-        self.tracklets = [
-            t for t in self.tracklets
-            if (t.time_since_update <= self.config.max_tracklet_age and
-                np.sum(t.uncertainty['position']) <= self.config.uncertainty_threshold)
-        ]
+        for track_idx in to_remove:
+            del self._pending[track_idx]
 
     def _build_conflict_graph(
             self,
@@ -522,7 +574,6 @@ class MultiObjectTracker:
             weight = max(0, int(cand.competition_score * 100))
             conflict_graph.add_node(i, weight=weight)
 
-        # Precompute centroids
         centroids = np.array([cand.centroid for cand in candidates])
 
         # Check conflicts for all pairs
@@ -559,7 +610,6 @@ class MultiObjectTracker:
                         1 for name in common
                         if np.linalg.norm(kps_i[name] - kps_j[name]) < self.config.conflict_solver_proximity_radius
                     )
-
                     if proximal_count / len(union) > self.config.conflict_solver_jaccard_threshold:
                         conflict_graph.add_edge(i, j)
 
@@ -571,20 +621,19 @@ class MultiObjectTracker:
     ) -> np.ndarray:
         """Calculate temporal association bonuses based on tracklet predictions."""
 
-        if not self.tracklets or not candidates:
+        all_tracklets = self.all_tracklets
+        if not all_tracklets or not candidates:
             return np.zeros(len(candidates))
 
         bonuses = np.zeros(len(candidates))
 
         for j, cand in enumerate(candidates):
             skel_kps = cand.positions
-
             if not skel_kps:
                 continue
 
             max_bonus = 0.0
-
-            for t in self.tracklets:
+            for t in all_tracklets:
                 pred_pose = t.predicted_pose
 
                 if not pred_pose:
@@ -599,8 +648,7 @@ class MultiObjectTracker:
                 ) / len(common_kps)
 
                 bonus = np.exp(-0.5 * mean_dist_sq / (self.config.association_radius ** 2))
-                if bonus > max_bonus:
-                    max_bonus = bonus
+                max_bonus = max(max_bonus, bonus)
 
             bonuses[j] = max_bonus
 
@@ -673,7 +721,7 @@ if __name__ == '__main__':
     print(f"Loading stats from {stats_file}...")
     stats = SkeletonStats.from_json(stats_file, skeleton)
 
-    # Initialize pipeline
+    # Initialise pipeline
     assembler = SkeletonAssembler(
         skeleton=skeleton,
         skeleton_stats=stats,
@@ -690,40 +738,33 @@ if __name__ == '__main__':
     # Run tracking
     unique_frames = np.unique(soup.frame_indices)
     min_frame, max_frame = int(unique_frames[0]), int(unique_frames[-1])
-    tracklets_by_id = defaultdict(list)
 
-    print(f"Tracking from frame {min_frame} to {max_frame}...")
+    records_by_track: Dict[int, List[dict]] = defaultdict(list)
+
+    print(f"Tracking frames {min_frame} to {max_frame}...")
     with alive_bar(total=(max_frame - min_frame + 1), length=20, force_tty=True) as bar:
 
         for frame_idx in range(min_frame, max_frame + 1):
-            active_tracklets = tracker.update(frame_idx)
+            tracker.update(frame_idx)
 
-            for tracklet in active_tracklets:
+            # Update skeleton stats from high-quality observations
+            for tracklet in tracker.active:
                 if tracklet.last_update_frame == frame_idx:
                     stats.update(tracklet.pose.keypoints)
 
-                pose_dict = tracklet.pose.to_dict()
-                pose_dict.update({
-                    'track_idx': tracklet.track_idx,
-                    'track_health': tracklet.health,
-                    'track_anatomical_integrity': tracklet.anatomical_integrity,
-                    'track_uncertainty_pos': tracklet.uncertainty['position'].tolist(),
-                    'track_velocity': tracklet.kf.x[3:6].flatten().tolist(),
-                    'track_predicted_pos': tracklet.predicted_position.tolist(),
-                    'time_since_update': tracklet.time_since_update,
-                    'frame_idx': frame_idx
-                })
-                tracklets_by_id[tracklet.track_idx].append(pose_dict)
+            # Collect records
+            for record in tracker.collect_records(frame_idx):
+                records_by_track[record['track_idx']].append(record)
+
             bar()
 
-    print("Tracking complete.")
-    print(f"Generated {len(tracklets_by_id)} unique tracklets.")
+    print(f"Tracking complete. Generated {len(records_by_track)} tracklets.")
 
     # Save tracking results
     tracklets_file.parent.mkdir(parents=True, exist_ok=True)
     with open(tracklets_file, 'wb') as f:
-        pickle.dump(dict(tracklets_by_id), f)
-    print(f"Tracklet results saved to '{tracklets_file}'")
+        pickle.dump(dict(records_by_track), f)
+    print(f"Saved to '{tracklets_file}'")
 
     # Save updated stats
     stats.to_json(stats_file)
@@ -731,4 +772,4 @@ if __name__ == '__main__':
 
     if DEBUG_PLOT:
         from mokap.pose_reconstruction.debug import TrackletViewer
-        viewer = TrackletViewer(soup, tracklets_by_id, skeleton)
+        viewer = TrackletViewer(soup, records_by_track, skeleton)

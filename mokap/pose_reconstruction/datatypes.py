@@ -517,81 +517,96 @@ class Tracklet:
             central_kp: str,
             config: TrackerConfig
     ):
-
         self.config = config
         self.track_idx = track_idx
+        self.central_kp = central_kp
+
+        # Temporal state
         self.age = 0
         self.time_since_update = 0
         self.last_update_frame = frame_idx
 
+        # Current pose
         self.pose: Pose3D = initial_pose
-        self.central_kp = central_kp
 
-        # Tracklet health and score metrics
+        # Health metrics
         self.health = 1.0
         self.anatomical_integrity = self.pose.score
 
-        # Kalman Filter for 3D position (x, y, z), 3D velocity (vx, vy, vz), and scale (s)
-        # State vector (dim_x = 7): [x, y, z, vx, vy, vz, s]
-        self.kf = KalmanFilter(dim_x=7, dim_z=4)
+        # Kalman Filter: state = [x, y, z, vx, vy, vz, scale]
+        self.kf = self._init_kalman_filter(initial_pose)
 
+    def _init_kalman_filter(self, initial_pose: Pose3D) -> KalmanFilter:
+        """Initialise Kalman filter for position, velocity, and scale tracking."""
+        kf = KalmanFilter(dim_x=7, dim_z=4)
         dt = 1.0
 
-        self.kf.F = np.array([[1.0, 0.0, 0.0, dt, 0.0, 0.0, 0.0],
-                              [0.0, 1.0, 0.0, 0.0, dt, 0.0, 0.0],
-                              [0.0, 0.0, 1.0, 0.0, 0.0, dt, 0.0],
-                              [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
-                              [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
-                              [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-                              [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]])
+        # State transition: constant velocity model
+        kf.F = np.array([
+            [1, 0, 0, dt, 0, 0, 0],
+            [0, 1, 0, 0, dt, 0, 0],
+            [0, 0, 1, 0, 0, dt, 0],
+            [0, 0, 0, 1, 0, 0, 0],
+            [0, 0, 0, 0, 1, 0, 0],
+            [0, 0, 0, 0, 0, 1, 0],
+            [0, 0, 0, 0, 0, 0, 1],
+        ], dtype=float)
 
-        # Measurement function: we measure position (x, y, z) and scale (s)
-        self.kf.H = np.array([[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                              [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                              [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
-                              [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]])
+        # Measurement: observe position and scale
+        kf.H = np.array([
+            [1, 0, 0, 0, 0, 0, 0],
+            [0, 1, 0, 0, 0, 0, 0],
+            [0, 0, 1, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 1],
+        ], dtype=float)
 
         # Process noise
         pos_vel_q = Q_discrete_white_noise(dim=2, dt=dt, var=self.config.kf_process_noise_pos, block_size=3)
         scale_q = np.array([[self.config.kf_process_noise_scale]])
-        self.kf.Q = block_diag(pos_vel_q, scale_q)
+        kf.Q = block_diag(pos_vel_q, scale_q)
 
         # Measurement noise
-        self.kf.R = np.diag([self.config.kf_measurement_noise_pos, self.config.kf_measurement_noise_pos,
-                             self.config.kf_measurement_noise_pos, self.config.kf_measurement_noise_scale])
+        kf.R = np.diag([
+            self.config.kf_measurement_noise_pos,
+            self.config.kf_measurement_noise_pos,
+            self.config.kf_measurement_noise_pos,
+            self.config.kf_measurement_noise_scale
+        ])
 
-        # Initial state covariance
-        self.kf.P[3:6, 3:6] *= 1.0
-        self.kf.P[6, 6] = 1.0
+        # Initial covariance
+        kf.P[3:6, 3:6] *= 1.0
+        kf.P[6, 6] = 1.0
 
         # Initial state
-        self.kf.x[:3] = self.pose.keypoints[self.central_kp].reshape(3, 1)
-        self.kf.x[6] = self.pose.scale
+        kf.x[:3] = initial_pose.keypoints[self.central_kp].reshape(3, 1)
+        kf.x[6] = initial_pose.scale
+
+        return kf
 
     def predict(self, current_frame_idx: int):
-        """Predicts the state of the tracklet for the current frame."""
+        """Predict state forward to current frame."""
 
-        steps_to_predict = current_frame_idx - self.last_update_frame
+        steps = current_frame_idx - self.last_update_frame
 
-        for _ in range(steps_to_predict):
+        for _ in range(steps):
             self.kf.predict()
             self.age += 1
             self.time_since_update += 1
             self.health *= self.config.health_decay_rate
 
     def update(self, pose: Pose3D, frame_idx: int):
-        """Updates the tracklet's state with a new pose."""
+        """Update tracklet with new pose observation."""
 
         inferred = False
 
-        # If the primary keypoint is missing, try to infer it
+        # Try to infer missing central keypoint
         if self.central_kp not in pose.keypoints:
             inferred_pose = self._infer_missing_central_kp(pose)
-
             if inferred_pose:
                 pose = inferred_pose
                 inferred = True
             else:
+                # Can't update KF, just store pose
                 self.pose = pose
                 self.time_since_update = 0
                 self.last_update_frame = frame_idx
@@ -601,26 +616,29 @@ class Tracklet:
         self.time_since_update = 0
         self.last_update_frame = frame_idx
 
+        # KF measurement update
         measurement = np.array([*pose.keypoints[self.central_kp], pose.scale])
 
         if inferred:
+            # Increase measurement uncertainty for inferred positions
             original_R = self.kf.R.copy()
             self.kf.R[:3, :3] *= self.config.kf_inference_uncertainty_factor
             self.kf.update(measurement)
             self.kf.R = original_R
-        else:
-            self.kf.update(measurement)
-
-        # Update health metrics
-        self.anatomical_integrity = self.config.anatomical_score_alpha * pose.score + (
-                1 - self.config.anatomical_score_alpha) * self.anatomical_integrity
-
-        if inferred:
             self.health = 1.0 - self.config.inferred_health_penalty
         else:
+            self.kf.update(measurement)
             self.health = 1.0
 
+        # Update anatomical integrity (EMA)
+        self.anatomical_integrity = (
+                self.config.anatomical_score_alpha * pose.score +
+                (1 - self.config.anatomical_score_alpha) * self.anatomical_integrity
+        )
+
     def _infer_missing_central_kp(self, fragment: Pose3D) -> Optional[Pose3D]:
+        """Infer central keypoint position via rigid alignment."""
+
         prev_kps, curr_kps = self.pose.keypoints, fragment.keypoints
         common_names = list(prev_kps.keys() & curr_kps.keys())
 
@@ -633,35 +651,71 @@ class Tracklet:
         R_mat, t_vec = align_rigid(points_A, points_B)
         inferred_pos = np.array(R_mat) @ prev_kps[self.central_kp] + np.array(t_vec)
 
-        completed_skeleton = Pose3D(
-            keypoints=fragment.keypoints.copy(),
+        completed = Pose3D(
+            keypoints={**fragment.keypoints, self.central_kp: inferred_pos},
             score=fragment.score,
             scale=fragment.scale,
             soup_point_indices=fragment.soup_point_indices
         )
-        completed_skeleton.keypoints[self.central_kp] = inferred_pos
-        return completed_skeleton
+        return completed
 
     @property
-    def predicted_pose(self) -> Optional[Dict[str, np.ndarray]]:
-        if self.central_kp not in self.pose.keypoints:
-            return None
-        translation = self.predicted_position - self.pose.keypoints[self.central_kp]
-        return {kp_name: pos + translation for kp_name, pos in self.pose.keypoints.items()}
+    def is_active(self) -> bool:
+        """True if tracklet was updated this frame."""
+        return self.time_since_update == 0
 
     @property
-    def predicted_position(self) -> np.ndarray:
+    def position(self) -> np.ndarray:
+        """Current estimated position (from KF state)."""
         return self.kf.x[:3].flatten()
 
     @property
-    def predicted_scale(self) -> float:
-        return self.kf.x[6, 0]
+    def velocity(self) -> np.ndarray:
+        """Current estimated velocity (from KF state)."""
+        return self.kf.x[3:6].flatten()
 
     @property
-    def uncertainty(self) -> Dict[str, np.ndarray]:
-        diag_P = self.kf.P.diagonal()
+    def estimated_scale(self) -> float:
+        """Current estimated scale (from KF state)."""
+        return float(self.kf.x[6, 0])
+
+    @property
+    def position_uncertainty(self) -> np.ndarray:
+        """Position uncertainty (diagonal of covariance)."""
+        return self.kf.P.diagonal()[:3]
+
+    @property
+    def predicted_pose(self) -> Optional[Dict[str, np.ndarray]]:
+        """Predicted keypoint positions based on KF state."""
+
+        if self.central_kp not in self.pose.keypoints:
+            return None
+
+        translation = self.position - self.pose.keypoints[self.central_kp]
+        return {name: pos + translation for name, pos in self.pose.keypoints.items()}
+
+    def to_record(self, frame_idx: int) -> dict:
+        """
+        Export tracklet state as a record for storage/analysis.
+        """
         return {
-            'position': diag_P[0:3],
-            'velocity': diag_P[3:6],
-            'scale': diag_P[6]
+            'frame_idx': frame_idx,
+            'track_idx': self.track_idx,
+
+            # Pose data
+            'keypoints': self.pose.keypoints,
+            'scale': self.pose.scale,
+            'score': self.pose.score,
+            'soup_point_indices': self.pose.soup_point_indices,
+
+            # Tracking state
+            'position': self.position.tolist(),
+            'velocity': self.velocity.tolist(),
+            'position_uncertainty': self.position_uncertainty.tolist(),
+
+            # Health metrics
+            'health': self.health,
+            'anatomical_integrity': self.anatomical_integrity,
+            'age': self.age,
+            'time_since_update': self.time_since_update,
         }
