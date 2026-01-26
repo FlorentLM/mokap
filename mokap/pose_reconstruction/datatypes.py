@@ -4,10 +4,10 @@ from typing import Dict, List, Tuple, FrozenSet, Optional, Union, Sequence
 import numpy as np
 from filterpy.common import Q_discrete_white_noise
 from filterpy.kalman import KalmanFilter
-from lucida.geometry import align_rigid
 from scipy.linalg import block_diag
 from scipy.spatial import cKDTree
 
+from lucida.geometry import align_rigid, intersect_ray_sphere
 from mokap.pose_reconstruction.configs import TrackerConfig
 
 
@@ -308,7 +308,6 @@ class FrameData:
         Registers resulting points as virtual points.
         Returns: List of new virtual point indices (negative integers).
         """
-        # TODO: Move the actual ray-sphere intersection to lucida.geometry module
 
         ray_indices = self.soup.rays_by_name[keypoint_name]
 
@@ -318,28 +317,17 @@ class FrameData:
         origins = self.soup.ray_origins[ray_indices]
         dirs = self.soup.ray_directions[ray_indices]
 
-        # Ray-sphere intersection
-        V = origins - center
-        b = 2.0 * np.einsum('ij,ij->i', V, dirs)
-        c = np.einsum('ij,ij->i', V, V) - (radius ** 2)
-        discriminant = b ** 2 - 4 * c
+        p1, p2, valid_mask = intersect_ray_sphere(origins, dirs, center, radius)
 
-        valid_mask = discriminant >= 0
         if not np.any(valid_mask):
             return []
 
         valid_locs = np.where(valid_mask)[0]
-
-        # Calculate intersection points t1 and t2
-        sqrt_delta = np.sqrt(discriminant[valid_locs])
-        t1 = (-b[valid_locs] - sqrt_delta) / 2.0
-        t2 = (-b[valid_locs] + sqrt_delta) / 2.0
-
-        # Retrieve valid ray attributes
         valid_ray_indices = ray_indices[valid_locs]
-        valid_origins = origins[valid_locs]
-        valid_dirs = dirs[valid_locs]
         valid_confs = self.soup.ray_confidences[valid_ray_indices]
+
+        p1_valid = p1[valid_locs]
+        p2_valid = p2[valid_locs]
 
         new_indices = []
 
@@ -347,22 +335,16 @@ class FrameData:
             vid = self._next_virt_id
             self._virtual_registry[vid] = {
                 'position': p,
-                'confidence': c * 0.8,  # Virtual penalty # TODO: This value should not live here
+                'confidence': c * 0.8,  # TODO: Move this factror out of here
                 'keypoint_name': keypoint_name,
                 'ray_index': r_idx
             }
             self._next_virt_id -= 1
             return vid
 
-        # Register both solutions
         for i in range(len(valid_locs)):
-            p1 = valid_origins[i] + t1[i] * valid_dirs[i]
-            p2 = valid_origins[i] + t2[i] * valid_dirs[i]
-            ray_idx = valid_ray_indices[i]
-            conf = valid_confs[i]
-
-            new_indices.append(_register(p1, conf, ray_idx))
-            new_indices.append(_register(p2, conf, ray_idx))
+            new_indices.append(_register(p1_valid[i], valid_confs[i], valid_ray_indices[i]))
+            new_indices.append(_register(p2_valid[i], valid_confs[i], valid_ray_indices[i]))
 
         return new_indices
 
