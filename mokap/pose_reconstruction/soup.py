@@ -22,7 +22,7 @@ from lucida.geometry import (undistort_points, px_to_ray, transform_vectors, pro
                              px_to_norm, triangulate_linear, epipolar_line_distance)
 
 from mokap.pose_reconstruction.datatypes import PointSoup
-from mokap.pose_reconstruction.skeleton import Skeleton
+from mokap.pose_reconstruction.skeleton import SkeletonTopology
 
 logger = logging.getLogger(__name__)
 
@@ -456,7 +456,7 @@ if __name__ == "__main__":
 
     rig = CameraRig.load(rig_file)
     df = fileio.load_session(input_dir, session=SESSION)
-    skeleton = Skeleton.from_sleap(input_dir)
+    skeleton = SkeletonTopology.from_sleap(input_dir)
 
     reconstructor = Reconstructor(
         rig=rig,

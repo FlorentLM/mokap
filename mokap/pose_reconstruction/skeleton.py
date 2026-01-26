@@ -10,7 +10,7 @@ from lucida.geometry.backend import ArrayLike
 from mokap.utils import common_prefix_suffix
 
 if TYPE_CHECKING:
-    from mokap.pose_reconstruction.datatypes import Node, SkeletonHypothesis
+    from mokap.pose_reconstruction.datatypes import Node3D, SkeletonHypothesis
 
 
 def _ema_update(existing: float, new: float, alpha: float = 0.01):
@@ -18,9 +18,9 @@ def _ema_update(existing: float, new: float, alpha: float = 0.01):
 
 
 @dataclass(frozen=True, order=True)
-class Bone:
+class BoneDefinition:
     """
-    An immutable, undirected edge between two keypoints.
+    A bone definition: immutable, undirected edge between two keypoints.
     """
     k1: str
     k2: str
@@ -54,18 +54,18 @@ class Bone:
         return str(self)
 
     @classmethod
-    def from_key(cls, key: str) -> 'Bone':
+    def from_key(cls, key: str) -> 'BoneDefinition':
         return cls(*key.split(cls._sep))
 
 
-def _bone_or_key(item: Bone | str | Sequence[str]):
-    if isinstance(item, Bone):
+def _bone_or_key(item: BoneDefinition | str | Sequence[str]):
+    if isinstance(item, BoneDefinition):
         return item
     if isinstance(item, str) and len(item) >= 3:
-        if Bone._sep in item and item[0] != Bone._sep and item[-1] != Bone._sep:
-            return Bone.from_key(item)
+        if BoneDefinition._sep in item and item[0] != BoneDefinition._sep and item[-1] != BoneDefinition._sep:
+            return BoneDefinition.from_key(item)
     if isinstance(item, Sequence) and len(item) == 2:
-        return Bone(*item)
+        return BoneDefinition(*item)
     raise KeyError(item)
 
 
@@ -102,7 +102,7 @@ class BoneStats:
         )
 
 
-class Skeleton:
+class SkeletonTopology:
     """
     An immutable definition of a Skeleton topology.
 
@@ -122,7 +122,7 @@ class Skeleton:
     ):
         self.name = name
         self.keypoints = tuple(keypoints)
-        self.bones = tuple([Bone(u, v) for u, v in bones])
+        self.bones = tuple([BoneDefinition(u, v) for u, v in bones])
         self.symmetry = tuple(symmetry) if symmetry else ()
 
         self._bone_set = set(self.bones)
@@ -189,7 +189,7 @@ class Skeleton:
                 canonical_map[kp] = delim.sub('', kp).lower()
         return canonical_map
 
-    def __contains__(self, item: Bone | str | Sequence[str]) -> bool:
+    def __contains__(self, item: BoneDefinition | str | Sequence[str]) -> bool:
         try:
             bone = _bone_or_key(item)
             return bone in self._bone_set
@@ -212,7 +212,7 @@ class Skeleton:
         return self._central_keypoint
 
     @property
-    def central_bone(self) -> Bone:
+    def central_bone(self) -> BoneDefinition:
         """Most connected bone (stable for scale estimation)."""
         return max(self.bones, key=lambda b: self._degrees[b.k1] + self._degrees[b.k2])
 
@@ -222,13 +222,13 @@ class Skeleton:
     def neighbours(self, keypoint: str) -> List[str]:
         return list(self._graph.neighbors(keypoint))
 
-    def canonical(self, item: Bone | str | Sequence[str]) -> str:
+    def canonical(self, item: BoneDefinition | str | Sequence[str]) -> str:
         """Get canonical name from a keypoint or bone name."""
         try:
             bone = _bone_or_key(item)
             canon1 = self.canonical(bone.k1)
             canon2 = self.canonical(bone.k2)
-            return Bone._sep.join(sorted([canon1, canon2]))
+            return BoneDefinition._sep.join(sorted([canon1, canon2]))
 
         except KeyError:
             return self.canonical_map[item]
@@ -253,44 +253,44 @@ class SkeletonStats:
     - Stats may be serialized/loaded independently
     """
 
-    def __init__(self, skeleton: Skeleton):
+    def __init__(self, skeleton: SkeletonTopology):
         self.skeleton = skeleton
 
-        self.reference_bone: Optional[Bone] = None
+        self.reference_bone: Optional[BoneDefinition] = None
         self.reference_length_world = 1.0  # length of the reference bone in world units
 
-        self.bone_stats: Dict[Bone, BoneStats] = {}
+        self.bone_stats: Dict[BoneDefinition, BoneStats] = {}
 
-    def expected_ratio(self, bone: Bone | str | Sequence[str]) -> float:
+    def expected_ratio(self, bone: BoneDefinition | str | Sequence[str]) -> float:
         """Expected length in relation to reference bone."""
         return self.bone_stats[_bone_or_key(bone)].ratio_length
 
-    def expected_length(self, bone: Bone | str | Sequence[str]) -> float:
+    def expected_length(self, bone: BoneDefinition | str | Sequence[str]) -> float:
         """Absolute expected length in world units."""
         return self.expected_ratio(bone) * self.reference_length_world
 
-    def ratio_variability(self, bone: Bone | str | Sequence[str]) -> float:
+    def ratio_variability(self, bone: BoneDefinition | str | Sequence[str]) -> float:
         return self.bone_stats[_bone_or_key(bone)].variability
 
-    def length_variability(self, bone: Bone | str | Sequence[str]) -> float:
+    def length_variability(self, bone: BoneDefinition | str | Sequence[str]) -> float:
         return self.ratio_variability(bone) * self.reference_length_world
 
-    def ratio_bounds(self, bone: Bone | str | Sequence[str], n_sigma: float = 3.0) -> Tuple[float, float]:
+    def ratio_bounds(self, bone: BoneDefinition | str | Sequence[str], n_sigma: float = 3.0) -> Tuple[float, float]:
         """Acceptable ratio range for validation."""
         expected = self.expected_ratio(bone)
         tolerance = n_sigma * self.ratio_variability(bone)
         return expected - tolerance, expected + tolerance
 
-    def length_bounds(self, bone: Bone | str | Sequence[str], n_sigma: float = 3.0) -> Tuple[float, float]:
+    def length_bounds(self, bone: BoneDefinition | str | Sequence[str], n_sigma: float = 3.0) -> Tuple[float, float]:
         """Acceptable length range for validation."""
         lower, upper = self.ratio_bounds(bone, n_sigma)
         return lower * self.reference_length_world, upper * self.reference_length_world
 
     def score_bone(
             self,
-            bone: Bone | str | Sequence[str],
-            node1: 'Node',
-            node2: 'Node',
+            bone: BoneDefinition | str | Sequence[str],
+            node1: 'Node3D',
+            node2: 'Node3D',
             scale: float = 1.0,
             MAD_threshold: float = 5.0,
             MAD_floor: float = 0.05
@@ -323,7 +323,7 @@ class SkeletonStats:
         return length_score * confidence_score
 
     def estimate_scale(self,
-                       hypothesis: Union['SkeletonHypothesis', Dict[str, 'Node'], Dict[str, ArrayLike]],
+                       hypothesis: Union['SkeletonHypothesis', Dict[str, 'Node3D'], Dict[str, ArrayLike]],
                        min_scale: float = 0.3,
                        max_scale: float = 4.0
                        ) -> float:
@@ -403,7 +403,7 @@ class SkeletonStats:
         }
 
     @classmethod
-    def from_dict(cls, data: dict, skeleton: Skeleton) -> 'SkeletonStats':
+    def from_dict(cls, data: dict, skeleton: SkeletonTopology) -> 'SkeletonStats':
         skel_stats = data['anatomy']
 
         ref_bone = _bone_or_key(skel_stats.get('reference_bone'))
@@ -414,7 +414,7 @@ class SkeletonStats:
         stats.reference_length_world = ref_len
 
         for key, bone_data in skel_stats['bones'].items():
-            bone = Bone.from_key(key)
+            bone = BoneDefinition.from_key(key)
 
             if bone in stats.skeleton:
                 bone_data = BoneStats.from_dict(bone_data)
@@ -440,26 +440,5 @@ class SkeletonStats:
             json.dump(data, f, indent=2)
 
     @classmethod
-    def from_json(cls, path: Path, skeleton: Skeleton) -> 'SkeletonStats':
+    def from_json(cls, path: Path, skeleton: SkeletonTopology) -> 'SkeletonStats':
         return cls.from_dict(json.loads(path.read_text()), skeleton)
-
-
-##
-
-if __name__ == '__main__':
-    BASE_DIR = Path.home() / 'Desktop' / '3d_ant_data'
-    PREFIX = '240905-1616'
-    input_dir = BASE_DIR / PREFIX / 'inputs' / 'tracking'
-    output_dir = BASE_DIR / PREFIX / 'outputs'
-
-    skeleton = Skeleton.from_sleap(input_dir)
-    path = bone_stats_file = output_dir / "skeleton_stats.json"
-
-    self = skeleton
-
-    with open(bone_stats_file) as f:
-        data = json.load(f)
-
-    skel_stats = SkeletonStats.from_json(bone_stats_file, skeleton)
-
-    skel_stats.to_json(bone_stats_file)

@@ -14,10 +14,12 @@ from lucida.geometry import align_rigid, intersect_ray_sphere
 from mokap.pose_reconstruction.configs import TrackerConfig
 
 
+# Classes for accessing the 3D data
+
 @dataclass(frozen=True, slots=True)
-class Node:
+class Node3D:
     """
-    A keypoint observation in a frame.
+    A keypoint observation in a given time step.
     Immutable and hashable for comparisons.
     Negative indices indicate virtual points.
     """
@@ -31,104 +33,13 @@ class Node:
         return hash((self.name, self.idx))
 
     def __eq__(self, other):
-        if not isinstance(other, Node):
+        if not isinstance(other, Node3D):
             return NotImplemented
         return self.name == other.name and self.idx == other.idx
 
     @property
     def is_virtual(self) -> bool:
         return self.idx < 0
-
-
-@dataclass
-class SkeletonHypothesis:
-    """
-    A candidate skeleton during assembly.
-    Nodes are stored as a frozenset (for hashing/comparison) and indexed by name (for O(1) lookup).
-    """
-    _nodes: FrozenSet[Node]
-    scale: float
-    competition_score: float
-    anatomical_score: float
-    constituent_indices: Optional[FrozenSet[int]] = None  # for tracking merge provenance
-
-    # Cached lookups
-    _by_name: Dict[str, Node] = field(init=False, repr=False, compare=False)
-    _point_indices: FrozenSet[int] = field(init=False, repr=False, compare=False)
-
-    def __post_init__(self):
-        object.__setattr__(self, '_by_name', {n.name: n for n in self._nodes})
-        object.__setattr__(self, '_point_indices', frozenset(n.idx for n in self._nodes))
-
-    def __getitem__(self, name: str) -> Node:
-        """Get node by keypoint name. Raises KeyError if not found."""
-        return self._by_name[name]
-
-    def __contains__(self, item: Union[str, Node]) -> bool:
-        """Check if keypoint name or node is in this hypothesis."""
-        if isinstance(item, str):
-            return item in self._by_name
-        return item in self._nodes
-
-    def __iter__(self) -> Iterator[Node]:
-        return iter(self._nodes)
-
-    def __len__(self) -> int:
-        return len(self._nodes)
-
-    def get(self, name: str, default: Optional[Node] = None) -> Optional[Node]:
-        """Get node by name, return default if not found."""
-        return self._by_name.get(name, default)
-
-    @property
-    def names(self) -> FrozenSet[str]:
-        """Set of keypoint names in this hypothesis."""
-        return frozenset(self._by_name.keys())
-
-    @property
-    def positions(self) -> Dict[str, np.ndarray]:
-        """Dict mapping keypoint names to positions."""
-        return {n.name: n.position for n in self._nodes}
-
-    @property
-    def centroid(self) -> np.ndarray:
-        """Mean position of all nodes."""
-        return np.mean([n.position for n in self._nodes], axis=0)
-
-    @property
-    def point_indices(self) -> FrozenSet[int]:
-        """Set of point indices (soup indices) in this hypothesis."""
-        return self._point_indices
-
-    @property
-    def ray_indices(self) -> Set[int]:
-        """Set of source ray indices for virtual points in this hypothesis."""
-        return {n.ray_idx for n in self._nodes if n.is_virtual}
-
-    def shares_points_with(self, other: 'SkeletonHypothesis') -> bool:
-        """Check if two hypotheses share any point indices."""
-        return not self._point_indices.isdisjoint(other._point_indices)
-
-    def shares_rays_with(self, other: 'SkeletonHypothesis') -> bool:
-        """Check if two hypotheses share any source rays."""
-        return not self.ray_indices.isdisjoint(other.ray_indices)
-
-    def is_related(self, other: 'SkeletonHypothesis') -> bool:
-        """Check if one hypothesis is a constituent of the other (merge provenance)."""
-        if self.constituent_indices and other.constituent_indices:
-            return (self.constituent_indices.issubset(other.constituent_indices) or
-                    other.constituent_indices.issubset(self.constituent_indices))
-        return False
-
-    def to_pose(self, track_idx: int = -1) -> 'Pose3D':
-        """Convert to a resolved Pose3D for output."""
-        return Pose3D(
-            keypoints=self.positions,
-            scale=self.scale,
-            score=self.anatomical_score,
-            soup_point_indices={n.name: n.idx for n in self._nodes},
-            track_idx=track_idx
-        )
 
 
 class PointSoup:
@@ -397,9 +308,9 @@ class PointSoup:
             pickle.dump(self, f)
 
 
-class FrameData:
+class TimestepData:
     """
-    Single-frame view of a PointSoup with virtual point management.
+    Single timestep view of the data with virtual point management.
     Provides access to real points (from triangulation) and virtual points (from ray-sphere intersection).
     """
 
@@ -407,20 +318,20 @@ class FrameData:
 
     def __init__(self, soup_slice: PointSoup):
         self.soup = soup_slice
-        self._virtual_nodes: Dict[int, Node] = {}
+        self._virtual_nodes: Dict[int, Node3D] = {}
         self._next_virt_id = -1
 
     def __bool__(self) -> bool:
         return self.soup.nb_points > 0 or self.soup.nb_rays > 0
 
-    def get_node(self, name: str, idx: int) -> Node:
+    def get_node(self, name: str, idx: int) -> Node3D:
         """
         Instantiate a Node for the given keypoint name and index.
         """
         if idx < 0:
             return self._virtual_nodes[idx]
 
-        return Node(
+        return Node3D(
             name=name,
             idx=idx,
             position=self.soup.positions[idx],
@@ -443,7 +354,7 @@ class FrameData:
             keypoint_name: str,
             center: np.ndarray,
             radius: float
-    ) -> List[Node]:
+    ) -> List[Node3D]:
         """
         Intersect rays of type `keypoint_name` with a sphere (center, radius).
         Creates and registers virtual Nodes for intersection points.
@@ -478,7 +389,7 @@ class FrameData:
             ray_idx = int(valid_ray_indices[i])
 
             for pos in (p1_valid[i], p2_valid[i]):
-                node = Node(
+                node = Node3D(
                     name=keypoint_name,
                     idx=self._next_virt_id,
                     position=pos,
@@ -492,16 +403,87 @@ class FrameData:
         return new_nodes
 
 
+# Assembly and tracking classes
+
 @dataclass
-class Pose3D:
+class SkeletonHypothesis:
     """
-    A resolved 3D pose (actual coordinates) for a single frame.
+    A candidate skeleton during assembly.
+    Nodes are stored as a frozenset (for hashing/comparison) and indexed by name (for O(1) lookup).
     """
-    keypoints: Dict[str, np.ndarray]  # keypoint name -> (3,) position
+    nodes: FrozenSet[Node3D]
     scale: float
-    score: float
-    soup_point_indices: Dict[str, int] = field(default_factory=dict)  # provenance
-    track_idx: int = -1
+    competition_score: float
+    anatomical_score: float
+    constituent_indices: Optional[FrozenSet[int]] = None  # for tracking merge provenance
+
+    # Cached lookups
+    _by_name: Dict[str, Node3D] = field(init=False, repr=False, compare=False)
+    _point_indices: FrozenSet[int] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self):
+        object.__setattr__(self, '_by_name', {n.name: n for n in self.nodes})
+        object.__setattr__(self, '_point_indices', frozenset(n.idx for n in self.nodes))
+
+    def __getitem__(self, name: str) -> Node3D:
+        """Get node by keypoint name. Raises KeyError if not found."""
+        return self._by_name[name]
+
+    def __contains__(self, item: Union[str, Node3D]) -> bool:
+        """Check if keypoint name or node is in this hypothesis."""
+        if isinstance(item, str):
+            return item in self._by_name
+        return item in self.nodes
+
+    def __iter__(self) -> Iterator[Node3D]:
+        return iter(self.nodes)
+
+    def __len__(self) -> int:
+        return len(self.nodes)
+
+    def get(self, name: str, default: Optional[Node3D] = None) -> Optional[Node3D]:
+        """Get node by name, return default if not found."""
+        return self._by_name.get(name, default)
+
+    @property
+    def names(self) -> FrozenSet[str]:
+        """Set of keypoint names in this hypothesis."""
+        return frozenset(self._by_name.keys())
+
+    @property
+    def positions(self) -> Dict[str, np.ndarray]:
+        """Dict mapping keypoint names to positions."""
+        return {n.name: n.position for n in self.nodes}
+
+    @property
+    def centroid(self) -> np.ndarray:
+        """Mean position of all nodes."""
+        return np.mean([n.position for n in self.nodes], axis=0)
+
+    @property
+    def point_indices(self) -> FrozenSet[int]:
+        """Set of point indices (soup indices) in this hypothesis."""
+        return self._point_indices
+
+    @property
+    def ray_indices(self) -> Set[int]:
+        """Set of source ray indices for virtual points in this hypothesis."""
+        return {n.ray_idx for n in self.nodes if n.is_virtual}
+
+    def shares_points_with(self, other: 'SkeletonHypothesis') -> bool:
+        """Check if two hypotheses share any point indices."""
+        return not self._point_indices.isdisjoint(other._point_indices)
+
+    def shares_rays_with(self, other: 'SkeletonHypothesis') -> bool:
+        """Check if two hypotheses share any source rays."""
+        return not self.ray_indices.isdisjoint(other.ray_indices)
+
+    def is_related(self, other: 'SkeletonHypothesis') -> bool:
+        """Check if one hypothesis is a constituent of the other (merge provenance)."""
+        if self.constituent_indices and other.constituent_indices:
+            return (self.constituent_indices.issubset(other.constituent_indices) or
+                    other.constituent_indices.issubset(self.constituent_indices))
+        return False
 
 
 class Tracklet:
@@ -513,7 +495,7 @@ class Tracklet:
     def __init__(
             self,
             track_idx: int,
-            initial_pose: Pose3D,
+            initial_hypothesis: SkeletonHypothesis,
             frame_idx: int,
             central_kp: str,
             config: TrackerConfig
@@ -527,17 +509,17 @@ class Tracklet:
         self.time_since_update = 0
         self.last_update_frame = frame_idx
 
-        # Current pose
-        self.pose: Pose3D = initial_pose
+        # Current hypothesis
+        self.hypothesis: SkeletonHypothesis = initial_hypothesis
 
         # Health metrics
         self.health = 1.0
-        self.anatomical_integrity = self.pose.score
+        self.anatomical_integrity = initial_hypothesis.anatomical_score
 
         # Kalman Filter: state = [x, y, z, vx, vy, vz, scale]
-        self.kf = self._init_kalman_filter(initial_pose)
+        self.kf = self._init_kalman_filter(initial_hypothesis)
 
-    def _init_kalman_filter(self, initial_pose: Pose3D) -> KalmanFilter:
+    def _init_kalman_filter(self, hypothesis: SkeletonHypothesis) -> KalmanFilter:
         """Initialise Kalman filter for position, velocity, and scale tracking."""
 
         kf = KalmanFilter(dim_x=7, dim_z=4)
@@ -580,8 +562,8 @@ class Tracklet:
         kf.P[6, 6] = 1.0
 
         # Initial state
-        kf.x[:3] = initial_pose.keypoints[self.central_kp].reshape(3, 1)
-        kf.x[6] = initial_pose.scale
+        kf.x[:3] = hypothesis[self.central_kp].position.reshape(3, 1)
+        kf.x[6] = hypothesis.scale
 
         return kf
 
@@ -596,30 +578,32 @@ class Tracklet:
             self.time_since_update += 1
             self.health *= self.config.health_decay_rate
 
-    def update(self, pose: Pose3D, frame_idx: int):
-        """Update tracklet with new pose observation."""
+    def update(self, hypothesis: SkeletonHypothesis, frame_idx: int):
+        """Update tracklet with new hypothesis observation."""
 
         inferred = False
 
         # Try to infer missing central keypoint
-        if self.central_kp not in pose.keypoints:
-            inferred_pose = self._infer_missing_central_kp(pose)
-            if inferred_pose:
-                pose = inferred_pose
+        if self.central_kp not in hypothesis:
+            updated_hypothesis = self._infer_missing_central_kp(hypothesis)
+
+            if updated_hypothesis:
+                hypothesis = updated_hypothesis
                 inferred = True
             else:
-                # Can't update KF, just store pose
-                self.pose = pose
+                # Can't update KF, just store hypothesis
+                self.hypothesis = hypothesis
                 self.time_since_update = 0
                 self.last_update_frame = frame_idx
                 return
 
-        self.pose = pose
+        self.hypothesis = hypothesis
         self.time_since_update = 0
         self.last_update_frame = frame_idx
 
         # KF measurement update
-        measurement = np.array([*pose.keypoints[self.central_kp], pose.scale])
+        central_pos = hypothesis[self.central_kp].position
+        measurement = np.array([*central_pos, hypothesis.scale])
 
         if inferred:
             # Increase measurement uncertainty for inferred positions
@@ -634,14 +618,15 @@ class Tracklet:
 
         # Update anatomical integrity (EMA)
         self.anatomical_integrity = (
-                self.config.anatomical_score_alpha * pose.score +
-                (1 - self.config.anatomical_score_alpha) * self.anatomical_integrity
+            self.config.anatomical_score_alpha * hypothesis.anatomical_score +
+            (1 - self.config.anatomical_score_alpha) * self.anatomical_integrity
         )
 
-    def _infer_missing_central_kp(self, fragment: Pose3D) -> Optional[Pose3D]:
+    def _infer_missing_central_kp(self, hypothesis: SkeletonHypothesis) -> Optional[SkeletonHypothesis]:
         """Infer central keypoint position via rigid alignment."""
 
-        prev_kps, curr_kps = self.pose.keypoints, fragment.keypoints
+        prev_kps = self.hypothesis.positions
+        curr_kps = hypothesis.positions
         common_names = list(prev_kps.keys() & curr_kps.keys())
 
         if len(common_names) < self.config.min_kps_for_inference:
@@ -653,13 +638,25 @@ class Tracklet:
         R_mat, t_vec = align_rigid(points_A, points_B)
         inferred_pos = np.array(R_mat) @ prev_kps[self.central_kp] + np.array(t_vec)
 
-        completed = Pose3D(
-            keypoints={**fragment.keypoints, self.central_kp: inferred_pos},
-            score=fragment.score,
-            scale=fragment.scale,
-            soup_point_indices=fragment.soup_point_indices
+        # Create a new node for the inferred central keypoint
+        inferred_node = Node3D(
+            name=self.central_kp,
+            idx=-9999,  # special index for inferred points
+            position=inferred_pos,
+            confidence=0.5,  # lower confidence for inferred  # TODO: move to config
+            ray_idx=-1
         )
-        return completed
+
+        # Create new hypothesis with the inferred node added
+        new_nodes = frozenset(hypothesis.nodes | {inferred_node})
+
+        return SkeletonHypothesis(
+            nodes=new_nodes,
+            scale=hypothesis.scale,
+            competition_score=hypothesis.competition_score,
+            anatomical_score=hypothesis.anatomical_score,
+            constituent_indices=hypothesis.constituent_indices
+        )
 
     @property
     def is_active(self) -> bool:
@@ -687,28 +684,33 @@ class Tracklet:
         return self.kf.P.diagonal()[:3]
 
     @property
-    def predicted_pose(self) -> Optional[Dict[str, np.ndarray]]:
+    def keypoints(self) -> Dict[str, np.ndarray]:
+        """Current keypoint positions from hypothesis."""
+        return self.hypothesis.positions
+
+    @property
+    def predicted_keypoints(self) -> Optional[Dict[str, np.ndarray]]:
         """Predicted keypoint positions based on KF state."""
 
-        if self.central_kp not in self.pose.keypoints:
+        if self.central_kp not in self.hypothesis:
             return None
 
-        translation = self.position - self.pose.keypoints[self.central_kp]
-        return {name: pos + translation for name, pos in self.pose.keypoints.items()}
+        current_central = self.hypothesis[self.central_kp].position
+        translation = self.position - current_central
+        return {name: pos + translation for name, pos in self.hypothesis.positions.items()}
 
     def to_record(self, frame_idx: int) -> dict:
-        """
-        Export tracklet state as a record for storage/analysis.
-        """
+        """Export tracklet state as a record for storage/analysis."""
+
         return {
             'frame_idx': frame_idx,
             'track_idx': self.track_idx,
 
             # Pose data
-            'keypoints': self.pose.keypoints,
-            'scale': self.pose.scale,
-            'score': self.pose.score,
-            'soup_point_indices': self.pose.soup_point_indices,
+            'keypoints': self.hypothesis.positions,
+            'scale': self.hypothesis.scale,
+            'score': self.hypothesis.anatomical_score,
+            'point_indices': {n.name: n.idx for n in self.hypothesis},
 
             # Tracking state
             'position': self.position.tolist(),

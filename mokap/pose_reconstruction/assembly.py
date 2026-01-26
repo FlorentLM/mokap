@@ -11,8 +11,8 @@ import networkx as nx
 from alive_progress import alive_bar
 from scipy.optimize import linear_sum_assignment
 
-from mokap.pose_reconstruction.skeleton import Bone, Skeleton, SkeletonStats
-from mokap.pose_reconstruction.datatypes import Node, Pose3D, SkeletonHypothesis, PointSoup, Tracklet, FrameData
+from mokap.pose_reconstruction.skeleton import BoneDefinition, SkeletonTopology, SkeletonStats
+from mokap.pose_reconstruction.datatypes import Node3D, SkeletonHypothesis, PointSoup, Tracklet, TimestepData
 from mokap.pose_reconstruction.configs import AssemblerConfig, TrackerConfig
 from mokap.pose_reconstruction.utils import solve_mwis
 
@@ -29,7 +29,7 @@ class SkeletonAssembler:
 
     def __init__(
             self,
-            skeleton: Skeleton,
+            skeleton: SkeletonTopology,
             skeleton_stats: SkeletonStats,
             config: AssemblerConfig,
     ):
@@ -37,7 +37,7 @@ class SkeletonAssembler:
         self.skeleton_stats = skeleton_stats
         self.config = config
 
-    def assemble(self, frame_data: FrameData) -> List[SkeletonHypothesis]:
+    def assemble(self, frame_data: TimestepData) -> List[SkeletonHypothesis]:
         """
         Main assembly entry point.
         Returns a list of skeleton hypotheses (both initial and merged).
@@ -55,7 +55,7 @@ class SkeletonAssembler:
 
         return initial_fragments + merge_hypotheses
 
-    def _generate_hypotheses(self, frame_data: FrameData) -> List[SkeletonHypothesis]:
+    def _generate_hypotheses(self, frame_data: TimestepData) -> List[SkeletonHypothesis]:
         """Generate skeleton hypotheses by seeding from anchors and leaves."""
 
         candidate_skeletons = []
@@ -122,8 +122,8 @@ class SkeletonAssembler:
 
     def _grow_skeleton(
             self,
-            frame_data: FrameData,
-            seed_nodes: Dict[str, Node],
+            frame_data: TimestepData,
+            seed_nodes: Dict[str, Node3D],
             max_iterations: Optional[int] = None,
             min_score_threshold: float = 0.0
     ) -> Optional[SkeletonHypothesis]:
@@ -216,17 +216,17 @@ class SkeletonAssembler:
 
     def _find_extension_candidates(
             self,
-            frame_data: FrameData,
-            current_nodes: Dict[str, Node],
+            frame_data: TimestepData,
+            current_nodes: Dict[str, Node3D],
             max_search_radius: float
-    ) -> List[Node]:
+    ) -> List[Node3D]:
         """
         Find all candidate nodes that could extend the current skeleton.
         (real 3D points and virtual points from single-view rescue).
         """
 
         current_kp_names = set(current_nodes.keys())
-        candidates_by_type: Dict[str, List[Node]] = defaultdict(list)
+        candidates_by_type: Dict[str, List[Node3D]] = defaultdict(list)
 
         # For each existing node find potential neighbours
         for node_kp, node in current_nodes.items():
@@ -253,7 +253,7 @@ class SkeletonAssembler:
                 if candidates_by_type[target_type]:
                     continue  # already have real candidates
 
-                bone = Bone(node_kp, target_type)
+                bone = BoneDefinition(node_kp, target_type)
                 if bone in self.skeleton:
                     expected_len = self.skeleton_stats.expected_length(bone)
                     virtual_nodes = frame_data.intersect_rays(
@@ -275,8 +275,8 @@ class SkeletonAssembler:
 
     def _evaluate_extension(
             self,
-            current_nodes: Dict[str, Node],
-            candidate: Node,
+            current_nodes: Dict[str, Node3D],
+            candidate: Node3D,
             current_scale: float,
     ) -> Optional[Tuple[float, int]]:
         """
@@ -287,7 +287,7 @@ class SkeletonAssembler:
         bone_count = 0
 
         for existing_name, existing_node in current_nodes.items():
-            bone = Bone(candidate.name, existing_name)
+            bone = BoneDefinition(candidate.name, existing_name)
 
             if bone not in self.skeleton:
                 continue
@@ -355,7 +355,7 @@ class SkeletonAssembler:
 
         for kp_a in skel_A.names:
             for kp_b in skel_B.names:
-                bone = Bone(kp_a, kp_b)
+                bone = BoneDefinition(kp_a, kp_b)
                 if bone not in self.skeleton:
                     continue
 
@@ -383,7 +383,7 @@ class SkeletonAssembler:
         new_num_bones = num_bones_A + num_bones_B + 1
         new_avg_score = new_total_score / new_num_bones
 
-        combined_nodes = skel_A._nodes | skel_B._nodes
+        combined_nodes = skel_A.nodes | skel_B.nodes
         return self._create_hypothesis(combined_nodes, new_avg_score, combined_scale)
 
     def _create_hypothesis(
@@ -396,7 +396,7 @@ class SkeletonAssembler:
 
         if avg_score <= 0:
             return SkeletonHypothesis(
-                _nodes=nodes,
+                nodes=nodes,
                 competition_score=0.0,
                 anatomical_score=0.0,
                 scale=scale
@@ -410,7 +410,7 @@ class SkeletonAssembler:
             quality_bonus = base_score * (self.config.quality_bonus_factor - 1.0)
 
         return SkeletonHypothesis(
-            _nodes=nodes,
+            nodes=nodes,
             competition_score=base_score + quality_bonus,
             anatomical_score=avg_score * num_nodes,
             scale=scale
@@ -426,7 +426,7 @@ class MultiObjectTracker:
     def __init__(
             self,
             soup: PointSoup,
-            skeleton: Skeleton,
+            skeleton: SkeletonTopology,
             assembler: SkeletonAssembler,
             config: TrackerConfig
     ):
@@ -435,26 +435,27 @@ class MultiObjectTracker:
         self.config = config
         self.soup = soup
 
-        self._active: Dict[int, Tracklet] = {}   # track_idx -> Tracklet (updated this frame)
-        self._pending: Dict[int, Tracklet] = {}  # track_idx -> Tracklet (coasting)
-        self._next_track_idx = 0
+        self._active_tracklets: Dict[int, Tracklet] = {}   # track_idx -> Tracklet (updated this frame)
+        self._pending_tracklets: Dict[int, Tracklet] = {}  # track_idx -> Tracklet (coasting)
+        # TODO: Maybe store terminated tracklets instead of pruning them?
 
+        self._next_track_idx = 0
         self._current_frame = -1
 
     @property
-    def active(self) -> List[Tracklet]:
+    def active_tracklets(self) -> List[Tracklet]:
         """Tracklets that were updated this frame."""
-        return list(self._active.values())
+        return list(self._active_tracklets.values())
 
     @property
-    def pending(self) -> List[Tracklet]:
+    def pending_tracklets(self) -> List[Tracklet]:
         """Tracklets that are coasting (not updated this frame)."""
-        return list(self._pending.values())
+        return list(self._pending_tracklets.values())
 
     @property
     def tracklets(self) -> List[Tracklet]:
         """All tracklets (active + pending)."""
-        return self.active + self.pending
+        return self.active_tracklets + self.pending_tracklets
 
     @property
     def current_frame(self) -> int:
@@ -468,15 +469,15 @@ class MultiObjectTracker:
         self._current_frame = frame_idx
 
         # Move all active tracklets to pending at start of frame
-        self._pending.update(self._active)
-        self._active.clear()
+        self._pending_tracklets.update(self._active_tracklets)
+        self._active_tracklets.clear()
 
         # Predict all tracklets forward
-        for tracklet in self._pending.values():
+        for tracklet in self._pending_tracklets.values():
             tracklet.predict(frame_idx)
 
         # Generate and resolve hypotheses
-        frame_data = FrameData(self.soup[frame_idx])
+        frame_data = TimestepData(self.soup[frame_idx])
         frame_candidates = self.assembler.assemble(frame_data)
 
         if not frame_candidates:
@@ -489,66 +490,112 @@ class MultiObjectTracker:
             cand.competition_score += bonuses[i] * self.config.continuity_bonus
 
         # Solve conflicts
-        winning_hypotheses = self._resolve_conflicts(frame_candidates)
+        remaining_hypotheses = self._resolve_conflicts(frame_candidates)
 
-        # Match hypotheses to existing tracklets
-        self._extend_tracklets(winning_hypotheses, frame_idx)
+        # Commit surviving hypotheses: either extend existing tracklets or create new ones
+        self._extend_tracklets(remaining_hypotheses, frame_idx)
 
         self._prune_pending()
 
-    def _extend_tracklets(self, hypotheses: List[SkeletonHypothesis], frame_idx: int):
-        """Extend to existing tracklets with the winner hypotheses (or start new tracklets)."""
+    def _extend_tracklets(self,
+            hypotheses: List[SkeletonHypothesis],
+            frame_idx: int
+        ):
+        """Match hypotheses to existing tracklets, and create new tracklets from unmatched hypotheses."""
 
         if not hypotheses:
             return
 
-        pending_tracklets = list(self._pending.values())
-        matched_hypotheses_indices = set()
+        # Assign to existing tracklets and get unmatched hypotheses
+        unmatched = self._assign_hypotheses(hypotheses, frame_idx)
 
-        if pending_tracklets:
+        # Create new tracklets for unmatched hypotheses that have the central keypoint
+        for hyp in unmatched:
 
-            cost_matrix = self._assign_hypotheses(pending_tracklets, hypotheses)
-            tracklet_indices, hypotheses_indices = linear_sum_assignment(cost_matrix)
-
-            for t_idx, h_idx in zip(tracklet_indices, hypotheses_indices):
-
-                if cost_matrix[t_idx, h_idx] < 1e9:
-                    tracklet = pending_tracklets[t_idx]
-                    tracklet.update(pose=hypotheses[h_idx].to_pose(), frame_idx=frame_idx)
-
-                    # Move from pending to active
-                    del self._pending[tracklet.track_idx]
-
-                    self._active[tracklet.track_idx] = tracklet
-                    matched_hypotheses_indices.add(h_idx)
-
-        # Create new tracklets for unmatched hypotheses
-        for i, hyp in enumerate(hypotheses):
-
-            pose = hyp.to_pose()
-
-            if i in matched_hypotheses_indices:
-                continue
-
-            if self.skeleton.central_keypoint not in pose.keypoints:
+            if self.skeleton.central_keypoint not in hyp:
                 continue
 
             tracklet = Tracklet(
                 track_idx=self._next_track_idx,
-                initial_pose=pose,
+                initial_hypothesis=hyp,
                 frame_idx=frame_idx,
                 central_kp=self.skeleton.central_keypoint,
                 config=self.config
             )
-            self._active[tracklet.track_idx] = tracklet
+            self._active_tracklets[tracklet.track_idx] = tracklet
             self._next_track_idx += 1
+
+    def _assign_hypotheses(self,
+            hypotheses: List[SkeletonHypothesis],
+            frame_idx: int
+    ) -> List[SkeletonHypothesis]:
+        """
+        Assign hypotheses to pending tracklets using Hungarian algorithm.
+        Returns list of unmatched hypotheses.
+        """
+
+        if not self._pending_tracklets:
+            return hypotheses
+
+        pending_tracklets = list(self._pending_tracklets.values())
+
+        # Build cost matrix for linear assignment
+        cost_matrix = np.full((len(pending_tracklets), len(hypotheses)), 1e9)
+
+        for i, tracklet in enumerate(pending_tracklets):
+            pred_kps = tracklet.predicted_keypoints
+            if not pred_kps:
+                continue
+
+            for j, hyp in enumerate(hypotheses):
+                hyp_kps = hyp.positions
+                common_kps = pred_kps.keys() & hyp_kps.keys()
+
+                if len(common_kps) < self.config.association_min_kps:
+                    continue
+
+                mean_dist_sq = sum(
+                    np.sum((pred_kps[kp] - hyp_kps[kp]) ** 2) for kp in common_kps
+                ) / len(common_kps)
+
+                if mean_dist_sq > self.config.association_radius ** 2:
+                    continue
+
+                cost = (self.config.cost_pose_distance_weight * mean_dist_sq +
+                        self.config.cost_skeleton_score_weight * hyp.anatomical_score)
+                cost_matrix[i, j] = cost
+
+        # Solve assignment
+        tracklet_indices, hypotheses_indices = linear_sum_assignment(cost_matrix)
+
+        # Update pending tracklets with assigned hypotheses
+        assigned_indices = set()
+        for t_idx, h_idx in zip(tracklet_indices, hypotheses_indices):
+
+            if cost_matrix[t_idx, h_idx] >= 1e9:
+                continue
+
+            tracklet = pending_tracklets[t_idx]
+            tracklet.update(hypothesis=hypotheses[h_idx], frame_idx=frame_idx)
+
+            # Move from pending to active
+            del self._pending_tracklets[tracklet.track_idx]
+            self._active_tracklets[tracklet.track_idx] = tracklet
+
+            assigned_indices.add(h_idx)
+
+        # Return unmatched hypotheses
+        unmatched_indices = set(hypotheses_indices).difference(assigned_indices)
+
+        return [hypotheses[i] for i in unmatched_indices]
 
     def _prune_pending(self):
         """Remove stale or uncertain tracklets from pending."""
+        # TODO: Maybe should be removed, finished tracklets should be stored
 
         to_remove = []
 
-        for track_idx, t in self._pending.items():
+        for track_idx, t in self._pending_tracklets.items():
 
             if t.time_since_update > self.config.max_tracklet_age:
                 to_remove.append(track_idx)
@@ -557,13 +604,10 @@ class MultiObjectTracker:
                 to_remove.append(track_idx)
 
         for track_idx in to_remove:
-            del self._pending[track_idx]
+            del self._pending_tracklets[track_idx]
 
-    def _resolve_conflicts(
-            self,
-            candidates: List[SkeletonHypothesis],
-    ) -> List[SkeletonHypothesis]:
-        """Build graph where edges represent mutually exclusive hypotheses."""
+    def _resolve_conflicts(self, candidates: List[SkeletonHypothesis]) -> List[SkeletonHypothesis]:
+        """Build graph where edges represent mutually exclusive hypotheses, and solve with MWIS."""
 
         conflict_graph = nx.Graph()
 
@@ -613,15 +657,13 @@ class MultiObjectTracker:
                     if proximal_count / len(union) > self.config.conflict_solver_jaccard_threshold:
                         conflict_graph.add_edge(i, j)
 
+        # Solve assignment
         winner_indices = solve_mwis(conflict_graph, method='networkx')
         winning_hypotheses = [candidates[i] for i in winner_indices]
 
         return winning_hypotheses
 
-    def _association_bonuses(
-            self,
-            candidates: List[SkeletonHypothesis],
-    ) -> np.ndarray:
+    def _association_bonuses(self, candidates: List[SkeletonHypothesis]) -> np.ndarray:
         """Calculate temporal association bonuses based on tracklet predictions."""
 
         all_tracklets = self.tracklets
@@ -657,49 +699,12 @@ class MultiObjectTracker:
 
         return bonuses
 
-    def _assign_hypotheses(
-            self,
-            tracklets: List[Tracklet],
-            hypotheses: List[SkeletonHypothesis],
-    ) -> np.ndarray:
-        """Build cost matrix for tracklet-pose assignment."""
-
-        cost_matrix = np.full((len(tracklets), len(hypotheses)), 1e9)
-
-        for i, tracklet in enumerate(tracklets):
-            pred_pose = tracklet.predicted_pose
-
-            if not pred_pose:
-                continue
-
-            for j, hyp in enumerate(hypotheses):
-                pose = hyp.to_pose()
-
-                common_kps = pred_pose.keys() & pose.keypoints.keys()
-
-                if len(common_kps) < self.config.association_min_kps:
-                    continue
-
-                mean_dist_sq = sum(
-                    np.sum((pred_pose[kp] - pose.keypoints[kp]) ** 2)
-                    for kp in common_kps
-                ) / len(common_kps)
-
-                if mean_dist_sq > self.config.association_radius ** 2:
-                    continue
-
-                cost = (self.config.cost_pose_distance_weight * mean_dist_sq +
-                        self.config.cost_skeleton_score_weight * pose.score)
-                cost_matrix[i, j] = cost
-
-        return cost_matrix
-
     def collect_records(self, frame_idx: int) -> List[dict]:
         """
         Collect serialisable records for all active tracklets.
         Use this for building output data structures.
         """
-        return [t.to_record(frame_idx) for t in self.active]
+        return [t.to_record(frame_idx) for t in self.active_tracklets]
 
 
 ##
@@ -722,7 +727,7 @@ if __name__ == '__main__':
 
     # Load stuff
     soup = PointSoup.from_file(soup_file)
-    skeleton = Skeleton.from_sleap(input_dir)
+    skeleton = SkeletonTopology.from_sleap(input_dir)
     stats = SkeletonStats.from_json(stats_file, skeleton)
 
     print(f"Loaded point soup from {soup_file}")
@@ -762,10 +767,10 @@ if __name__ == '__main__':
             tracker.update(frame_idx)
 
             # Update skeleton stats from high-quality observations
-            for tracklet in tracker.active:
+            for tracklet in tracker.active_tracklets:
 
                 if tracklet.last_update_frame == frame_idx:
-                    stats.update(tracklet.pose.keypoints)
+                    stats.update(tracklet.keypoints)
 
             # Collect records
             for record in tracker.collect_records(frame_idx):
