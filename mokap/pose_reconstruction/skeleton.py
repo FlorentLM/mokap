@@ -2,12 +2,15 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Tuple, Optional, Sequence, List
+from typing import TYPE_CHECKING, Dict, Tuple, Optional, Sequence, List, Union
 import networkx as nx
 import numpy as np
 
 from lucida.geometry.backend import ArrayLike
 from mokap.utils import common_prefix_suffix
+
+if TYPE_CHECKING:
+    from mokap.pose_reconstruction.datatypes import Node, SkeletonHypothesis
 
 
 def _ema_update(existing: float, new: float, alpha: float = 0.01):
@@ -71,10 +74,10 @@ class BoneStats:
     """
     Statistics for a single bone (relative to a reference).
     """
-    ratio_length: float     # length relative to reference bone
-    variability: float      # intra-individual variation (MAD of the ratio length, pooled)
-    count: int = 0          # number of observations
-    pairs: int = 0          # number of tracklet pairs used
+    ratio_length: float  # length relative to reference bone
+    variability: float  # intra-individual variation (MAD of the ratio length, pooled)
+    count: int = 0  # number of observations
+    pairs: int = 0  # number of tracklet pairs used
 
     # Optional absolute measurements (if known/calibrated)
     length_world: Optional[float] = None
@@ -252,10 +255,10 @@ class SkeletonStats:
 
     def __init__(self, skeleton: Skeleton):
         self.skeleton = skeleton
-        
+
         self.reference_bone: Optional[Bone] = None
-        self.reference_length_world = 1.0    # length of the reference bone in world units
-        
+        self.reference_length_world = 1.0  # length of the reference bone in world units
+
         self.bone_stats: Dict[Bone, BoneStats] = {}
 
     def expected_ratio(self, bone: Bone | str | Sequence[str]) -> float:
@@ -286,21 +289,27 @@ class SkeletonStats:
     def score_bone(
             self,
             bone: Bone | str | Sequence[str],
-            coords_p1: ArrayLike,
-            coords_p2: ArrayLike,
-            conf_p1: float = 1.0,
-            conf_p2: float = 1.0,
+            node1: 'Node',
+            node2: 'Node',
             scale: float = 1.0,
             MAD_threshold: float = 5.0,
             MAD_floor: float = 0.05
     ) -> float:
         """
         Score a proposed bone based on consistency with learned statistics.
+
+        Args:
+            bone: The bone being scored
+            node1: First endpoint node
+            node2: Second endpoint node
+            scale: Current skeleton scale estimate
+            MAD_threshold: Number of MADs beyond which to reject
+            MAD_floor: Minimum variability floor
         """
         if bone not in self.skeleton:
             return 0.0
 
-        proposed_length = float(np.linalg.norm(coords_p1 - coords_p2))
+        proposed_length = float(np.linalg.norm(node1.position - node2.position))
         expected = self.expected_length(bone) * scale
 
         variability = self.length_variability(bone) * scale + MAD_floor
@@ -310,17 +319,30 @@ class SkeletonStats:
             return -1000.0
 
         length_score = np.exp(-0.5 * n_mads ** 2)
-        confidence_score = (conf_p1 + conf_p2) / 2.0
+        confidence_score = (node1.confidence + node2.confidence) / 2.0
         return length_score * confidence_score
 
     def estimate_scale(self,
-            keypoints: Dict[str, ArrayLike],
-            min_scale: float = 0.3,
-            max_scale: float = 4.0
-    ) -> float:
+                       hypothesis: Union['SkeletonHypothesis', Dict[str, 'Node'], Dict[str, ArrayLike]],
+                       min_scale: float = 0.3,
+                       max_scale: float = 4.0
+                       ) -> float:
         """
         Estimate skeleton scale from observed keypoint positions.
+
+        Args:
+            hypothesis: A SkeletonHypothesis, Dict[str, Node], or Dict[str, position]
+            min_scale: Minimum acceptable scale
+            max_scale: Maximum acceptable scale
         """
+
+        if hasattr(hypothesis, 'positions'):
+            keypoints = hypothesis.positions
+        elif hypothesis and hasattr(next(iter(hypothesis.values())), 'position'):
+            keypoints = {name: node.position for name, node in hypothesis.items()}
+        else:
+            keypoints = hypothesis
+
         bones_scales = []
 
         for bone, stats in self.bone_stats.items():
@@ -351,7 +373,8 @@ class SkeletonStats:
         if not (self.reference_bone.k1 in keypoints and self.reference_bone.k2 in keypoints):
             return False
 
-        ref_bone_length_obs = float(np.linalg.norm(keypoints[self.reference_bone.k1] - keypoints[self.reference_bone.k2]))
+        ref_bone_length_obs = float(
+            np.linalg.norm(keypoints[self.reference_bone.k1] - keypoints[self.reference_bone.k2]))
 
         # Update reference length with exponential moving average
         self.reference_length_world = _ema_update(self.reference_length_world, ref_bone_length_obs)
@@ -420,6 +443,8 @@ class SkeletonStats:
     def from_json(cls, path: Path, skeleton: Skeleton) -> 'SkeletonStats':
         return cls.from_dict(json.loads(path.read_text()), skeleton)
 
+
+##
 
 if __name__ == '__main__':
     BASE_DIR = Path.home() / 'Desktop' / '3d_ant_data'

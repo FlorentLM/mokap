@@ -1,7 +1,8 @@
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import Dict, List, Tuple, FrozenSet, Optional, Union, Sequence
+from typing import Dict, List, FrozenSet, Optional, Union, Sequence, Iterator, Set
 import numpy as np
+import pandas as pd
 from filterpy.common import Q_discrete_white_noise
 from filterpy.kalman import KalmanFilter
 from scipy.linalg import block_diag
@@ -9,6 +10,123 @@ from scipy.spatial import cKDTree
 
 from lucida.geometry import align_rigid, intersect_ray_sphere
 from mokap.pose_reconstruction.configs import TrackerConfig
+
+
+@dataclass(frozen=True, slots=True)
+class Node:
+    """
+    A keypoint observation in a frame.
+    Immutable and hashable for comparisons.
+    Negative indices indicate virtual points.
+    """
+    name: str
+    idx: int
+    position: np.ndarray
+    confidence: float
+    ray_idx: int = -1  # source ray index if virtual, -1 otherwise
+
+    def __hash__(self):
+        return hash((self.name, self.idx))
+
+    def __eq__(self, other):
+        if not isinstance(other, Node):
+            return NotImplemented
+        return self.name == other.name and self.idx == other.idx
+
+    @property
+    def is_virtual(self) -> bool:
+        return self.idx < 0
+
+
+@dataclass
+class SkeletonHypothesis:
+    """
+    A candidate skeleton during assembly.
+    Nodes are stored as a frozenset (for hashing/comparison) and indexed by name (for O(1) lookup).
+    """
+    _nodes: FrozenSet[Node]
+    scale: float
+    competition_score: float
+    anatomical_score: float
+    constituent_indices: Optional[FrozenSet[int]] = None  # for tracking merge provenance
+
+    # Cached lookups
+    _by_name: Dict[str, Node] = field(init=False, repr=False, compare=False)
+    _point_indices: FrozenSet[int] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self):
+        object.__setattr__(self, '_by_name', {n.name: n for n in self._nodes})
+        object.__setattr__(self, '_point_indices', frozenset(n.idx for n in self._nodes))
+
+    def __getitem__(self, name: str) -> Node:
+        """Get node by keypoint name. Raises KeyError if not found."""
+        return self._by_name[name]
+
+    def __contains__(self, item: Union[str, Node]) -> bool:
+        """Check if keypoint name or node is in this hypothesis."""
+        if isinstance(item, str):
+            return item in self._by_name
+        return item in self._nodes
+
+    def __iter__(self) -> Iterator[Node]:
+        return iter(self._nodes)
+
+    def __len__(self) -> int:
+        return len(self._nodes)
+
+    def get(self, name: str, default: Optional[Node] = None) -> Optional[Node]:
+        """Get node by name, return default if not found."""
+        return self._by_name.get(name, default)
+
+    @property
+    def names(self) -> FrozenSet[str]:
+        """Set of keypoint names in this hypothesis."""
+        return frozenset(self._by_name.keys())
+
+    @property
+    def positions(self) -> Dict[str, np.ndarray]:
+        """Dict mapping keypoint names to positions."""
+        return {n.name: n.position for n in self._nodes}
+
+    @property
+    def centroid(self) -> np.ndarray:
+        """Mean position of all nodes."""
+        return np.mean([n.position for n in self._nodes], axis=0)
+
+    @property
+    def point_indices(self) -> FrozenSet[int]:
+        """Set of point indices (soup indices) in this hypothesis."""
+        return self._point_indices
+
+    @property
+    def ray_indices(self) -> Set[int]:
+        """Set of source ray indices for virtual points in this hypothesis."""
+        return {n.ray_idx for n in self._nodes if n.is_virtual}
+
+    def shares_points_with(self, other: 'SkeletonHypothesis') -> bool:
+        """Check if two hypotheses share any point indices."""
+        return not self._point_indices.isdisjoint(other._point_indices)
+
+    def shares_rays_with(self, other: 'SkeletonHypothesis') -> bool:
+        """Check if two hypotheses share any source rays."""
+        return not self.ray_indices.isdisjoint(other.ray_indices)
+
+    def is_related(self, other: 'SkeletonHypothesis') -> bool:
+        """Check if one hypothesis is a constituent of the other (merge provenance)."""
+        if self.constituent_indices and other.constituent_indices:
+            return (self.constituent_indices.issubset(other.constituent_indices) or
+                    other.constituent_indices.issubset(self.constituent_indices))
+        return False
+
+    def to_pose(self, track_idx: int = -1) -> 'Pose3D':
+        """Convert to a resolved Pose3D for output."""
+        return Pose3D(
+            keypoints=self.positions,
+            scale=self.scale,
+            score=self.anatomical_score,
+            soup_point_indices={n.name: n.idx for n in self._nodes},
+            track_idx=track_idx
+        )
 
 
 class PointSoup:
@@ -197,7 +315,7 @@ class PointSoup:
         if len(soups) == 1:
             return soups[0]
 
-        # Combine all unique names from all soups while preserving order as much as possible
+        # Combine all unique names from all soups while preserving order
         kp_names_union = []
         seen_kp = set()
         for s in soups:
@@ -231,7 +349,6 @@ class PointSoup:
             if len(local_indices) == 0:
                 return local_indices
 
-            # Create a translation table: map[local_id] = global_id
             lookup = np.array([global_names.index(name) for name in soup.keypoint_names], dtype=np.int16)
             return lookup[local_indices]
 
@@ -252,8 +369,6 @@ class PointSoup:
     def to_df(self, keypoint_names: Optional[List[str]] = None) -> 'pd.DataFrame':
         """Convert the point data to a pandas DataFrame for tracking/analysis."""
 
-        import pandas as pd
-
         if keypoint_names is not None:
             valid_ids = [self.keypoint_names.index(n) for n in keypoint_names if n in self.keypoint_names]
             mask = np.isin(self.keypoint_indices, valid_ids)
@@ -271,45 +386,59 @@ class PointSoup:
 
 
 class FrameData:
-    # TODO: This class should probably return a Point object with a 'virtual' flag
+    """
+    Single-frame view of a PointSoup with virtual point management.
+    Provides access to real points (from triangulation) and virtual points (from ray-sphere intersection).
+    """
+
+    VIRTUAL_CONFIDENCE_PENALTY = 0.8  # TODO: Move this to config?
 
     def __init__(self, soup_slice: PointSoup):
         self.soup = soup_slice
-
-        # {virtual_idx: {'position': array, 'confidence': float, 'keypoint_name': str, 'ray_index': int}}
-        self._virtual_registry: Dict[int, Dict] = {}
+        self._virtual_nodes: Dict[int, Node] = {}
         self._next_virt_id = -1
 
     def __bool__(self) -> bool:
         return self.soup.nb_points > 0 or self.soup.nb_rays > 0
 
-    def position(self, idx: int) -> np.ndarray:
-        return self.soup.positions[idx] if idx >= 0 else self._virtual_registry[idx]['position']
+    def get_node(self, name: str, idx: int) -> Node:
+        """
+        Instantiate a Node for the given keypoint name and index.
+        """
+        if idx < 0:
+            return self._virtual_nodes[idx]
 
-    def confidence(self, idx: int) -> float:
-        return self.soup.confidences[idx] if idx >= 0 else self._virtual_registry[idx]['confidence']
+        return Node(
+            name=name,
+            idx=idx,
+            position=self.soup.positions[idx],
+            confidence=self.soup.confidences[idx],
+            ray_idx=-1
+        )
 
     def get_indices(self, keypoint_name: str) -> np.ndarray:
         """Get indices of real 3D points for a specific keypoint type."""
-        return self.soup.points_by_name[keypoint_name]
-    
-    def get_ray_index(self, virtual_idx: int) -> int:
-        """Returns the ray index used to generate a virtual point (or -1 if real)."""
-        return self._virtual_registry[virtual_idx]['ray_index'] if virtual_idx < 0 else -1
-    
+        return self.soup.points_by_name.get(keypoint_name, np.array([], dtype=np.int32))
+
     def nearby(self, center: np.ndarray, radius: float) -> List[int]:
+        """Find all real point indices within radius of center."""
         if not self.soup.tree:
             return []
         return list(self.soup.tree.query_ball_point(center, r=radius))
 
-    def intersect_rays(self, keypoint_name: str, center: np.ndarray, radius: float) -> List[int]:
+    def intersect_rays(
+            self,
+            keypoint_name: str,
+            center: np.ndarray,
+            radius: float
+    ) -> List[Node]:
         """
         Intersect rays of type `keypoint_name` with a sphere (center, radius).
-        Registers resulting points as virtual points.
-        Returns: List of new virtual point indices (negative integers).
+        Creates and registers virtual Nodes for intersection points.
+        Returns list of new virtual Nodes.
         """
 
-        ray_indices = self.soup.rays_by_name[keypoint_name]
+        ray_indices = self.soup.rays_by_name.get(keypoint_name, np.array([]))
 
         if len(ray_indices) == 0:
             return []
@@ -329,47 +458,34 @@ class FrameData:
         p1_valid = p1[valid_locs]
         p2_valid = p2[valid_locs]
 
-        new_indices = []
+        new_nodes = []
 
-        def _register(p, c, r_idx):
-            vid = self._next_virt_id
-            self._virtual_registry[vid] = {
-                'position': p,
-                'confidence': c * 0.8,  # TODO: Move this factror out of here
-                'keypoint_name': keypoint_name,
-                'ray_index': r_idx
-            }
-            self._next_virt_id -= 1
-            return vid
-
+        # Register both intersection solutions
         for i in range(len(valid_locs)):
-            new_indices.append(_register(p1_valid[i], valid_confs[i], valid_ray_indices[i]))
-            new_indices.append(_register(p2_valid[i], valid_confs[i], valid_ray_indices[i]))
+            conf = valid_confs[i] * self.VIRTUAL_CONFIDENCE_PENALTY
+            ray_idx = int(valid_ray_indices[i])
 
-        return new_indices
+            for pos in (p1_valid[i], p2_valid[i]):
+                node = Node(
+                    name=keypoint_name,
+                    idx=self._next_virt_id,
+                    position=pos,
+                    confidence=conf,
+                    ray_idx=ray_idx
+                )
+                self._virtual_nodes[self._next_virt_id] = node
+                self._next_virt_id -= 1
+                new_nodes.append(node)
 
-
-##
-
-
-@dataclass
-class SkeletonHypothesis:
-    """
-    A candidate skeleton during assembly.
-    References points by index (into current frame's PointSoup).
-    """
-    nodes: FrozenSet[Tuple[str, int]]  # (keypoint name, soup point index)
-    scale: float
-    competition_score: float
-    anatomical_score: float
-    constituent_indices: Optional[FrozenSet[int]] = None
+        return new_nodes
 
 
 @dataclass
 class Pose3D:
     """
     A resolved 3D pose for a single frame.
-    Contains actual positions (not indices).
+    This is the output format containing actual positions (not indices).
+    # TODO: This class should be replaced / removed
     """
     keypoints: Dict[str, np.ndarray]  # keypoint name -> (3,) position
     scale: float
@@ -390,16 +506,17 @@ class Pose3D:
 class Tracklet:
     """
     Stateful class for a single skeleton in a tracklet.
-    Manages state estimation (position, velocity, scale) wtith a Kalman Filter.
+    Manages state estimation (position, velocity, scale) with a Kalman Filter.
     """
 
-    def __init__(self,
-                 track_idx: int,
-                 initial_pose: Pose3D,
-                 frame_idx: int,
-                 central_kp: str,
-                 config: TrackerConfig
-                 ):
+    def __init__(
+            self,
+            track_idx: int,
+            initial_pose: Pose3D,
+            frame_idx: int,
+            central_kp: str,
+            config: TrackerConfig
+    ):
 
         self.config = config
         self.track_idx = track_idx
