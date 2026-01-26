@@ -245,9 +245,9 @@ class SkeletonTopology:
 
 class SkeletonStats:
     """
-    Learned statistics for a skeleton topology.
+    Learned statistics for a skeleton (bone lengths and per-keypoint motion params).
 
-    Separate from Skeleton class because:
+    Separate from SkeletonTopology class because:
     - Skeleton topology is immutable (from annotation)
     - Stats are learned/updated during bootstrap and tracking
     - Stats may be serialized/loaded independently
@@ -256,10 +256,14 @@ class SkeletonStats:
     def __init__(self, skeleton: SkeletonTopology):
         self.skeleton = skeleton
 
+        # Anatomy
         self.reference_bone: Optional[BoneDefinition] = None
         self.reference_length_world = 1.0  # length of the reference bone in world units
 
         self.bone_stats: Dict[BoneDefinition, BoneStats] = {}
+
+        # Dynamics
+        self.keypoint_dynamics: Dict[str, KeypointDynamics] = {}
 
     def expected_ratio(self, bone: BoneDefinition | str | Sequence[str]) -> float:
         """Expected length in relation to reference bone."""
@@ -285,6 +289,21 @@ class SkeletonStats:
         """Acceptable length range for validation."""
         lower, upper = self.ratio_bounds(bone, n_sigma)
         return lower * self.reference_length_world, upper * self.reference_length_world
+
+    def get_dynamics(self, keypoint: str) -> 'KeypointDynamics':
+        """Get dynamics for a keypoint."""
+
+        if keypoint in self.keypoint_dynamics:
+            return self.keypoint_dynamics[keypoint]
+
+        # Fallback based on graph distance (extremities are more erratic)
+        graph_dist = self.skeleton.graph_distance(keypoint)
+        return KeypointDynamics(
+            process_noise=0.1 * (1 + graph_dist),
+            measurement_noise=0.1,
+            association_weight=1.0 / (1 + graph_dist),
+            source='fallback'
+        )
 
     def score_bone(
             self,
@@ -394,34 +413,42 @@ class SkeletonStats:
 
     def to_dict(self) -> dict:
         return {
-            'reference_bone': self.reference_bone.to_key(),
+            'reference_bone': self.reference_bone.to_key() if self.reference_bone else None,
             'reference_length_world': self.reference_length_world,
             'bones': {
                 bone.to_key(): stats.to_dict()
                 for bone, stats in self.bone_stats.items()
+            },
+            'dynamics': {
+                kp: dyn.to_dict()
+                for kp, dyn in self.keypoint_dynamics.items()
             }
         }
 
     @classmethod
     def from_dict(cls, data: dict, skeleton: SkeletonTopology) -> 'SkeletonStats':
-        skel_stats = data['anatomy']
-
-        ref_bone = _bone_or_key(skel_stats.get('reference_bone'))
-        ref_len = skel_stats.get('reference_length_world', 1.0)
-
         stats = cls(skeleton)
-        stats.reference_bone = ref_bone
-        stats.reference_length_world = ref_len
 
-        for key, bone_data in skel_stats['bones'].items():
+        # Load anatomy
+        anat = data.get('anatomy', data)
+
+        if anat.get('reference_bone'):
+            stats.reference_bone = _bone_or_key(anat['reference_bone'])
+        stats.reference_length_world = anat.get('reference_length_world', 1.0)
+
+        for key, bone_data in anat.get('bones', {}).items():
             bone = BoneDefinition.from_key(key)
 
             if bone in stats.skeleton:
-                bone_data = BoneStats.from_dict(bone_data)
+                stats.bone_stats[bone] = BoneStats.from_dict(bone_data)
                 if bone_data.length_world is None:
-                    bone_data.length_world = ref_len * bone_data.ratio_length
+                    bone_data.length_world = stats.reference_length_world * bone_data.ratio_length
 
-                stats.bone_stats[bone] = bone_data
+        # Load dynamics
+        for kp, dyn_data in data.get('dynamics', {}).items():
+            if kp in skeleton.keypoints:
+                stats.keypoint_dynamics[kp] = KeypointDynamics.from_dict(dyn_data)
+
         return stats
 
     def to_json(self, path: Path | str):
@@ -442,3 +469,40 @@ class SkeletonStats:
     @classmethod
     def from_json(cls, path: Path, skeleton: SkeletonTopology) -> 'SkeletonStats':
         return cls.from_dict(json.loads(path.read_text()), skeleton)
+
+
+@dataclass
+class KeypointDynamics:
+    """
+    Per-keypoint dynamics parameters for Kalman filtering.
+    """
+    process_noise: float        # Q (how erratic is this keypoint's motion)
+    measurement_noise: float    # R (observation uncertainty)
+    association_weight: float   # How much to trust this keypoint in association (0-1)
+    source: str = "default"     # Where these params came from: "data", "topology_prior", "default"
+
+    def to_dict(self) -> dict:
+        return {
+            'process_noise': self.process_noise,
+            'measurement_noise': self.measurement_noise,
+            'association_weight': self.association_weight,
+            'source': self.source
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> 'KeypointDynamics':
+        return cls(
+            process_noise=d['process_noise'],
+            measurement_noise=d['measurement_noise'],
+            association_weight=d['association_weight'],
+            source=d.get('source', 'loaded')
+        )
+
+    @classmethod
+    def default(cls, process_noise: float = 0.5, measurement_noise: float = 0.1) -> 'KeypointDynamics':
+        return cls(
+            process_noise=process_noise,
+            measurement_noise=measurement_noise,
+            association_weight=0.5,
+            source='default'
+        )

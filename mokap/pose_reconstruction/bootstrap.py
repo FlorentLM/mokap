@@ -7,7 +7,6 @@ Classes:
 
 Both classes produce data that can be used to initialize SkeletonStats.
 """
-import json
 from collections import defaultdict
 from typing import Dict, Tuple, Any, Optional, List
 
@@ -18,7 +17,8 @@ import matplotlib.pyplot as plt
 from scipy.stats import median_abs_deviation
 
 from mokap.pose_reconstruction.datatypes import PointSoup
-from mokap.pose_reconstruction.skeleton import BoneDefinition, SkeletonTopology, SkeletonStats, BoneStats
+from mokap.pose_reconstruction.skeleton import (BoneDefinition, SkeletonTopology, SkeletonStats,
+                                                BoneStats, KeypointDynamics)
 from mokap.pose_reconstruction.utils import plot_tracks_3d, robust_stats
 
 
@@ -227,6 +227,7 @@ class DynamicsBootstrapper:
             min_track_length: int = 15,
             reference_bone_length: float = 1.0,
             min_process_noise: float = 0.01,
+            max_process_noise: float = 2.0,
             measurement_noise: float = 0.5,
             store_debug_data: bool = False
     ):
@@ -239,6 +240,7 @@ class DynamicsBootstrapper:
         self.min_track_length = min_track_length
         self.reference_bone_length = reference_bone_length
         self.min_process_noise = min_process_noise
+        self.max_process_noise = max_process_noise
         self.base_measurement_noise = measurement_noise
 
         # Debug storage
@@ -301,7 +303,7 @@ class DynamicsBootstrapper:
                         self.debug_tracks[canon_name].append(track)
 
         # Derive final parameters per keypoint
-        final_params = {}
+        result: Dict[str, 'KeypointDynamics'] = {}
 
         for keypoint in self.skeleton.keypoints:
             canon_name = self.skeleton.canonical(keypoint)
@@ -310,29 +312,33 @@ class DynamicsBootstrapper:
             if len(data["vel"]) < 50:
                 # Insufficient data: use topology-based prior
                 graph_dist = self.skeleton.graph_distance(keypoint)
-                process_noise = max(self.min_process_noise, 0.5 * graph_dist)
-                weight = 0.5
+                process_noise = max(self.min_process_noise, 0.1 * (1 + graph_dist))
+                weight = 1.0 / (1 + graph_dist * 0.5)
                 source = "topology_prior"
             else:
-                # Compute from data
                 vel_med, vel_mad = robust_stats(data["vel"])
                 acc_med, acc_mad = robust_stats(data["acc"])
 
-                process_noise = max(self.min_process_noise, float(acc_med + 2.0 * acc_mad))
+                # Process noise from acceleration (clipped)
+                process_noise = float(np.clip(
+                    acc_med + 2.0 * acc_mad,
+                    self.min_process_noise,
+                    self.max_process_noise
+                ))
 
-                # Weight based on velocity consistency
-                jitter = vel_mad / self.reference_bone_length
-                weight = float(1.0 / (1.0 + (jitter * 30.0) ** 2))
+                # Weight: stable keypoints get higher weight
+                jitter = vel_mad / max(self.reference_bone_length, 0.01)
+                weight = float(np.clip(1.0 / (1.0 + (jitter * 10.0) ** 2), 0.1, 1.0))
                 source = "data"
 
-            final_params[keypoint] = {
-                "process_noise": process_noise,
-                "measurement_noise": self.base_measurement_noise,
-                "association_weight": weight,
-                "source": source
-            }
+            result[keypoint] = KeypointDynamics(
+                process_noise=process_noise,
+                measurement_noise=self.base_measurement_noise,
+                association_weight=weight,
+                source=source
+            )
 
-        return final_params
+        return result
 
 
 if __name__ == "__main__":
@@ -369,10 +375,6 @@ if __name__ == "__main__":
     )
     stats = anat.process(soup)
 
-    # Save anatomy stats
-    stats.to_json(stats_file)
-    print(f"Saved skeleton stats to {stats_file}")
-
     # Run dynamics bootstrap
     dyn = DynamicsBootstrapper(
         skeleton=skeleton,
@@ -384,16 +386,15 @@ if __name__ == "__main__":
         measurement_noise=0.1,
         store_debug_data=DEBUG_PLOT
     )
-    dynamics = dyn.process(soup)
+    dynamics = dyn.process(soup, max_frames=4000)
 
     # Add dynamics stats
-    # TODO: This needs to be encapsulated in the class
-    reloaded_stats = json.loads(stats_file.read_text())
-    reloaded_stats['dynamics'] = dynamics
+    stats.keypoint_dynamics = dynamics
 
-    with open(stats_file, 'w') as f:
-        json.dump(reloaded_stats, f, indent=2)
-    print(f"Saved dynamics stats to {stats_file}")
+    # Save stats
+    stats.to_json(stats_file)
+    print(f"Saved skeleton stats (anatomy + dynamics) to {stats_file}")
+
 
     ##
 
@@ -510,7 +511,7 @@ if __name__ == "__main__":
         # Sort by association weight
         sorted_items = sorted(
             dynamics.items(),
-            key=lambda x: x[1]["association_weight"],
+            key=lambda x: x[1].association_weight,
             reverse=True,
         )
 
@@ -520,11 +521,11 @@ if __name__ == "__main__":
                 continue
             seen_canon.add(canon_name)
 
-            src = " (prior)" if params["source"] != "data" else ""
+            src = " (prior)" if params.source != "data" else ""
             table_data.append([
                 canon_name[:15] + src,
-                f"{params['process_noise']:.3f}",
-                f"{params['association_weight']:.2f}",
+                f"{params.process_noise:.3f}",
+                f"{params.association_weight:.2f}",
             ])
             if len(table_data) >= 12:
                 break
