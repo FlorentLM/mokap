@@ -37,6 +37,10 @@ class TrackerConfig:
     inferred_health_penalty: float = 0.05  # health reduction for an update based on an inferred (not measured) point
     health_decay_rate: float = 0.98  # multiplicative decay of health per frame without an update
 
+    # Scale gating
+    scale_gate_hard_threshold: float = 0.3  # Reject if |Δscale|/scale > this
+    scale_gate_soft_weight: float = 50.0  # Penalty weight for smaller deviations
+
     # Conflict solver parameters
     conflict_solver_broad_radius: float = 3.0  # skeletons with centroids further than this (mm) are assumed not to conflict
     conflict_solver_proximity_radius: float = 0.25  # max distance (mm) to consider two corresponding keypoints 'the same'

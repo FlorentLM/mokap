@@ -446,7 +446,7 @@ if __name__ == "__main__":
     SESSION = 22
     CHUNK_SIZE = 500
 
-    calib_dir = BASE_DIR / PREFIX / 'inputs' / 'calibration'
+    calib_dir = BASE_DIR / PREFIX / 'calibration'
     input_dir = BASE_DIR / PREFIX / 'inputs' / 'tracking'
     output_dir = BASE_DIR / PREFIX / 'outputs'
     output_dir.mkdir(parents=True, exist_ok=True)

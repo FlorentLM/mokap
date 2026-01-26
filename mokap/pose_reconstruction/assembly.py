@@ -568,6 +568,12 @@ class MultiObjectTracker:
 
             for j, hyp in enumerate(hypotheses):
 
+                scale_ratio = abs(hyp.scale - tracklet.estimated_scale) / max(tracklet.estimated_scale, 0.1)
+                if scale_ratio > self.config.scale_gate_hard_threshold:
+                    continue  # leave at 1e9
+
+                scale_penalty = self.config.scale_gate_soft_weight * (scale_ratio ** 2)
+
                 mean_dist_sq = self._poses_mse(tracklet.predicted_keypoints, hyp.positions)
                 if mean_dist_sq is None:
                     continue
@@ -575,8 +581,11 @@ class MultiObjectTracker:
                 if mean_dist_sq > self.config.association_radius ** 2:
                     continue
 
-                cost = (self.config.cost_pose_distance_weight * mean_dist_sq +
-                        self.config.cost_skeleton_score_weight * hyp.anatomical_score)
+                cost = (
+                    self.config.cost_pose_distance_weight * mean_dist_sq +
+                    self.config.cost_skeleton_score_weight * hyp.anatomical_score +
+                    scale_penalty
+                )
                 cost_matrix[i, j] = cost
 
         # Solve assignment
@@ -726,7 +735,7 @@ if __name__ == '__main__':
     BASE_DIR = Path.home() / 'Desktop' / '3d_ant_data'
     PREFIX = '240905-1616'
     SESSION = 22
-    DEBUG_PLOT = False
+    DEBUG_PLOT = True
 
     input_dir = BASE_DIR / PREFIX / 'inputs' / 'tracking'
     output_dir = BASE_DIR / PREFIX / 'outputs'
