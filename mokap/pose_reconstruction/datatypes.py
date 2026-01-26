@@ -88,93 +88,6 @@ class PointSoup:
         if sort:
             self._sort_inplace()
 
-    @staticmethod
-    def _as_array(data, shape, dtype):
-        if not bool(np.any(data)):
-            return np.empty(shape, dtype=dtype)
-        return np.asarray(data, dtype=dtype)
-
-    def _sort_inplace(self):
-        """Sorts all point and ray arrays by their respective frame indices."""
-
-        if len(self.frame_indices) > 1 and np.all(self.frame_indices[:-1] <= self.frame_indices[1:]):
-            return
-
-        if len(self.frame_indices) > 0:
-            p_idx = np.argsort(self.frame_indices)
-
-            self.positions = self.positions[p_idx]
-            self.confidences = self.confidences[p_idx]
-            self.reprojection_errors = self.reprojection_errors[p_idx]
-            self.keypoint_indices = self.keypoint_indices[p_idx]
-            self.frame_indices = self.frame_indices[p_idx]
-            self.camera_masks = self.camera_masks[p_idx]
-
-        if len(self.ray_frame_indices) > 0:
-            r_idx = np.argsort(self.ray_frame_indices)
-
-            self.ray_origins = self.ray_origins[r_idx]
-            self.ray_directions = self.ray_directions[r_idx]
-            self.ray_confidences = self.ray_confidences[r_idx]
-            self.ray_keypoint_indices = self.ray_keypoint_indices[r_idx]
-            self.ray_frame_indices = self.ray_frame_indices[r_idx]
-
-    @property
-    def nb_points(self) -> int:
-        return len(self.positions)
-
-    @property
-    def nb_rays(self) -> int:
-        return len(self.ray_origins)
-
-    @cached_property
-    def tree(self) -> Optional[cKDTree]:
-        """Builds a KDTree of all 3D points in this soup (lazy)."""
-        if self.nb_points > 0:
-            return cKDTree(self.positions)
-        return None
-
-    @cached_property
-    def points_by_name(self) -> Dict[str, np.ndarray]:
-        """Returns a map of keypoint_name -> array of point indices (lazy & vectorised)."""
-        return self._group_indices(self.keypoint_indices)
-
-    @cached_property
-    def rays_by_name(self) -> Dict[str, np.ndarray]:
-        """Returns a map of keypoint_name -> array of ray indices (lazy & vectorised)."""
-        return self._group_indices(self.ray_keypoint_indices)
-
-    def _group_indices(self, keypoints: Sequence) -> Dict[str, np.ndarray]:
-        result = {name: np.array([], dtype=np.int32) for name in self.keypoint_names}
-        if len(keypoints) == 0:
-            return result
-
-        order = np.argsort(keypoints)
-        sorted_kp = np.asarray(keypoints)[order]
-        diff = np.diff(sorted_kp, append=sorted_kp[-1] + 1)
-        splits = np.where(diff != 0)[0] + 1
-
-        groups = np.split(order, splits[:-1])
-        unique_ids = sorted_kp[splits[:-1]]
-        for kp_id, g in zip(unique_ids, groups):
-            result[self.keypoint_names[kp_id]] = g
-        return result
-
-    @property
-    def frame_range(self):
-        """Returns (min_frame, max_frame) present in the data."""
-
-        all_frames = []
-        if self.nb_points > 0:
-            all_frames.extend([self.frame_indices[0], self.frame_indices[-1]])
-        if self.nb_rays > 0:
-            all_frames.extend([self.ray_frame_indices[0], self.ray_frame_indices[-1]])
-
-        if not all_frames:
-            return 0, 0
-
-        return min(all_frames), max(all_frames)
-
     def __len__(self) -> int:
         """Returns the number of points (standard for SoA objects)."""
         return self.nb_points
@@ -188,7 +101,7 @@ class PointSoup:
         Slice the soup by frame index.
         Returns an empty soup if no data exists for those frames.
         """
-        if isinstance(key, int):
+        if isinstance(key, (int, np.integer)):
             start_f, stop_f = key, key + 1
         elif isinstance(key, slice):
             start_f = key.start if key.start is not None else -np.inf
@@ -220,6 +133,93 @@ class PointSoup:
             camera_names=self.camera_names,
             sort=False  # subsets are already sorted
         )
+
+    @staticmethod
+    def _as_array(data, shape, dtype):
+        if not bool(np.any(data)):
+            return np.empty(shape, dtype=dtype)
+        return np.asarray(data, dtype=dtype)
+
+    def _sort_inplace(self):
+        """Sorts all point and ray arrays by their respective frame indices."""
+
+        if len(self.frame_indices) > 1 and np.all(self.frame_indices[:-1] <= self.frame_indices[1:]):
+            return
+
+        if len(self.frame_indices) > 0:
+            p_idx = np.argsort(self.frame_indices)
+
+            self.positions = self.positions[p_idx]
+            self.confidences = self.confidences[p_idx]
+            self.reprojection_errors = self.reprojection_errors[p_idx]
+            self.keypoint_indices = self.keypoint_indices[p_idx]
+            self.frame_indices = self.frame_indices[p_idx]
+            self.camera_masks = self.camera_masks[p_idx]
+
+        if len(self.ray_frame_indices) > 0:
+            r_idx = np.argsort(self.ray_frame_indices)
+
+            self.ray_origins = self.ray_origins[r_idx]
+            self.ray_directions = self.ray_directions[r_idx]
+            self.ray_confidences = self.ray_confidences[r_idx]
+            self.ray_keypoint_indices = self.ray_keypoint_indices[r_idx]
+            self.ray_frame_indices = self.ray_frame_indices[r_idx]
+
+    def _group_indices(self, keypoints: Sequence) -> Dict[str, np.ndarray]:
+        result = {name: np.array([], dtype=np.int32) for name in self.keypoint_names}
+        if len(keypoints) == 0:
+            return result
+
+        order = np.argsort(keypoints)
+        sorted_kp = np.asarray(keypoints)[order]
+        diff = np.diff(sorted_kp, append=sorted_kp[-1] + 1)
+        splits = np.where(diff != 0)[0] + 1
+
+        groups = np.split(order, splits[:-1])
+        unique_ids = sorted_kp[splits[:-1]]
+        for kp_id, g in zip(unique_ids, groups):
+            result[self.keypoint_names[kp_id]] = g
+        return result
+
+    @property
+    def nb_points(self) -> int:
+        return len(self.positions)
+
+    @property
+    def nb_rays(self) -> int:
+        return len(self.ray_origins)
+
+    @cached_property
+    def tree(self) -> Optional[cKDTree]:
+        """Builds a KDTree of all 3D points in this soup (lazy)."""
+        if self.nb_points > 0:
+            return cKDTree(self.positions)
+        return None
+
+    @cached_property
+    def points_by_name(self) -> Dict[str, np.ndarray]:
+        """Returns a map of keypoint_name -> array of point indices (lazy & vectorised)."""
+        return self._group_indices(self.keypoint_indices)
+
+    @cached_property
+    def rays_by_name(self) -> Dict[str, np.ndarray]:
+        """Returns a map of keypoint_name -> array of ray indices (lazy & vectorised)."""
+        return self._group_indices(self.ray_keypoint_indices)
+
+    @property
+    def frame_range(self):
+        """Returns (min_frame, max_frame) present in the data."""
+
+        all_frames = []
+        if self.nb_points > 0:
+            all_frames.extend([self.frame_indices[0], self.frame_indices[-1]])
+        if self.nb_rays > 0:
+            all_frames.extend([self.ray_frame_indices[0], self.ray_frame_indices[-1]])
+
+        if not all_frames:
+            return 0, 0
+
+        return min(all_frames), max(all_frames)
 
     @classmethod
     def concatenate(cls, soups: Sequence['PointSoup']) -> 'PointSoup':

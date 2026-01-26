@@ -442,6 +442,25 @@ class MultiObjectTracker:
         self._next_track_idx = 0
         self._current_frame = -1
 
+    def _poses_mse(self,
+             kps_a: Dict[str, np.ndarray],
+             kps_b: Dict[str, np.ndarray]
+         ) -> Optional[float]:
+        """
+        Computes Mean Squared Error between two sets of keypoints.
+        Returns None if overlap is insufficient.
+        """
+        common_kps = kps_a.keys() & kps_b.keys()
+
+        if len(common_kps) < self.config.association_min_kps:
+            return None
+
+        total_dist_sq = sum(
+            np.sum((kps_a[kp] - kps_b[kp]) ** 2) for kp in common_kps
+        )
+
+        return total_dist_sq / len(common_kps)
+
     @property
     def active_tracklets(self) -> List[Tracklet]:
         """Tracklets that were updated this frame."""
@@ -543,20 +562,15 @@ class MultiObjectTracker:
         cost_matrix = np.full((len(pending_tracklets), len(hypotheses)), 1e9)
 
         for i, tracklet in enumerate(pending_tracklets):
-            pred_kps = tracklet.predicted_keypoints
-            if not pred_kps:
+
+            if not tracklet.predicted_keypoints:
                 continue
 
             for j, hyp in enumerate(hypotheses):
-                hyp_kps = hyp.positions
-                common_kps = pred_kps.keys() & hyp_kps.keys()
 
-                if len(common_kps) < self.config.association_min_kps:
+                mean_dist_sq = self._poses_mse(tracklet.predicted_keypoints, hyp.positions)
+                if mean_dist_sq is None:
                     continue
-
-                mean_dist_sq = sum(
-                    np.sum((pred_kps[kp] - hyp_kps[kp]) ** 2) for kp in common_kps
-                ) / len(common_kps)
 
                 if mean_dist_sq > self.config.association_radius ** 2:
                     continue
@@ -673,25 +687,21 @@ class MultiObjectTracker:
         bonuses = np.zeros(len(candidates))
 
         for j, cand in enumerate(candidates):
-            skel_kps = cand.positions
-            if not skel_kps:
+
+            if not cand.positions:
                 continue
 
             max_bonus = 0.0
             for t in all_tracklets:
-                pred_kps = t.predicted_keypoints
 
-                if not pred_kps:
+                if not t.predicted_keypoints:
                     continue
 
-                common_kps = pred_kps.keys() & skel_kps.keys()
-                if len(common_kps) < self.config.association_min_kps:
+                mean_dist_sq = self._poses_mse(t.predicted_keypoints, cand.positions)
+                if mean_dist_sq is None:
                     continue
 
-                mean_dist_sq = sum(
-                    np.sum((pred_kps[kp] - skel_kps[kp]) ** 2) for kp in common_kps
-                ) / len(common_kps)
-
+                # Gaussian falloff based on squared distance
                 bonus = np.exp(-0.5 * mean_dist_sq / (self.config.association_radius ** 2))
                 max_bonus = max(max_bonus, bonus)
 
