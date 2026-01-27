@@ -419,6 +419,7 @@ class SkeletonHypothesis:
     competition_score: float
     anatomical_score: float
     constituent_indices: Optional[FrozenSet[int]] = None  # for tracking merge provenance
+    track_affinity: Optional[int] = None  # track ID if guided, None if blind
 
     # Cached lookups
     _by_name: Dict[str, Node3D] = field(init=False, repr=False, compare=False)

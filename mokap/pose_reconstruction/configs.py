@@ -46,6 +46,12 @@ class AssemblerConfig:
     high_quality_threshold: float = 90.0  # score threshold above which a skeleton gets a quality bonus
     quality_bonus_factor: float = 1.5  # multiplicative bonus factor for high-quality skeletons (1.5 = 50% bonus)
 
+    scale_consistency_factor: float = 1.5 # Reject bones implying scale outside [1/1.5, 1.5] of current
+
+    # Guided assembly
+    guided_search_radius: float = 0.5  # Multiplied by reference_length_world
+    prediction_bonus_weight: float = 0.3  # How much to boost candidates near predictions
+    prediction_bonus_sigma: float = 0.2  # Gaussian falloff (multiplied by reference_length_world)
 
 @dataclass
 class TrackerConfig:
@@ -75,3 +81,5 @@ class TrackerConfig:
     # Cost function weights (for final assignment)
     cost_pose_distance_weight: float = 0.9   # weight for pose distance in the hungarian assignment cost
     skeleton_score_bonus_weight: float = 0.1  # bonus for high anatomical scores
+
+    guided_affinity_bonus: float = 5.0  # Bonus for guided hypotheses in MWIS

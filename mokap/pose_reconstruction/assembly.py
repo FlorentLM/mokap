@@ -22,84 +22,189 @@ logger = logging.getLogger(__name__)
 class SkeletonAssembler:
     """
     Assembles skeleton hypotheses in a frame view.
-
-    Uses a greedy growth strategy starting from anchor keypoints,
-    with orphan detection rescue via ray-sphere intersection.
     """
-
-    def __init__(
-            self,
-            skeleton: SkeletonTopology,
-            skeleton_stats: SkeletonStats,
-            config: AssemblerConfig,
+    def __init__(self,
+        skeleton: SkeletonTopology,
+        skeleton_stats: SkeletonStats,
+        config: AssemblerConfig,
     ):
         self.skeleton = skeleton
         self.skeleton_stats = skeleton_stats
         self.config = config
 
-    def assemble(self, frame_data: TimestepData) -> List[SkeletonHypothesis]:
+    # ──── Public interface ────
+
+    def assemble(self,
+            frame_data: TimestepData,
+            predictions: Optional[Dict[int, Dict[str, np.ndarray]]] = None
+        ) -> List[SkeletonHypothesis]:
         """
         Main assembly entry point.
-        Returns a list of skeleton hypotheses (both initial and merged).
+
+        Args:
+            frame_data: Current frame's point data
+            predictions: Optional dict of {track_idx: {keypoint_name: predicted_position}}
+                        from existing tracklets. Used to guide assembly.
+
+        Returns:
+            List of skeleton hypotheses.
         """
         if not frame_data:
             return []
 
-        # Generate initial fragments (including orphan rescue)
-        initial_fragments = self._generate_hypotheses(frame_data)
-        if not initial_fragments:
-            return []
-
-        # Generate merge hypotheses
-        merge_hypotheses = self._generate_merge_hypotheses(initial_fragments)
-
-        return initial_fragments + merge_hypotheses
-
-    def _generate_hypotheses(self, frame_data: TimestepData) -> List[SkeletonHypothesis]:
-        """Generate skeleton hypotheses by seeding from anchors and leaves."""
-
-        candidate_skeletons = []
         used_indices: Set[int] = set()
 
-        # Seed from anchors (full skeleton growth)
+        # Generate primary hypotheses
+        all_fragments = self._generate_hypotheses(frame_data, predictions, used_indices)
+
+        if not all_fragments:
+            return []
+
+        # Generate merge hypotheses for fragmented detections
+        merge_hypotheses = self._generate_merge_hypotheses(all_fragments)
+
+        return all_fragments + merge_hypotheses
+
+    # ──── Score and bonus helpers ────
+
+    def _calc_prediction_bonus(self, node: Node3D, predicted_pos: np.ndarray) -> float:
+        """Calculates a Gaussian bonus based on proximity to prediction."""
+
+        dist = np.linalg.norm(node.position - predicted_pos)
+        sigma = self.config.prediction_bonus_sigma * self.skeleton_stats.reference_length_world
+        bonus = self.config.prediction_bonus_weight * np.exp(-0.5 * (dist / sigma) ** 2)
+
+        return bonus
+
+    def _calc_growth_score(self,
+        total_bone_score: float,
+        num_bones: int,
+        num_nodes: int
+    ) -> float:
+        """Calculates the growth score for skeleton extension decisions."""
+
+        if num_bones == 0:
+            return 0.0
+
+        avg_score = total_bone_score / num_bones
+        base_score = avg_score * num_nodes
+
+        # Quality bonus for high-scoring skeletons
+        quality_bonus = 0.0
+        if avg_score > self.config.high_quality_threshold:
+            bonus_factor = self.config.quality_bonus_factor - 1.0
+            normalized_quality = max(0.0, (avg_score - 75.0) / 25.0)
+            quality_bonus = base_score * bonus_factor * normalized_quality
+
+        return base_score + quality_bonus
+
+    def _evaluate_extension(self,
+        current_nodes: Dict[str, Node3D],
+        candidate: Node3D,
+        current_scale: float,
+    ) -> Optional[Tuple[float, int]]:
+        """
+        Evaluate adding a candidate node to the current skeleton.
+        Returns (total_bone_score, bone_count) or None if invalid.
+        """
+        total_score = 0.0
+        bone_count = 0
+
+        for existing_name, existing_node in current_nodes.items():
+            bone = BoneDefinition(candidate.name, existing_name)
+
+            if bone not in self.skeleton:
+                continue
+
+            observed_length = float(np.linalg.norm(candidate.position - existing_node.position))
+            expected_length = self.skeleton_stats.expected_length(bone) * current_scale
+            bone_scale_ratio = observed_length / max(expected_length, 1e-6)
+
+            if not (
+                    1.0 / self.config.scale_consistency_factor < bone_scale_ratio < self.config.scale_consistency_factor):
+                return None  # this bone implies incompatible scale -> reject
+
+            score = self.skeleton_stats.score_bone(
+                bone, candidate, existing_node,
+                scale=current_scale,
+                MAD_threshold=self.config.MAD_threshold
+            )
+
+            if score < -500:  # hard rejection threshold
+                return None
+
+            total_score += score
+            bone_count += 1
+
+        if bone_count == 0:
+            return None
+
+        return total_score, bone_count
+
+    # ──── Hypotheses generation ────
+
+    def _generate_hypotheses(self,
+        frame_data: TimestepData,
+        predictions: Dict[int, Dict[str, np.ndarray]],
+        used_indices: Set[int]
+    ) -> List[SkeletonHypothesis]:
+        """
+        Generates skeleton hypotheses in two (well, three actually) passes:
+
+        Guided: Seeded from points near tracklet predictions.
+        Blind: Seeded from remaining anchor/leaf keypoints.
+        """
+        hypotheses = []
+
+        # Pass 1: Guided assembly from predictions
+        if predictions:
+            central_kp = self.skeleton.central_keypoint
+            for track_idx, pred_kps in predictions.items():
+                if central_kp not in pred_kps:
+                    continue
+
+                seed_node = self._find_node_guided(
+                    frame_data, central_kp, pred_kps[central_kp], used_indices
+                )
+
+                if seed_node:
+                    hyp = self._grow_skeleton(frame_data, {central_kp: seed_node}, predictions=pred_kps)
+                    if hyp:
+                        hyp.track_affinity = track_idx  # tag for association boost
+                        hypotheses.append(hyp)
+                        used_indices.update(idx for idx in hyp.point_indices if idx >= 0)
+
+        # Pass 2: Blind assembly for new individuals (anchors)
         for anchor_kp in self.skeleton.anchor_keypoints:
             for seed_idx in frame_data.get_indices(anchor_kp):
-
                 if seed_idx in used_indices:
                     continue
 
                 seed_node = frame_data.get_node(anchor_kp, seed_idx)
-                candidate = self._grow_skeleton(frame_data, seed_nodes={anchor_kp: seed_node})
+                hyp = self._grow_skeleton(frame_data, {anchor_kp: seed_node})
+                if hyp:
+                    hypotheses.append(hyp)
+                    used_indices.update(idx for idx in hyp.point_indices if idx >= 0)
 
-                if candidate:
-                    candidate_skeletons.append(candidate)
-                    used_indices.update(idx for idx in candidate.point_indices if idx >= 0)
-
-        # Seed from leaves (limited growth)
+        # Pass 3: Fragment rescue (leaf nodes)
         for leaf_kp in self.skeleton.leaf_keypoints:
             for seed_idx in frame_data.get_indices(leaf_kp):
-
                 if seed_idx in used_indices:
                     continue
 
                 seed_node = frame_data.get_node(leaf_kp, seed_idx)
-                fragment = self._grow_skeleton(
-                    frame_data,
-                    seed_nodes={leaf_kp: seed_node},
+                hyp = self._grow_skeleton(
+                    frame_data, {leaf_kp: seed_node},
                     max_iterations=1,
                     min_score_threshold=self.config.min_bone_score_for_fragment
                 )
+                if hyp:
+                    hypotheses.append(hyp)
+                    used_indices.update(idx for idx in hyp.point_indices if idx >= 0)
 
-                if fragment:
-                    candidate_skeletons.append(fragment)
-                    used_indices.update(idx for idx in fragment.point_indices if idx >= 0)
+        return hypotheses
 
-        return candidate_skeletons
-
-    def _generate_merge_hypotheses(
-            self,
-            fragments: List[SkeletonHypothesis],
-    ) -> List[SkeletonHypothesis]:
+    def _generate_merge_hypotheses(self, fragments: List[SkeletonHypothesis]) -> List[SkeletonHypothesis]:
         """Generate hypotheses by merging compatible fragments."""
 
         if len(fragments) < 2:
@@ -120,22 +225,109 @@ class SkeletonAssembler:
 
         return merge_hypotheses
 
-    def _grow_skeleton(
-            self,
-            frame_data: TimestepData,
-            seed_nodes: Dict[str, Node3D],
-            max_iterations: Optional[int] = None,
-            min_score_threshold: float = 0.0
+    def _try_merge(self,
+        skel_A: SkeletonHypothesis,
+        skel_B: SkeletonHypothesis,
+    ) -> Optional[SkeletonHypothesis]:
+        """Attempt to merge two skeleton hypotheses."""
+
+        # Check disjointness
+        if skel_A.shares_points_with(skel_B):
+            return None
+        if not skel_A.names.isdisjoint(skel_B.names):
+            return None
+
+        # Scale consistency
+        if abs(skel_A.scale - skel_B.scale) > self.config.merge_scale_tolerance:
+            return None
+        combined_scale = (skel_A.scale + skel_B.scale) / 2.0
+
+        # Find linking bone between the two skeletons
+        best_link_score = -1.0
+
+        for kp_a in skel_A.names:
+            for kp_b in skel_B.names:
+                bone = BoneDefinition(kp_a, kp_b)
+                if bone not in self.skeleton:
+                    continue
+
+                score = self.skeleton_stats.score_bone(
+                    bone, skel_A[kp_a], skel_B[kp_b],
+                    scale=combined_scale,
+                    MAD_threshold=self.config.MAD_threshold
+                )
+                if score > best_link_score:
+                    best_link_score = score
+
+        if best_link_score < self.config.merge_linking_bone_threshold:
+            return None
+
+        # Construct merged hypothesis
+        num_nodes_A, num_nodes_B = len(skel_A), len(skel_B)
+
+        avg_score_A = skel_A.anatomical_score / num_nodes_A
+        avg_score_B = skel_B.anatomical_score / num_nodes_B
+
+        num_bones_A = max(1, num_nodes_A - 1)
+        num_bones_B = max(1, num_nodes_B - 1)
+
+        new_total_score = (avg_score_A * num_bones_A) + (avg_score_B * num_bones_B) + best_link_score
+        new_num_bones = num_bones_A + num_bones_B + 1
+        new_avg_score = new_total_score / new_num_bones
+
+        combined_nodes = skel_A.nodes | skel_B.nodes
+
+        return self._create_hypothesis(combined_nodes, new_avg_score, combined_scale)
+
+    def _create_hypothesis(self,
+        nodes: frozenset,
+        avg_score: float,
+        scale: float
+    ) -> SkeletonHypothesis:
+        """Create a SkeletonHypothesis with computed scores."""
+
+        if avg_score <= 0:
+            return SkeletonHypothesis(
+                nodes=nodes,
+                competition_score=0.0,
+                anatomical_score=0.0,
+                scale=scale
+            )
+
+        num_nodes = len(nodes)
+        base_score = avg_score * num_nodes
+
+        quality_bonus = 0.0
+        if avg_score > self.config.high_quality_threshold:
+            quality_bonus = base_score * (self.config.quality_bonus_factor - 1.0)
+
+        return SkeletonHypothesis(
+            nodes=nodes,
+            competition_score=base_score + quality_bonus,
+            anatomical_score=avg_score * num_nodes,
+            scale=scale
+        )
+
+    # ──── Core skeleton growth algorithm ────
+
+    def _grow_skeleton(self,
+        frame_data: TimestepData,
+        seed_nodes: Dict[str, Node3D],
+        predictions: Optional[Dict[str, np.ndarray]] = None,
+        max_iterations: Optional[int] = None,
+        min_score_threshold: float = 0.0
     ) -> Optional[SkeletonHypothesis]:
         """
-        Grow a skeleton from seed node(s) using greedy extension.
+        Generic greedy growth algorithm.
 
         Args:
             frame_data: Current frame's point data
             seed_nodes: Initial nodes to grow from (name -> Node)
+            predictions: If provided, apply a spatial bonus to candidate scores
             max_iterations: Maximum growth steps (None = unlimited)
             min_score_threshold: Minimum final score to accept result
         """
+
         current_nodes = dict(seed_nodes)
         total_bone_score = 0.0
         num_bones = 0
@@ -144,51 +336,45 @@ class SkeletonAssembler:
         max_search_radius = self.skeleton_stats.reference_length_world * self.config.max_bone_len
 
         while max_iterations is None or iterations < max_iterations:
-            # Find candidate extensions
-            candidates = self._find_extension_candidates(frame_data, current_nodes, max_search_radius)
-
+            candidates = self._find_neighbouring_nodes(frame_data, current_nodes, max_search_radius)
             if not candidates:
                 break
 
-            # Check scale sanity
             current_scale = self.skeleton_stats.estimate_scale(
                 current_nodes,
                 min_scale=self.config.min_sane_scale,
                 max_scale=self.config.max_sane_scale
             )
-            if not (self.config.min_sane_scale < current_scale < self.config.max_sane_scale):
-                break
 
-            # Calculate current growth score for comparison
-            current_growth_score = self._compute_growth_score(
-                total_bone_score, num_bones, len(current_nodes)
-            )
-
-            # Evaluate each candidate and pick the best
-            best_extension = None
-            best_growth_score = -float('inf')
+            # Evaluate growth from current state
+            current_growth_score = self._calc_growth_score(total_bone_score, num_bones, len(current_nodes))
+            best_ext = None
+            best_ext_score = -float('inf')
 
             for cand_node in candidates:
-                extension_result = self._evaluate_extension(current_nodes, cand_node, current_scale)
-
-                if extension_result is None:
+                eval_result = self._evaluate_extension(current_nodes, cand_node, current_scale)
+                if eval_result is None:
                     continue
 
-                new_bone_score, new_bone_count = extension_result
+                new_score, new_count = eval_result
 
-                new_growth_score = self._compute_growth_score(
-                    total_bone_score + new_bone_score,
-                    num_bones + new_bone_count,
+                # Apply prediction guidance bonus if available
+                if predictions and cand_node.name in predictions:
+                    new_score += self._calc_prediction_bonus(cand_node, predictions[cand_node.name])
+
+                new_growth_score = self._calc_growth_score(
+                    total_bone_score + new_score,
+                    num_bones + new_count,
                     len(current_nodes) + 1
                 )
 
-                if new_growth_score > best_growth_score:
-                    best_growth_score = new_growth_score
-                    best_extension = (cand_node, new_bone_score, new_bone_count)
+                if new_growth_score > best_ext_score:
+                    best_ext_score = new_growth_score
+                    best_ext = (cand_node, new_score, new_count)
 
-            # Decision: extend or stop
-            if best_extension and best_growth_score > (current_growth_score - self.config.score_debt_tolerance):
-                node, score_contrib, bone_count = best_extension
+            # Check if best extension is worth the debt
+            if best_ext and best_ext_score > (current_growth_score - self.config.score_debt_tolerance):
+                node, score_contrib, bone_count = best_ext
                 current_nodes[node.name] = node
                 total_bone_score += score_contrib
                 num_bones += bone_count
@@ -196,30 +382,57 @@ class SkeletonAssembler:
             else:
                 break
 
-        # Validate result
+        # Validation
         if len(current_nodes) < self.config.min_kps_for_skeleton:
             return None
 
-        final_avg_score = (total_bone_score / num_bones) if num_bones > 0 else 0.0
-        if final_avg_score <= min_score_threshold:
+        final_avg = (total_bone_score / num_bones) if num_bones > 0 else 0.0
+        if final_avg <= min_score_threshold:
             return None
 
-        final_scale = self.skeleton_stats.estimate_scale(
-            current_nodes,
-            min_scale=self.config.min_sane_scale,
-            max_scale=self.config.max_sane_scale
-        )
-
         return self._create_hypothesis(
-            frozenset(current_nodes.values()), final_avg_score, final_scale
+            frozenset(current_nodes.values()),
+            final_avg,
+            self.skeleton_stats.estimate_scale(current_nodes)
         )
 
-    def _find_extension_candidates(
-            self,
+    # ──── Point discovery ────
+
+    def _find_node_guided(self,
+            frame_data: TimestepData,
+            kp_type: str,
+            predicted_pos: np.ndarray,
+            used_indices: Set[int]
+        ) -> Optional[Node3D]:
+        """
+        Finds the best Node3D for a specific keypoint type near a predicted position.
+        """
+
+        search_radius = self.config.guided_search_radius * self.skeleton_stats.reference_length_world
+        nearby_indices = frame_data.nearby(predicted_pos, search_radius)
+
+        # Filter indices by type and availability
+        valid_indices = [i for i in nearby_indices
+            if i not in used_indices and frame_data.soup.keypoint_names[frame_data.soup.keypoint_indices[i]] == kp_type
+        ]
+
+        if not valid_indices:
+            return None
+
+        # Select best index based on distance and confidence
+        best_idx = min(
+            valid_indices,
+            key=lambda i: (np.linalg.norm(frame_data.soup.positions[i] - predicted_pos)
+                           - 0.1 * frame_data.soup.confidences[i])
+        )
+
+        return frame_data.get_node(kp_type, best_idx)
+
+    def _find_neighbouring_nodes(self,
             frame_data: TimestepData,
             current_nodes: Dict[str, Node3D],
             max_search_radius: float
-    ) -> List[Node3D]:
+        ) -> List[Node3D]:
         """
         Find all candidate nodes that could extend the current skeleton.
         (real 3D points and virtual points from single-view rescue).
@@ -272,149 +485,6 @@ class SkeletonAssembler:
                     candidates.append(node)
 
         return candidates
-
-    def _evaluate_extension(
-            self,
-            current_nodes: Dict[str, Node3D],
-            candidate: Node3D,
-            current_scale: float,
-    ) -> Optional[Tuple[float, int]]:
-        """
-        Evaluate adding a candidate node to the current skeleton.
-        Returns (total_bone_score, bone_count) or None if invalid.
-        """
-        total_score = 0.0
-        bone_count = 0
-
-        for existing_name, existing_node in current_nodes.items():
-            bone = BoneDefinition(candidate.name, existing_name)
-
-            if bone not in self.skeleton:
-                continue
-
-            score = self.skeleton_stats.score_bone(
-                bone, candidate, existing_node,
-                scale=current_scale,
-                MAD_threshold=self.config.MAD_threshold
-            )
-
-            if score < -500:  # Hard rejection threshold
-                return None
-
-            total_score += score
-            bone_count += 1
-
-        if bone_count == 0:
-            return None
-
-        return total_score, bone_count
-
-    def _compute_growth_score(
-            self,
-            total_bone_score: float,
-            num_bones: int,
-            num_nodes: int
-    ) -> float:
-        """Compute the growth score for skeleton extension decisions."""
-
-        if num_bones == 0:
-            return 0.0
-
-        avg_score = total_bone_score / num_bones
-        base_score = avg_score * num_nodes
-
-        # Quality bonus for high-scoring skeletons
-        quality_bonus = 0.0
-        if avg_score > self.config.high_quality_threshold:
-            bonus_factor = self.config.quality_bonus_factor - 1.0
-            normalized_quality = max(0.0, (avg_score - 75.0) / 25.0)
-            quality_bonus = base_score * bonus_factor * normalized_quality
-
-        return base_score + quality_bonus
-
-    def _try_merge(
-            self,
-            skel_A: SkeletonHypothesis,
-            skel_B: SkeletonHypothesis,
-    ) -> Optional[SkeletonHypothesis]:
-        """Attempt to merge two skeleton hypotheses."""
-
-        # Check disjointness
-        if skel_A.shares_points_with(skel_B):
-            return None
-        if not skel_A.names.isdisjoint(skel_B.names):
-            return None
-
-        # Scale consistency
-        if abs(skel_A.scale - skel_B.scale) > self.config.merge_scale_tolerance:
-            return None
-        combined_scale = (skel_A.scale + skel_B.scale) / 2.0
-
-        # Find linking bone between the two skeletons
-        best_link_score = -1.0
-
-        for kp_a in skel_A.names:
-            for kp_b in skel_B.names:
-                bone = BoneDefinition(kp_a, kp_b)
-                if bone not in self.skeleton:
-                    continue
-
-                score = self.skeleton_stats.score_bone(
-                    bone, skel_A[kp_a], skel_B[kp_b],
-                    scale=combined_scale,
-                    MAD_threshold=self.config.MAD_threshold
-                )
-                if score > best_link_score:
-                    best_link_score = score
-
-        if best_link_score < self.config.merge_linking_bone_threshold:
-            return None
-
-        # Construct merged hypothesis
-        num_nodes_A, num_nodes_B = len(skel_A), len(skel_B)
-
-        avg_score_A = skel_A.anatomical_score / num_nodes_A
-        avg_score_B = skel_B.anatomical_score / num_nodes_B
-
-        num_bones_A = max(1, num_nodes_A - 1)
-        num_bones_B = max(1, num_nodes_B - 1)
-
-        new_total_score = (avg_score_A * num_bones_A) + (avg_score_B * num_bones_B) + best_link_score
-        new_num_bones = num_bones_A + num_bones_B + 1
-        new_avg_score = new_total_score / new_num_bones
-
-        combined_nodes = skel_A.nodes | skel_B.nodes
-        return self._create_hypothesis(combined_nodes, new_avg_score, combined_scale)
-
-    def _create_hypothesis(
-            self,
-            nodes: frozenset,
-            avg_score: float,
-            scale: float
-    ) -> SkeletonHypothesis:
-        """Create a SkeletonHypothesis with computed scores."""
-
-        if avg_score <= 0:
-            return SkeletonHypothesis(
-                nodes=nodes,
-                competition_score=0.0,
-                anatomical_score=0.0,
-                scale=scale
-            )
-
-        num_nodes = len(nodes)
-        base_score = avg_score * num_nodes
-
-        quality_bonus = 0.0
-        if avg_score > self.config.high_quality_threshold:
-            quality_bonus = base_score * (self.config.quality_bonus_factor - 1.0)
-
-        return SkeletonHypothesis(
-            nodes=nodes,
-            competition_score=base_score + quality_bonus,
-            anatomical_score=avg_score * num_nodes,
-            scale=scale
-        )
 
 
 class MultiObjectTracker:
@@ -496,11 +566,10 @@ class MultiObjectTracker:
         return self._current_frame
 
     def update(self, frame_idx: int):
-        """Process a new frame and update tracklets."""
+        """Process a new frame."""
 
         self._current_frame = frame_idx
 
-        # Move all active tracklets to pending at start of frame
         self._pending_tracklets.update(self._active_tracklets)
         self._active_tracklets.clear()
 
@@ -508,9 +577,16 @@ class MultiObjectTracker:
         for tracklet in self._pending_tracklets.values():
             tracklet.predict(frame_idx)
 
-        # Generate and resolve hypotheses
+        # Build predictions dict for guided assembly
+        predictions = {
+            t.track_idx: t.predicted_keypoints
+            for t in self._pending_tracklets.values()
+            if t.predicted_keypoints
+        }
+
+        # Generate and resolve hypotheses (now with guidance)
         frame_data = TimestepData(self.soup[frame_idx])
-        frame_candidates = self.assembler.assemble(frame_data)
+        frame_candidates = self.assembler.assemble(frame_data, predictions=predictions)
 
         if not frame_candidates:
             self._prune_pending()
@@ -521,10 +597,14 @@ class MultiObjectTracker:
         for i, cand in enumerate(frame_candidates):
             cand.competition_score += bonuses[i] * self.config.continuity_bonus
 
+            # Extra bonus for guided hypotheses matching their source tracklet
+            if cand.track_affinity is not None:
+                cand.competition_score += self.config.guided_affinity_bonus
+
         # Solve conflicts
         remaining_hypotheses = self._resolve_conflicts(frame_candidates)
 
-        # Commit surviving hypotheses: either extend existing tracklets or create new ones
+        # Commit surviving hypotheses
         self._extend_tracklets(remaining_hypotheses, frame_idx)
 
         self._prune_pending()
