@@ -1,14 +1,11 @@
 """
 Bootstrap skeleton statistics from 3D point soup.
 
-Classes:
-    AnatomyBootstrapper: Learns bone length statistics (ratios, variability)
-    DynamicsBootstrapper: Learns motion dynamics (process noise, association weights)
-
-Both classes produce data that can be used to initialize SkeletonStats.
+AnatomyBootstrapper: Learns bone length statistics (ratios, variability)
+DynamicsBootstrapper: Learns motion dynamics (process noise, association weights)
 """
 from collections import defaultdict
-from typing import Dict, Tuple, Any, Optional, List
+from typing import Dict, Tuple, Optional, List
 
 import numpy as np
 import pandas as pd
@@ -16,6 +13,7 @@ import trackpy as tp
 import matplotlib.pyplot as plt
 from scipy.stats import median_abs_deviation
 
+from mokap.pose_reconstruction.configs import MIN_PROCESS_NOISE, MAX_PROCESS_NOISE
 from mokap.pose_reconstruction.datatypes import PointSoup
 from mokap.pose_reconstruction.skeleton import (BoneDefinition, SkeletonTopology, SkeletonStats,
                                                 BoneStats, KeypointDynamics)
@@ -59,12 +57,11 @@ class AnatomyBootstrapper:
     """
     Bootstrap bone length statistics from 3D point soup.
 
-    Strategy:
-    1. Track individual keypoints across frames using trackpy
-    2. Find co-occurring tracklet pairs (same frames, spatially close)
-    3. Measure bone lengths within each pair
-    4. Compute intra-individual variance per pair, then pool across pairs
-    5. Use symmetry (canonical names) to increase sample size
+    - Track individual keypoints across frames using trackpy
+    - Find co-occurring tracklet pairs (same frames, spatially close)
+    - Measure bone lengths within each pair
+    - Compute intra-individual variance per pair, then pool across pairs
+    - Use symmetry (canonical names) to increase sample size
 
     Produces a SkeletonStats object with learned bone ratios and variabilities.
     """
@@ -102,11 +99,10 @@ class AnatomyBootstrapper:
         """
         Process point soup and return learned SkeletonStats.
 
-        Steps:
-        1. Track individual keypoints across frames
-        2. For each bone, find co-occurring tracklet pairs
-        3. Measure bone lengths within pairs, compute per-pair variance
-        4. Pool intra-individual variances using symmetry (canonical names)
+        - Track individual keypoints across frames
+        - For each bone, find co-occurring tracklet pairs
+        - Measure bone lengths within pairs, compute per-pair variance
+        - Pool intra-individual variances using symmetry (canonical names)
         """
         df = _run_trackpy(
             soup=soup,
@@ -226,8 +222,8 @@ class DynamicsBootstrapper:
             max_displacement: float = 1.0,
             min_track_length: int = 15,
             reference_bone_length: float = 1.0,
-            min_process_noise: float = 0.01,
-            max_process_noise: float = 2.0,
+            min_process_noise: float = MIN_PROCESS_NOISE,
+            max_process_noise: float = MAX_PROCESS_NOISE,
             measurement_noise: float = 0.5,
             store_debug_data: bool = False
     ):
@@ -247,7 +243,7 @@ class DynamicsBootstrapper:
         self.debug_tracks: Dict[str, List[pd.DataFrame]] = defaultdict(list)
         self.debug_velocities: Dict[str, List[float]] = defaultdict(list)
 
-    def process(self, soup: PointSoup, max_frames: int = 4000) -> Dict[str, Any]:
+    def process(self, soup: PointSoup, max_frames: int = 4000) -> 'SkeletonStats':
         """
         Process point soup and return dynamics parameters per keypoint.
 
@@ -303,42 +299,42 @@ class DynamicsBootstrapper:
                         self.debug_tracks[canon_name].append(track)
 
         # Derive final parameters per keypoint
-        result: Dict[str, 'KeypointDynamics'] = {}
+
+        stats = SkeletonStats(self.skeleton)
 
         for keypoint in self.skeleton.keypoints:
+
             canon_name = self.skeleton.canonical(keypoint)
             data = canon_stats.get(canon_name, {"vel": [], "acc": []})
 
-            if len(data["vel"]) < 50:
+            total_distance = np.sum(data["vel"]) # otal distance travelled by this keypoint in the dataset
+
+            if len(data["vel"]) < 50 or total_distance < (self.reference_bone_length * 5.0):    # TODO: Maybe move these thresholds somewhere easily configurable
                 # Insufficient data: use topology-based prior
                 graph_dist = self.skeleton.graph_distance(keypoint)
                 process_noise = max(self.min_process_noise, 0.1 * (1 + graph_dist))
                 weight = 1.0 / (1 + graph_dist * 0.5)
                 source = "topology_prior"
             else:
-                vel_med, vel_mad = robust_stats(data["vel"])
-                acc_med, acc_mad = robust_stats(data["acc"])
+                median_vel, vel_mad = robust_stats(data["vel"])
+                median_acc, acc_mad = robust_stats(data["acc"])
 
                 # Process noise from acceleration (clipped)
-                process_noise = float(np.clip(
-                    acc_med + 2.0 * acc_mad,
-                    self.min_process_noise,
-                    self.max_process_noise
-                ))
+                process_noise = float(np.clip(median_acc + 2.0 * acc_mad, self.min_process_noise, self.max_process_noise))
 
                 # Weight: stable keypoints get higher weight
                 jitter = vel_mad / max(self.reference_bone_length, 0.01)
                 weight = float(np.clip(1.0 / (1.0 + (jitter * 10.0) ** 2), 0.1, 1.0))
                 source = "data"
 
-            result[keypoint] = KeypointDynamics(
+            stats.keypoint_dynamics[keypoint] = KeypointDynamics(
                 process_noise=process_noise,
                 measurement_noise=self.base_measurement_noise,
                 association_weight=weight,
                 source=source
             )
 
-        return result
+        return stats
 
 
 if __name__ == "__main__":
@@ -352,7 +348,8 @@ if __name__ == "__main__":
     input_dir = BASE_DIR / PREFIX / 'inputs' / 'tracking'
     output_dir = BASE_DIR / PREFIX / 'outputs'
 
-    soup_file = output_dir / f"soup_session{SESSION}.pkl"
+    # soup_file = output_dir / f"soup_session{SESSION}.pkl"
+    soup_file = output_dir / f"soup2_session{SESSION}.pkl"
     stats_file = output_dir / "skeleton_stats.json"
 
     # Load stuff
@@ -373,7 +370,8 @@ if __name__ == "__main__":
         max_displacement=1.5,
         store_debug_data=DEBUG_PLOT
     )
-    stats = anat.process(soup)
+    stats_anatomy = anat.process(soup)
+    stats_anatomy.to_json(stats_file)
 
     # Run dynamics bootstrap
     dyn = DynamicsBootstrapper(
@@ -381,18 +379,14 @@ if __name__ == "__main__":
         fps=100.0,
         max_displacement=1.5,
         min_track_length=5,
-        reference_bone_length=stats.reference_length_world,
+        reference_bone_length=stats_anatomy.reference_length_world,
         min_process_noise=0.01,
         measurement_noise=0.1,
         store_debug_data=DEBUG_PLOT
     )
-    dynamics = dyn.process(soup, max_frames=4000)
+    stats_dynamics = dyn.process(soup, max_frames=4000)
+    stats_dynamics.to_json(stats_file)
 
-    # Add dynamics stats
-    stats.keypoint_dynamics = dynamics
-
-    # Save stats
-    stats.to_json(stats_file)
     print(f"Saved skeleton stats (anatomy + dynamics) to {stats_file}")
 
 
@@ -400,7 +394,7 @@ if __name__ == "__main__":
 
     # Visualization
     if DEBUG_PLOT:
-        ref_len = stats.reference_length_world
+        ref_len = stats_anatomy.reference_length_world
 
         fig = plt.figure(figsize=(18, 12))
         fig.suptitle(
@@ -476,7 +470,7 @@ if __name__ == "__main__":
         table_data = []
         seen_canon = set()
 
-        for bone, bone_stats in stats.bone_stats.items():
+        for bone, bone_stats in stats_anatomy.bone_stats.items():
             canon_key = anat.skeleton.canonical(bone)
             if canon_key in seen_canon:
                 continue
@@ -510,7 +504,7 @@ if __name__ == "__main__":
 
         # Sort by association weight
         sorted_items = sorted(
-            dynamics.items(),
+            stats_dynamics.keypoint_dynamics.items(),
             key=lambda x: x[1].association_weight,
             reverse=True,
         )

@@ -228,7 +228,7 @@ class TrackletViewer:
         # Tracklet
         if isinstance(obj, Tracklet):
             return (
-                obj.keypoints,
+                obj.hypothesis.positions,
                 obj.estimated_scale,
                 obj.track_idx,
                 {n.name: n.idx for n in obj.hypothesis}

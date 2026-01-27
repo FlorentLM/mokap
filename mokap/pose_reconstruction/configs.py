@@ -1,6 +1,9 @@
 from dataclasses import dataclass
 
-# TODO: This is too many parameters
+# TODO: Parameters need to be reorganised
+
+MIN_PROCESS_NOISE = 0.01
+MAX_PROCESS_NOISE = 2.0
 
 
 @dataclass

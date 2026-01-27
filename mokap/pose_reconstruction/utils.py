@@ -153,3 +153,7 @@ def prepare_reconstruction_input(df: pl.DataFrame, cameras: List[str], keypoints
         "coords": df.select(["x", "y"]).to_numpy(),
         "scores": df["score"].to_numpy()
     }
+
+
+def ema_update(existing: float, new: float, alpha: float = 0.01):
+    return (1 - alpha) * existing + alpha * new
