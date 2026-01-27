@@ -7,14 +7,13 @@ import networkx as nx
 import numpy as np
 
 from lucida.geometry.backend import ArrayLike
+
+from mokap.pose_reconstruction.configs import MIN_PROCESS_NOISE, MAX_PROCESS_NOISE
+from mokap.pose_reconstruction.utils import ema_update
 from mokap.utils import common_prefix_suffix
 
 if TYPE_CHECKING:
     from mokap.pose_reconstruction.datatypes import Node3D, SkeletonHypothesis
-
-
-def _ema_update(existing: float, new: float, alpha: float = 0.01):
-    return (1 - alpha) * existing + alpha * new
 
 
 @dataclass(frozen=True, order=True)
@@ -61,11 +60,11 @@ class BoneDefinition:
 def _bone_or_key(item: BoneDefinition | str | Sequence[str]):
     if isinstance(item, BoneDefinition):
         return item
-    if isinstance(item, str) and len(item) >= 3:
+    elif isinstance(item, Sequence) and len(item) == 2:
+        return BoneDefinition(*item)
+    elif isinstance(item, str) and len(item) >= 3:
         if BoneDefinition._sep in item and item[0] != BoneDefinition._sep and item[-1] != BoneDefinition._sep:
             return BoneDefinition.from_key(item)
-    if isinstance(item, Sequence) and len(item) == 2:
-        return BoneDefinition(*item)
     raise KeyError(item)
 
 
@@ -74,22 +73,32 @@ class BoneStats:
     """
     Statistics for a single bone (relative to a reference).
     """
-    ratio_length: float  # length relative to reference bone
-    variability: float  # intra-individual variation (MAD of the ratio length, pooled)
-    count: int = 0  # number of observations
-    pairs: int = 0  # number of tracklet pairs used
+    ratio_length: float     # length relative to reference bone
+    variability: float      # intra-individual variation (MAD of the ratio length, pooled)
+    count: int = 0          # number of observations
+    pairs: int = 0          # number of tracklet pairs used
 
-    # Optional absolute measurements (if known/calibrated)
+    # Optional absolute measurements
     length_world: Optional[float] = None
 
+    def update(self, current_length: float, reference_length: float, alpha: float = 0.01):
+        """Update stats with a new observation."""
+
+        ratio_obs = current_length / reference_length
+        self.ratio_length = ema_update(self.ratio_length, ratio_obs, alpha)
+        self.length_world = self.ratio_length * reference_length
+        self.count += 1
+
     def to_dict(self) -> dict:
-        return {
+        d = {
             'ratio_length': self.ratio_length,
             'variability': self.variability,
             'count': self.count,
             'pairs': self.pairs,
-            'length_world': self.length_world
         }
+        if self.length_world is not None:
+            d['length_world'] = self.length_world
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> 'BoneStats':
@@ -102,11 +111,45 @@ class BoneStats:
         )
 
 
+@dataclass
+class KeypointDynamics:
+    """
+    Per-keypoint dynamics parameters for Kalman filtering.
+    """
+    process_noise: float  # Q (how erratic is this keypoint's motion)
+    measurement_noise: float  # R (observation uncertainty)
+    association_weight: float  # How much to trust this keypoint in association (0-1)
+    source: str = "default"  # Where these params came from: "data", "topology_prior", "default"
+
+    def update(self, observed_process_noise: Optional[float] = None, alpha: float = 0.01):
+        """Update dynamics parameters (for example adapt Q based on observed velocity)."""
+
+        if observed_process_noise is not None:
+            new_val = np.clip(observed_process_noise, MIN_PROCESS_NOISE, MAX_PROCESS_NOISE)
+            self.process_noise = ema_update(self.process_noise, float(new_val), alpha)
+
+    def to_dict(self) -> dict:
+        return {
+            'process_noise': self.process_noise,
+            'measurement_noise': self.measurement_noise,
+            'association_weight': self.association_weight,
+            'source': self.source
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> 'KeypointDynamics':
+        return cls(
+            process_noise=d['process_noise'],
+            measurement_noise=d['measurement_noise'],
+            association_weight=d['association_weight'],
+            source=d.get('source', 'loaded')
+        )
+
+
 class SkeletonTopology:
     """
     An immutable definition of a Skeleton topology.
 
-    Provides:
     - Graph structure (keypoints, bones, connectivity)
     - Topological classifications (leaves, anchors, central keypoint)
     - Canonical name mapping for symmetry pooling
@@ -191,8 +234,7 @@ class SkeletonTopology:
 
     def __contains__(self, item: BoneDefinition | str | Sequence[str]) -> bool:
         try:
-            bone = _bone_or_key(item)
-            return bone in self._bone_set
+            return _bone_or_key(item) in self._bone_set
         except KeyError:
             return item in self._keypoint_set
 
@@ -226,10 +268,7 @@ class SkeletonTopology:
         """Get canonical name from a keypoint or bone name."""
         try:
             bone = _bone_or_key(item)
-            canon1 = self.canonical(bone.k1)
-            canon2 = self.canonical(bone.k2)
-            return BoneDefinition._sep.join(sorted([canon1, canon2]))
-
+            return BoneDefinition._sep.join(sorted([self.canonical(bone.k1), self.canonical(bone.k2)]))
         except KeyError:
             return self.canonical_map[item]
 
@@ -246,11 +285,6 @@ class SkeletonTopology:
 class SkeletonStats:
     """
     Learned statistics for a skeleton (bone lengths and per-keypoint motion params).
-
-    Separate from SkeletonTopology class because:
-    - Skeleton topology is immutable (from annotation)
-    - Stats are learned/updated during bootstrap and tracking
-    - Stats may be serialized/loaded independently
     """
 
     def __init__(self, skeleton: SkeletonTopology):
@@ -264,6 +298,8 @@ class SkeletonStats:
 
         # Dynamics
         self.keypoint_dynamics: Dict[str, KeypointDynamics] = {}
+
+    #  ────── Anatomy  ──────
 
     def expected_ratio(self, bone: BoneDefinition | str | Sequence[str]) -> float:
         """Expected length in relation to reference bone."""
@@ -290,62 +326,11 @@ class SkeletonStats:
         lower, upper = self.ratio_bounds(bone, n_sigma)
         return lower * self.reference_length_world, upper * self.reference_length_world
 
-    def get_dynamics(self, keypoint: str) -> 'KeypointDynamics':
-        """Get dynamics for a keypoint."""
-
-        if keypoint in self.keypoint_dynamics:
-            return self.keypoint_dynamics[keypoint]
-
-        # Fallback based on graph distance (extremities are more erratic)
-        graph_dist = self.skeleton.graph_distance(keypoint)
-        return KeypointDynamics(
-            process_noise=0.1 * (1 + graph_dist),
-            measurement_noise=0.1,
-            association_weight=1.0 / (1 + graph_dist),
-            source='fallback'
-        )
-
-    def score_bone(
-            self,
-            bone: BoneDefinition | str | Sequence[str],
-            node1: 'Node3D',
-            node2: 'Node3D',
-            scale: float = 1.0,
-            MAD_threshold: float = 5.0,
-            MAD_floor: float = 0.05
-    ) -> float:
-        """
-        Score a proposed bone based on consistency with learned statistics.
-
-        Args:
-            bone: The bone being scored
-            node1: First endpoint node
-            node2: Second endpoint node
-            scale: Current skeleton scale estimate
-            MAD_threshold: Number of MADs beyond which to reject
-            MAD_floor: Minimum variability floor
-        """
-        if bone not in self.skeleton:
-            return 0.0
-
-        proposed_length = float(np.linalg.norm(node1.position - node2.position))
-        expected = self.expected_length(bone) * scale
-
-        variability = self.length_variability(bone) * scale + MAD_floor
-        n_mads = abs(proposed_length - expected) / max(1e-6, variability)
-
-        if n_mads > MAD_threshold:
-            return -1000.0
-
-        length_score = np.exp(-0.5 * n_mads ** 2)
-        confidence_score = (node1.confidence + node2.confidence) / 2.0
-        return length_score * confidence_score
-
     def estimate_scale(self,
-                       hypothesis: Union['SkeletonHypothesis', Dict[str, 'Node3D'], Dict[str, ArrayLike]],
-                       min_scale: float = 0.3,
-                       max_scale: float = 4.0
-                       ) -> float:
+           hypothesis: Union['SkeletonHypothesis', Dict[str, 'Node3D'], Dict[str, ArrayLike]],
+           min_scale: float = 0.3,
+           max_scale: float = 4.0
+       ) -> float:
         """
         Estimate skeleton scale from observed keypoint positions.
 
@@ -380,129 +365,174 @@ class SkeletonStats:
 
         return float(np.nanmedian(bones_scales))
 
-    def update(self, keypoints: Dict[str, np.ndarray]) -> bool:
+    def score_bone(
+            self,
+            bone: BoneDefinition | str | Sequence[str],
+            node1: 'Node3D',
+            node2: 'Node3D',
+            scale: float = 1.0,
+            MAD_threshold: float = 5.0,
+            MAD_floor: float = 0.05
+    ) -> float:
         """
-        Update statistics from a high-quality pose observation.
+        Score a proposed bone based on consistency with learned statistics.
+
+        Args:
+            bone: The bone being scored
+            node1: First endpoint node
+            node2: Second endpoint node
+            scale: Current skeleton scale estimate
+            MAD_threshold: Number of MADs beyond which to reject
+            MAD_floor: Minimum variability floor
+        """
+
+        if bone not in self.bone_stats:
+            return 0.0
+
+        stats = self.bone_stats[bone]
+        proposed = float(np.linalg.norm(node1.position - node2.position))
+
+        expected = stats.ratio_length * self.reference_length_world * scale
+        variability = stats.variability * self.reference_length_world * scale + MAD_floor
+
+        n_mads = abs(proposed - expected) / max(1e-6, variability)
+        if n_mads > MAD_threshold:
+            return -1000.0
+
+        length_score = np.exp(-0.5 * n_mads ** 2)
+        confidence_score = (node1.confidence + node2.confidence) / 2.0
+        return length_score * confidence_score
+
+    def update_anatomy(self, keypoints: Dict[str, np.ndarray]) -> bool:
+        """
+        Update anatomy statistics from a high-quality pose observation.
         Returns True if the sample was accepted.
         """
 
         # TODO: This method should probably be scale-aware..?
 
         # Only accept if reference bone is present
-        if not (self.reference_bone.k1 in keypoints and self.reference_bone.k2 in keypoints):
+        if not (self.reference_bone and self.reference_bone.k1 in keypoints and self.reference_bone.k2 in keypoints):
             return False
 
-        ref_bone_length_obs = float(
-            np.linalg.norm(keypoints[self.reference_bone.k1] - keypoints[self.reference_bone.k2]))
+        ref_obs = float(np.linalg.norm(keypoints[self.reference_bone.k1] - keypoints[self.reference_bone.k2]))
 
         # Update reference length with exponential moving average
-        self.reference_length_world = _ema_update(self.reference_length_world, ref_bone_length_obs)
+        self.reference_length_world = ema_update(self.reference_length_world, ref_obs)
 
         for bone, stats in self.bone_stats.items():
             if bone.k1 in keypoints and bone.k2 in keypoints:
-                length_observed = float(np.linalg.norm(keypoints[bone.k1] - keypoints[bone.k2]))
-                ratio_obs = length_observed / ref_bone_length_obs
-
-                # Update ratio length with exponential moving average
-                stats.ratio_length = _ema_update(stats.ratio_length, ratio_obs)
-                stats.count += 1
+                dist = float(np.linalg.norm(keypoints[bone.k1] - keypoints[bone.k2]))
+                stats.update(dist, self.reference_length_world)
 
         return True
 
-    # Serialization
+    #  ────── Dynamics ──────
+
+    def get_dynamics(self, keypoint: str) -> 'KeypointDynamics':
+        """Get dynamics for a keypoint."""
+
+        if keypoint in self.keypoint_dynamics:
+            return self.keypoint_dynamics[keypoint]
+
+        # Fallback based on graph distance (extremities are more erratic)
+        graph_dist = self.skeleton.graph_distance(keypoint)
+        return KeypointDynamics(
+            process_noise=0.1 * (1 + graph_dist),
+            measurement_noise=0.1,
+            association_weight=1.0 / (1 + graph_dist),
+            source='fallback'
+        )
+
+    def update_dynamics(self, keypoint: str, observed_metric: float, alpha: float = 0.01):
+        """Update dynamics stats."""
+
+        if keypoint in self.keypoint_dynamics:
+            self.keypoint_dynamics[keypoint].update(observed_metric, alpha)
+
+    #  ────── Serialization  ──────
 
     def to_dict(self) -> dict:
-        return {
-            'reference_bone': self.reference_bone.to_key() if self.reference_bone else None,
-            'reference_length_world': self.reference_length_world,
-            'bones': {
-                bone.to_key(): stats.to_dict()
-                for bone, stats in self.bone_stats.items()
-            },
-            'dynamics': {
-                kp: dyn.to_dict()
-                for kp, dyn in self.keypoint_dynamics.items()
+        """Export strictly to {'anatomy': ..., 'dynamics': ...}."""
+        data = {'anatomy': {}, 'dynamics': {}}
+
+        # Anatomy
+        if self.reference_bone:
+            data['anatomy'] = {
+                'reference_bone': self.reference_bone.to_key(),
+                'reference_length_world': self.reference_length_world,
+                'bones': {b.to_key(): s.to_dict() for b, s in self.bone_stats.items()}
             }
-        }
+
+        # Dynamics
+        if self.keypoint_dynamics:
+            data['dynamics'] = {k: d.to_dict() for k, d in self.keypoint_dynamics.items()}
+
+        return data
 
     @classmethod
     def from_dict(cls, data: dict, skeleton: SkeletonTopology) -> 'SkeletonStats':
         stats = cls(skeleton)
 
-        # Load anatomy
-        anat = data.get('anatomy', data)
+        # Load Anatomy
+        if 'anatomy' in data and data['anatomy']:
+            anat = data['anatomy']
+            if 'reference_bone' in anat:
+                stats.reference_bone = _bone_or_key(anat['reference_bone'])
+                stats.reference_length_world = anat.get('reference_length_world', 1.0)
 
-        if anat.get('reference_bone'):
-            stats.reference_bone = _bone_or_key(anat['reference_bone'])
-        stats.reference_length_world = anat.get('reference_length_world', 1.0)
+                for k, v in anat.get('bones', {}).items():
+                    try:
+                        bone = BoneDefinition.from_key(k)
+                        if bone in skeleton:
+                            bs = BoneStats.from_dict(v)
 
-        for key, bone_data in anat.get('bones', {}).items():
-            bone = BoneDefinition.from_key(key)
+                            # fill absolute length if missing
+                            if bs.length_world is None:
+                                bs.length_world = bs.ratio_length * stats.reference_length_world
+                            stats.bone_stats[bone] = bs
 
-            if bone in stats.skeleton:
-                stats.bone_stats[bone] = BoneStats.from_dict(bone_data)
-                if stats.bone_stats[bone].length_world is None:
-                    stats.bone_stats[bone].length_world = stats.reference_length_world * bone_data['ratio_length']
+                    except (KeyError, ValueError):
+                        pass
 
-        # Load dynamics
-        for kp, dyn_data in data.get('dynamics', {}).items():
-            if kp in skeleton.keypoints:
-                stats.keypoint_dynamics[kp] = KeypointDynamics.from_dict(dyn_data)
+        # Load Dynamics
+        if 'dynamics' in data and data['dynamics']:
+            for k, v in data['dynamics'].items():
+                if k in skeleton.keypoints:
+                    stats.keypoint_dynamics[k] = KeypointDynamics.from_dict(v)
 
         return stats
 
     def to_json(self, path: Path | str):
+        """
+        Save to JSON (merges with existing file).
+        """
         path = Path(path)
+
+        existing_data = {}
+        if path.exists():
+            try:
+                existing_data = json.loads(path.read_text())
+            except json.JSONDecodeError:
+                pass
+
+        current_data = self.to_dict()
+
+        final_data = {'anatomy': existing_data.get('anatomy', {}),
+                      'dynamics': existing_data.get('dynamics', {})}
+
+        if self.reference_bone:
+            final_data['anatomy'] = current_data['anatomy']
+
+        if self.keypoint_dynamics:
+            final_data['dynamics'] = current_data['dynamics']
 
         if not path.parent.exists():
             path.parent.mkdir(parents=True)
 
-        if not path.is_file():
-            data = {'anatomy': self.to_dict()}
-        else:
-            data = json.loads(path.read_text())
-            data['anatomy'] = self.to_dict()
-
         with open(path, 'w') as f:
-            json.dump(data, f, indent=2)
+            json.dump(final_data, f, indent=2)
 
     @classmethod
     def from_json(cls, path: Path, skeleton: SkeletonTopology) -> 'SkeletonStats':
         return cls.from_dict(json.loads(path.read_text()), skeleton)
-
-
-@dataclass
-class KeypointDynamics:
-    """
-    Per-keypoint dynamics parameters for Kalman filtering.
-    """
-    process_noise: float        # Q (how erratic is this keypoint's motion)
-    measurement_noise: float    # R (observation uncertainty)
-    association_weight: float   # How much to trust this keypoint in association (0-1)
-    source: str = "default"     # Where these params came from: "data", "topology_prior", "default"
-
-    def to_dict(self) -> dict:
-        return {
-            'process_noise': self.process_noise,
-            'measurement_noise': self.measurement_noise,
-            'association_weight': self.association_weight,
-            'source': self.source
-        }
-
-    @classmethod
-    def from_dict(cls, d: dict) -> 'KeypointDynamics':
-        return cls(
-            process_noise=d['process_noise'],
-            measurement_noise=d['measurement_noise'],
-            association_weight=d['association_weight'],
-            source=d.get('source', 'loaded')
-        )
-
-    @classmethod
-    def default(cls, process_noise: float = 0.5, measurement_noise: float = 0.1) -> 'KeypointDynamics':
-        return cls(
-            process_noise=process_noise,
-            measurement_noise=measurement_noise,
-            association_weight=0.5,
-            source='default'
-        )
