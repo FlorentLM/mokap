@@ -33,23 +33,23 @@ class TrackletConfig:
 class AssemblerConfig:
     """Configuration for the skeleton assembler class."""
 
-    max_bone_len: float = 4.0
+    max_bone_len: float = 2.0
     min_kps_for_skeleton: int = 3  # min keypoints to be considered a valid skeleton fragment
     min_central_anchors: int = 2  # min number of most-connected keypoints to be primary anchors
     MAD_threshold: float = 5.0  # how far a bone's length can deviate (in mads) before its score is zero
-    min_sane_scale: float = 0.7  # min plausible scale estimate for a skeleton fragment
-    max_sane_scale: float = 1.5  # max plausible scale estimate for a skeleton fragment
+    min_sane_scale: float = 0.5  # min plausible scale estimate for a skeleton fragment
+    max_sane_scale: float = 2.0  # max plausible scale estimate for a skeleton fragment
     score_debt_tolerance: float = 10.0  # how much of a score hit is allowed to add one more part during growth
     merge_scale_tolerance: float = 0.075  # max relative difference in scale for two fragments to be merged
     merge_linking_bone_threshold: float = 90.0  # minimum score (0-100) for a bone connecting two fragments to be valid
     min_bone_score_for_fragment: float = 70.0  # minimum score for a simple 2-point leaf fragment to be created
     high_quality_threshold: float = 90.0  # score threshold above which a skeleton gets a quality bonus
-    quality_bonus_factor: float = 1.5  # multiplicative bonus factor for high-quality skeletons (1.5 = 50% bonus)
 
+    quality_bonus_factor: float = 1.5  # multiplicative bonus factor for high-quality skeletons (1.5 = 50% bonus)
     scale_consistency_factor: float = 1.5 # Reject bones implying scale outside [1/1.5, 1.5] of current
 
     # Guided assembly
-    guided_search_radius: float = 0.5  # Multiplied by reference_length_world
+    guided_search_radius_fallback: float = 0.5  # Fallback search radius, multiplied by reference_length_world
     prediction_bonus_weight: float = 0.3  # How much to boost candidates near predictions
     prediction_bonus_sigma: float = 0.2  # Gaussian falloff (multiplied by reference_length_world)
 

@@ -36,15 +36,14 @@ class SkeletonAssembler:
 
     def assemble(self,
             frame_data: TimestepData,
-            predictions: Optional[Dict[int, Dict[str, np.ndarray]]] = None
+            tracklets: Optional[List[Tracklet]] = None
         ) -> List[SkeletonHypothesis]:
         """
         Main assembly entry point.
 
         Args:
             frame_data: Current frame's point data
-            predictions: Optional dict of {track_idx: {keypoint_name: predicted_position}}
-                        from existing tracklets. Used to guide assembly.
+            tracklets: Optional list of tracklets (used to guide assembly)
 
         Returns:
             List of skeleton hypotheses.
@@ -55,7 +54,7 @@ class SkeletonAssembler:
         used_indices: Set[int] = set()
 
         # Generate primary hypotheses
-        all_fragments = self._generate_hypotheses(frame_data, predictions, used_indices)
+        all_fragments = self._generate_hypotheses(frame_data, tracklets, used_indices)
 
         if not all_fragments:
             return []
@@ -145,7 +144,7 @@ class SkeletonAssembler:
 
     def _generate_hypotheses(self,
         frame_data: TimestepData,
-        predictions: Dict[int, Dict[str, np.ndarray]],
+        tracklets: Optional[List[Tracklet]],
         used_indices: Set[int]
     ) -> List[SkeletonHypothesis]:
         """
@@ -157,20 +156,29 @@ class SkeletonAssembler:
         hypotheses = []
 
         # Pass 1: Guided assembly from predictions
-        if predictions:
-            central_kp = self.skeleton.central_keypoint
-            for track_idx, pred_kps in predictions.items():
+        if tracklets:
+            for tracklet in tracklets:
+                pred_kps = tracklet.predicted_keypoints
+                central_kp = self.skeleton.central_keypoint
+
                 if central_kp not in pred_kps:
                     continue
 
+                uncertainty = tracklet.get_world_uncertainty(central_kp)
+
                 seed_node = self._find_node_guided(
-                    frame_data, central_kp, pred_kps[central_kp], used_indices
+                    frame_data, central_kp, pred_kps[central_kp], used_indices,
+                    prediction_uncertainty=uncertainty
                 )
 
                 if seed_node:
-                    hyp = self._grow_skeleton(frame_data, {central_kp: seed_node}, predictions=pred_kps)
+                    hyp = self._grow_skeleton(
+                        frame_data,
+                        {central_kp: seed_node},
+                        tracklet=tracklet
+                    )
                     if hyp:
-                        hyp.track_affinity = track_idx  # tag for association boost
+                        hyp.track_affinity = tracklet.track_idx  # tag for association boost
                         hypotheses.append(hyp)
                         used_indices.update(idx for idx in hyp.point_indices if idx >= 0)
 
@@ -181,7 +189,7 @@ class SkeletonAssembler:
                     continue
 
                 seed_node = frame_data.get_node(anchor_kp, seed_idx)
-                hyp = self._grow_skeleton(frame_data, {anchor_kp: seed_node})
+                hyp = self._grow_skeleton(frame_data, {anchor_kp: seed_node}, tracklet=None)
                 if hyp:
                     hypotheses.append(hyp)
                     used_indices.update(idx for idx in hyp.point_indices if idx >= 0)
@@ -195,6 +203,7 @@ class SkeletonAssembler:
                 seed_node = frame_data.get_node(leaf_kp, seed_idx)
                 hyp = self._grow_skeleton(
                     frame_data, {leaf_kp: seed_node},
+                    tracklet=None,
                     max_iterations=1,
                     min_score_threshold=self.config.min_bone_score_for_fragment
                 )
@@ -313,7 +322,7 @@ class SkeletonAssembler:
     def _grow_skeleton(self,
         frame_data: TimestepData,
         seed_nodes: Dict[str, Node3D],
-        predictions: Optional[Dict[str, np.ndarray]] = None,
+        tracklet: Optional[Tracklet] = None,
         max_iterations: Optional[int] = None,
         min_score_threshold: float = 0.0
     ) -> Optional[SkeletonHypothesis]:
@@ -323,7 +332,7 @@ class SkeletonAssembler:
         Args:
             frame_data: Current frame's point data
             seed_nodes: Initial nodes to grow from (name -> Node)
-            predictions: If provided, apply a spatial bonus to candidate scores
+            tracklet: If provided, use predictions and uncertainties for guidance
             max_iterations: Maximum growth steps (None = unlimited)
             min_score_threshold: Minimum final score to accept result
         """
@@ -335,8 +344,16 @@ class SkeletonAssembler:
 
         max_search_radius = self.skeleton_stats.reference_length_world * self.config.max_bone_len
 
+        # Extract predictions from tracklet if available
+        predictions = tracklet.predicted_keypoints if tracklet else None
+
         while max_iterations is None or iterations < max_iterations:
-            candidates = self._find_neighbouring_nodes(frame_data, current_nodes, max_search_radius)
+            candidates = self._find_neighbouring_nodes(
+                frame_data,
+                current_nodes,
+                max_search_radius,
+                tracklet=tracklet
+            )
             if not candidates:
                 break
 
@@ -396,19 +413,65 @@ class SkeletonAssembler:
             self.skeleton_stats.estimate_scale(current_nodes)
         )
 
+    def _filter_virtuals(
+            self,
+            virtual_nodes: List[Node3D],
+            predicted_pos: np.ndarray,
+            prediction_uncertainty: Optional[np.ndarray] = None,
+            n_sigma: float = 3.0
+    ) -> List[Node3D]:
+        """
+        Filter virtual nodes to those within n_sigma of prediction uncertainty.
+        """
+
+        if prediction_uncertainty is not None:
+            max_dist = n_sigma * np.sqrt(np.sum(prediction_uncertainty))
+        else:
+            # This shouldn't happen - we only call this when we have a tracklet
+            return []
+
+        filtered = []
+        for node in virtual_nodes:
+            dist = np.linalg.norm(node.position - predicted_pos)
+            if dist < max_dist:
+                filtered.append((dist, node))
+
+        if not filtered:
+            return []
+
+        # Sort by distance to prediction, return only the closest
+        filtered.sort(key=lambda x: x[0])
+
+        # Deduplicate by ray source (keep closest per ray)
+        seen_rays = set()
+        result = []
+        for dist, node in filtered:
+            if node.ray_idx not in seen_rays:
+                seen_rays.add(node.ray_idx)
+                result.append(node)
+
+        return result
+
     # ──── Point discovery ────
 
     def _find_node_guided(self,
             frame_data: TimestepData,
             kp_type: str,
             predicted_pos: np.ndarray,
-            used_indices: Set[int]
+            used_indices: Set[int],
+            prediction_uncertainty: Optional[np.ndarray] = None,
+            n_sigma: float = 3.0
         ) -> Optional[Node3D]:
         """
         Finds the best Node3D for a specific keypoint type near a predicted position.
         """
 
-        search_radius = self.config.guided_search_radius * self.skeleton_stats.reference_length_world
+        if prediction_uncertainty is not None:
+            search_radius = n_sigma * np.sqrt(np.sum(prediction_uncertainty))
+        else:
+            # Fallback: use a configured default (should rarely happen)
+            search_radius = self.config.guided_search_radius_fallback * self.skeleton_stats.reference_length_world
+
         nearby_indices = frame_data.nearby(predicted_pos, search_radius)
 
         # Filter indices by type and availability
@@ -431,7 +494,8 @@ class SkeletonAssembler:
     def _find_neighbouring_nodes(self,
             frame_data: TimestepData,
             current_nodes: Dict[str, Node3D],
-            max_search_radius: float
+            max_search_radius: float,
+            tracklet: Optional[Tracklet] = None
         ) -> List[Node3D]:
         """
         Find all candidate nodes that could extend the current skeleton.
@@ -441,8 +505,16 @@ class SkeletonAssembler:
         current_kp_names = set(current_nodes.keys())
         candidates_by_type: Dict[str, List[Node3D]] = defaultdict(list)
 
+        # Extract predictions if we have a tracklet
+        predictions = tracklet.predicted_keypoints if tracklet else None
+
         # For each existing node find potential neighbours
         for node_kp, node in current_nodes.items():
+
+            # # Skip virtual nodes as extension sources to prevent chaining
+            # if node.is_virtual:
+            #     continue
+
             neighbor_types = {
                 n for n in self.skeleton.neighbours(node_kp)
                 if n not in current_kp_names
@@ -466,13 +538,26 @@ class SkeletonAssembler:
                 if candidates_by_type[target_type]:
                     continue  # already have real candidates
 
+                # Only attempt ray rescue if we have a tracklet with prediction
+                if tracklet is None or predictions is None or target_type not in predictions:
+                    continue
+
+                predicted_pos = predictions[target_type]
+                uncertainty = tracklet.get_world_uncertainty(target_type)
+
                 bone = BoneDefinition(node_kp, target_type)
                 if bone in self.skeleton:
                     expected_len = self.skeleton_stats.expected_length(bone)
                     virtual_nodes = frame_data.intersect_rays(
                         target_type, node.position, expected_len
                     )
-                    candidates_by_type[target_type].extend(virtual_nodes)
+
+                    # Only keep virtual nodes near the prediction
+                    if virtual_nodes:
+                        virtual_nodes = self._filter_virtuals(
+                            virtual_nodes, predicted_pos, prediction_uncertainty=uncertainty
+                        )
+                        candidates_by_type[target_type].extend(virtual_nodes)
 
         # Flatten and deduplicate
         seen = set()
@@ -607,15 +692,12 @@ class MultiObjectTracker:
         for t in self._pending_tracklets.values():
             t.predict(frame_idx)
 
-        # Build predictions dict for guided assembly
-        predictions = {
-            t.track_idx: t.predicted_keypoints
-            for t in self._pending_tracklets.values() if t.predicted_keypoints
-        }
-
         # Generate and resolve hypotheses
         frame_data = TimestepData(self.soup[frame_idx])
-        frame_candidates = self.assembler.assemble(frame_data, predictions=predictions)
+        frame_candidates = self.assembler.assemble(
+            frame_data,
+            tracklets=list(self._pending_tracklets.values())
+        )
 
         if not frame_candidates:
             self._prune_pending()

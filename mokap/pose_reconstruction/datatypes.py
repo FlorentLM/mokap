@@ -662,6 +662,90 @@ class Tracklet:
             self.offset_kfs[kp] = kf
             self.rest_offsets[kp] = local_offset.copy()
 
+    # ──── Properties and accessors ────
+
+    @property
+    def predicted_keypoints(self) -> Dict[str, np.ndarray]:
+        """Current predicted positions (without advancing time)."""
+
+        central_pos = self.central_kf.x[:3, 0]
+        scale = self.central_kf.x[6, 0]
+
+        predictions = {self.central_kp: central_pos.copy()}
+
+        for kp, offset_kf in self.offset_kfs.items():
+            local_offset = offset_kf.x[:3, 0]
+            rest = self.rest_offsets.get(kp, local_offset)
+
+            blended_offset = (
+                    (1 - self.config.rigidity_factor) * local_offset + self.config.rigidity_factor * rest
+            )
+            world_offset = self.body_rotation.T @ (blended_offset * scale)
+            predictions[kp] = central_pos + world_offset
+
+        return predictions
+
+    @property
+    def position(self) -> np.ndarray:
+        """Central position estimate."""
+        return self.central_kf.x[:3, 0].copy()
+
+    @property
+    def velocity(self) -> np.ndarray:
+        """Central velocity estimate."""
+        return self.central_kf.x[3:6, 0].copy()
+
+    @property
+    def estimated_scale(self) -> float:
+        """Current scale estimate."""
+        return float(self.central_kf.x[6, 0])
+
+    @property
+    def position_uncertainty(self) -> np.ndarray:
+        """Position uncertainty (diagonal of covariance)."""
+        return self.central_kf.P.diagonal()[:3]
+
+    @property
+    def is_active(self) -> bool:
+        """Was this tracklet updated this frame?"""
+        return self.time_since_update == 0
+
+    def get_offset_uncertainty(self, keypoint: str) -> Optional[np.ndarray]:
+        """Get position uncertainty for a specific keypoint's offset."""
+        if keypoint in self.offset_kfs:
+            return self.offset_kfs[keypoint].P.diagonal()[:3]
+        return None
+
+    def get_world_uncertainty(self, keypoint: str) -> Optional[np.ndarray]:
+        """
+        Get position uncertainty for a keypoint in world frame.
+
+        For the central keypoint, returns the central KF position uncertainty.
+        For other keypoints, transforms the offset uncertainty to world frame
+        and adds the central position uncertainty.
+        """
+
+        if keypoint == self.central_kp:
+            return self.central_kf.P.diagonal()[:3]
+
+        if keypoint not in self.offset_kfs:
+            return None
+
+        # Offset uncertainty is in body frame, scaled
+        local_var = self.offset_kfs[keypoint].P.diagonal()[:3]
+        scale = self.estimated_scale
+
+        # Transform variance to world frame
+        R = self.body_rotation.T  # body -> world
+        world_var = (scale ** 2) * np.sum((R ** 2) * local_var, axis=1)
+
+        # Add central position uncertainty (offsets are relative to center)
+        world_var += self.central_kf.P.diagonal()[:3]
+
+        return world_var
+
+    # ──── Public interface ────
+
     def predict(self, current_frame_idx: int) -> Dict[str, np.ndarray]:
         """
         Predict all keypoint positions forward to current frame.
@@ -701,27 +785,6 @@ class Tracklet:
 
         return predictions
 
-    @property
-    def predicted_keypoints(self) -> Dict[str, np.ndarray]:
-        """Current predicted positions (without advancing time)."""
-
-        central_pos = self.central_kf.x[:3, 0]
-        scale = self.central_kf.x[6, 0]
-
-        predictions = {self.central_kp: central_pos.copy()}
-
-        for kp, offset_kf in self.offset_kfs.items():
-            local_offset = offset_kf.x[:3, 0]
-            rest = self.rest_offsets.get(kp, local_offset)
-
-            blended_offset = (
-                    (1 - self.config.rigidity_factor) * local_offset + self.config.rigidity_factor * rest
-            )
-            world_offset = self.body_rotation.T @ (blended_offset * scale)
-            predictions[kp] = central_pos + world_offset
-
-        return predictions
-
     def update(self, hypothesis: 'SkeletonHypothesis', frame_idx: int):
         """
         Update tracklet with new observation.
@@ -730,6 +793,9 @@ class Tracklet:
         self.time_since_update = 0
         self.last_update_frame = frame_idx
         self.hypothesis = hypothesis
+
+        # Update body frame
+        self._update_body_orientation(hypothesis.positions, alpha=0.3)
 
         # Handle missing central keypoint
         if self.central_kp not in hypothesis:
@@ -785,6 +851,8 @@ class Tracklet:
 
         self.anatomical_integrity = ema_update(self.anatomical_integrity, hypothesis.anatomical_score, alpha=0.1)
 
+    # ──── State-awareness ────
+
     def _infer_central_position(self, hypothesis: 'SkeletonHypothesis') -> Optional[np.ndarray]:
         """
         Infer central keypoint position from other observed keypoints.
@@ -824,36 +892,98 @@ class Tracklet:
         inferred_central = np.average(central_estimates, axis=0, weights=weights)
         return inferred_central
 
-    @property
-    def position(self) -> np.ndarray:
-        """Central position estimate."""
-        return self.central_kf.x[:3, 0].copy()
+    def _estimate_body_orientation(self, keypoints: Dict[str, np.ndarray]) -> np.ndarray:
+        """
+        Estimate body frame orientation from observed keypoints.
 
-    @property
-    def velocity(self) -> np.ndarray:
-        """Central velocity estimate."""
-        return self.central_kf.x[3:6, 0].copy()
+        - PCA on keypoint positions to get principal axis (anterior-posterior)
+        - Use velocity direction to disambiguate sign (head vs tail)
+        - Construct right-handed frame with Z assumed up (or from skeleton plane normal)
 
-    @property
-    def estimated_scale(self) -> float:
-        """Current scale estimate."""
-        return float(self.central_kf.x[6, 0])
+        Returns:
+            3x3 rotation matrix (world -> body frame)
+        """
+        positions = np.array(list(keypoints.values()))
 
-    @property
-    def position_uncertainty(self) -> np.ndarray:
-        """Position uncertainty (diagonal of covariance)."""
-        return self.central_kf.P.diagonal()[:3]
+        if len(positions) < 3:
+            return self.body_rotation  # keep previous estimate
 
-    @property
-    def is_active(self) -> bool:
-        """Was this tracklet updated this frame?"""
-        return self.time_since_update == 0
+        # Center the points
+        centroid = positions.mean(axis=0)
+        centered = positions - centroid
 
-    def get_offset_uncertainty(self, keypoint: str) -> Optional[np.ndarray]:
-        """Get position uncertainty for a specific keypoint's offset."""
-        if keypoint in self.offset_kfs:
-            return self.offset_kfs[keypoint].P.diagonal()[:3]
-        return None
+        # PCA via SVD
+        U, S, Vt = np.linalg.svd(centered, full_matrices=False)
+
+        # Principal axis (longest extent) - this is the "anterior-posterior" axis
+        principal_axis = Vt[0]  # first row of Vt
+
+        # Disambiguate direction using velocity (head points in movement direction)
+        velocity = self.velocity
+        speed = np.linalg.norm(velocity)
+
+        if speed > 0.05 * self.stats.reference_length_world:  # moving
+            # Flip if principal axis points opposite to velocity
+            if np.dot(principal_axis, velocity) < 0:
+                principal_axis = -principal_axis
+        else:
+            # Stationary: use continuity with previous frame
+            prev_axis = self.body_rotation[0, :]  # previous x-axis (forward)
+            if np.dot(principal_axis, prev_axis) < 0:
+                principal_axis = -principal_axis
+
+        # Secondary axis: try to use skeleton plane normal, else use world Z
+        if len(positions) >= 3:
+            # Plane normal from SVD (smallest singular value direction)
+            plane_normal = Vt[2]
+            # Ensure it points "up" (positive Z component in world)
+            if plane_normal[2] < 0:
+                plane_normal = -plane_normal
+        else:
+            plane_normal = np.array([0., 0., 1.])
+
+        # Construct orthonormal frame: X=forward, Z=up, Y=right (right-handed)
+        x_axis = principal_axis / np.linalg.norm(principal_axis)
+
+        # Gram-Schmidt: Z perpendicular to X, in the plane containing original Z
+        z_axis = plane_normal - np.dot(plane_normal, x_axis) * x_axis
+        z_norm = np.linalg.norm(z_axis)
+
+        if z_norm < 1e-6:
+            # Degenerate case: principal axis aligned with up vector
+            z_axis = np.array([0., 0., 1.])
+            if abs(np.dot(x_axis, z_axis)) > 0.99:
+                z_axis = np.array([0., 1., 0.])
+            z_axis = z_axis - np.dot(z_axis, x_axis) * x_axis
+            z_axis = z_axis / np.linalg.norm(z_axis)
+        else:
+            z_axis = z_axis / z_norm
+
+        y_axis = np.cross(z_axis, x_axis)
+
+        # Rotation matrix: rows are the body axes expressed in world coordinates
+        # This transforms world -> body: body_coords = R @ world_coords
+        R = np.array([x_axis, y_axis, z_axis])
+
+        return R
+
+    def _update_body_orientation(self, keypoints: Dict[str, np.ndarray], alpha: float = 0.3):
+        """
+        Update body orientation with temporal smoothing.
+        Uses SLERP-like interpolation for rotation matrices.
+        """
+        new_R = self._estimate_body_orientation(keypoints)
+
+        # Blend with previous orientation (simple linear blend + re-orthogonalize)
+        # For small rotations this approximates SLERP
+        blended = (1 - alpha) * self.body_rotation + alpha * new_R
+
+        # Re-orthogonalise via SVD (closest orthogonal matrix)
+        U, _, Vt = np.linalg.svd(blended)
+        self.body_rotation = U @ Vt
+
+    # ──── Serialisation ────
+    # TODO: Rework this output format
 
     def to_record(self, frame_idx: int) -> dict:
         """Export tracklet state for storage/analysis."""
