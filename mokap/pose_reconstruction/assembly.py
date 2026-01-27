@@ -827,7 +827,7 @@ if __name__ == '__main__':
     BASE_DIR = Path.home() / 'Desktop' / '3d_ant_data'
     PREFIX = '240905-1616'
     SESSION = 22
-    DEBUG = True
+    DEBUG_PLOT = True
 
     input_dir = BASE_DIR / PREFIX / 'inputs' / 'tracking'
     output_dir = BASE_DIR / PREFIX / 'outputs'
@@ -879,19 +879,6 @@ if __name__ == '__main__':
         for frame_idx in range(min_frame, max_frame + 1):
             tracker.update(frame_idx)
 
-            if DEBUG:
-                for t in tracker.active_tracklets:
-                    offset_vels = {kp: np.linalg.norm(kf.x[3:6, 0]) for kp, kf in t.offset_kfs.items()}
-                    max_offset_vel_kp = max(offset_vels, key=offset_vels.get)
-                    max_offset_vel = offset_vels[max_offset_vel_kp]
-
-                    central_vel = np.linalg.norm(t.velocity)
-
-                    if frame_idx % 100 == 0:
-                        print(f"Frame {frame_idx}, Track {t.track_idx}: "
-                              f"central_vel={central_vel:.3f}, "
-                              f"max_offset_vel={max_offset_vel:.3f} ({max_offset_vel_kp})")
-
             # Update skeleton stats from high-quality observations
             for tracklet in tracker.active_tracklets:
 
@@ -916,6 +903,6 @@ if __name__ == '__main__':
     stats.to_json(stats_file)
     print(f"Updated stats saved to '{stats_file}'")
 
-    if DEBUG:
+    if DEBUG_PLOT:
         from mokap.pose_reconstruction.debug import TrackletViewer
         viewer = TrackletViewer(soup, records_by_track, skeleton)
