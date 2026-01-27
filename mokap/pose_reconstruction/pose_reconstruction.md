@@ -207,7 +207,8 @@ After each frame, high-quality tracklet observations update the global `Skeleton
 
 ### Body frame orientation
 
-Currently the local orientation `body_rotation` remains fixed throughout tracking. This assumes the animal never rotates, which causes offset predictions to drift when animals turn. Given the high framerate this is acceptable for now, but ideally the body frame should be updated each frame (Kabsch, or PCA-based orientation estimation from observed keypoints?)
+~~Currently the local orientation `body_rotation` remains fixed throughout tracking. This assumes the animal never rotates, which causes offset predictions to drift when animals turn. Given the high framerate this is acceptable for now, but ideally the body frame should be updated each frame (Kabsch, or PCA-based orientation estimation from observed keypoints?)~~
+Mostly done
 
 ### Tracklet storage
 
@@ -223,7 +224,8 @@ Rest offsets are currently learned online via EMA during tracking, starting from
 
 ### Ray intersection disambiguation
 
-Ray-sphere intersection yields two solutions. Currently both are registered as candidates and scored equally. The tracklet's predicted offset could be used to disambiguate: prefer the intersection point closer to the predicted position for that keypoint.
+~~Ray-sphere intersection yields two solutions. Currently both are registered as candidates and scored equally. The tracklet's predicted offset could be used to disambiguate: prefer the intersection point closer to the predicted position for that keypoint.~~
+Mostly done
 
 ### Scale freezing
 
