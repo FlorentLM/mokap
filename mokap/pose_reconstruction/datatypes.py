@@ -2,19 +2,22 @@ import pickle
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
-from typing import Dict, List, FrozenSet, Optional, Union, Sequence, Iterator, Set
+from typing import TYPE_CHECKING, Dict, List, FrozenSet, Optional, Union, Sequence, Iterator, Set
 import numpy as np
 import pandas as pd
 from filterpy.common import Q_discrete_white_noise
 from filterpy.kalman import KalmanFilter
-from scipy.linalg import block_diag
 from scipy.spatial import cKDTree
 
-from lucida.geometry import align_rigid, intersect_ray_sphere
-from mokap.pose_reconstruction.configs import TrackerConfig
+from lucida.geometry import intersect_ray_sphere
+from mokap.pose_reconstruction.skeleton import SkeletonStats, SkeletonTopology
+from mokap.pose_reconstruction.utils import ema_update
+
+if TYPE_CHECKING:
+    from mokap.pose_reconstruction.configs import TrackletConfig
 
 
-# Classes for accessing the 3D data
+# ────── Classes for accessing the 3D data ──────
 
 @dataclass(frozen=True, slots=True)
 class Node3D:
@@ -403,7 +406,7 @@ class TimestepData:
         return new_nodes
 
 
-# Assembly and tracking classes
+# ────── Assembly and tracking classes ──────
 
 @dataclass
 class SkeletonHypothesis:
@@ -444,6 +447,10 @@ class SkeletonHypothesis:
     def get(self, name: str, default: Optional[Node3D] = None) -> Optional[Node3D]:
         """Get node by name, return default if not found."""
         return self._by_name.get(name, default)
+
+    @property
+    def nodes_by_name(self) -> Dict[str, Node3D]:
+        return self._by_name
 
     @property
     def names(self) -> FrozenSet[str]:
@@ -488,21 +495,25 @@ class SkeletonHypothesis:
 
 class Tracklet:
     """
-    Stateful class for a single skeleton in a tracklet.
-    Manages state estimation (position, velocity, scale).
-    """
+    Hierarchical state representation for articulated skeleton tracking.
 
+    - Central KF: tracks body position, velocity, and scale
+    - Offset KFs: track each keypoint's offset from central (in body frame), allowing articulation
+    """
     def __init__(
             self,
             track_idx: int,
-            initial_hypothesis: SkeletonHypothesis,
+            initial_hypothesis: 'SkeletonHypothesis',
             frame_idx: int,
-            central_kp: str,
-            config: TrackerConfig
+            skeleton: 'SkeletonTopology',
+            stats: 'SkeletonStats',
+            config: 'TrackletConfig'
     ):
-        self.config = config
         self.track_idx = track_idx
-        self.central_kp = central_kp
+        self.skeleton = skeleton
+        self.stats = stats
+        self.config = config
+        self.central_kp = skeleton.central_keypoint
 
         # Temporal state
         self.age = 0
@@ -516,16 +527,27 @@ class Tracklet:
         self.health = 1.0
         self.anatomical_integrity = initial_hypothesis.anatomical_score
 
-        # Kalman Filter: state = [x, y, z, vx, vy, vz, scale]
-        self.kf = self._init_kalman_filter(initial_hypothesis)
+        # Body frame orientation (world -> body rotation matrix)
+        # TODO: Not used for now
+        self.body_rotation = np.eye(3)
 
-    def _init_kalman_filter(self, hypothesis: SkeletonHypothesis) -> KalmanFilter:
-        """Initialise Kalman filter for position, velocity, and scale tracking."""
+        # Rest pose: mean offset per keypoint in body frame (learned over time)
+        self.rest_offsets: Dict[str, np.ndarray] = {}
 
+        # Initialise filters
+        self.central_kf = self._init_central_kf(initial_hypothesis)
+        self.offset_kfs: Dict[str, 'KalmanFilter'] = {}
+
+        self._init_offset_kfs(initial_hypothesis)
+
+    def _init_central_kf(self, hypothesis: 'SkeletonHypothesis') -> 'KalmanFilter':
+        """
+        Central KF: state = [x, y, z, vx, vy, vz, scale]
+        """
         kf = KalmanFilter(dim_x=7, dim_z=4)
         dt = 1.0
 
-        # State transition: constant velocity model
+        # State transition (constant velocity model)
         kf.F = np.array([
             [1,  0,  0, dt,  0,  0,  0],
             [0,  1,  0,  0, dt,  0,  0],
@@ -536,7 +558,7 @@ class Tracklet:
             [0,  0,  0,  0,  0,  0,  1],
         ], dtype=float)
 
-        # Measurement: observe position and scale
+        # Observation: position + scale
         kf.H = np.array([
             [1, 0, 0, 0, 0, 0, 0],
             [0, 1, 0, 0, 0, 0, 0],
@@ -545,177 +567,313 @@ class Tracklet:
         ], dtype=float)
 
         # Process noise
-        pos_vel_q = Q_discrete_white_noise(dim=2, dt=dt, var=self.config.kf_process_noise_pos, block_size=3)
-        scale_q = np.array([[self.config.kf_process_noise_scale]])
-        kf.Q = block_diag(pos_vel_q, scale_q)
+        q_pos = Q_discrete_white_noise(
+            dim=2, dt=dt,
+            var=self.config.central_process_noise_pos,
+            block_size=3
+        )
+        q_scale = np.array([[self.config.central_process_noise_scale]])
+        kf.Q = np.zeros((7, 7))
+        kf.Q[:6, :6] = q_pos
+        kf.Q[6, 6] = q_scale[0, 0]
 
         # Measurement noise
         kf.R = np.diag([
-            self.config.kf_measurement_noise_pos,
-            self.config.kf_measurement_noise_pos,
-            self.config.kf_measurement_noise_pos,
-            self.config.kf_measurement_noise_scale
+            self.config.central_measurement_noise_pos,
+            self.config.central_measurement_noise_pos,
+            self.config.central_measurement_noise_pos,
+            self.config.central_measurement_noise_scale
         ])
 
         # Initial covariance
-        kf.P[3:6, 3:6] *= 1.0
-        kf.P[6, 6] = 1.0
+        kf.P = np.eye(7)
+        kf.P[3:6, 3:6] *= 1.0  # velocity uncertainty
+        kf.P[6, 6] = 0.1  # scale uncertainty
 
         # Initial state
-        kf.x[:3] = hypothesis[self.central_kp].position.reshape(3, 1)
-        kf.x[6] = hypothesis.scale
+        if self.central_kp in hypothesis:
+            kf.x[:3, 0] = hypothesis[self.central_kp].position
+        else:
+            kf.x[:3, 0] = hypothesis.centroid
+        kf.x[6, 0] = hypothesis.scale
 
         return kf
 
-    def predict(self, current_frame_idx: int):
-        """Predict state forward to current frame."""
+    def _init_offset_kfs(self, hypothesis: 'SkeletonHypothesis'):
+        """
+        Initialise per-keypoint offset KFs.
+        State = [dx, dy, dz, d_vx, d_vy, d_vz] (offset position and offset velocity in body frame).
+        """
+        central_pos = self.central_kf.x[:3, 0]
+        scale = self.central_kf.x[6, 0]
 
+        # Estimate initial body frame
+        self.body_rotation = np.eye(3)
+
+        for kp in self.skeleton.keypoints:
+            if kp == self.central_kp:
+                continue
+
+            dynamics = self.stats.get_dynamics(kp)
+
+            kf = KalmanFilter(dim_x=6, dim_z=3) # state = [dx, dy, dz, dvx, dvy, dvz]
+            dt = 1.0
+
+            # State transition with velocity damping
+            damp = self.config.offset_velocity_damping
+            kf.F = np.array([
+                [1,    0,    0,  dt,     0,    0],
+                [0,    1,    0,    0,   dt,    0],
+                [0,    0,    1,    0,    0,   dt],
+                [0,    0,    0, damp,    0,    0],
+                [0,    0,    0,    0, damp,    0],
+                [0,    0,    0,    0,    0, damp],
+            ], dtype=float)
+
+            # Observation = offset position only
+            kf.H = np.array([
+                [1, 0, 0, 0, 0, 0],
+                [0, 1, 0, 0, 0, 0],
+                [0, 0, 1, 0, 0, 0],
+            ], dtype=float)
+
+            # Process noise (from learned dynamics)
+            # TODO: Should probably update online
+            q = Q_discrete_white_noise(dim=2, dt=dt, var=dynamics.process_noise, block_size=3)
+            kf.Q = q
+
+            # Measurement noise
+            kf.R = np.eye(3) * dynamics.measurement_noise
+
+            # Initial covariance
+            kf.P = np.eye(6) * 0.5
+
+            # Initial state
+            if kp in hypothesis:
+                world_offset = hypothesis[kp].position - central_pos
+                local_offset = self.body_rotation @ world_offset / max(scale, 0.1)
+            else:
+                local_offset = np.zeros(3)
+
+            kf.x[:3, 0] = local_offset
+            kf.x[3:6, 0] = 0.0  # zero initial velocity
+
+            self.offset_kfs[kp] = kf
+            self.rest_offsets[kp] = local_offset.copy()
+
+    def predict(self, current_frame_idx: int) -> Dict[str, np.ndarray]:
+        """
+        Predict all keypoint positions forward to current frame.
+        Returns dict of keypoint_name -> predicted world position.
+        """
         steps = current_frame_idx - self.last_update_frame
 
+        # Predict central state
         for _ in range(steps):
-            self.kf.predict()
+            self.central_kf.predict()
             self.age += 1
             self.time_since_update += 1
             self.health *= self.config.health_decay_rate
 
-    def update(self, hypothesis: SkeletonHypothesis, frame_idx: int):
-        """Update tracklet with new hypothesis observation."""
+        central_pos = self.central_kf.x[:3, 0]
+        scale = self.central_kf.x[6, 0]
 
-        inferred = False
+        predictions = {self.central_kp: central_pos.copy()}
 
-        # Try to infer missing central keypoint
-        if self.central_kp not in hypothesis:
-            updated_hypothesis = self._infer_missing_central_kp(hypothesis)
+        # Predict each offset KF
+        for kp, offset_kf in self.offset_kfs.items():
+            for _ in range(steps):
+                offset_kf.predict()
 
-            if updated_hypothesis:
-                hypothesis = updated_hypothesis
-                inferred = True
-            else:
-                # Can't update KF, just store hypothesis
-                self.hypothesis = hypothesis
-                self.time_since_update = 0
-                self.last_update_frame = frame_idx
-                return
+            # Rigidity constraint: pull toward rest offset
+            local_offset = offset_kf.x[:3, 0].copy()
+            rest = self.rest_offsets.get(kp, local_offset)
 
-        self.hypothesis = hypothesis
-        self.time_since_update = 0
-        self.last_update_frame = frame_idx
+            blended_offset = (
+                    (1 - self.config.rigidity_factor) * local_offset +
+                    self.config.rigidity_factor * rest
+            )
 
-        # KF measurement update
-        central_pos = hypothesis[self.central_kp].position
-        measurement = np.array([*central_pos, hypothesis.scale])
+            # Transform to world frame
+            world_offset = self.body_rotation.T @ (blended_offset * scale)
+            predictions[kp] = central_pos + world_offset
 
-        if inferred:
-            # Increase measurement uncertainty for inferred positions
-            original_R = self.kf.R.copy()
-            self.kf.R[:3, :3] *= self.config.kf_inference_uncertainty_factor
-            self.kf.update(measurement)
-            self.kf.R = original_R
-            self.health = 1.0 - self.config.inferred_health_penalty
-        else:
-            self.kf.update(measurement)
-            self.health = 1.0
-
-        # Update anatomical integrity (EMA)
-        self.anatomical_integrity = (
-            self.config.anatomical_score_alpha * hypothesis.anatomical_score +
-            (1 - self.config.anatomical_score_alpha) * self.anatomical_integrity
-        )
-
-    def _infer_missing_central_kp(self, hypothesis: SkeletonHypothesis) -> Optional[SkeletonHypothesis]:
-        """Infer central keypoint position via rigid alignment."""
-
-        prev_kps = self.hypothesis.positions
-        curr_kps = hypothesis.positions
-        common_names = list(prev_kps.keys() & curr_kps.keys())
-
-        if len(common_names) < self.config.min_kps_for_inference:
-            return None
-
-        points_A = np.array([prev_kps[name] for name in common_names])
-        points_B = np.array([curr_kps[name] for name in common_names])
-
-        R_mat, t_vec = align_rigid(points_A, points_B)
-        inferred_pos = np.array(R_mat) @ prev_kps[self.central_kp] + np.array(t_vec)
-
-        # Create a new node for the inferred central keypoint
-        inferred_node = Node3D(
-            name=self.central_kp,
-            idx=-9999,  # special index for inferred points
-            position=inferred_pos,
-            confidence=0.5,  # lower confidence for inferred  # TODO: move to config
-            ray_idx=-1
-        )
-
-        # Create new hypothesis with the inferred node added
-        new_nodes = frozenset(hypothesis.nodes | {inferred_node})
-
-        return SkeletonHypothesis(
-            nodes=new_nodes,
-            scale=hypothesis.scale,
-            competition_score=hypothesis.competition_score,
-            anatomical_score=hypothesis.anatomical_score,
-            constituent_indices=hypothesis.constituent_indices
-        )
+        return predictions
 
     @property
-    def is_active(self) -> bool:
-        """True if tracklet was updated this frame."""
-        return self.time_since_update == 0
+    def predicted_keypoints(self) -> Dict[str, np.ndarray]:
+        """Current predicted positions (without advancing time)."""
+
+        central_pos = self.central_kf.x[:3, 0]
+        scale = self.central_kf.x[6, 0]
+
+        predictions = {self.central_kp: central_pos.copy()}
+
+        for kp, offset_kf in self.offset_kfs.items():
+            local_offset = offset_kf.x[:3, 0]
+            rest = self.rest_offsets.get(kp, local_offset)
+
+            blended_offset = (
+                    (1 - self.config.rigidity_factor) * local_offset + self.config.rigidity_factor * rest
+            )
+            world_offset = self.body_rotation.T @ (blended_offset * scale)
+            predictions[kp] = central_pos + world_offset
+
+        return predictions
+
+    def update(self, hypothesis: 'SkeletonHypothesis', frame_idx: int):
+        """
+        Update tracklet with new observation.
+        """
+
+        self.time_since_update = 0
+        self.last_update_frame = frame_idx
+        self.hypothesis = hypothesis
+
+        # Handle missing central keypoint
+        if self.central_kp not in hypothesis:
+            inferred_pos = self._infer_central_position(hypothesis)
+            if inferred_pos is None:
+                self.health = max(0.1, self.health - self.config.inferred_health_penalty)
+                return
+            central_obs = inferred_pos
+            inferred = True
+        else:
+            central_obs = hypothesis[self.central_kp].position
+            inferred = False
+
+        scale_obs = hypothesis.scale
+
+        # Update central KF
+        measurement = np.array([*central_obs, scale_obs])
+
+        if inferred:
+            original_R = self.central_kf.R.copy()
+            self.central_kf.R[:3, :3] *= self.config.centre_inference_uncertainty_factor  # increase uncertainty
+            self.central_kf.update(measurement)
+            self.central_kf.R = original_R
+            self.health = max(0.1, 1.0 - self.config.inferred_health_penalty)
+        else:
+            self.central_kf.update(measurement)
+            self.health = 1.0
+
+        # TODO: would be good to update body frame estimate
+
+        # Update offset KFs for observed keypoints
+        central_pos = self.central_kf.x[:3, 0]
+        scale = max(self.central_kf.x[6, 0], 0.1)
+
+        for kp, node in hypothesis.nodes_by_name.items():
+
+            if kp == self.central_kp:
+                continue
+
+            if kp not in self.offset_kfs:
+                continue
+
+            # Compute observed offset in body frame
+            world_offset = node.position - central_pos
+            local_offset = self.body_rotation @ world_offset / scale
+
+            self.offset_kfs[kp].update(local_offset)
+
+            # Update rest offset
+            #alpha = 0.02
+            alpha = 0.1  # TODO: Not sure how slow this EMA should be
+            self.rest_offsets[kp] = ema_update(self.rest_offsets[kp], local_offset, alpha=alpha)
+
+        self.anatomical_integrity = ema_update(self.anatomical_integrity, hypothesis.anatomical_score, alpha=0.1)
+
+    def _infer_central_position(self, hypothesis: 'SkeletonHypothesis') -> Optional[np.ndarray]:
+        """
+        Infer central keypoint position from other observed keypoints.
+        Uses offset predictions to triangulate likely central position.
+        """
+        observed_kps = [kp for kp in hypothesis.names if kp in self.offset_kfs]
+
+        if len(observed_kps) < self.config.min_kps_for_inference:
+            return None
+
+        scale = max(self.central_kf.x[6, 0], 0.1)
+
+        # For each observed keypoint, estimate where central should be
+        central_estimates = []
+        weights = []
+
+        for kp in observed_kps:
+            obs_pos = hypothesis[kp].position
+
+            # Expected offset for this keypoint (in body frame)
+            expected_local_offset = self.offset_kfs[kp].x[:3, 0]
+            expected_world_offset = self.body_rotation.T @ (expected_local_offset * scale)
+
+            # Estimated central = observed - expected_offset
+            estimated_central = obs_pos - expected_world_offset
+
+            # Weight by association weight (stable keypoints contribute more)
+            dynamics = self.stats.get_dynamics(kp)
+
+            central_estimates.append(estimated_central)
+            weights.append(dynamics.association_weight)
+
+        # Weighted average
+        weights = np.array(weights)
+        weights = weights / weights.sum()
+
+        inferred_central = np.average(central_estimates, axis=0, weights=weights)
+        return inferred_central
 
     @property
     def position(self) -> np.ndarray:
-        """Current estimated position (from KF state)."""
-        return self.kf.x[:3].flatten()
+        """Central position estimate."""
+        return self.central_kf.x[:3, 0].copy()
 
     @property
     def velocity(self) -> np.ndarray:
-        """Current estimated velocity (from KF state)."""
-        return self.kf.x[3:6].flatten()
+        """Central velocity estimate."""
+        return self.central_kf.x[3:6, 0].copy()
 
     @property
     def estimated_scale(self) -> float:
-        """Current estimated scale (from KF state)."""
-        return float(self.kf.x[6, 0])
+        """Current scale estimate."""
+        return float(self.central_kf.x[6, 0])
 
     @property
     def position_uncertainty(self) -> np.ndarray:
         """Position uncertainty (diagonal of covariance)."""
-        return self.kf.P.diagonal()[:3]
+        return self.central_kf.P.diagonal()[:3]
 
     @property
-    def keypoints(self) -> Dict[str, np.ndarray]:
-        """Current keypoint positions from hypothesis."""
-        return self.hypothesis.positions
+    def is_active(self) -> bool:
+        """Was this tracklet updated this frame?"""
+        return self.time_since_update == 0
 
-    @property
-    def predicted_keypoints(self) -> Optional[Dict[str, np.ndarray]]:
-        """Predicted keypoint positions based on KF state."""
-
-        if self.central_kp not in self.hypothesis:
-            return None
-
-        current_central = self.hypothesis[self.central_kp].position
-        translation = self.position - current_central
-        return {name: pos + translation for name, pos in self.hypothesis.positions.items()}
+    def get_offset_uncertainty(self, keypoint: str) -> Optional[np.ndarray]:
+        """Get position uncertainty for a specific keypoint's offset."""
+        if keypoint in self.offset_kfs:
+            return self.offset_kfs[keypoint].P.diagonal()[:3]
+        return None
 
     def to_record(self, frame_idx: int) -> dict:
-        """Export tracklet state as a record for storage/analysis."""
-
+        """Export tracklet state for storage/analysis."""
         return {
             'frame_idx': frame_idx,
             'track_idx': self.track_idx,
 
             # Pose data
             'keypoints': self.hypothesis.positions,
-            'scale': self.hypothesis.scale,
+            'predicted_keypoints': self.predicted_keypoints,
+            'scale': self.estimated_scale,
             'score': self.hypothesis.anatomical_score,
             'point_indices': {n.name: n.idx for n in self.hypothesis},
 
-            # Tracking state
+            # Central state
             'position': self.position.tolist(),
             'velocity': self.velocity.tolist(),
             'position_uncertainty': self.position_uncertainty.tolist(),
+
+            # Body frame
+            'body_rotation': self.body_rotation.tolist(),
 
             # Health metrics
             'health': self.health,

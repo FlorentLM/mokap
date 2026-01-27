@@ -1,11 +1,11 @@
-import re
 import numpy as np
 import polars as pl
 import pandas as pd
 import networkx as nx
-from typing import List, Optional, Tuple, Dict
+from typing import List, Tuple, Union
 from scipy.stats import median_abs_deviation
-from mokap.utils import common_prefix_suffix
+
+from lucida.geometry.backend import ArrayLike
 
 
 def solve_mwis_networkx(G: nx.Graph) -> List[int]:
@@ -97,12 +97,16 @@ def solve_mwis(G: nx.Graph, method='networkx') -> List[int]:
 ##
 
 def robust_stats(data: List[float], fallback_val: float = np.nan) -> Tuple[float, float]:
-    """Returns median and MAD, safe for empty lists."""
+    """Returns median and MAD."""
     if len(data) == 0:
         return fallback_val, fallback_val
     arr = np.asarray(data)
     # scale 'normal' approximates std dev consistency
     return float(np.median(arr)), float(median_abs_deviation(arr, scale="normal"))
+
+
+def ema_update(existing: float, new: float, alpha: float = 0.01):
+    return (1 - alpha) * existing + alpha * new
 
 
 def plot_tracks_3d(ax, tracks_df: pd.DataFrame, title: str):
@@ -153,7 +157,3 @@ def prepare_reconstruction_input(df: pl.DataFrame, cameras: List[str], keypoints
         "coords": df.select(["x", "y"]).to_numpy(),
         "scores": df["score"].to_numpy()
     }
-
-
-def ema_update(existing: float, new: float, alpha: float = 0.01):
-    return (1 - alpha) * existing + alpha * new

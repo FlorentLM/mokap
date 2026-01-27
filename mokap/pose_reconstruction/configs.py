@@ -7,6 +7,29 @@ MAX_PROCESS_NOISE = 2.0
 
 
 @dataclass
+class TrackletConfig:
+    """Configuration for a Tracklet."""
+
+    # Central KF
+    central_process_noise_pos: float = 0.1
+    central_process_noise_scale: float = 0.01
+    central_measurement_noise_pos: float = 0.5 # 1.0  # measurement noise for central position
+    central_measurement_noise_scale: float = 0.01 # 0.25
+
+    centre_inference_uncertainty_factor: float = 3.0  # multiplier for measurement noise when a keypoint is inferred
+
+    # Offset KFs
+    offset_velocity_damping: float = 0.95  # Offsets tend to return to rest
+    rigidity_factor: float = 0.3  # How much to pull offsets toward rest pose (0=free, 1=rigid)
+
+    # Health/lifecycle
+    health_decay_rate: float = 0.95
+    inferred_health_penalty: float = 0.2
+    max_coast_age: int = 10
+    min_kps_for_inference: int = 3
+
+
+@dataclass
 class AssemblerConfig:
     """Configuration for the skeleton assembler class."""
 
@@ -50,12 +73,5 @@ class TrackerConfig:
     conflict_solver_jaccard_threshold: float = 0.85  # jaccard proximity threshold to consider two skeletons 'clones'
 
     # Cost function weights (for final assignment)
-    cost_pose_distance_weight: float = 0.9  # weight for pose distance in the hungarian assignment cost
-    cost_skeleton_score_weight: float = -0.1  # weight for skeleton score. negative to reward high-score matches
-
-    # Kalman filter parameters
-    kf_process_noise_pos: float = 0.1  # process noise for position (assumes random acceleration). higher = less smooth
-    kf_process_noise_scale: float = 0.01  # process noise for scale
-    kf_measurement_noise_pos: float = 1.0  # measurement noise for position (reflects 3d reconstruction uncertainty)
-    kf_measurement_noise_scale: float = 0.25  # measurement noise for scale
-    kf_inference_uncertainty_factor: float = 2.0  # multiplier for measurement noise when a keypoint is inferred
+    cost_pose_distance_weight: float = 0.9   # weight for pose distance in the hungarian assignment cost
+    skeleton_score_bonus_weight: float = 0.1  # bonus for high anatomical scores

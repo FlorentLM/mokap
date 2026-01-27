@@ -13,7 +13,7 @@ from scipy.optimize import linear_sum_assignment
 
 from mokap.pose_reconstruction.skeleton import BoneDefinition, SkeletonTopology, SkeletonStats
 from mokap.pose_reconstruction.datatypes import Node3D, SkeletonHypothesis, PointSoup, Tracklet, TimestepData
-from mokap.pose_reconstruction.configs import AssemblerConfig, TrackerConfig
+from mokap.pose_reconstruction.configs import AssemblerConfig, TrackerConfig, TrackletConfig
 from mokap.pose_reconstruction.utils import solve_mwis
 
 logger = logging.getLogger(__name__)
@@ -427,10 +427,12 @@ class MultiObjectTracker:
             self,
             soup: PointSoup,
             skeleton: SkeletonTopology,
+            stats: SkeletonStats,
             assembler: SkeletonAssembler,
             config: TrackerConfig
     ):
         self.skeleton = skeleton
+        self.stats = stats
         self.assembler = assembler
         self.config = config
         self.soup = soup
@@ -442,24 +444,37 @@ class MultiObjectTracker:
         self._next_track_idx = 0
         self._current_frame = -1
 
-    def _poses_mse(self,
-             kps_a: Dict[str, np.ndarray],
-             kps_b: Dict[str, np.ndarray]
-         ) -> Optional[float]:
+        self._tracklet_config = TrackletConfig()
+
+    def _poses_mse_weighted(
+            self,
+            kps_a: Dict[str, np.ndarray],
+            kps_b: Dict[str, np.ndarray]
+    ) -> Optional[float]:
         """
-        Computes Mean Squared Error between two sets of keypoints.
+        Weighted Mean Squared Error using per-keypoint association weights.
         Returns None if overlap is insufficient.
         """
+
         common_kps = kps_a.keys() & kps_b.keys()
 
         if len(common_kps) < self.config.association_min_kps:
             return None
 
-        total_dist_sq = sum(
-            np.sum((kps_a[kp] - kps_b[kp]) ** 2) for kp in common_kps
-        )
+        total_weighted_dist_sq = 0.0
+        total_weight = 0.0
 
-        return total_dist_sq / len(common_kps)
+        for kp in common_kps:
+            dist_sq = float(np.sum((kps_a[kp] - kps_b[kp]) ** 2))
+            weight = self.stats.get_dynamics(kp).association_weight
+
+            total_weighted_dist_sq += weight * dist_sq
+            total_weight += weight
+
+        if total_weight < 1e-6:
+            return None
+
+        return total_weighted_dist_sq / total_weight
 
     @property
     def active_tracklets(self) -> List[Tracklet]:
@@ -481,10 +496,8 @@ class MultiObjectTracker:
         return self._current_frame
 
     def update(self, frame_idx: int):
-        """
-        Process a new frame and update tracklets.
-        (after calling this access results via .active and .pending properties)
-        """
+        """Process a new frame and update tracklets."""
+
         self._current_frame = frame_idx
 
         # Move all active tracklets to pending at start of frame
@@ -538,8 +551,9 @@ class MultiObjectTracker:
                 track_idx=self._next_track_idx,
                 initial_hypothesis=hyp,
                 frame_idx=frame_idx,
-                central_kp=self.skeleton.central_keypoint,
-                config=self.config
+                skeleton=self.skeleton,
+                stats=self.stats,
+                config=self._tracklet_config
             )
             self._active_tracklets[tracklet.track_idx] = tracklet
             self._next_track_idx += 1
@@ -563,18 +577,20 @@ class MultiObjectTracker:
 
         for i, tracklet in enumerate(pending_tracklets):
 
-            if not tracklet.predicted_keypoints:
+            predicted_keypoints = tracklet.predicted_keypoints
+            if not predicted_keypoints:
                 continue
 
             for j, hyp in enumerate(hypotheses):
-
+                # Scale gate
                 scale_ratio = abs(hyp.scale - tracklet.estimated_scale) / max(tracklet.estimated_scale, 0.1)
                 if scale_ratio > self.config.scale_gate_hard_threshold:
                     continue  # leave at 1e9
 
                 scale_penalty = self.config.scale_gate_soft_weight * (scale_ratio ** 2)
 
-                mean_dist_sq = self._poses_mse(tracklet.predicted_keypoints, hyp.positions)
+                # Weighted pose distance
+                mean_dist_sq = self._poses_mse_weighted(predicted_keypoints, hyp.positions)
                 if mean_dist_sq is None:
                     continue
 
@@ -582,9 +598,9 @@ class MultiObjectTracker:
                     continue
 
                 cost = (
-                    self.config.cost_pose_distance_weight * mean_dist_sq +
-                    self.config.cost_skeleton_score_weight * hyp.anatomical_score +
-                    scale_penalty
+                        self.config.cost_pose_distance_weight * mean_dist_sq
+                        - self.config.skeleton_score_bonus_weight * hyp.anatomical_score
+                        + scale_penalty
                 )
                 cost_matrix[i, j] = cost
 
@@ -608,9 +624,7 @@ class MultiObjectTracker:
             assigned_indices.add(h_idx)
 
         # Return unmatched hypotheses
-        unmatched_indices = set(hypotheses_indices).difference(assigned_indices)
-
-        return [hypotheses[i] for i in unmatched_indices]
+        return [hypotheses[i] for i in range(len(hypotheses)) if i not in assigned_indices]
 
     def _prune_pending(self):
         """Remove stale or uncertain tracklets from pending."""
@@ -706,7 +720,7 @@ class MultiObjectTracker:
                 if not t.predicted_keypoints:
                     continue
 
-                mean_dist_sq = self._poses_mse(t.predicted_keypoints, cand.positions)
+                mean_dist_sq = self._poses_mse_weighted(t.predicted_keypoints, cand.positions)
                 if mean_dist_sq is None:
                     continue
 
@@ -735,7 +749,7 @@ if __name__ == '__main__':
     BASE_DIR = Path.home() / 'Desktop' / '3d_ant_data'
     PREFIX = '240905-1616'
     SESSION = 22
-    DEBUG_PLOT = True
+    DEBUG = True
 
     input_dir = BASE_DIR / PREFIX / 'inputs' / 'tracking'
     output_dir = BASE_DIR / PREFIX / 'outputs'
@@ -769,6 +783,7 @@ if __name__ == '__main__':
     tracker = MultiObjectTracker(
         soup=soup,
         skeleton=skeleton,
+        stats=stats,
         assembler=assembler,
         config=tracker_cfg
     )
@@ -786,11 +801,24 @@ if __name__ == '__main__':
         for frame_idx in range(min_frame, max_frame + 1):
             tracker.update(frame_idx)
 
+            if DEBUG:
+                for t in tracker.active_tracklets:
+                    offset_vels = {kp: np.linalg.norm(kf.x[3:6, 0]) for kp, kf in t.offset_kfs.items()}
+                    max_offset_vel_kp = max(offset_vels, key=offset_vels.get)
+                    max_offset_vel = offset_vels[max_offset_vel_kp]
+
+                    central_vel = np.linalg.norm(t.velocity)
+
+                    if frame_idx % 100 == 0:
+                        print(f"Frame {frame_idx}, Track {t.track_idx}: "
+                              f"central_vel={central_vel:.3f}, "
+                              f"max_offset_vel={max_offset_vel:.3f} ({max_offset_vel_kp})")
+
             # Update skeleton stats from high-quality observations
             for tracklet in tracker.active_tracklets:
 
                 if tracklet.last_update_frame == frame_idx:
-                    stats.update(tracklet.keypoints)
+                    stats.update_anatomy(tracklet.hypothesis.positions)
 
             # Collect records
             for record in tracker.collect_records(frame_idx):
@@ -810,6 +838,6 @@ if __name__ == '__main__':
     stats.to_json(stats_file)
     print(f"Updated stats saved to '{stats_file}'")
 
-    if DEBUG_PLOT:
+    if DEBUG:
         from mokap.pose_reconstruction.debug import TrackletViewer
         viewer = TrackletViewer(soup, records_by_track, skeleton)
