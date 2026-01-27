@@ -441,8 +441,8 @@ class SkeletonStats:
 
             if bone in stats.skeleton:
                 stats.bone_stats[bone] = BoneStats.from_dict(bone_data)
-                if bone_data.length_world is None:
-                    bone_data.length_world = stats.reference_length_world * bone_data.ratio_length
+                if stats.bone_stats[bone].length_world is None:
+                    stats.bone_stats[bone].length_world = stats.reference_length_world * bone_data['ratio_length']
 
         # Load dynamics
         for kp, dyn_data in data.get('dynamics', {}).items():
