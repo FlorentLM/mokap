@@ -565,7 +565,7 @@ class MultiObjectTracker:
 
         return total_weighted_dist_sq / total_weight
 
-    def _calc_continuity_bonuses(self, candidates: List[SkeletonHypothesis]):
+    def _apply_continuity_bonuses(self, candidates: List[SkeletonHypothesis]):
         """
         Adds score bonuses to hypotheses that align well with existing tracklet predictions.
         """
@@ -622,7 +622,7 @@ class MultiObjectTracker:
             return
 
         # Association bonus for temporal continuity
-        self._calc_continuity_bonuses(frame_candidates)
+        self._apply_continuity_bonuses(frame_candidates)
 
         # Solve conflicts
         remaining_hypotheses = self._resolve_conflicts(frame_candidates)

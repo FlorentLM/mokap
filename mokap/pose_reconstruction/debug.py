@@ -181,12 +181,12 @@ class TrackletViewer:
 
         if real_kps:
             rk = np.array(real_kps)
-            # Real: full markers
+            # Real: round markers
             self.ax.scatter(rk[:, 0], rk[:, 1], rk[:, 2], color=color, s=40, edgecolors='w', alpha=1.0)
 
         if virt_kps:
             vk = np.array(virt_kps)
-            # Virtual: hollow markers
+            # Virtual: triangles
             self.ax.scatter(vk[:, 0], vk[:, 1], vk[:, 2], color=color, s=30, marker='^', edgecolors='w', alpha=0.7)
 
         # Draw bones
