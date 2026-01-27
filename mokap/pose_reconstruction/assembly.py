@@ -516,7 +516,26 @@ class MultiObjectTracker:
 
         self._tracklet_config = TrackletConfig()
 
-    def _poses_mse_weighted(
+    # ──── Properties ────
+
+    @property
+    def active_tracklets(self) -> List[Tracklet]:
+        """Tracklets that were updated this frame."""
+        return list(self._active_tracklets.values())
+
+    @property
+    def pending_tracklets(self) -> List[Tracklet]:
+        """Tracklets that are coasting (not updated this frame)."""
+        return list(self._pending_tracklets.values())
+
+    @property
+    def tracklets(self) -> List[Tracklet]:
+        """All tracklets (active + pending)."""
+        return self.active_tracklets + self.pending_tracklets
+
+    # ──── Scoring helpers ────
+
+    def _calc_pose_distance(
             self,
             kps_a: Dict[str, np.ndarray],
             kps_b: Dict[str, np.ndarray]
@@ -546,45 +565,55 @@ class MultiObjectTracker:
 
         return total_weighted_dist_sq / total_weight
 
-    @property
-    def active_tracklets(self) -> List[Tracklet]:
-        """Tracklets that were updated this frame."""
-        return list(self._active_tracklets.values())
+    def _calc_continuity_bonuses(self, candidates: List[SkeletonHypothesis]):
+        """
+        Adds score bonuses to hypotheses that align well with existing tracklet predictions.
+        """
 
-    @property
-    def pending_tracklets(self) -> List[Tracklet]:
-        """Tracklets that are coasting (not updated this frame)."""
-        return list(self._pending_tracklets.values())
+        with_predictions = [t for t in self.tracklets if t.predicted_keypoints]
 
-    @property
-    def tracklets(self) -> List[Tracklet]:
-        """All tracklets (active + pending)."""
-        return self.active_tracklets + self.pending_tracklets
+        if not with_predictions:
+            return
 
-    @property
-    def current_frame(self) -> int:
-        return self._current_frame
+        for cand in candidates:
+            max_bonus = 0.0
+
+            for t in with_predictions:
+                dist_sq = self._calc_pose_distance(t.predicted_keypoints, cand.positions)
+                if dist_sq is not None:
+
+                    # Gaussian falloff based on squared distance
+                    bonus = np.exp(-0.5 * dist_sq / (self.config.association_radius ** 2))
+                    max_bonus = max(max_bonus, bonus)
+
+            cand.competition_score += max_bonus * self.config.continuity_bonus
+
+            # Additional bonus for assembly guided by a specific tracklet
+            if cand.track_affinity is not None:
+                cand.competition_score += self.config.guided_affinity_bonus
+
+    # ──── Public interface ────
 
     def update(self, frame_idx: int):
-        """Process a new frame."""
+        """Process a single frame."""
 
         self._current_frame = frame_idx
 
+        # Move all previously active to pending
         self._pending_tracklets.update(self._active_tracklets)
         self._active_tracklets.clear()
 
         # Predict all tracklets forward
-        for tracklet in self._pending_tracklets.values():
-            tracklet.predict(frame_idx)
+        for t in self._pending_tracklets.values():
+            t.predict(frame_idx)
 
         # Build predictions dict for guided assembly
         predictions = {
             t.track_idx: t.predicted_keypoints
-            for t in self._pending_tracklets.values()
-            if t.predicted_keypoints
+            for t in self._pending_tracklets.values() if t.predicted_keypoints
         }
 
-        # Generate and resolve hypotheses (now with guidance)
+        # Generate and resolve hypotheses
         frame_data = TimestepData(self.soup[frame_idx])
         frame_candidates = self.assembler.assemble(frame_data, predictions=predictions)
 
@@ -593,27 +622,25 @@ class MultiObjectTracker:
             return
 
         # Association bonus for temporal continuity
-        bonuses = self._association_bonuses(frame_candidates)
-        for i, cand in enumerate(frame_candidates):
-            cand.competition_score += bonuses[i] * self.config.continuity_bonus
-
-            # Extra bonus for guided hypotheses matching their source tracklet
-            if cand.track_affinity is not None:
-                cand.competition_score += self.config.guided_affinity_bonus
+        self._calc_continuity_bonuses(frame_candidates)
 
         # Solve conflicts
         remaining_hypotheses = self._resolve_conflicts(frame_candidates)
 
-        # Commit surviving hypotheses
-        self._extend_tracklets(remaining_hypotheses, frame_idx)
+        # Commit surviving hypotheses (extends existing, and initialises new ones)
+        self._commit_tracklet_hypotheses(remaining_hypotheses, frame_idx)
 
         self._prune_pending()
 
-    def _extend_tracklets(self,
+    # ──── Association and matching ────
+
+    def _commit_tracklet_hypotheses(self,
             hypotheses: List[SkeletonHypothesis],
             frame_idx: int
         ):
-        """Match hypotheses to existing tracklets, and create new tracklets from unmatched hypotheses."""
+        """
+        Matches hypotheses to existing tracklets, and creates new tracklets from unmatched hypotheses.
+        """
 
         if not hypotheses:
             return
@@ -670,7 +697,7 @@ class MultiObjectTracker:
                 scale_penalty = self.config.scale_gate_soft_weight * (scale_ratio ** 2)
 
                 # Weighted pose distance
-                mean_dist_sq = self._poses_mse_weighted(predicted_keypoints, hyp.positions)
+                mean_dist_sq = self._calc_pose_distance(predicted_keypoints, hyp.positions)
                 if mean_dist_sq is None:
                     continue
 
@@ -705,23 +732,6 @@ class MultiObjectTracker:
 
         # Return unmatched hypotheses
         return [hypotheses[i] for i in range(len(hypotheses)) if i not in assigned_indices]
-
-    def _prune_pending(self):
-        """Remove stale or uncertain tracklets from pending."""
-        # TODO: Maybe should be removed, finished tracklets should be stored
-
-        to_remove = []
-
-        for track_idx, t in self._pending_tracklets.items():
-
-            if t.time_since_update > self.config.max_tracklet_age:
-                to_remove.append(track_idx)
-
-            elif np.sum(t.position_uncertainty) > self.config.uncertainty_threshold:
-                to_remove.append(track_idx)
-
-        for track_idx in to_remove:
-            del self._pending_tracklets[track_idx]
 
     def _resolve_conflicts(self, candidates: List[SkeletonHypothesis]) -> List[SkeletonHypothesis]:
         """Build graph where edges represent mutually exclusive hypotheses, and solve with MWIS."""
@@ -780,37 +790,25 @@ class MultiObjectTracker:
 
         return winning_hypotheses
 
-    def _association_bonuses(self, candidates: List[SkeletonHypothesis]) -> np.ndarray:
-        """Calculate temporal association bonuses based on tracklet predictions."""
+    # ──── Lifecycle and serialisation ────
 
-        all_tracklets = self.tracklets
-        if not all_tracklets or not candidates:
-            return np.zeros(len(candidates))
+    # TODO: Should not prune at all, should just move them to a third internal store
 
-        bonuses = np.zeros(len(candidates))
+    def _prune_pending(self):
+        """Remove stale or uncertain tracklets from pending."""
 
-        for j, cand in enumerate(candidates):
+        to_remove = []
 
-            if not cand.positions:
-                continue
+        for track_idx, t in self._pending_tracklets.items():
 
-            max_bonus = 0.0
-            for t in all_tracklets:
+            if t.time_since_update > self.config.max_tracklet_age:
+                to_remove.append(track_idx)
 
-                if not t.predicted_keypoints:
-                    continue
+            elif np.sum(t.position_uncertainty) > self.config.uncertainty_threshold:
+                to_remove.append(track_idx)
 
-                mean_dist_sq = self._poses_mse_weighted(t.predicted_keypoints, cand.positions)
-                if mean_dist_sq is None:
-                    continue
-
-                # Gaussian falloff based on squared distance
-                bonus = np.exp(-0.5 * mean_dist_sq / (self.config.association_radius ** 2))
-                max_bonus = max(max_bonus, bonus)
-
-            bonuses[j] = max_bonus
-
-        return bonuses
+        for track_idx in to_remove:
+            del self._pending_tracklets[track_idx]
 
     def collect_records(self, frame_idx: int) -> List[dict]:
         """
