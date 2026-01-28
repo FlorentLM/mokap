@@ -10,39 +10,11 @@ from filterpy.kalman import KalmanFilter
 from scipy.spatial import cKDTree
 
 from lucida.geometry import intersect_ray_sphere
-from mokap.pose_reconstruction.skeleton import SkeletonStats, SkeletonTopology
+from mokap.pose_reconstruction.skeleton import SkeletonStats, Skeleton
 from mokap.pose_reconstruction.utils import ema_update
 
 if TYPE_CHECKING:
     from mokap.pose_reconstruction.configs import TrackletConfig
-
-
-# ────── Classes for accessing the 3D data ──────
-
-@dataclass(frozen=True, slots=True)
-class Node3D:
-    """
-    A keypoint observation in a given time step.
-    Immutable and hashable for comparisons.
-    Negative indices indicate virtual points.
-    """
-    name: str
-    idx: int
-    position: np.ndarray
-    confidence: float
-    ray_idx: int = -1  # source ray index if virtual, -1 otherwise
-
-    def __hash__(self):
-        return hash((self.name, self.idx))
-
-    def __eq__(self, other):
-        if not isinstance(other, Node3D):
-            return NotImplemented
-        return self.name == other.name and self.idx == other.idx
-
-    @property
-    def is_virtual(self) -> bool:
-        return self.idx < 0
 
 
 class PointSoup:
@@ -406,13 +378,36 @@ class TimestepData:
         return new_nodes
 
 
-# ────── Assembly and tracking classes ──────
+@dataclass(frozen=True, slots=True)
+class Node3D:
+    """
+    A keypoint observation in a given time step.
+    Immutable and hashable for comparisons.
+    Negative indices indicate virtual points.
+    """
+    name: str
+    idx: int
+    position: np.ndarray
+    confidence: float
+    ray_idx: int = -1  # source ray index if virtual, -1 otherwise
+
+    def __hash__(self):
+        return hash((self.name, self.idx))
+
+    def __eq__(self, other):
+        if not isinstance(other, Node3D):
+            return NotImplemented
+        return self.name == other.name and self.idx == other.idx
+
+    @property
+    def is_virtual(self) -> bool:
+        return self.idx < 0
+
 
 @dataclass
-class SkeletonHypothesis:
+class Pose3D:
     """
-    A candidate skeleton during assembly.
-    Nodes are stored as a frozenset (for hashing/comparison) and indexed by name (for O(1) lookup).
+    A candidate skeleton (a pose in 3D) during assembly.
     """
     nodes: FrozenSet[Node3D]
     scale: float
@@ -430,11 +425,10 @@ class SkeletonHypothesis:
         object.__setattr__(self, '_point_indices', frozenset(n.idx for n in self.nodes))
 
     def __getitem__(self, name: str) -> Node3D:
-        """Get node by keypoint name. Raises KeyError if not found."""
+        """Get node by keypoint name."""
         return self._by_name[name]
 
     def __contains__(self, item: Union[str, Node3D]) -> bool:
-        """Check if keypoint name or node is in this hypothesis."""
         if isinstance(item, str):
             return item in self._by_name
         return item in self.nodes
@@ -445,9 +439,9 @@ class SkeletonHypothesis:
     def __len__(self) -> int:
         return len(self.nodes)
 
-    def get(self, name: str, default: Optional[Node3D] = None) -> Optional[Node3D]:
-        """Get node by name, return default if not found."""
-        return self._by_name.get(name, default)
+    def get(self, name: str) -> Optional[Node3D]:
+        """Get node by name."""
+        return self._by_name.get(name)
 
     @property
     def nodes_by_name(self) -> Dict[str, Node3D]:
@@ -478,15 +472,15 @@ class SkeletonHypothesis:
         """Set of source ray indices for virtual points in this hypothesis."""
         return {n.ray_idx for n in self.nodes if n.is_virtual}
 
-    def shares_points_with(self, other: 'SkeletonHypothesis') -> bool:
+    def shares_points_with(self, other: 'Pose3D') -> bool:
         """Check if two hypotheses share any point indices."""
         return not self._point_indices.isdisjoint(other._point_indices)
 
-    def shares_rays_with(self, other: 'SkeletonHypothesis') -> bool:
+    def shares_rays_with(self, other: 'Pose3D') -> bool:
         """Check if two hypotheses share any source rays."""
         return not self.ray_indices.isdisjoint(other.ray_indices)
 
-    def is_related(self, other: 'SkeletonHypothesis') -> bool:
+    def is_related(self, other: 'Pose3D') -> bool:
         """Check if one hypothesis is a constituent of the other (merge provenance)."""
         if self.constituent_indices and other.constituent_indices:
             return (self.constituent_indices.issubset(other.constituent_indices) or
@@ -504,9 +498,9 @@ class Tracklet:
     def __init__(
             self,
             track_idx: int,
-            initial_hypothesis: 'SkeletonHypothesis',
+            initial_hypothesis: 'Pose3D',
             frame_idx: int,
-            skeleton: 'SkeletonTopology',
+            skeleton: 'Skeleton',
             stats: 'SkeletonStats',
             config: 'TrackletConfig'
     ):
@@ -522,7 +516,7 @@ class Tracklet:
         self.last_update_frame = frame_idx
 
         # Current hypothesis
-        self.hypothesis: SkeletonHypothesis = initial_hypothesis
+        self.hypothesis: Pose3D = initial_hypothesis
 
         # Health metrics
         self.health = 1.0
@@ -541,7 +535,7 @@ class Tracklet:
 
         self._init_offset_kfs(initial_hypothesis)
 
-    def _init_central_kf(self, hypothesis: 'SkeletonHypothesis') -> 'KalmanFilter':
+    def _init_central_kf(self, hypothesis: 'Pose3D') -> 'KalmanFilter':
         """
         Central KF: state = [x, y, z, vx, vy, vz, scale]
         """
@@ -600,7 +594,7 @@ class Tracklet:
 
         return kf
 
-    def _init_offset_kfs(self, hypothesis: 'SkeletonHypothesis'):
+    def _init_offset_kfs(self, hypothesis: 'Pose3D'):
         """
         Initialise per-keypoint offset KFs.
         State = [dx, dy, dz, d_vx, d_vy, d_vz] (offset position and offset velocity in body frame).
@@ -785,7 +779,7 @@ class Tracklet:
 
         return predictions
 
-    def update(self, hypothesis: 'SkeletonHypothesis', frame_idx: int):
+    def update(self, hypothesis: 'Pose3D', frame_idx: int):
         """
         Update tracklet with new observation.
         """
@@ -824,8 +818,6 @@ class Tracklet:
             self.central_kf.update(measurement)
             self.health = 1.0
 
-        # TODO: would be good to update body frame estimate
-
         # Update offset KFs for observed keypoints
         central_pos = self.central_kf.x[:3, 0]
         scale = max(self.central_kf.x[6, 0], 0.1)
@@ -853,7 +845,7 @@ class Tracklet:
 
     # ──── State-awareness ────
 
-    def _infer_central_position(self, hypothesis: 'SkeletonHypothesis') -> Optional[np.ndarray]:
+    def _infer_central_position(self, hypothesis: 'Pose3D') -> Optional[np.ndarray]:
         """
         Infer central keypoint position from other observed keypoints.
         Uses offset predictions to triangulate likely central position.
@@ -900,8 +892,7 @@ class Tracklet:
         - Use velocity direction to disambiguate sign (head vs tail)
         - Construct right-handed frame with Z assumed up (or from skeleton plane normal)
 
-        Returns:
-            3x3 rotation matrix (world -> body frame)
+        Returns 3x3 rotation matrix (world -> body frame)
         """
         positions = np.array(list(keypoints.values()))
 
@@ -915,7 +906,7 @@ class Tracklet:
         # PCA via SVD
         U, S, Vt = np.linalg.svd(centered, full_matrices=False)
 
-        # Principal axis (longest extent) - this is the "anterior-posterior" axis
+        # Principal axis (longest extent): this is (hopefully) the anterior-posterior axis
         principal_axis = Vt[0]  # first row of Vt
 
         # Disambiguate direction using velocity (head points in movement direction)
@@ -934,18 +925,14 @@ class Tracklet:
 
         # Secondary axis: try to use skeleton plane normal, else use world Z
         if len(positions) >= 3:
-            # Plane normal from SVD (smallest singular value direction)
             plane_normal = Vt[2]
-            # Ensure it points "up" (positive Z component in world)
             if plane_normal[2] < 0:
                 plane_normal = -plane_normal
         else:
             plane_normal = np.array([0., 0., 1.])
 
-        # Construct orthonormal frame: X=forward, Z=up, Y=right (right-handed)
+        # Construct frame: X=forward, Z=up, Y=right (right-handed)
         x_axis = principal_axis / np.linalg.norm(principal_axis)
-
-        # Gram-Schmidt: Z perpendicular to X, in the plane containing original Z
         z_axis = plane_normal - np.dot(plane_normal, x_axis) * x_axis
         z_norm = np.linalg.norm(z_axis)
 
@@ -961,8 +948,8 @@ class Tracklet:
 
         y_axis = np.cross(z_axis, x_axis)
 
-        # Rotation matrix: rows are the body axes expressed in world coordinates
-        # This transforms world -> body: body_coords = R @ world_coords
+        # Rotation matrix: rows are the body axes in world coordinates
+        # (this transforms world -> body: body_coords = R @ world_coords)
         R = np.array([x_axis, y_axis, z_axis])
 
         return R
@@ -970,19 +957,19 @@ class Tracklet:
     def _update_body_orientation(self, keypoints: Dict[str, np.ndarray], alpha: float = 0.3):
         """
         Update body orientation with temporal smoothing.
-        Uses SLERP-like interpolation for rotation matrices.
         """
         new_R = self._estimate_body_orientation(keypoints)
 
-        # Blend with previous orientation (simple linear blend + re-orthogonalize)
-        # For small rotations this approximates SLERP
+        # Blend with previous orientation (simple linear blend + re-orthogonalise)
+        # (for small rotations this approximates SLERP)
         blended = (1 - alpha) * self.body_rotation + alpha * new_R
 
-        # Re-orthogonalise via SVD (closest orthogonal matrix)
+        # Re-orthogonalise with SVD (closest orthogonal matrix)
         U, _, Vt = np.linalg.svd(blended)
         self.body_rotation = U @ Vt
 
     # ──── Serialisation ────
+
     # TODO: Rework this output format
 
     def to_record(self, frame_idx: int) -> dict:

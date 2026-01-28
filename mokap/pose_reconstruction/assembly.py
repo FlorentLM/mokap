@@ -11,8 +11,8 @@ import networkx as nx
 from alive_progress import alive_bar
 from scipy.optimize import linear_sum_assignment
 
-from mokap.pose_reconstruction.skeleton import BoneDefinition, SkeletonTopology, SkeletonStats
-from mokap.pose_reconstruction.datatypes import Node3D, SkeletonHypothesis, PointSoup, Tracklet, TimestepData
+from mokap.pose_reconstruction.skeleton import Bone, Skeleton, SkeletonStats
+from mokap.pose_reconstruction.datatypes import Node3D, Pose3D, PointSoup, Tracklet, TimestepData
 from mokap.pose_reconstruction.configs import AssemblerConfig, TrackerConfig, TrackletConfig
 from mokap.pose_reconstruction.utils import solve_mwis
 
@@ -24,10 +24,10 @@ class SkeletonAssembler:
     Assembles skeleton hypotheses in a frame view.
     """
     def __init__(self,
-        skeleton: SkeletonTopology,
-        skeleton_stats: SkeletonStats,
-        config: AssemblerConfig,
-    ):
+                 skeleton: Skeleton,
+                 skeleton_stats: SkeletonStats,
+                 config: AssemblerConfig,
+                 ):
         self.skeleton = skeleton
         self.skeleton_stats = skeleton_stats
         self.config = config
@@ -37,7 +37,7 @@ class SkeletonAssembler:
     def assemble(self,
             frame_data: TimestepData,
             tracklets: Optional[List[Tracklet]] = None
-        ) -> List[SkeletonHypothesis]:
+        ) -> List[Pose3D]:
         """
         Main assembly entry point.
 
@@ -110,7 +110,7 @@ class SkeletonAssembler:
         bone_count = 0
 
         for existing_name, existing_node in current_nodes.items():
-            bone = BoneDefinition(candidate.name, existing_name)
+            bone = Bone(candidate.name, existing_name)
 
             if bone not in self.skeleton:
                 continue
@@ -146,7 +146,7 @@ class SkeletonAssembler:
         frame_data: TimestepData,
         tracklets: Optional[List[Tracklet]],
         used_indices: Set[int]
-    ) -> List[SkeletonHypothesis]:
+    ) -> List[Pose3D]:
         """
         Generates skeleton hypotheses in two (well, three actually) passes:
 
@@ -213,7 +213,7 @@ class SkeletonAssembler:
 
         return hypotheses
 
-    def _generate_merge_hypotheses(self, fragments: List[SkeletonHypothesis]) -> List[SkeletonHypothesis]:
+    def _generate_merge_hypotheses(self, fragments: List[Pose3D]) -> List[Pose3D]:
         """Generate hypotheses by merging compatible fragments."""
 
         if len(fragments) < 2:
@@ -235,9 +235,9 @@ class SkeletonAssembler:
         return merge_hypotheses
 
     def _try_merge(self,
-        skel_A: SkeletonHypothesis,
-        skel_B: SkeletonHypothesis,
-    ) -> Optional[SkeletonHypothesis]:
+                   skel_A: Pose3D,
+                   skel_B: Pose3D,
+                   ) -> Optional[Pose3D]:
         """Attempt to merge two skeleton hypotheses."""
 
         # Check disjointness
@@ -256,7 +256,7 @@ class SkeletonAssembler:
 
         for kp_a in skel_A.names:
             for kp_b in skel_B.names:
-                bone = BoneDefinition(kp_a, kp_b)
+                bone = Bone(kp_a, kp_b)
                 if bone not in self.skeleton:
                     continue
 
@@ -292,11 +292,11 @@ class SkeletonAssembler:
         nodes: frozenset,
         avg_score: float,
         scale: float
-    ) -> SkeletonHypothesis:
+    ) -> Pose3D:
         """Create a SkeletonHypothesis with computed scores."""
 
         if avg_score <= 0:
-            return SkeletonHypothesis(
+            return Pose3D(
                 nodes=nodes,
                 competition_score=0.0,
                 anatomical_score=0.0,
@@ -310,7 +310,7 @@ class SkeletonAssembler:
         if avg_score > self.config.high_quality_threshold:
             quality_bonus = base_score * (self.config.quality_bonus_factor - 1.0)
 
-        return SkeletonHypothesis(
+        return Pose3D(
             nodes=nodes,
             competition_score=base_score + quality_bonus,
             anatomical_score=avg_score * num_nodes,
@@ -325,7 +325,7 @@ class SkeletonAssembler:
         tracklet: Optional[Tracklet] = None,
         max_iterations: Optional[int] = None,
         min_score_threshold: float = 0.0
-    ) -> Optional[SkeletonHypothesis]:
+    ) -> Optional[Pose3D]:
         """
         Generic greedy growth algorithm.
 
@@ -545,7 +545,7 @@ class SkeletonAssembler:
                 predicted_pos = predictions[target_type]
                 uncertainty = tracklet.get_world_uncertainty(target_type)
 
-                bone = BoneDefinition(node_kp, target_type)
+                bone = Bone(node_kp, target_type)
                 if bone in self.skeleton:
                     expected_len = self.skeleton_stats.expected_length(bone)
                     virtual_nodes = frame_data.intersect_rays(
@@ -581,7 +581,7 @@ class MultiObjectTracker:
     def __init__(
             self,
             soup: PointSoup,
-            skeleton: SkeletonTopology,
+            skeleton: Skeleton,
             stats: SkeletonStats,
             assembler: SkeletonAssembler,
             config: TrackerConfig
@@ -650,7 +650,7 @@ class MultiObjectTracker:
 
         return total_weighted_dist_sq / total_weight
 
-    def _apply_continuity_bonuses(self, candidates: List[SkeletonHypothesis]):
+    def _apply_continuity_bonuses(self, candidates: List[Pose3D]):
         """
         Adds score bonuses to hypotheses that align well with existing tracklet predictions.
         """
@@ -717,9 +717,9 @@ class MultiObjectTracker:
     # ──── Association and matching ────
 
     def _commit_tracklet_hypotheses(self,
-            hypotheses: List[SkeletonHypothesis],
-            frame_idx: int
-        ):
+                                    hypotheses: List[Pose3D],
+                                    frame_idx: int
+                                    ):
         """
         Matches hypotheses to existing tracklets, and creates new tracklets from unmatched hypotheses.
         """
@@ -748,9 +748,9 @@ class MultiObjectTracker:
             self._next_track_idx += 1
 
     def _assign_hypotheses(self,
-            hypotheses: List[SkeletonHypothesis],
-            frame_idx: int
-    ) -> List[SkeletonHypothesis]:
+                           hypotheses: List[Pose3D],
+                           frame_idx: int
+                           ) -> List[Pose3D]:
         """
         Assign hypotheses to pending tracklets using Hungarian algorithm.
         Returns list of unmatched hypotheses.
@@ -815,7 +815,7 @@ class MultiObjectTracker:
         # Return unmatched hypotheses
         return [hypotheses[i] for i in range(len(hypotheses)) if i not in assigned_indices]
 
-    def _resolve_conflicts(self, candidates: List[SkeletonHypothesis]) -> List[SkeletonHypothesis]:
+    def _resolve_conflicts(self, candidates: List[Pose3D]) -> List[Pose3D]:
         """Build graph where edges represent mutually exclusive hypotheses, and solve with MWIS."""
 
         conflict_graph = nx.Graph()
@@ -910,18 +910,18 @@ if __name__ == '__main__':
     PREFIX = '240905-1616'
     SESSION = 22
     DEBUG_PLOT = True
+    SAVE_UPDATED_STATS = False
 
     input_dir = BASE_DIR / PREFIX / 'inputs' / 'tracking'
     output_dir = BASE_DIR / PREFIX / 'outputs'
 
-    # soup_file = output_dir / f"soup_session{SESSION}.pkl"
-    soup_file = output_dir / f"soup2_session{SESSION}.pkl"
+    soup_file = output_dir / f"soup_session{SESSION}.pkl"
     stats_file = output_dir / "skeleton_stats.json"
     tracklets_file = output_dir / f'tracklets_session{SESSION}.pkl'
 
     # Load stuff
     soup = PointSoup.from_file(soup_file)
-    skeleton = SkeletonTopology.from_sleap(input_dir)
+    skeleton = Skeleton.from_sleap(input_dir)
     stats = SkeletonStats.from_json(stats_file, skeleton)
 
     print(f"Loaded point soup from {soup_file}")
@@ -981,9 +981,10 @@ if __name__ == '__main__':
         pickle.dump(dict(records_by_track), f)
     print(f"Saved to '{tracklets_file}'")
 
-    # Save updated stats
-    stats.to_json(stats_file)
-    print(f"Updated stats saved to '{stats_file}'")
+    if SAVE_UPDATED_STATS:
+        # Save updated stats
+        stats.to_json(stats_file)
+        print(f"Updated stats saved to '{stats_file}'")
 
     if DEBUG_PLOT:
         from mokap.pose_reconstruction.debug import TrackletViewer

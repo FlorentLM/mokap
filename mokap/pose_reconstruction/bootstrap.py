@@ -15,7 +15,7 @@ from scipy.stats import median_abs_deviation
 
 from mokap.pose_reconstruction.configs import MIN_PROCESS_NOISE, MAX_PROCESS_NOISE
 from mokap.pose_reconstruction.datatypes import PointSoup
-from mokap.pose_reconstruction.skeleton import (BoneDefinition, SkeletonTopology, SkeletonStats,
+from mokap.pose_reconstruction.skeleton import (Bone, Skeleton, SkeletonStats,
                                                 BoneStats, KeypointDynamics)
 from mokap.pose_reconstruction.utils import plot_tracks_3d, robust_stats
 
@@ -68,11 +68,11 @@ class AnatomyBootstrapper:
 
     def __init__(
             self,
-            skeleton: SkeletonTopology,
+            skeleton: Skeleton,
             default_variability: float = 0.1,
             min_samples: int = 10,
             max_bone_length: float = np.inf,
-            reference_bone: Optional[BoneDefinition] = None,
+            reference_bone: Optional[Bone] = None,
             min_tracklet_length: int = 5,
             max_displacement: float = 1.0,
             store_debug_data: bool = False
@@ -217,7 +217,7 @@ class DynamicsBootstrapper:
 
     def __init__(
             self,
-            skeleton: SkeletonTopology,
+            skeleton: Skeleton,
             fps: float = 30.0,
             max_displacement: float = 1.0,
             min_track_length: int = 15,
@@ -348,13 +348,12 @@ if __name__ == "__main__":
     input_dir = BASE_DIR / PREFIX / 'inputs' / 'tracking'
     output_dir = BASE_DIR / PREFIX / 'outputs'
 
-    # soup_file = output_dir / f"soup_session{SESSION}.pkl"
-    soup_file = output_dir / f"soup2_session{SESSION}.pkl"
+    soup_file = output_dir / f"soup_session{SESSION}.pkl"
     stats_file = output_dir / "skeleton_stats.json"
 
     # Load stuff
     soup = PointSoup.from_file(soup_file)
-    skeleton = SkeletonTopology.from_sleap(input_dir)
+    skeleton = Skeleton.from_sleap(input_dir)
 
     print(f"Loaded point soup from {soup_file}")
     print(f"Loaded skeleton with {len(skeleton.keypoints)} keypoints, {len(skeleton.bones)} bones")

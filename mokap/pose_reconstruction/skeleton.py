@@ -13,11 +13,11 @@ from mokap.pose_reconstruction.utils import ema_update
 from mokap.utils import common_prefix_suffix
 
 if TYPE_CHECKING:
-    from mokap.pose_reconstruction.datatypes import Node3D, SkeletonHypothesis
+    from mokap.pose_reconstruction.datatypes import Node3D, Pose3D
 
 
 @dataclass(frozen=True, order=True)
-class BoneDefinition:
+class Bone:
     """
     A bone definition: immutable, undirected edge between two keypoints.
     """
@@ -53,18 +53,18 @@ class BoneDefinition:
         return str(self)
 
     @classmethod
-    def from_key(cls, key: str) -> 'BoneDefinition':
+    def from_key(cls, key: str) -> 'Bone':
         return cls(*key.split(cls._sep))
 
 
-def _bone_or_key(item: BoneDefinition | str | Sequence[str]):
-    if isinstance(item, BoneDefinition):
+def _bone_or_key(item: Bone | str | Sequence[str]):
+    if isinstance(item, Bone):
         return item
     elif isinstance(item, Sequence) and len(item) == 2:
-        return BoneDefinition(*item)
+        return Bone(*item)
     elif isinstance(item, str) and len(item) >= 3:
-        if BoneDefinition._sep in item and item[0] != BoneDefinition._sep and item[-1] != BoneDefinition._sep:
-            return BoneDefinition.from_key(item)
+        if Bone._sep in item and item[0] != Bone._sep and item[-1] != Bone._sep:
+            return Bone.from_key(item)
     raise KeyError(item)
 
 
@@ -146,7 +146,38 @@ class KeypointDynamics:
         )
 
 
-class SkeletonTopology:
+@dataclass
+class SkeletonMetadata:
+    """
+    Metadata for a skeleton definition.
+
+    species: Scientific or common species name
+    common_name: Display name for the skeleton
+    skeleton_type: 'articulated' or 'rigid' (fixed shape)
+    reference_bone: Tuple of (kp1, kp2) defining the reference bone for scaling
+    units: World coordinate units ('mm', 'cm', 'px', etc)
+    notes: Free-form notes about the skeleton
+    version: Schema version for forward compatibility
+    created_date: ISO date string when skeleton was created
+    """
+    species: str = 'unknown'
+    common_name: str = ''
+    skeleton_type: str = 'articulated'
+    reference_bone: Optional[Tuple[str, str]] = None
+    units: str = 'mm'
+    notes: str = ''
+    version: str = '1.0'
+    created_date: str = ''
+
+
+# TODO: Consider adding this:
+#     - [bones] section: optional prior statistics (mean length, std) treated as ground truth
+#     - [bones] section could also be extended with angle affordances, joint limits
+#     - Real-life measurements could be added as ground truth for validation
+#     - Deformable skeleton types could include mesh/surface definitions
+
+
+class Skeleton:
     """
     An immutable definition of a Skeleton topology.
 
@@ -161,12 +192,15 @@ class SkeletonTopology:
             keypoints: Sequence[str],
             bones: Sequence[Tuple[str, str]],
             symmetry: Optional[Sequence[Tuple[str, str]]] = None,
-            name: str = "default"
+            name: str = "default",
+            metadata: Optional[SkeletonMetadata] = None
     ):
         self.name = name
         self.keypoints = tuple(keypoints)
-        self.bones = tuple([BoneDefinition(u, v) for u, v in bones])
+        self.bones = tuple([Bone(u, v) for u, v in bones])
         self.symmetry = tuple(symmetry) if symmetry else ()
+
+        self.metadata = metadata
 
         self._bone_set = set(self.bones)
         self._keypoint_set = set(self.keypoints)
@@ -232,7 +266,7 @@ class SkeletonTopology:
                 canonical_map[kp] = delim.sub('', kp).lower()
         return canonical_map
 
-    def __contains__(self, item: BoneDefinition | str | Sequence[str]) -> bool:
+    def __contains__(self, item: Bone | str | Sequence[str]) -> bool:
         try:
             return _bone_or_key(item) in self._bone_set
         except KeyError:
@@ -254,7 +288,7 @@ class SkeletonTopology:
         return self._central_keypoint
 
     @property
-    def central_bone(self) -> BoneDefinition:
+    def central_bone(self) -> Bone:
         """Most connected bone (stable for scale estimation)."""
         return max(self.bones, key=lambda b: self._degrees[b.k1] + self._degrees[b.k2])
 
@@ -264,11 +298,11 @@ class SkeletonTopology:
     def neighbours(self, keypoint: str) -> List[str]:
         return list(self._graph.neighbors(keypoint))
 
-    def canonical(self, item: BoneDefinition | str | Sequence[str]) -> str:
+    def canonical(self, item: Bone | str | Sequence[str]) -> str:
         """Get canonical name from a keypoint or bone name."""
         try:
             bone = _bone_or_key(item)
-            return BoneDefinition._sep.join(sorted([self.canonical(bone.k1), self.canonical(bone.k2)]))
+            return Bone._sep.join(sorted([self.canonical(bone.k1), self.canonical(bone.k2)]))
         except KeyError:
             return self.canonical_map[item]
 
@@ -287,50 +321,50 @@ class SkeletonStats:
     Learned statistics for a skeleton (bone lengths and per-keypoint motion params).
     """
 
-    def __init__(self, skeleton: SkeletonTopology):
+    def __init__(self, skeleton: Skeleton):
         self.skeleton = skeleton
 
         # Anatomy
-        self.reference_bone: Optional[BoneDefinition] = None
+        self.reference_bone: Optional[Bone] = None
         self.reference_length_world = 1.0  # length of the reference bone in world units
 
-        self.bone_stats: Dict[BoneDefinition, BoneStats] = {}
+        self.bone_stats: Dict[Bone, BoneStats] = {}
 
         # Dynamics
         self.keypoint_dynamics: Dict[str, KeypointDynamics] = {}
 
     #  ────── Anatomy  ──────
 
-    def expected_ratio(self, bone: BoneDefinition | str | Sequence[str]) -> float:
+    def expected_ratio(self, bone: Bone | str | Sequence[str]) -> float:
         """Expected length in relation to reference bone."""
         return self.bone_stats[_bone_or_key(bone)].ratio_length
 
-    def expected_length(self, bone: BoneDefinition | str | Sequence[str]) -> float:
+    def expected_length(self, bone: Bone | str | Sequence[str]) -> float:
         """Absolute expected length in world units."""
         return self.expected_ratio(bone) * self.reference_length_world
 
-    def ratio_variability(self, bone: BoneDefinition | str | Sequence[str]) -> float:
+    def ratio_variability(self, bone: Bone | str | Sequence[str]) -> float:
         return self.bone_stats[_bone_or_key(bone)].variability
 
-    def length_variability(self, bone: BoneDefinition | str | Sequence[str]) -> float:
+    def length_variability(self, bone: Bone | str | Sequence[str]) -> float:
         return self.ratio_variability(bone) * self.reference_length_world
 
-    def ratio_bounds(self, bone: BoneDefinition | str | Sequence[str], n_sigma: float = 3.0) -> Tuple[float, float]:
+    def ratio_bounds(self, bone: Bone | str | Sequence[str], n_sigma: float = 3.0) -> Tuple[float, float]:
         """Acceptable ratio range for validation."""
         expected = self.expected_ratio(bone)
         tolerance = n_sigma * self.ratio_variability(bone)
         return expected - tolerance, expected + tolerance
 
-    def length_bounds(self, bone: BoneDefinition | str | Sequence[str], n_sigma: float = 3.0) -> Tuple[float, float]:
+    def length_bounds(self, bone: Bone | str | Sequence[str], n_sigma: float = 3.0) -> Tuple[float, float]:
         """Acceptable length range for validation."""
         lower, upper = self.ratio_bounds(bone, n_sigma)
         return lower * self.reference_length_world, upper * self.reference_length_world
 
     def estimate_scale(self,
-           hypothesis: Union['SkeletonHypothesis', Dict[str, 'Node3D'], Dict[str, ArrayLike]],
-           min_scale: float = 0.3,
-           max_scale: float = 4.0
-       ) -> float:
+                       hypothesis: Union['Pose3D', Dict[str, 'Node3D'], Dict[str, ArrayLike]],
+                       min_scale: float = 0.3,
+                       max_scale: float = 4.0
+                       ) -> float:
         """
         Estimate skeleton scale from observed keypoint positions.
 
@@ -367,7 +401,7 @@ class SkeletonStats:
 
     def score_bone(
             self,
-            bone: BoneDefinition | str | Sequence[str],
+            bone: Bone | str | Sequence[str],
             node1: 'Node3D',
             node2: 'Node3D',
             scale: float = 1.0,
@@ -471,7 +505,7 @@ class SkeletonStats:
         return data
 
     @classmethod
-    def from_dict(cls, data: dict, skeleton: SkeletonTopology) -> 'SkeletonStats':
+    def from_dict(cls, data: dict, skeleton: Skeleton) -> 'SkeletonStats':
         stats = cls(skeleton)
 
         # Load Anatomy
@@ -483,7 +517,7 @@ class SkeletonStats:
 
                 for k, v in anat.get('bones', {}).items():
                     try:
-                        bone = BoneDefinition.from_key(k)
+                        bone = Bone.from_key(k)
                         if bone in skeleton:
                             bs = BoneStats.from_dict(v)
 
@@ -534,5 +568,5 @@ class SkeletonStats:
             json.dump(final_data, f, indent=2)
 
     @classmethod
-    def from_json(cls, path: Path, skeleton: SkeletonTopology) -> 'SkeletonStats':
+    def from_json(cls, path: Path, skeleton: Skeleton) -> 'SkeletonStats':
         return cls.from_dict(json.loads(path.read_text()), skeleton)

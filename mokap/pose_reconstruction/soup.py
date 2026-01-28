@@ -4,17 +4,16 @@
 Pipeline:
   1. Undistort all 2D detections
   2. For each keypoint type (batched across all frames):
-     - Find all epipolar-valid pairs using fundamental matrices
-     - Triangulate all pairs in one batch
-     - Filter by reprojection error
-     - Merge nearby points by re-triangulating with all contributing views
+      - Find cliques of mutually epipolar-consistent detections
+      - Triangulate each clique using all contributing views
+      - Greedily accept non-conflicting points (prefer more views)
   3. Collect orphan rays for unused detections
 """
 import logging
-from itertools import combinations
-from typing import List, Dict, Tuple
+from collections import defaultdict, Counter
+from typing import List, Dict
+import networkx as nx
 import numpy as np
-from scipy.spatial import cKDTree
 
 from lucida import CameraRig
 from lucida.geometry.backend import xp, set_at, xp_float
@@ -22,20 +21,19 @@ from lucida.geometry import (undistort_points, px_to_ray, transform_vectors, pro
                              px_to_norm, triangulate_linear, epipolar_line_distance)
 
 from mokap.pose_reconstruction.datatypes import PointSoup
-from mokap.pose_reconstruction.skeleton import SkeletonTopology
+from mokap.pose_reconstruction.skeleton import Skeleton
 
 logger = logging.getLogger(__name__)
 
 
 class Reconstructor:
     """
-    3D reconstruction via pairwise triangulation and spatial merging.
+    3D reconstruction via clique detection and triangulation.
 
     For each keypoint type (batched across all frames):
-      1. Find epipolar-valid camera pairs
-      2. Triangulate each pair
-      3. Filter by reprojection error
-      4. Merge nearby points by re-triangulating with all contributing views
+      1. Find cliques of mutually epipolar-consistent detections
+      2. Triangulate each clique using all contributing views
+      3. Greedily accept non-conflicting points (prefer more views)
     """
 
     def __init__(self,
@@ -44,19 +42,16 @@ class Reconstructor:
                  min_views: int = 2,
                  epipolar_threshold: float = 10.0,
                  reprojection_threshold: float = 5.0,
-                 merge_radius: float = 0.5,
                  ):
 
         self.rig = rig
         self.nb_cams = len(rig)
-        self.cam_pairs = list(combinations(range(self.nb_cams), 2))
         self.keypoint_names = keypoint_names
 
         # Config
         self.min_views = min_views
         self.epi_thresh = epipolar_threshold
         self.reproj_thresh = reprojection_threshold
-        self.merge_radius = merge_radius
 
         # Cache rig arrays
         self.Ks = rig.K.copy()
@@ -66,18 +61,35 @@ class Reconstructor:
         self.F = rig.F.copy()
         self.dist_model = str(rig.distortion_model)
 
-        # Pre-allocate empty arrays to avoid thousands of alloc calls
-        self._empty_triangulate_result = (
-            np.empty((0, 3), dtype=np.float32),
-            np.empty((0,), dtype=np.float32),
-            [],
-            np.empty((0,), dtype=np.uint64),
-            np.empty((0,), dtype=np.int32)
+    def _triangulate_reproj_wrapper(self, pixel_coords, weights):
+        """Just a tiny internal wrapper for px->norm->3d->reproj because this is used twice."""
+
+        obs_px_normalised = px_to_norm(pixel_coords, self.Ks[:, None])
+        pts3d = triangulate_linear(obs_px_normalised, self.Ts, weights=weights)
+        reproj = project_full(
+            pts3d[None],
+            self.Ts[:, None],
+            self.Ks[:, None],
+            self.Ds[:, None],
+            self.dist_model
         )
+        return pts3d, reproj
 
     def reconstruct(self, inputs: Dict[str, np.ndarray]) -> PointSoup:
-        """Processes a frame (or a chunk of)."""
+        """
+        Main entry point. Processes a batch of frames.
 
+        Args:
+            inputs: Dict with keys:
+                - 'coords': (N, 2) pixel coordinates
+                - 'cam_ids': (N,) camera indices
+                - 'frame_indices': (N,) frame indices
+                - 'kp_type_ids': (N,) keypoint type indices
+                - 'scores': (N,) detection confidences
+
+        Returns:
+            PointSoup with reconstructed 3D points and orphan rays
+        """
         coords = xp.asarray(inputs['coords'])
         cam_ids = inputs['cam_ids']
         frame_ids = inputs['frame_indices']
@@ -92,58 +104,56 @@ class Reconstructor:
             self.dist_model
         )
 
+        # Track which detections get used (for orphan ray generation)
         used = np.zeros(len(coords), dtype=bool)
 
         out_pts, out_conf, out_err = [], [], []
         out_kp, out_frame, out_mask = [], [], []
 
-        # Process per keypoint type (frames are batched together)
+        # Process per keypoint type
         for kp_type in np.unique(kp_ids):
-
             kp_mask = kp_ids == kp_type
             idx = np.where(kp_mask)[0]
 
             if len(idx) < self.min_views:
                 continue
 
-            local_undist = undist[idx]
-            local_raw = coords[idx]
-            local_cams = cam_ids[idx]
-            local_scores = scores[idx]
-            local_frames = frame_ids[idx]
-
-            # Triangulate all valid pairs across all frames
-            pts, errs, det_indices, cam_masks, pair_frames = self._triangulate_epipolar_pairs(
-                local_undist, local_raw, local_cams, local_scores, local_frames, idx
+            # Find cliques of mutually consistent detections
+            cliques = self._find_detection_cliques(
+                undist=undist[idx],
+                cam_ids=cam_ids[idx],
+                frame_ids=frame_ids[idx],
+                local_to_global=idx  # Map local indices back to global
             )
-            nb_points = len(pts)
 
-            if nb_points == 0:
+            if not cliques:
                 continue
 
-            # Merge nearby points with re-triangulation (respecting frame boundaries)
-            pts_merged, errs, det_indices, cam_masks, pair_frames = self._merge_nearby(
-                pts, errs, det_indices, cam_masks, pair_frames,
-                undist, coords, cam_ids, scores
+            # Triangulate cliques and resolve conflicts
+            results = self._triangulate_cliques(
+                cliques=cliques,
+                undist=undist,
+                raw=coords,
+                cam_ids=cam_ids,
+                scores=scores,
+                frame_ids=frame_ids
             )
 
-            for i in range(len(pts_merged)):
-                out_pts.append(pts_merged[i])
-                out_err.append(errs[i])
-
-                n_views = bin(cam_masks[i]).count('1')
-                out_conf.append(n_views * 10.0 - errs[i])
-
+            # Collect results
+            for res in results:
+                out_pts.append(res['position'])
+                out_err.append(res['error'])
+                out_conf.append(res['n_views'] * 10.0 - res['error'])
                 out_kp.append(kp_type)
-                out_frame.append(pair_frames[i])
-                out_mask.append(cam_masks[i])
+                out_frame.append(res['frame'])
+                out_mask.append(res['cam_mask'])
 
-                for det_idx in det_indices[i]:
+                for det_idx in res['detections']:
                     used[det_idx] = True
 
         # Orphan rays for unused detections
-        orphan_rays_mask = ~used & ~np.isnan(inputs['coords'][:, 0])
-        orphan_rays = self._get_rays(inputs, undist, orphan_rays_mask)
+        orphan_mask = ~used & ~np.isnan(inputs['coords'][:, 0])
+        orphan_rays = self._get_rays(inputs, undist, orphan_mask)
 
         return PointSoup(
             positions=np.array(out_pts, dtype=np.float32).reshape(-1, 3),
@@ -157,243 +167,181 @@ class Reconstructor:
             keypoint_names=self.keypoint_names
         )
 
-    def _triangulate_reproj_wrapper(self, pixel_coords, weights):
-        """Just a tiny internal wrapper for px->norm->3d->reproj because this is used twice."""
+    def _find_detection_cliques(
+        self,
+        undist: xp.ndarray,
+        cam_ids: np.ndarray,
+        frame_ids: np.ndarray,
+        local_to_global: np.ndarray
+    ) -> List[List[int]]:
+        """
+        Find maximal cliques of mutually epipolar-consistent detections.
+        Batched epipolar computation for performance.
+        """
 
-        obs_px_normalised = px_to_norm(pixel_coords, self.Ks[:, None])
+        # Group by frame
+        frame_to_local = defaultdict(list)
+        for local_idx, f in enumerate(frame_ids):
+            frame_to_local[f].append(local_idx)
 
-        pts3d = triangulate_linear(obs_px_normalised, self.Ts, weights=weights)
+        all_cliques = []
 
-        reproj = project_full(
-            pts3d[None],
-            self.Ts[:, None],
-            self.Ks[:, None],
-            self.Ds[:, None],
-            self.dist_model
-        )
-
-        return pts3d, reproj
-
-    def _triangulate_epipolar_pairs(
-            self,
-            undist: xp.ndarray,
-            raw: xp.ndarray,
-            cam_ids: np.ndarray,
-            scores: np.ndarray,
-            frame_ids: np.ndarray,
-            global_idx: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray, List[List[int]], np.ndarray, np.ndarray]:
-        """Triangulate all epipolar-valid pairs (across all frames at once)."""
-
-        all_ii, all_jj = [], []
-        all_ci, all_cj = [], []
-
-        for ci, cj in self.cam_pairs:
-            idx_i = np.where(cam_ids == ci)[0]
-            idx_j = np.where(cam_ids == cj)[0]
-
-            if len(idx_i) == 0 or len(idx_j) == 0:
+        for frame, local_indices in frame_to_local.items():
+            n = len(local_indices)
+            if n < self.min_views:
                 continue
 
-            ii, jj = np.meshgrid(idx_i, idx_j, indexing='ij')
-            ii, jj = ii.ravel(), jj.ravel()
+            local_indices = np.array(local_indices, dtype=np.int32)
+            local_cams = cam_ids[local_indices]
 
-            # Same frame only
-            same_frame = frame_ids[ii] == frame_ids[jj]
-            ii, jj = ii[same_frame], jj[same_frame]
+            # Build all pairs (a, b) where a < b and different cameras
+            pairs_a, pairs_b = [], []
+            for a in range(n):
+                for b in range(a + 1, n):
+                    if local_cams[a] != local_cams[b]:
+                        pairs_a.append(a)
+                        pairs_b.append(b)
 
-            if len(ii) == 0:
+            if not pairs_a:
                 continue
 
-            all_ii.append(ii)
-            all_jj.append(jj)
-            all_ci.append(np.full(len(ii), ci, dtype=np.int32))
-            all_cj.append(np.full(len(ii), cj, dtype=np.int32))
+            pairs_a = np.array(pairs_a, dtype=np.int32)
+            pairs_b = np.array(pairs_b, dtype=np.int32)
 
-        if not all_ii:
-            return self._empty_triangulate_result
+            # Epipolar distance (batched)
+            li_a = local_indices[pairs_a]
+            li_b = local_indices[pairs_b]
+            ci = local_cams[pairs_a]
+            cj = local_cams[pairs_b]
 
-        ii = np.concatenate(all_ii)
-        jj = np.concatenate(all_jj)
-        ci = np.concatenate(all_ci)
-        cj = np.concatenate(all_cj)
+            dists = epipolar_line_distance(
+                undist[li_a],
+                undist[li_b],
+                self.F[ci, cj]
+            )
+            dists = np.asarray(dists)
 
-        pair_frames = frame_ids[ii]
+            # Build adjacency from valid pairs
+            valid_pairs = dists < self.epi_thresh
 
-        # Batched epipolar check
-        dists = epipolar_line_distance(
-            undist[ii],
-            undist[jj],
-            self.F[ci, cj]
-        )
-        valid_epi = dists < self.epi_thresh
+            # Construct graph edges
+            edges = list(zip(pairs_a[valid_pairs], pairs_b[valid_pairs]))
+            if not edges:
+                # No valid edges, but maybe single-camera situation
+                # (shouldn't happen given min_views check, but this to be safe)
+                continue
 
-        ii = ii[valid_epi]
-        jj = jj[valid_epi]
-        pair_frames = pair_frames[valid_epi]
+            G = nx.Graph()
+            G.add_nodes_from(range(n))
+            G.add_edges_from(edges)
 
-        nb_pairs = len(ii)
-        if nb_pairs == 0:
-            return self._empty_triangulate_result
+            # Find all maximal cliques
+            for clique in nx.find_cliques(G):
+                if len(clique) >= self.min_views:
+                    global_clique = [int(local_to_global[local_indices[c]]) for c in clique]
+                    all_cliques.append(global_clique)
 
-        # Build observation tensor
-        pair_indices = np.arange(nb_pairs)
+        return all_cliques
 
-        obs = xp.full((self.nb_cams, nb_pairs, 2), xp.nan, dtype=xp_float)
-        obs = set_at(obs, (cam_ids[ii], pair_indices), undist[ii])
-        obs = set_at(obs, (cam_ids[jj], pair_indices), undist[jj])
+    def _triangulate_cliques(
+        self,
+        cliques: List[List[int]],
+        undist: xp.ndarray,
+        raw: xp.ndarray,
+        cam_ids: np.ndarray,
+        scores: np.ndarray,
+        frame_ids: np.ndarray
+    ) -> List[Dict]:
+        """
+        Triangulate each clique, greedily accepting non-conflicting points.
 
-        weights = xp.zeros((self.nb_cams, nb_pairs), dtype=xp_float)
-        weights = set_at(weights, (cam_ids[ii], pair_indices), xp.asarray(scores[ii]))
-        weights = set_at(weights, (cam_ids[jj], pair_indices), xp.asarray(scores[jj]))
+        Cliques are sorted by (n_views, total_score) descending.
+        Once a detection is used, all cliques containing it are skipped.
 
-        # Triangulate and reproject
-        pts3d, reproj = self._triangulate_reproj_wrapper(obs, weights)
+        Args:
+            cliques: List of cliques (each is list of global detection indices)
+            undist: All undistorted coordinates
+            raw: All raw coordinates (for reprojection error)
+            cam_ids: All camera IDs
+            scores: All detection scores
+            frame_ids: All frame IDs
 
-        raw_tensor = xp.full((self.nb_cams, nb_pairs, 2), xp.nan, dtype=xp_float)
-        raw_tensor = set_at(raw_tensor, (cam_ids[ii], pair_indices), raw[ii])
-        raw_tensor = set_at(raw_tensor, (cam_ids[jj], pair_indices), raw[jj])
+        Returns:
+            List of result dicts with keys: position, error, n_views, detections, cam_mask, frame
+        """
 
-        diff = raw_tensor - reproj
-        sq_err = xp.sum(xp.square(diff), axis=-1)
-        valid_views = ~xp.isnan(raw_tensor[..., 0])
+        # Score and sort cliques: prefer more views, then higher total confidence
+        cliques_scored = []
+        for clique in cliques:
+            n_views = len(clique)
+            total_score = sum(scores[i] for i in clique)
+            cliques_scored.append((n_views, total_score, clique))
 
-        rmse = xp.sqrt(xp.sum(xp.where(valid_views, sq_err, 0.0), axis=0) / 2.0)
+        cliques_scored.sort(reverse=True, key=lambda x: (x[0], x[1]))
 
-        rmse_np = np.asarray(rmse)
-        pts3d_np = np.asarray(pts3d)
+        used_detections = set()
+        results = []
 
-        valid_mask = (rmse_np < self.reproj_thresh) & ~np.any(np.isnan(pts3d_np), axis=1)
-        valid_idx = np.where(valid_mask)[0]
+        for n_views, total_score, clique in cliques_scored:
 
-        pts_out = pts3d_np[valid_idx]
-        err_out = rmse_np[valid_idx]
-        frames_out = pair_frames[valid_idx]
+            # Skip if any detection already used
+            if any(d in used_detections for d in clique):
+                continue
 
-        det_indices = [
-            [int(global_idx[ii[k]]), int(global_idx[jj[k]])]
-            for k in valid_idx
-        ]
+            # Build observation tensor for this clique
+            obs = xp.full((self.nb_cams, 1, 2), xp.nan, dtype=xp_float)
+            weights = xp.zeros((self.nb_cams, 1), dtype=xp_float)
 
-        cam_masks = np.array([
-            (1 << int(cam_ids[ii[k]])) | (1 << int(cam_ids[jj[k]]))
-            for k in valid_idx
-        ], dtype=np.uint64)
-
-        return pts_out, err_out, det_indices, cam_masks, frames_out
-
-    def _merge_nearby(
-            self,
-            pts: np.ndarray,
-            errors: np.ndarray,
-            det_indices: List[List[int]],
-            cam_masks: np.ndarray,
-            frame_ids: np.ndarray,
-            undist: xp.ndarray,
-            raw: xp.ndarray,
-            cam_ids: np.ndarray,
-            scores: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray, List[List[int]], np.ndarray, np.ndarray]:
-        """Fast merge using KDTree + union-find, and batched re-triangulation."""
-
-        nb_pts = len(pts)
-        if nb_pts <= 1:
-            return pts, errors, det_indices, cam_masks, frame_ids
-
-        # Cool trick: add massive offset for frames to Z to prevent cross-frame merging
-        frame_shift = self.merge_radius * 1000  # 1000 doesn't matter, just needs to be big
-        pts_with_frame = np.column_stack([
-            pts[:, 0],
-            pts[:, 1],
-            pts[:, 2],
-            frame_ids.astype(np.float32) * frame_shift
-        ])
-
-        # Find neighbours within merge radius (but in 4D space)
-        tree = cKDTree(pts_with_frame)
-        pairs = tree.query_pairs(r=self.merge_radius)
-
-        # Union-find to cluster
-        parent = np.arange(nb_pts)
-
-        def find(x):
-            root = x
-            while parent[root] != root:
-                root = parent[root]
-            while parent[x] != root:
-                parent[x], x = root, parent[x]
-            return root
-
-        def union(x, y):
-            px, py = find(x), find(y)
-            if px != py:
-                parent[px] = py
-
-        for i, j in pairs:
-            union(i, j)
-
-        # Group by cluster
-        clusters = {}
-        for i in range(nb_pts):
-            root = find(i)
-            if root not in clusters:
-                clusters[root] = []
-            clusters[root].append(i)
-
-        cluster_list = list(clusters.values())
-        n_clusters = len(cluster_list)
-
-        # Take all detections per cluster
-        cluster_dets = []
-        cluster_frames = []
-
-        for cluster in cluster_list:
-            all_dets = set()
-
-            for idx in cluster:
-                all_dets.update(det_indices[idx])
-
-            cluster_dets.append(list(all_dets))
-            cluster_frames.append(frame_ids[cluster[0]])
-
-        # Build observation tensor
-        obs = xp.full((self.nb_cams, n_clusters, 2), xp.nan, dtype=xp.float32)
-        weights = xp.zeros((self.nb_cams, n_clusters), dtype=xp.float32)
-        merged_masks = np.zeros(n_clusters, dtype=np.uint64)
-
-        for cluster_idx, dets in enumerate(cluster_dets):
-            cluster_mask = np.uint64(0)
-
-            for det_idx in dets:
+            for det_idx in clique:
                 c = int(cam_ids[det_idx])
-                obs = set_at(obs, (c, cluster_idx), undist[det_idx])
-                weights = set_at(weights, (c, cluster_idx), xp.asarray(scores[det_idx]))
-                cluster_mask |= np.uint64(1 << c)
+                obs = set_at(obs, (c, 0), undist[det_idx])
+                weights = set_at(weights, (c, 0), xp.asarray(scores[det_idx]))
 
-            merged_masks[cluster_idx] = cluster_mask
+            # Triangulate
+            pt3d, reproj = self._triangulate_reproj_wrapper(obs, weights)
 
-        # Re-triangulate all
-        pts3d, reproj = self._triangulate_reproj_wrapper(obs, weights)
+            # Check for degenerate triangulation
+            pt3d_np = np.asarray(pt3d[0])
+            if np.any(np.isnan(pt3d_np)):
+                continue
 
-        raw_tensor = xp.full((self.nb_cams, n_clusters, 2), xp.nan, dtype=xp.float32)
-
-        for cluster_idx, dets in enumerate(cluster_dets):
-            for det_idx in dets:
+            # Compute reprojection error against raw (distorted) coordinates
+            raw_obs = xp.full((self.nb_cams, 1, 2), xp.nan, dtype=xp_float)
+            for det_idx in clique:
                 c = int(cam_ids[det_idx])
-                raw_tensor = set_at(raw_tensor, (c, cluster_idx), raw[det_idx])
+                raw_obs = set_at(raw_obs, (c, 0), raw[det_idx])
 
-        diff = raw_tensor - reproj
-        sq_err = xp.sum(xp.square(diff), axis=-1)
-        valid_views = ~xp.isnan(raw_tensor[..., 0])
-        n_views = xp.sum(valid_views, axis=0)
+            diff = raw_obs - reproj
+            sq_err = xp.sum(xp.square(diff), axis=-1)  # (n_cams, 1)
+            valid_mask = ~xp.isnan(raw_obs[..., 0])
+            n_valid = int(xp.sum(valid_mask))
 
-        rmse = xp.sqrt(xp.sum(xp.where(valid_views, sq_err, 0.0), axis=0) / xp.maximum(n_views, 1))
+            total_sq_err = float(xp.sum(xp.where(valid_mask, sq_err, 0.0)))
+            rmse = np.sqrt(total_sq_err / max(n_valid, 1))
 
-        pts3d_np = np.asarray(pts3d)
-        rmse_np = np.asarray(rmse)
-        cluster_frames_np = np.array(cluster_frames, dtype=np.int32)
+            # Filter by reprojection error
+            if rmse >= self.reproj_thresh:
+                continue
 
-        return pts3d_np, rmse_np, cluster_dets, merged_masks, cluster_frames_np
+            # Accept point
+            used_detections.update(clique)
+
+            cam_mask = np.uint64(0)
+            for det_idx in clique:
+                cam_mask |= np.uint64(1 << int(cam_ids[det_idx]))
+
+            results.append({
+                'position': pt3d_np,
+                'error': float(rmse),
+                'n_views': n_views,
+                'detections': clique,
+                'cam_mask': cam_mask,
+                'frame': int(frame_ids[clique[0]])
+            })
+
+        # print(f"  Points by view count: {dict(Counter(r['n_views'] for r in results))}")
+
+        return results
 
     def _get_rays(
             self,
@@ -401,7 +349,7 @@ class Reconstructor:
             undist: xp.ndarray,
             orphan_mask: np.ndarray
     ) -> Dict[str, np.ndarray]:
-        """Make 3D rays for unused detections."""
+        """Generate 3D rays for unused detections."""
 
         if not np.any(orphan_mask):
             return {}
@@ -409,7 +357,7 @@ class Reconstructor:
         pts = undist[orphan_mask]
         cams = inputs['cam_ids'][orphan_mask]
 
-        n_orphans = len(pts)
+        n_orphans = int(np.sum(orphan_mask))
         all_dirs = np.zeros((n_orphans, 3), dtype=np.float32)
         all_origins = np.zeros((n_orphans, 3), dtype=np.float32)
 
@@ -456,15 +404,14 @@ if __name__ == "__main__":
 
     rig = CameraRig.load(rig_file)
     df = fileio.load_session(input_dir, session=SESSION)
-    skeleton = SkeletonTopology.from_sleap(input_dir)
+    skeleton = Skeleton.from_sleap(input_dir)
 
     reconstructor = Reconstructor(
         rig=rig,
         keypoint_names=skeleton.keypoints,  # TODO: not really needed (just for the soup metadata)
         min_views=2,
         epipolar_threshold=10.0,
-        reprojection_threshold=5.0,
-        merge_radius=0.05,
+        reprojection_threshold=5.0
     )
 
     all_frames = np.sort(df['frame'].unique().to_numpy())

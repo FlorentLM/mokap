@@ -5,8 +5,8 @@ import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider
 from mpl_toolkits.mplot3d import Axes3D
 
-from mokap.pose_reconstruction.skeleton import SkeletonTopology
-from mokap.pose_reconstruction.datatypes import PointSoup, SkeletonHypothesis, Tracklet
+from mokap.pose_reconstruction.skeleton import Skeleton
+from mokap.pose_reconstruction.datatypes import PointSoup, Pose3D, Tracklet
 
 
 class TrackletViewer:
@@ -25,8 +25,8 @@ class TrackletViewer:
     def __init__(
             self,
             soup: PointSoup,
-            data: Union[Dict[int, List[dict]], Dict[int, List[SkeletonHypothesis]]],
-            skeleton: SkeletonTopology,
+            data: Union[Dict[int, List[dict]], Dict[int, List[Pose3D]]],
+            skeleton: Skeleton,
             view_radius: float = 15.0
     ):
         self.soup = soup
@@ -235,7 +235,7 @@ class TrackletViewer:
             )
 
         # SkeletonHypothesis (no ID)
-        if isinstance(obj, SkeletonHypothesis):
+        if isinstance(obj, Pose3D):
             return (
                 obj.positions,
                 obj.scale,
