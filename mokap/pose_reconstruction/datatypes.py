@@ -1,10 +1,8 @@
-import pickle
+import warnings
 from dataclasses import dataclass, field
 from functools import cached_property
-from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, FrozenSet, Optional, Union, Sequence, Iterator, Set
 import numpy as np
-import pandas as pd
 from filterpy.common import Q_discrete_white_noise
 from filterpy.kalman import KalmanFilter
 from scipy.spatial import cKDTree
@@ -64,7 +62,6 @@ class PointSoup:
             self._sort_inplace()
 
     def __len__(self) -> int:
-        """Returns the number of points (standard for SoA objects)."""
         return self.nb_points
 
     def __repr__(self) -> str:
@@ -173,12 +170,12 @@ class PointSoup:
 
     @cached_property
     def points_by_name(self) -> Dict[str, np.ndarray]:
-        """Returns a map of keypoint_name -> array of point indices (lazy & vectorised)."""
+        """Map of keypoint_name -> array of point indices (lazy)."""
         return self._group_indices(self.keypoint_indices)
 
     @cached_property
     def rays_by_name(self) -> Dict[str, np.ndarray]:
-        """Returns a map of keypoint_name -> array of ray indices (lazy & vectorised)."""
+        """Map of keypoint_name -> array of ray indices (lazy)."""
         return self._group_indices(self.ray_keypoint_indices)
 
     @property
@@ -220,7 +217,6 @@ class PointSoup:
                     cam_names_union.append(name)
                     seen_cam.add(name)
 
-        # Prepare concatenated arrays
         concatenated_data = {}
         simple_attrs = [
             'positions', 'confidences', 'reprojection_errors',
@@ -254,30 +250,57 @@ class PointSoup:
             sort=True
         )
 
-    def to_df(self, keypoint_names: Optional[List[str]] = None) -> 'pd.DataFrame':
-        """Convert the point data to a pandas DataFrame for tracking/analysis."""
+    # DEPRECATED METHODS
 
+    def to_df(self, keypoint_names: Optional[List[str]] = None):
+        """
+        DEPRECATED: Use mokap_io.soup_to_df(soup) instead.
+        """
+        warnings.warn(
+            "PointSoup.to_df() is deprecated. Use mokap_io.soup_to_df(soup) instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        from mokap.mokap_io import soup_to_df
+        import polars as pl
+
+        df = soup_to_df(self)
+
+        # Filter keypoints if requested
         if keypoint_names is not None:
-            valid_ids = [self.keypoint_names.index(n) for n in keypoint_names if n in self.keypoint_names]
-            mask = np.isin(self.keypoint_indices, valid_ids)
-        else:
-            mask = np.ones(self.nb_points, dtype=bool)
+            df = df.filter(pl.col('keypoint').is_in(keypoint_names))
 
-        return pd.DataFrame({
-            "frame": self.frame_indices[mask],
-            "x": self.positions[mask, 0],
-            "y": self.positions[mask, 1],
-            "z": self.positions[mask, 2],
-            "keypoint": [self.keypoint_names[i] for i in self.keypoint_indices[mask]],
-            "confidence": self.confidences[mask]
-        })
+        # Return pandas for backwards compatibility
+        return df.to_pandas()
 
     @classmethod
-    def from_file(cls, file_path: Path | str) -> 'PointSoup':
+    def from_file(cls, file_path) -> 'PointSoup':
+        """
+        DEPRECATED: Use mokap_io.load_point_soup() instead.
+        """
+        warnings.warn(
+            "PointSoup.from_file() is deprecated. "
+            "Use mokap_io.load_point_soup(path, keypoint_names, camera_names) instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        import pickle
+        from pathlib import Path
         file_path = Path(file_path)
-        return pickle.load(file_path.open('rb'))    # TODO: soup should be saved in a human readable format, not pickle
+        return pickle.load(file_path.open('rb'))
 
-    def to_file(self, save_path: Path | str):
+    def to_file(self, save_path):
+        """
+        DEPRECATED: Use mokap_io.save_point_soup() instead.
+        """
+        warnings.warn(
+            "PointSoup.to_file() is deprecated. "
+            "Use mokap_io.save_point_soup(soup, path) instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        import pickle
+        from pathlib import Path
         save_path = Path(save_path)
         with open(save_path, 'wb') as f:
             pickle.dump(self, f)
@@ -299,7 +322,7 @@ class TimestepData:
     def __bool__(self) -> bool:
         return self.soup.nb_points > 0 or self.soup.nb_rays > 0
 
-    def get_node(self, name: str, idx: int) -> Node3D:
+    def get_node(self, name: str, idx: int) -> 'Node3D':
         """
         Instantiate a Node for the given keypoint name and index.
         """
@@ -329,7 +352,7 @@ class TimestepData:
             keypoint_name: str,
             center: np.ndarray,
             radius: float
-    ) -> List[Node3D]:
+    ) -> List['Node3D']:
         """
         Intersect rays of type `keypoint_name` with a sphere (center, radius).
         Creates and registers virtual Nodes for intersection points.
@@ -382,8 +405,7 @@ class TimestepData:
 class Node3D:
     """
     A keypoint observation in a given time step.
-    Immutable and hashable for comparisons.
-    Negative indices indicate virtual points.
+    Immutable and hashable. Negative indices indicate virtual points.
     """
     name: str
     idx: int
@@ -491,10 +513,8 @@ class Pose3D:
 class Tracklet:
     """
     Hierarchical state representation for articulated skeleton tracking.
-
-    - Central KF: tracks body position, velocity, and scale
-    - Offset KFs: track each keypoint's offset from central (in body frame), allowing articulation
     """
+
     def __init__(
             self,
             track_idx: int,
@@ -523,16 +543,13 @@ class Tracklet:
         self.anatomical_integrity = initial_hypothesis.anatomical_score
 
         # Body frame orientation (world -> body rotation matrix)
-        # TODO: Not used for now
         self.body_rotation = np.eye(3)
 
-        # Rest pose: mean offset per keypoint in body frame (learned over time)
+        # Rest pose offsets (learned over time)
         self.rest_offsets: Dict[str, np.ndarray] = {}
 
-        # Initialise filters
         self.central_kf = self._init_central_kf(initial_hypothesis)
         self.offset_kfs: Dict[str, 'KalmanFilter'] = {}
-
         self._init_offset_kfs(initial_hypothesis)
 
     def _init_central_kf(self, hypothesis: 'Pose3D') -> 'KalmanFilter':
@@ -602,7 +619,6 @@ class Tracklet:
         central_pos = self.central_kf.x[:3, 0]
         scale = self.central_kf.x[6, 0]
 
-        # Estimate initial body frame
         self.body_rotation = np.eye(3)
 
         for kp in self.skeleton.keypoints:
@@ -656,7 +672,7 @@ class Tracklet:
             self.offset_kfs[kp] = kf
             self.rest_offsets[kp] = local_offset.copy()
 
-    # ──── Properties and accessors ────
+    # Properties and accessors
 
     @property
     def predicted_keypoints(self) -> Dict[str, np.ndarray]:
@@ -738,7 +754,7 @@ class Tracklet:
 
         return world_var
 
-    # ──── Public interface ────
+    # Public interface
 
     def predict(self, current_frame_idx: int) -> Dict[str, np.ndarray]:
         """
@@ -788,7 +804,6 @@ class Tracklet:
         self.last_update_frame = frame_idx
         self.hypothesis = hypothesis
 
-        # Update body frame
         self._update_body_orientation(hypothesis.positions, alpha=0.3)
 
         # Handle missing central keypoint
@@ -824,10 +839,7 @@ class Tracklet:
 
         for kp, node in hypothesis.nodes_by_name.items():
 
-            if kp == self.central_kp:
-                continue
-
-            if kp not in self.offset_kfs:
+            if kp == self.central_kp or kp not in self.offset_kfs:
                 continue
 
             # Compute observed offset in body frame
@@ -843,12 +855,11 @@ class Tracklet:
 
         self.anatomical_integrity = ema_update(self.anatomical_integrity, hypothesis.anatomical_score, alpha=0.1)
 
-    # ──── State-awareness ────
+    # State inference
 
     def _infer_central_position(self, hypothesis: 'Pose3D') -> Optional[np.ndarray]:
         """
         Infer central keypoint position from other observed keypoints.
-        Uses offset predictions to triangulate likely central position.
         """
         observed_kps = [kp for kp in hypothesis.names if kp in self.offset_kfs]
 
@@ -881,18 +892,11 @@ class Tracklet:
         weights = np.array(weights)
         weights = weights / weights.sum()
 
-        inferred_central = np.average(central_estimates, axis=0, weights=weights)
-        return inferred_central
+        return np.average(central_estimates, axis=0, weights=weights)
 
     def _estimate_body_orientation(self, keypoints: Dict[str, np.ndarray]) -> np.ndarray:
         """
         Estimate body frame orientation from observed keypoints.
-
-        - PCA on keypoint positions to get principal axis (anterior-posterior)
-        - Use velocity direction to disambiguate sign (head vs tail)
-        - Construct right-handed frame with Z assumed up (or from skeleton plane normal)
-
-        Returns 3x3 rotation matrix (world -> body frame)
         """
         positions = np.array(list(keypoints.values()))
 
@@ -968,32 +972,29 @@ class Tracklet:
         U, _, Vt = np.linalg.svd(blended)
         self.body_rotation = U @ Vt
 
-    # ──── Serialisation ────
 
-    # TODO: Rework this output format
+    # DEPRECATED
 
     def to_record(self, frame_idx: int) -> dict:
-        """Export tracklet state for storage/analysis."""
+
+        warnings.warn(
+            "Tracklet.to_record() is deprecated. "
+            "Use mokap_io.tracklets_to_df(tracklets, frame_idx) instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
         return {
             'frame_idx': frame_idx,
             'track_idx': self.track_idx,
-
-            # Pose data
             'keypoints': self.hypothesis.positions,
             'predicted_keypoints': self.predicted_keypoints,
             'scale': self.estimated_scale,
             'score': self.hypothesis.anatomical_score,
             'point_indices': {n.name: n.idx for n in self.hypothesis},
-
-            # Central state
             'position': self.position.tolist(),
             'velocity': self.velocity.tolist(),
             'position_uncertainty': self.position_uncertainty.tolist(),
-
-            # Body frame
             'body_rotation': self.body_rotation.tolist(),
-
-            # Health metrics
             'health': self.health,
             'anatomical_integrity': self.anatomical_integrity,
             'age': self.age,

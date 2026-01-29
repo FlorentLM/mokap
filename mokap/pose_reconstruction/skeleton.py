@@ -1,8 +1,7 @@
-import json
-import re
+import warnings
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Tuple, Optional, Sequence, List, Union
+import hashlib
 import networkx as nx
 import numpy as np
 
@@ -26,7 +25,7 @@ class Bone:
     _sep: str = ';'
 
     def __post_init__(self):
-        # Enforce order
+        # Enforce lexicographic order
         if self.k1 > self.k2:
             k1, k2 = self.k2, self.k1
             # __setattr__ because dataclass is frozen
@@ -222,49 +221,8 @@ class Skeleton:
         self._anchor_keypoints = tuple(sorted(anchors, key=lambda k: self._degrees[k], reverse=True))
         self._central_keypoint: str = max(self._degrees, key=self._degrees.get)
 
-        # Graph distances from central keypoint
-        self._graph_distances: Dict[str, int] = nx.single_source_shortest_path_length(
-            self._graph, self._central_keypoint
-        )
-
-        # Canonical map for symmetry pooling
-        self.canonical_map = self._build_canonical_map()
-
-    @classmethod
-    def from_sleap(cls, slp_path: str | Path):
-        """Factory method to load topology and symmetry from SLEAP files."""
-        import sleap_io
-
-        slp_path = Path(slp_path)
-
-        if slp_path.is_dir():
-            slp_path = next(slp_path.glob('*.slp'))
-
-        slp_content = sleap_io.load_file(slp_path)
-        return cls(
-            keypoints=slp_content.skeleton.node_names,
-            bones=slp_content.skeleton.edge_names,
-            symmetry=slp_content.skeleton.symmetry_names
-        )
-
-    def _build_canonical_map(self) -> Dict[str, str]:
-        """Maps specific keypoints to pooled types ('left_hand' -> 'hand')."""
-        canonical_map = {}
-        delim = re.compile(r'[-_. ;,]')
-
-        if self.symmetry:
-            for name1, name2 in self.symmetry:
-                prefix, suffix = common_prefix_suffix(name1, name2)
-                side_part = name1[len(prefix):len(name1) - len(suffix)]
-                # Remove side and clean
-                canon = name1.replace(side_part, '')
-                canon = delim.sub('', canon).lower()
-                canonical_map[name1] = canonical_map[name2] = canon
-
-        for kp in self.keypoints:
-            if kp not in canonical_map:
-                canonical_map[kp] = delim.sub('', kp).lower()
-        return canonical_map
+        self._canonical_map = self._build_canonical_map()
+        self._graph_distances = self._compute_graph_distances()
 
     def __contains__(self, item: Bone | str | Sequence[str]) -> bool:
         try:
@@ -272,24 +230,72 @@ class Skeleton:
         except KeyError:
             return item in self._keypoint_set
 
+    def __repr__(self):
+        return f"Skeleton('{self.name}', kps={len(self.keypoints)}, bones={len(self.bones)})"
+
+    def _build_canonical_map(self) -> Dict[str, str]:
+        """Build a mapping from each keypoint to its canonical name."""
+        mapping = {kp: kp for kp in self.keypoints}
+
+        for left, right in self.symmetry:
+            if left in mapping and right in mapping:
+                prefix, suffix = common_prefix_suffix(left, right)
+                canonical = prefix + suffix if prefix or suffix else left
+                mapping[left] = canonical
+                mapping[right] = canonical
+
+        return mapping
+
+    def _compute_graph_distances(self) -> Dict[str, int]:
+        """Compute shortest path distances from central keypoint."""
+        central = self.central_keypoint
+        distances = {central: 0}
+
+        if not nx.is_connected(self._graph):
+            for kp in self.keypoints:
+                if kp not in distances:
+                    distances[kp] = 0
+            return distances
+
+        lengths = nx.single_source_shortest_path_length(self._graph, central)
+        distances.update(lengths)
+        return distances
+
+    # Public properties and accessors
+
     @property
-    def leaf_keypoints(self) -> Tuple[str]:
-        """Keypoints with degree 1 (extremities)."""
+    def hash(self) -> str:
+        """
+        Short hash identifying this skeleton topology.
+        (useful for tagging stats files to their skeleton definition)
+        """
+        content = f"{self.name}|{','.join(sorted(self.keypoints))}|{','.join(sorted(str(b) for b in self.bones))}"
+        return hashlib.md5(content.encode()).hexdigest()[:8]
+
+    @property
+    def leaf_keypoints(self) -> Tuple[str, ...]:
+        """
+        Keypoints with degree 1 (extremities).
+        """
         return self._leaf_keypoints
 
     @property
-    def anchor_keypoints(self) -> Tuple[str]:
-        """Keypoints with degree > 1 (junctions)."""
+    def anchor_keypoints(self) -> Tuple[str, ...]:
+        """
+        Keypoints with degree > 1 (junctions).
+        """
         return self._anchor_keypoints
 
     @property
     def central_keypoint(self) -> str:
-        """Most connected keypoint."""
-        return self._central_keypoint
+        """
+        Most connected bone.
+        """
+        return self._anchor_keypoints[0] if self._anchor_keypoints else self.keypoints[0]
 
     @property
     def central_bone(self) -> Bone:
-        """Most connected bone (stable for scale estimation)."""
+        """Most connected bone."""
         return max(self.bones, key=lambda b: self._degrees[b.k1] + self._degrees[b.k2])
 
     def degree(self, keypoint: str) -> int:
@@ -307,8 +313,16 @@ class Skeleton:
             return self.canonical_map[item]
 
     def graph_distance(self, keypoint: str) -> int:
-        """Distance from central keypoint in graph hops."""
+        """
+        Return graph distance from keypoint to central.
+        """
         return self._graph_distances.get(keypoint, len(self.keypoints))
+
+    def adjacent_bones(self, keypoint: str) -> List[Bone]:
+        """
+        Return all bones connected to a keypoint.
+        """
+        return [b for b in self.bones if keypoint in b]
 
     def draw(self):
         # TODO: This needs to be symmetry and stats aware
@@ -318,7 +332,10 @@ class Skeleton:
 
 class SkeletonStats:
     """
-    Learned statistics for a skeleton (bone lengths and per-keypoint motion params).
+    Learned statistics for a skeleton definition.
+
+    - Bone length ratios and variabilities (anatomy)
+    - Per-keypoint dynamics (process noise, association weights)
     """
 
     def __init__(self, skeleton: Skeleton):
@@ -326,21 +343,34 @@ class SkeletonStats:
 
         # Anatomy
         self.reference_bone: Optional[Bone] = None
-        self.reference_length_world = 1.0  # length of the reference bone in world units
+        self.reference_length_world: float = 1.0  # length of the reference bone in world units
 
         self.bone_stats: Dict[Bone, BoneStats] = {}
 
         # Dynamics
         self.keypoint_dynamics: Dict[str, KeypointDynamics] = {}
 
-    #  ────── Anatomy  ──────
+    def __repr__(self):
+        return (f"SkeletonStats(skeleton='{self.skeleton.name}', "
+                f"bones={len(self.bone_stats)}, dynamics={len(self.keypoint_dynamics)})")
+
+    @property
+    def skeleton_hash(self) -> str:
+        """Skeleton ID for file naming."""
+        return self.skeleton.hash
+
+    # Anatomy accessors
 
     def expected_ratio(self, bone: Bone | str | Sequence[str]) -> float:
-        """Expected length in relation to reference bone."""
+        """
+        Expected length in relation to reference bone.
+        """
         return self.bone_stats[_bone_or_key(bone)].ratio_length
 
     def expected_length(self, bone: Bone | str | Sequence[str]) -> float:
-        """Absolute expected length in world units."""
+        """
+        Absolute expected length in world units.
+        """
         return self.expected_ratio(bone) * self.reference_length_world
 
     def ratio_variability(self, bone: Bone | str | Sequence[str]) -> float:
@@ -350,13 +380,17 @@ class SkeletonStats:
         return self.ratio_variability(bone) * self.reference_length_world
 
     def ratio_bounds(self, bone: Bone | str | Sequence[str], n_sigma: float = 3.0) -> Tuple[float, float]:
-        """Acceptable ratio range for validation."""
+        """
+        Acceptable ratio range for validation.
+        """
         expected = self.expected_ratio(bone)
         tolerance = n_sigma * self.ratio_variability(bone)
         return expected - tolerance, expected + tolerance
 
     def length_bounds(self, bone: Bone | str | Sequence[str], n_sigma: float = 3.0) -> Tuple[float, float]:
-        """Acceptable length range for validation."""
+        """
+        Acceptable length range for validation.
+        """
         lower, upper = self.ratio_bounds(bone, n_sigma)
         return lower * self.reference_length_world, upper * self.reference_length_world
 
@@ -442,7 +476,6 @@ class SkeletonStats:
         Update anatomy statistics from a high-quality pose observation.
         Returns True if the sample was accepted.
         """
-
         # TODO: This method should probably be scale-aware..?
 
         # Only accept if reference bone is present
@@ -451,7 +484,6 @@ class SkeletonStats:
 
         ref_obs = float(np.linalg.norm(keypoints[self.reference_bone.k1] - keypoints[self.reference_bone.k2]))
 
-        # Update reference length with exponential moving average
         self.reference_length_world = ema_update(self.reference_length_world, ref_obs)
 
         for bone, stats in self.bone_stats.items():
@@ -461,8 +493,7 @@ class SkeletonStats:
 
         return True
 
-    #  ────── Dynamics ──────
-
+    # Dynamics accessors
     def get_dynamics(self, keypoint: str) -> 'KeypointDynamics':
         """Get dynamics for a keypoint."""
 
@@ -484,13 +515,17 @@ class SkeletonStats:
         if keypoint in self.keypoint_dynamics:
             self.keypoint_dynamics[keypoint].update(observed_metric, alpha)
 
-    #  ────── Serialization  ──────
+    # Serialisation
 
     def to_dict(self) -> dict:
-        """Export strictly to {'anatomy': ..., 'dynamics': ...}."""
-        data = {'anatomy': {}, 'dynamics': {}}
+        """Export to dict format."""
+        data = {
+            'skeleton_hash': self.skeleton_hash,
+            'skeleton_name': self.skeleton.name,
+            'anatomy': {},
+            'dynamics': {}
+        }
 
-        # Anatomy
         if self.reference_bone:
             data['anatomy'] = {
                 'reference_bone': self.reference_bone.to_key(),
@@ -498,7 +533,6 @@ class SkeletonStats:
                 'bones': {b.to_key(): s.to_dict() for b, s in self.bone_stats.items()}
             }
 
-        # Dynamics
         if self.keypoint_dynamics:
             data['dynamics'] = {k: d.to_dict() for k, d in self.keypoint_dynamics.items()}
 
@@ -506,9 +540,19 @@ class SkeletonStats:
 
     @classmethod
     def from_dict(cls, data: dict, skeleton: Skeleton) -> 'SkeletonStats':
+        """Load from dict format (used by mokap_io.load_skeleton_stats)."""
         stats = cls(skeleton)
 
-        # Load Anatomy
+        # Verify skeleton compatibility
+        stored_hash = data.get('skeleton_hash')
+
+        if stored_hash and stored_hash != skeleton.hash:
+            warnings.warn(
+                f"Stats skeleton_hash '{stored_hash}' doesn't match skeleton '{skeleton.hash}'. "
+                "Stats may not be compatible with this skeleton definition.",
+                UserWarning
+            )
+
         if 'anatomy' in data and data['anatomy']:
             anat = data['anatomy']
             if 'reference_bone' in anat:
@@ -529,7 +573,6 @@ class SkeletonStats:
                     except (KeyError, ValueError):
                         pass
 
-        # Load Dynamics
         if 'dynamics' in data and data['dynamics']:
             for k, v in data['dynamics'].items():
                 if k in skeleton.keypoints:
@@ -537,36 +580,29 @@ class SkeletonStats:
 
         return stats
 
-    def to_json(self, path: Path | str):
-        """
-        Save to JSON (merges with existing file).
-        """
-        path = Path(path)
 
-        existing_data = {}
-        if path.exists():
-            try:
-                existing_data = json.loads(path.read_text())
-            except json.JSONDecodeError:
-                pass
 
-        current_data = self.to_dict()
+    # DEPRECATED
 
-        final_data = {'anatomy': existing_data.get('anatomy', {}),
-                      'dynamics': existing_data.get('dynamics', {})}
+    def to_json(self, path):
 
-        if self.reference_bone:
-            final_data['anatomy'] = current_data['anatomy']
-
-        if self.keypoint_dynamics:
-            final_data['dynamics'] = current_data['dynamics']
-
-        if not path.parent.exists():
-            path.parent.mkdir(parents=True)
-
-        with open(path, 'w') as f:
-            json.dump(final_data, f, indent=2)
+        warnings.warn(
+            "SkeletonStats.to_json() is deprecated. "
+            "Use mokap_io.save_skeleton_stats(stats, path) instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        from mokap.mokap_io import save_skeleton_stats
+        save_skeleton_stats(self, path, merge_existing=True)
 
     @classmethod
-    def from_json(cls, path: Path, skeleton: Skeleton) -> 'SkeletonStats':
-        return cls.from_dict(json.loads(path.read_text()), skeleton)
+    def from_json(cls, path, skeleton: Skeleton) -> 'SkeletonStats':
+
+        warnings.warn(
+            "SkeletonStats.from_json() is deprecated. "
+            "Use mokap_io.load_skeleton_stats(path, skeleton) instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        from mokap.mokap_io import load_skeleton_stats
+        return load_skeleton_stats(path, skeleton)

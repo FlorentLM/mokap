@@ -70,7 +70,7 @@ Learns per-keypoint movement parameters.
 
 ## Phase 3: Skeleton Assembly (`assembly.py`)
 
-The `SkeletonAssembler` operates per-frame to construct `SkeletonHypothesis` instances from the Point Soup, optionally guided by tracklet predictions.
+The `SkeletonAssembler` operates per-frame to construct `Pose3D` instances from the Point Soup, optionally guided by tracklet predictions.
 
 ### 3.1. Guided assembly (prediction-driven)
 

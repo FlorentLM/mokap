@@ -32,7 +32,7 @@ class SkeletonAssembler:
         self.skeleton_stats = skeleton_stats
         self.config = config
 
-    # ──── Public interface ────
+    # Public interface
 
     def assemble(self,
             frame_data: TimestepData,
@@ -64,7 +64,7 @@ class SkeletonAssembler:
 
         return all_fragments + merge_hypotheses
 
-    # ──── Score and bonus helpers ────
+    # Score and bonus helpers
 
     def _calc_prediction_bonus(self, node: Node3D, predicted_pos: np.ndarray) -> float:
         """Calculates a Gaussian bonus based on proximity to prediction."""
@@ -140,7 +140,7 @@ class SkeletonAssembler:
 
         return total_score, bone_count
 
-    # ──── Hypotheses generation ────
+    # Hypotheses generation
 
     def _generate_hypotheses(self,
         frame_data: TimestepData,
@@ -317,7 +317,7 @@ class SkeletonAssembler:
             scale=scale
         )
 
-    # ──── Core skeleton growth algorithm ────
+    # Core skeleton growth algorithm
 
     def _grow_skeleton(self,
         frame_data: TimestepData,
@@ -452,7 +452,7 @@ class SkeletonAssembler:
 
         return result
 
-    # ──── Point discovery ────
+    # Point discovery
 
     def _find_node_guided(self,
             frame_data: TimestepData,
@@ -601,7 +601,7 @@ class MultiObjectTracker:
 
         self._tracklet_config = TrackletConfig()
 
-    # ──── Properties ────
+    # Properties
 
     @property
     def active_tracklets(self) -> List[Tracklet]:
@@ -618,7 +618,7 @@ class MultiObjectTracker:
         """All tracklets (active + pending)."""
         return self.active_tracklets + self.pending_tracklets
 
-    # ──── Scoring helpers ────
+    # Scoring helpers
 
     def _calc_pose_distance(
             self,
@@ -677,7 +677,7 @@ class MultiObjectTracker:
             if cand.track_affinity is not None:
                 cand.competition_score += self.config.guided_affinity_bonus
 
-    # ──── Public interface ────
+    # Public interface
 
     def update(self, frame_idx: int):
         """Process a single frame."""
@@ -714,7 +714,7 @@ class MultiObjectTracker:
 
         self._prune_pending()
 
-    # ──── Association and matching ────
+    # Association and matching
 
     def _commit_tracklet_hypotheses(self,
                                     hypotheses: List[Pose3D],
@@ -872,7 +872,7 @@ class MultiObjectTracker:
 
         return winning_hypotheses
 
-    # ──── Lifecycle and serialisation ────
+    # Lifecycle and serialisation
 
     # TODO: Should not prune at all, should just move them to a third internal store
 

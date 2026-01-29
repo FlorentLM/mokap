@@ -1,15 +1,13 @@
+import warnings
 import numpy as np
-import polars as pl
 import pandas as pd
 import networkx as nx
-from typing import List, Tuple, Union
+from typing import List, Tuple
 from scipy.stats import median_abs_deviation
-
-from lucida.geometry.backend import ArrayLike
 
 
 def solve_mwis_networkx(G: nx.Graph) -> List[int]:
-    """ Solves the Maximum Weight Independent Set problem using NetworkX """
+    """Solves the Maximum Weight Independent Set problem using NetworkX."""
 
     if not G.nodes:
         return []
@@ -26,7 +24,7 @@ def solve_mwis_networkx(G: nx.Graph) -> List[int]:
 
 
 def solve_mwis_SCIP(G: nx.Graph) -> List[int]:
-    """ Solves the Maximum Weight Independent Set problem using SCIP ILP solver """
+    """Solves the Maximum Weight Independent Set problem using SCIP ILP solver."""
 
     if not G.nodes:
         return []
@@ -101,11 +99,11 @@ def robust_stats(data: List[float], fallback_val: float = np.nan) -> Tuple[float
     if len(data) == 0:
         return fallback_val, fallback_val
     arr = np.asarray(data)
-    # scale 'normal' approximates std dev consistency
     return float(np.median(arr)), float(median_abs_deviation(arr, scale="normal"))
 
 
 def ema_update(existing: float, new: float, alpha: float = 0.01):
+    """Exponential moving average update."""
     return (1 - alpha) * existing + alpha * new
 
 
@@ -134,26 +132,15 @@ def plot_tracks_3d(ax, tracks_df: pd.DataFrame, title: str):
     ax.set_zlim3d(centers[2] - radius, centers[2] + radius)
 
 
-# TODO: This will be removed once fileio is cleaned and uses polars for all disk-persistent data
-def prepare_reconstruction_input(df: pl.DataFrame, cameras: List[str], keypoints: List[str]):
-    """
-    Converts Polars DataFrame to flat numpy arrays for the Reconstructor
-    """
+# DEPRECATED
 
-    df = df.sort(["frame", "keypoint", "camera"])
+def prepare_reconstruction_input(df, cameras, keypoints):
 
-    cam_map = {cam_name: c for c, cam_name in enumerate(cameras)}
-    kp_map = {kp_name: k for k, kp_name in enumerate(keypoints)}
-
-    df = df.with_columns(
-        pl.col("keypoint").replace(kp_map).cast(pl.Int16).alias("kp_type_id"),
-        pl.col("camera").replace(cam_map).cast(pl.Int8).alias("cam_id"),
-    ).sort(["frame", "kp_type_id", "cam_id", "score"], descending=[False, False, False, True])
-
-    return {
-        "frame_indices": df["frame"].to_numpy(),
-        "kp_type_ids": df["kp_type_id"].to_numpy(),
-        "cam_ids": df["cam_id"].to_numpy(),
-        "coords": df.select(["x", "y"]).to_numpy(),
-        "scores": df["score"].to_numpy()
-    }
+    warnings.warn(
+        "utils.prepare_reconstruction_input() is deprecated. "
+        "Use mokap_io.prepare_reconstruction_input() instead.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+    from mokap.mokap_io import prepare_reconstruction_input as _prepare
+    return _prepare(df, cameras, keypoints)
