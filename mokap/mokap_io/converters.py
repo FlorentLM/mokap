@@ -8,18 +8,18 @@ if TYPE_CHECKING:
     from mokap.pose_reconstruction.datatypes import PointSoup, Tracklet
 
 
-def df_to_soup(
+def dataframe_to_soup(
     df: pl.DataFrame,
-    keypoint_names: Sequence[str],
-    camera_names: Sequence[str],
+    keypoints_order: Sequence[str],
+    cameras_order: Sequence[str],
 ) -> 'PointSoup':
     """
     Convert a Points3D DataFrame to a PointSoup runtime object.
 
     Args:
         df: DataFrame with Points3D schema
-        keypoint_names: Ordered keypoint names (for index mapping)
-        camera_names: Ordered camera names (for mask decoding)
+        keypoints_order: Ordered keypoint names (for index mapping)
+        cameras_order: Ordered camera names (for mask decoding)
 
     Returns:
         PointSoup instance
@@ -30,7 +30,7 @@ def df_to_soup(
     points_df = df.filter(pl.col("status") == "reconstructed")
     rays_df = df.filter(pl.col("status") == "ray")
 
-    kp_to_idx = {name: i for i, name in enumerate(keypoint_names)}
+    kp_to_idx = {name: i for i, name in enumerate(keypoints_order)}
 
     # Reconstructed points
     if len(points_df) > 0:
@@ -88,13 +88,13 @@ def df_to_soup(
         ray_confidences=ray_confidences,
         ray_keypoint_indices=ray_kp_indices,
         ray_frame_indices=ray_frame_indices,
-        keypoint_names=list(keypoint_names),
-        camera_names=list(camera_names),
+        keypoint_names=list(keypoints_order),
+        camera_names=list(cameras_order),
         sort=True,
     )
 
 
-def soup_to_df(soup: 'PointSoup') -> pl.DataFrame:
+def soup_to_dataframe(soup: 'PointSoup') -> pl.DataFrame:
     """
     Convert a PointSoup runtime object to a Points3D DataFrame.
 
@@ -184,14 +184,12 @@ def soup_to_df(soup: 'PointSoup') -> pl.DataFrame:
     return df.sort(["frame", "keypoint", "status"])
 
 
-def tracklets_to_df(
+def tracklets_to_dataframe(
     tracklets: Sequence['Tracklet'],
     frame_idx: int,
 ) -> pl.DataFrame:
     """
     Convert a sequence of Tracklet objects to a Tracks3D DataFrame.
-
-    This is the preferred method for serializing tracking output.
 
     Args:
         tracklets: Sequence of Tracklet instances
@@ -268,99 +266,100 @@ def tracklets_to_df(
     return df.sort(["track_id", "frame", "keypoint"])
 
 
-def tracklet_records_to_df(
-    records: Dict[int, List[dict]]
-) -> pl.DataFrame:
-    """
-    Convert legacy tracklet records dict to Tracks3D DataFrame.
+# def tracklet_records_to_df(
+#     records: Dict[int, List[dict]]
+# ) -> pl.DataFrame:
+#     """
+#     Convert legacy tracklet records dict to Tracks3D DataFrame.
+#
+#     DEPRECATED: Use tracklets_to_df() with Tracklet objects instead.
+#
+#     Args:
+#         records: Dict mapping track_id -> list of per-frame record dicts
+#
+#     Returns:
+#         DataFrame with Tracks3D schema
+#     """
+#     rows = []
+#
+#     for track_id, frame_records in records.items():
+#         for record in frame_records:
+#             frame_idx = record.get("frame_idx", 0)
+#             keypoints = record.get("keypoints", {})
+#
+#             scale = record.get("scale", 1.0)
+#             anatomical_score = record.get("score", 0.0)
+#             health = record.get("health", 1.0)
+#             integrity = record.get("anatomical_integrity", anatomical_score)
+#
+#             pos_unc = record.get("position_uncertainty", [0, 0, 0])
+#             uncertainty = sum(pos_unc) if isinstance(pos_unc, (list, tuple)) else float(pos_unc)
+#
+#             velocity = record.get("velocity", [0, 0, 0])
+#             vel_x = velocity[0] if len(velocity) > 0 else 0.0
+#             vel_y = velocity[1] if len(velocity) > 1 else 0.0
+#             vel_z = velocity[2] if len(velocity) > 2 else 0.0
+#
+#             for kp_name, position in keypoints.items():
+#                 if isinstance(position, np.ndarray):
+#                     x, y, z = position.tolist()
+#                 else:
+#                     x, y, z = position
+#
+#                 rows.append({
+#                     "track_id": int(track_id),
+#                     "frame": int(frame_idx),
+#                     "keypoint": kp_name,
+#                     "x": float(x),
+#                     "y": float(y),
+#                     "z": float(z),
+#                     "confidence": 1.0,
+#                     "scale": float(scale),
+#                     "anatomical_score": float(anatomical_score),
+#                     "health": float(health),
+#                     "integrity": float(integrity),
+#                     "uncertainty": float(uncertainty),
+#                     "velocity_x": float(vel_x),
+#                     "velocity_y": float(vel_y),
+#                     "velocity_z": float(vel_z),
+#                 })
+#
+#     if not rows:
+#         return empty_dataframe('Tracks3D')
+#
+#     df = pl.from_dicts(rows)
+#
+#     df = df.with_columns([
+#         pl.col("track_id").cast(pl.Int32),
+#         pl.col("frame").cast(pl.Int32),
+#         pl.col("x").cast(pl.Float32),
+#         pl.col("y").cast(pl.Float32),
+#         pl.col("z").cast(pl.Float32),
+#         pl.col("confidence").cast(pl.Float32),
+#         pl.col("scale").cast(pl.Float32),
+#         pl.col("anatomical_score").cast(pl.Float32),
+#         pl.col("health").cast(pl.Float32),
+#         pl.col("integrity").cast(pl.Float32),
+#         pl.col("uncertainty").cast(pl.Float32),
+#         pl.col("velocity_x").cast(pl.Float32),
+#         pl.col("velocity_y").cast(pl.Float32),
+#         pl.col("velocity_z").cast(pl.Float32),
+#     ])
+#
+#     return df.sort(["track_id", "frame", "keypoint"])
 
-    DEPRECATED: Use tracklets_to_df() with Tracklet objects instead.
 
-    Args:
-        records: Dict mapping track_id -> list of per-frame record dicts
-
-    Returns:
-        DataFrame with Tracks3D schema
-    """
-    rows = []
-
-    for track_id, frame_records in records.items():
-        for record in frame_records:
-            frame_idx = record.get("frame_idx", 0)
-            keypoints = record.get("keypoints", {})
-
-            scale = record.get("scale", 1.0)
-            anatomical_score = record.get("score", 0.0)
-            health = record.get("health", 1.0)
-            integrity = record.get("anatomical_integrity", anatomical_score)
-
-            pos_unc = record.get("position_uncertainty", [0, 0, 0])
-            uncertainty = sum(pos_unc) if isinstance(pos_unc, (list, tuple)) else float(pos_unc)
-
-            velocity = record.get("velocity", [0, 0, 0])
-            vel_x = velocity[0] if len(velocity) > 0 else 0.0
-            vel_y = velocity[1] if len(velocity) > 1 else 0.0
-            vel_z = velocity[2] if len(velocity) > 2 else 0.0
-
-            for kp_name, position in keypoints.items():
-                if isinstance(position, np.ndarray):
-                    x, y, z = position.tolist()
-                else:
-                    x, y, z = position
-
-                rows.append({
-                    "track_id": int(track_id),
-                    "frame": int(frame_idx),
-                    "keypoint": kp_name,
-                    "x": float(x),
-                    "y": float(y),
-                    "z": float(z),
-                    "confidence": 1.0,
-                    "scale": float(scale),
-                    "anatomical_score": float(anatomical_score),
-                    "health": float(health),
-                    "integrity": float(integrity),
-                    "uncertainty": float(uncertainty),
-                    "velocity_x": float(vel_x),
-                    "velocity_y": float(vel_y),
-                    "velocity_z": float(vel_z),
-                })
-
-    if not rows:
-        return empty_dataframe('Tracks3D')
-
-    df = pl.from_dicts(rows)
-
-    df = df.with_columns([
-        pl.col("track_id").cast(pl.Int32),
-        pl.col("frame").cast(pl.Int32),
-        pl.col("x").cast(pl.Float32),
-        pl.col("y").cast(pl.Float32),
-        pl.col("z").cast(pl.Float32),
-        pl.col("confidence").cast(pl.Float32),
-        pl.col("scale").cast(pl.Float32),
-        pl.col("anatomical_score").cast(pl.Float32),
-        pl.col("health").cast(pl.Float32),
-        pl.col("integrity").cast(pl.Float32),
-        pl.col("uncertainty").cast(pl.Float32),
-        pl.col("velocity_x").cast(pl.Float32),
-        pl.col("velocity_y").cast(pl.Float32),
-        pl.col("velocity_z").cast(pl.Float32),
-    ])
-
-    return df.sort(["track_id", "frame", "keypoint"])
-
-
-def tracks_df_to_numpy(
-    df: pl.DataFrame,
-    keypoint_order: Sequence[str],
+# TODO: This should accept tracklets: Sequence['Tracklet'] | pl.DataFrame
+def tracklets_to_arrays(
+    dataframe: pl.DataFrame,
+    keypoints_order: Sequence[str],
 ) -> Dict[int, np.ndarray]:
     """
-    Convert a Tracks3D DataFrame to numpy arrays for analysis.
+    Convert a Tracks3D DataFrame to arrays.
 
     Args:
-        df: DataFrame with Tracks3D schema
-        keypoint_order: Ordered list of keypoints (defines array columns)
+        dataframe: DataFrame with Tracks3D schema
+        keypoints_order: Ordered list of keypoints (defines array columns)
 
     Returns:
         Dict mapping track_id -> array of shape (n_frames, n_keypoints, 3)
@@ -368,12 +367,12 @@ def tracks_df_to_numpy(
     """
     result = {}
 
-    track_ids = df["track_id"].unique().to_list()
-    n_keypoints = len(keypoint_order)
-    kp_to_idx = {kp: i for i, kp in enumerate(keypoint_order)}
+    track_ids = dataframe["track_id"].unique().to_list()
+    n_keypoints = len(keypoints_order)
+    kp_to_idx = {kp: i for i, kp in enumerate(keypoints_order)}
 
     for track_id in track_ids:
-        track_df = df.filter(pl.col("track_id") == track_id)
+        track_df = dataframe.filter(pl.col("track_id") == track_id)
 
         frames = track_df["frame"].unique().sort().to_list()
         n_frames = len(frames)
@@ -394,7 +393,7 @@ def tracks_df_to_numpy(
 
 ##
 
-# TODO: temporary until Reconstructor uses Polars
+# TODO: REMOVE
 def prepare_reconstruction_input(
     df: pl.DataFrame,
     cameras: List[str],
@@ -402,8 +401,6 @@ def prepare_reconstruction_input(
 ) -> dict:
     """
     Convert Points2D DataFrame to flat numpy arrays for the Reconstructor.
-
-    TEMPORARY: Will be removed
 
     Args:
         df: DataFrame with Points2D schema

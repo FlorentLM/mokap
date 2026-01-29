@@ -922,7 +922,7 @@ if __name__ == '__main__':
     # Load stuff
     soup = PointSoup.from_file(soup_file)
     skeleton = Skeleton.from_sleap(input_dir)
-    stats = SkeletonStats.from_json(stats_file, skeleton)
+    stats = SkeletonStats.load(stats_file, skeleton)
 
     print(f"Loaded point soup from {soup_file}")
     print(f"Loaded skeleton with {len(skeleton.keypoints)} keypoints, {len(skeleton.bones)} bones")
@@ -983,7 +983,7 @@ if __name__ == '__main__':
 
     if SAVE_UPDATED_STATS:
         # Save updated stats
-        stats.to_json(stats_file)
+        stats.save(stats_file)
         print(f"Updated stats saved to '{stats_file}'")
 
     if DEBUG_PLOT:

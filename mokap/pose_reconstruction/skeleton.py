@@ -1,5 +1,13 @@
+"""
+Skeleton topology and statistics definitions.
+
+- Bone: Immutable undirected edge between two keypoints
+- Skeleton: Immutable skeleton topology definition
+- SkeletonStats: Learned anatomical and dynamics statistics
+"""
 import warnings
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Tuple, Optional, Sequence, List, Union
 import hashlib
 import networkx as nx
@@ -289,7 +297,7 @@ class Skeleton:
     @property
     def central_keypoint(self) -> str:
         """
-        Most connected bone.
+        Most connected keypoint.
         """
         return self._anchor_keypoints[0] if self._anchor_keypoints else self.keypoints[0]
 
@@ -297,6 +305,11 @@ class Skeleton:
     def central_bone(self) -> Bone:
         """Most connected bone."""
         return max(self.bones, key=lambda b: self._degrees[b.k1] + self._degrees[b.k2])
+
+    @property
+    def canonical_map(self) -> Dict[str, str]:
+        """Mapping from keypoint names to their canonical names."""
+        return self._canonical_map
 
     def degree(self, keypoint: str) -> int:
         return self._degrees[keypoint]
@@ -328,6 +341,44 @@ class Skeleton:
         # TODO: This needs to be symmetry and stats aware
         pos = nx.kamada_kawai_layout(self._graph)
         nx.draw(self._graph, pos=pos, with_labels=True)
+
+    # I/O methods
+
+    def save(self, path: Union[Path, str]) -> None:
+        """
+        Save skeleton definition to TOML file.
+
+        Args:
+            path: Output path (.toml)
+        """
+        from mokap.mokap_io import save_skeleton_toml
+        save_skeleton_toml(self, path)
+
+    @classmethod
+    def load(cls, path: Union[Path, str]) -> 'Skeleton':
+        """
+        Load skeleton from file.
+
+        Supports TOML (.toml) and SLEAP (.slp) formats.
+        If a directory is provided, searches for .slp files.
+
+        Args:
+            path: Path to skeleton file or directory
+
+        Returns:
+            Skeleton instance
+        """
+        from mokap.mokap_io import load_skeleton_toml, load_skeleton_sleap
+
+        path = Path(path)
+
+        if path.suffix == '.toml':
+            return load_skeleton_toml(path)
+        elif path.suffix == '.slp':
+            return load_skeleton_sleap(path)
+        else:
+            # Default to SLEAP for directories or unknown extensions
+            return load_skeleton_sleap(path)
 
 
 class SkeletonStats:
@@ -494,6 +545,7 @@ class SkeletonStats:
         return True
 
     # Dynamics accessors
+
     def get_dynamics(self, keypoint: str) -> 'KeypointDynamics':
         """Get dynamics for a keypoint."""
 
@@ -518,7 +570,7 @@ class SkeletonStats:
     # Serialisation
 
     def to_dict(self) -> dict:
-        """Export to dict format."""
+        """Serialise to dictionary."""
         data = {
             'skeleton_hash': self.skeleton_hash,
             'skeleton_name': self.skeleton.name,
@@ -540,7 +592,7 @@ class SkeletonStats:
 
     @classmethod
     def from_dict(cls, data: dict, skeleton: Skeleton) -> 'SkeletonStats':
-        """Load from dict format (used by mokap_io.load_skeleton_stats)."""
+        """Deserialise from dictionary."""
         stats = cls(skeleton)
 
         # Verify skeleton compatibility
@@ -580,29 +632,27 @@ class SkeletonStats:
 
         return stats
 
+    # I/O methods
 
+    def save(self, path: Union[Path, str], merge_existing: bool = True) -> None:
+        """
+        Save statistics to JSON file.
 
-    # DEPRECATED
-
-    def to_json(self, path):
-
-        warnings.warn(
-            "SkeletonStats.to_json() is deprecated. "
-            "Use mokap_io.save_skeleton_stats(stats, path) instead.",
-            DeprecationWarning,
-            stacklevel=2
-        )
+        Args:
+            path: Output path (.json)
+            merge_existing: If True, merge with existing file
+        """
         from mokap.mokap_io import save_skeleton_stats
-        save_skeleton_stats(self, path, merge_existing=True)
+        save_skeleton_stats(self, path, merge_existing=merge_existing)
 
     @classmethod
-    def from_json(cls, path, skeleton: Skeleton) -> 'SkeletonStats':
+    def load(cls, path: Union[Path, str], skeleton: Skeleton) -> 'SkeletonStats':
+        """
+        Load statistics from JSON file.
 
-        warnings.warn(
-            "SkeletonStats.from_json() is deprecated. "
-            "Use mokap_io.load_skeleton_stats(path, skeleton) instead.",
-            DeprecationWarning,
-            stacklevel=2
-        )
+        Args:
+            path: Path to stats.json
+            skeleton: Skeleton instance (required for reconstruction)
+        """
         from mokap.mokap_io import load_skeleton_stats
         return load_skeleton_stats(path, skeleton)

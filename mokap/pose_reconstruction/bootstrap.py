@@ -370,7 +370,7 @@ if __name__ == "__main__":
         store_debug_data=DEBUG_PLOT
     )
     stats_anatomy = anat.process(soup)
-    stats_anatomy.to_json(stats_file)
+    stats_anatomy.save(stats_file)
 
     # Run dynamics bootstrap
     dyn = DynamicsBootstrapper(
@@ -384,7 +384,7 @@ if __name__ == "__main__":
         store_debug_data=DEBUG_PLOT
     )
     stats_dynamics = dyn.process(soup, max_frames=4000)
-    stats_dynamics.to_json(stats_file)
+    stats_dynamics.save(stats_file)
 
     print(f"Saved skeleton stats (anatomy + dynamics) to {stats_file}")
 

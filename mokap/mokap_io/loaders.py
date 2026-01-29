@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Optional, Tuple, Union, Dict
+from typing import TYPE_CHECKING, List, Optional, Tuple, Union, Dict, Any
 import json
 import yaml
 import numpy as np
@@ -18,6 +18,8 @@ if TYPE_CHECKING:
 
 
 def load_config(path: Union[str, Path] = 'config.yaml') -> Dict:
+    """Load a YAML configuration file."""
+
     path = Path(path)
 
     yaml_file = path.with_suffix('.yaml')
@@ -78,18 +80,18 @@ def load_point_soup(
         keypoint_names: Ordered keypoint names for index mapping
         camera_names: Ordered camera names for mask decoding
     """
-    from .converters import df_to_soup
+    from .converters import dataframe_to_soup
 
     path = Path(path)
 
-    # Legacy pickle support # TODO: might remove
+    # Legacy pickle support
     if path.suffix == ".pkl":
         import pickle
         with open(path, 'rb') as f:
             return pickle.load(f)
 
     df = load_dataframe(path, schema_name='Points3D', validate=True)
-    return df_to_soup(df, keypoint_names, camera_names)
+    return dataframe_to_soup(df, keypoint_names, camera_names)
 
 
 def load_skeleton_toml(path: Union[str, Path]) -> 'Skeleton':
@@ -183,7 +185,7 @@ def load_skeleton_sleap(path: Union[str, Path]) -> 'Skeleton':
         path: Path to .slp file or directory containing one
 
     Returns:
-        SkeletonTopology instance
+        Skeleton instance
     """
     from mokap.pose_reconstruction.skeleton import Skeleton, SkeletonMetadata
     import sleap_io
@@ -191,7 +193,10 @@ def load_skeleton_sleap(path: Union[str, Path]) -> 'Skeleton':
     path = Path(path)
 
     if path.is_dir():
-        path = next(path.glob('*.slp'))
+        slp_files = list(path.glob('*.slp'))
+        if not slp_files:
+            raise FileNotFoundError(f"No .slp files found in {path}")
+        path = slp_files[0]
 
     slp = sleap_io.load_file(str(path))
 
@@ -210,7 +215,7 @@ def load_skeleton_sleap(path: Union[str, Path]) -> 'Skeleton':
             species='unknown',
             common_name=name,
             skeleton_type='articulated',
-        ),
+        )
     )
 
 
@@ -223,7 +228,7 @@ def load_skeleton_stats(
 
     Args:
         path: Path to stats.json
-        skeleton: SkeletonTopology instance (required for reconstruction)
+        skeleton: Skeleton instance (required for reconstruction)
 
     Returns:
         SkeletonStats instance
@@ -262,6 +267,23 @@ def load_skeleton_stats(
                 stats.keypoint_dynamics[k] = KeypointDynamics.from_dict(v)
 
     return stats
+
+
+def load_tracks(
+    path: Union[str, Path],
+    validate: bool = True
+) -> pl.DataFrame:
+    """
+    Load tracking results from file.
+
+    Args:
+        path: Path to .parquet or .csv file
+        validate: Whether to validate schema
+
+    Returns:
+        DataFrame with Tracks3D schema
+    """
+    return load_dataframe(path, schema_name='Tracks3D', validate=validate)
 
 
 def load_detections_sleap(path: Union[str, Path]) -> pl.DataFrame:
@@ -347,7 +369,7 @@ def _sleap_to_polars(slp_content, camera_name: str, session: str) -> pl.DataFram
 
 def load_session(
     path: Union[str, Path],
-    session: str = ''
+    session: Any = ''
 ) -> pl.DataFrame:
     """
     Load a tracking session, checking for cached parquet first.

@@ -24,11 +24,11 @@ from .savers import (
 )
 
 from .converters import (
-    df_to_soup,
-    soup_to_df,
-    tracklets_to_df,
+    dataframe_to_soup,
+    soup_to_dataframe,
+    tracklets_to_dataframe,
     tracklet_records_to_df,  # TODO: deprecate this
-    tracks_df_to_numpy,
+    tracklets_to_arrays,
     prepare_reconstruction_input,   # TODO: deprecate this
 )
 
@@ -56,10 +56,10 @@ __all__ = [
     'save_skeleton_stats',
 
     # Converters
-    'df_to_soup',
-    'soup_to_df',
-    'tracklets_to_df',
+    'dataframe_to_soup',
+    'soup_to_dataframe',
+    'tracklets_to_dataframe',
     'tracklet_records_to_df',
-    'tracks_df_to_numpy',
+    'tracklets_to_arrays',
     'prepare_reconstruction_input',
 ]

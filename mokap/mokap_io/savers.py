@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Union
 import json
 import polars as pl
 
@@ -7,7 +7,7 @@ from .schemas import validate_dataframe
 
 if TYPE_CHECKING:
     from mokap.pose_reconstruction.skeleton import Skeleton, SkeletonStats, SkeletonMetadata
-    from mokap.pose_reconstruction.datatypes import PointSoup
+    from mokap.pose_reconstruction.datatypes import PointSoup, Tracklet
 
 
 def save_dataframe(
@@ -54,7 +54,7 @@ def save_point_soup(
         path: Output path (.parquet, .csv, or .pkl for legacy)
         legacy_pickle: Force pickle format (deprecated)
     """
-    from .converters import soup_to_df
+    from .converters import soup_to_dataframe
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -65,7 +65,7 @@ def save_point_soup(
             pickle.dump(soup, f)
         return
 
-    df = soup_to_df(soup)
+    df = soup_to_dataframe(soup)
     save_dataframe(df, path, schema_name='Points3D', validate=True)
 
 
@@ -77,7 +77,7 @@ def save_skeleton_toml(
     Save a skeleton definition to a TOML file.
 
     Args:
-        skeleton: SkeletonTopology instance
+        skeleton: Skeleton instance
         path: Output path (.toml)
     """
     from mokap.pose_reconstruction.skeleton import SkeletonMetadata
@@ -202,3 +202,68 @@ def save_skeleton_stats(
 
     with open(path, 'w') as f:
         json.dump(final_data, f, indent=2)
+
+
+def save_tracks(
+    tracklets: Sequence['Tracklet'],
+    frame_idx: int,
+    path: Union[str, Path],
+) -> None:
+    """
+    Save tracking results to file.
+
+    Args:
+        tracklets: Sequence of Tracklet instances
+        frame_idx: Current frame index
+        path: Output path (.parquet or .csv)
+    """
+    from .converters import tracklets_to_df
+
+    df = tracklets_to_df(tracklets, frame_idx)
+    save_dataframe(df, path, schema_name='Tracks3D', validate=True)
+
+
+def save_tracklet_records(
+    records: Dict[int, List[dict]],
+    path: Union[str, Path],
+) -> None:
+    """
+    Save tracklet records dictionary to file.
+
+    This handles the dictionary format produced by collecting Tracklet.to_dict() calls.
+
+    Args:
+        records: Dict mapping track_id -> list of per-frame record dicts
+        path: Output path (.parquet or .csv)
+    """
+    from .converters import tracklet_records_to_df
+
+    df = tracklet_records_to_df(records)
+    save_dataframe(df, path, schema_name='Tracks3D', validate=True)
+
+
+def append_tracks(
+    tracklets: Sequence['Tracklet'],
+    frame_idx: int,
+    path: Union[str, Path],
+) -> None:
+    """
+    Append tracking results to an existing file (or create if it doesn't exist).
+
+    Args:
+        tracklets: Sequence of Tracklet instances
+        frame_idx: Current frame index
+        path: Output path (.parquet)
+    """
+    from .converters import tracklets_to_dataframe
+
+    path = Path(path)
+    new_df = tracklets_to_df(tracklets, frame_idx)
+
+    if path.exists():
+        existing_df = pl.read_parquet(path)
+        combined_df = pl.concat([existing_df, new_df])
+        combined_df.write_parquet(path)
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        new_df.write_parquet(path)

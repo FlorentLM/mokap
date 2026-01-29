@@ -1,6 +1,7 @@
 import warnings
 from dataclasses import dataclass, field
 from functools import cached_property
+from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, FrozenSet, Optional, Union, Sequence, Iterator, Set
 import numpy as np
 from filterpy.common import Q_discrete_white_noise
@@ -12,6 +13,7 @@ from mokap.pose_reconstruction.skeleton import SkeletonStats, Skeleton
 from mokap.pose_reconstruction.utils import ema_update
 
 if TYPE_CHECKING:
+    import polars as pl
     from mokap.pose_reconstruction.configs import TrackletConfig
 
 
@@ -250,37 +252,87 @@ class PointSoup:
             sort=True
         )
 
-    # DEPRECATED METHODS
+    # Serialisation methods
 
-    def to_df(self, keypoint_names: Optional[List[str]] = None):
+    def to_dataframe(self) -> 'pl.DataFrame':
         """
-        DEPRECATED: Use mokap_io.soup_to_df(soup) instead.
+        Convert to a Points3D Polars DataFrame.
+        """
+        from mokap.mokap_io import soup_to_dataframe
+        return soup_to_dataframe(self)
+
+    @classmethod
+    def from_dataframe(
+        cls,
+        df: 'pl.DataFrame',
+        keypoint_names: Sequence[str],
+        camera_names: Sequence[str],
+    ) -> 'PointSoup':
+        """
+        Create a PointSoup from a Points3D DataFrame.
+
+        Args:
+            df: DataFrame with Points3D schema
+            keypoint_names: Ordered keypoint names (for index mapping)
+            camera_names: Ordered camera names (for mask decoding)
+        """
+        from mokap.mokap_io import dataframe_to_soup
+        return dataframe_to_soup(df, keypoint_names, camera_names)
+
+    def save(self, path: Union[str, Path]) -> None:
+        """
+        Save to file (parquet recommended, pickle supported).
+        """
+        from mokap.mokap_io import save_point_soup
+        save_point_soup(self, path)
+
+    @classmethod
+    def load(
+        cls,
+        path: Union[str, Path],
+        keypoints_order: Sequence[str],
+        cameras_order: Sequence[str],
+    ) -> 'PointSoup':
+        """
+        Load from file.
+
+        Args:
+            path: Path to data file (.parquet, .csv, or .pkl)
+            keypoints_order: Ordered keypoint names for index mapping
+            cameras_order: Ordered camera names for mask decoding
+        """
+        from mokap.mokap_io import load_point_soup
+        return load_point_soup(path, keypoints_order, cameras_order)
+
+    # Legacy compatibility
+
+    def to_df(self, keypoint_filter: Optional[List[str]] = None):
+        """
+        Returns a pandas DataFrame for backwards compatibility.
         """
         warnings.warn(
-            "PointSoup.to_df() is deprecated. Use mokap_io.soup_to_df(soup) instead.",
+            "PointSoup.to_df() is deprecated. Use to_dataframe() instead.",
             DeprecationWarning,
             stacklevel=2
         )
-        from mokap.mokap_io import soup_to_df
         import polars as pl
 
-        df = soup_to_df(self)
+        df = self.to_dataframe()
 
         # Filter keypoints if requested
-        if keypoint_names is not None:
-            df = df.filter(pl.col('keypoint').is_in(keypoint_names))
+        if keypoint_filter is not None:
+            df = df.filter(pl.col('keypoint').is_in(keypoint_filter))
 
-        # Return pandas for backwards compatibility
         return df.to_pandas()
 
     @classmethod
     def from_file(cls, file_path) -> 'PointSoup':
         """
-        DEPRECATED: Use mokap_io.load_point_soup() instead.
+        DEPRECATED: Use PointSoup.load() instead.
         """
         warnings.warn(
             "PointSoup.from_file() is deprecated. "
-            "Use mokap_io.load_point_soup(path, keypoint_names, camera_names) instead.",
+            "Use PointSoup.load(path, keypoint_names, camera_names) instead.",
             DeprecationWarning,
             stacklevel=2
         )
@@ -291,11 +343,10 @@ class PointSoup:
 
     def to_file(self, save_path):
         """
-        DEPRECATED: Use mokap_io.save_point_soup() instead.
+        DEPRECATED: Use save() instead.
         """
         warnings.warn(
-            "PointSoup.to_file() is deprecated. "
-            "Use mokap_io.save_point_soup(soup, path) instead.",
+            "PointSoup.to_file() is deprecated. Use save() instead.",
             DeprecationWarning,
             stacklevel=2
         )
@@ -316,7 +367,7 @@ class TimestepData:
 
     def __init__(self, soup_slice: PointSoup):
         self.soup = soup_slice
-        self._virtual_nodes: Dict[int, Node3D] = {}
+        self._virtual_nodes: Dict[int, 'Node3D'] = {}
         self._next_virt_id = -1
 
     def __bool__(self) -> bool:
@@ -514,7 +565,6 @@ class Tracklet:
     """
     Hierarchical state representation for articulated skeleton tracking.
     """
-
     def __init__(
             self,
             track_idx: int,
@@ -972,22 +1022,15 @@ class Tracklet:
         U, _, Vt = np.linalg.svd(blended)
         self.body_rotation = U @ Vt
 
+    # Serialisation
 
-    # DEPRECATED
+    def to_dict(self, frame_idx: int) -> dict:
 
-    def to_record(self, frame_idx: int) -> dict:
-
-        warnings.warn(
-            "Tracklet.to_record() is deprecated. "
-            "Use mokap_io.tracklets_to_df(tracklets, frame_idx) instead.",
-            DeprecationWarning,
-            stacklevel=2
-        )
         return {
             'frame_idx': frame_idx,
             'track_idx': self.track_idx,
-            'keypoints': self.hypothesis.positions,
-            'predicted_keypoints': self.predicted_keypoints,
+            'keypoints': {k: v.tolist() for k, v in self.hypothesis.positions.items()},
+            'predicted_keypoints': {k: v.tolist() for k, v in self.predicted_keypoints.items()},
             'scale': self.estimated_scale,
             'score': self.hypothesis.anatomical_score,
             'point_indices': {n.name: n.idx for n in self.hypothesis},
@@ -1000,3 +1043,16 @@ class Tracklet:
             'age': self.age,
             'time_since_update': self.time_since_update,
         }
+
+    # Legacy compatibility
+
+    def to_record(self, frame_idx: int) -> dict:
+        """
+        DEPRECATED: Use to_dict() instead.
+        """
+        warnings.warn(
+            "Tracklet.to_record() is deprecated. Use to_dict(frame_idx) instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        return self.to_dict(frame_idx)

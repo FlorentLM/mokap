@@ -10,7 +10,7 @@ Pipeline:
   3. Collect orphan rays for unused detections
 """
 import logging
-from collections import defaultdict, Counter
+from collections import defaultdict
 from typing import List, Dict
 import networkx as nx
 import numpy as np
@@ -386,7 +386,7 @@ if __name__ == "__main__":
     import time
     import polars as pl
     from pathlib import Path
-    from mokap.utils import fileio
+    from mokap.mokap_io import load_session
     from mokap.pose_reconstruction.utils import prepare_reconstruction_input
 
     BASE_DIR = Path.home() / 'Desktop' / '3d_ant_data'
@@ -403,8 +403,8 @@ if __name__ == "__main__":
     soup_file = output_dir / f"soup_session{SESSION}.pkl"
 
     rig = CameraRig.load(rig_file)
-    df = fileio.load_session(input_dir, session=SESSION)
-    skeleton = Skeleton.from_sleap(input_dir)
+    df = load_session(input_dir, session=SESSION)
+    skeleton = Skeleton.load(input_dir)
 
     reconstructor = Reconstructor(
         rig=rig,
