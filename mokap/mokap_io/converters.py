@@ -27,10 +27,32 @@ def dataframe_to_soup(
     from mokap.pose_reconstruction.datatypes import PointSoup
 
     # Split by status
-    points_df = dataframe.filter(pl.col("status") == "reconstructed")
-    rays_df = dataframe.filter(pl.col("status") == "ray")
+    if "status" not in dataframe.columns:
+        points_df = dataframe
+        rays_df = dataframe.head(0)
+    else:
+        points_df = dataframe.filter(pl.col("status") == "reconstructed")
+        rays_df = dataframe.filter(pl.col("status") == "ray")
 
     kp_to_idx = {name: i for i, name in enumerate(keypoints_order)}
+
+    # Helper to validate keypoint mapping
+    def _map_keypoints(names_list: list) -> np.ndarray:
+        indices = [kp_to_idx.get(kp, -1) for kp in names_list]
+        indices = np.array(indices, dtype=np.int16)
+
+        unmapped_mask = indices == -1
+        if np.any(unmapped_mask):
+            bad_names = np.unique(np.array(names_list)[unmapped_mask])
+            shown = bad_names[:5].tolist()
+
+            if len(bad_names) > 5:
+                shown.append("...")
+            raise ValueError(
+                f"Data contains keypoints not present in the provided skeleton definition: {shown}. "
+                f"Check case-sensitivity or skeleton versions."
+            )
+        return indices
 
     # Reconstructed points
     if len(points_df) > 0:
@@ -38,10 +60,8 @@ def dataframe_to_soup(
         confidences = points_df["confidence"].to_numpy().astype(np.float32)
         frame_indices = points_df["frame"].to_numpy().astype(np.int32)
 
-        kp_indices = np.array(
-            [kp_to_idx.get(kp, -1) for kp in points_df["keypoint"].to_list()],
-            dtype=np.int16
-        )
+        # Use helper with validation
+        kp_indices = _map_keypoints(points_df["keypoint"].to_list())
 
         if "reprojection_error" in points_df.columns:
             reproj_errors = points_df["reprojection_error"].to_numpy().astype(np.float32)
@@ -66,10 +86,8 @@ def dataframe_to_soup(
         ray_directions = rays_df.select(["ray_dx", "ray_dy", "ray_dz"]).to_numpy().astype(np.float32)
         ray_confidences = rays_df["confidence"].to_numpy().astype(np.float32)
         ray_frame_indices = rays_df["frame"].to_numpy().astype(np.int32)
-        ray_kp_indices = np.array(
-            [kp_to_idx.get(kp, -1) for kp in rays_df["keypoint"].to_list()],
-            dtype=np.int16
-        )
+
+        ray_kp_indices = _map_keypoints(rays_df["keypoint"].to_list())
     else:
         ray_origins = np.empty((0, 3), dtype=np.float32)
         ray_directions = np.empty((0, 3), dtype=np.float32)
@@ -110,11 +128,11 @@ def soup_to_dataframe(soup: 'PointSoup') -> pl.DataFrame:
     # Reconstructed points
     for i in range(soup.nb_points):
         kp_idx = soup.keypoint_indices[i]
-        kp_name = (
-            soup.keypoint_names[kp_idx]
-            if 0 <= kp_idx < len(soup.keypoint_names)
-            else f"kp_{kp_idx}"
-        )
+
+        if 0 <= kp_idx < len(soup.keypoint_names):
+            kp_name = soup.keypoint_names[kp_idx]
+        else:
+            kp_name = f"unknown_{kp_idx}"
 
         rows.append({
             "frame": int(soup.frame_indices[i]),
@@ -141,11 +159,11 @@ def soup_to_dataframe(soup: 'PointSoup') -> pl.DataFrame:
     # Rays
     for i in range(soup.nb_rays):
         kp_idx = soup.ray_keypoint_indices[i]
-        kp_name = (
-            soup.keypoint_names[kp_idx]
-            if 0 <= kp_idx < len(soup.keypoint_names)
-            else f"kp_{kp_idx}"
-        )
+
+        if 0 <= kp_idx < len(soup.keypoint_names):
+            kp_name = soup.keypoint_names[kp_idx]
+        else:
+            kp_name = f"unknown_{kp_idx}"
 
         rows.append({
             "frame": int(soup.ray_frame_indices[i]),

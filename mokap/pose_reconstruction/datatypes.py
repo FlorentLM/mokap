@@ -1,4 +1,3 @@
-import warnings
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -152,7 +151,9 @@ class PointSoup:
         groups = np.split(order, splits[:-1])
         unique_ids = sorted_kp[splits[:-1]]
         for kp_id, g in zip(unique_ids, groups):
-            result[self.keypoint_names[kp_id]] = g
+            if 0 <= kp_id < len(self.keypoint_names):
+                result[self.keypoint_names[kp_id]] = g
+
         return result
 
     @property
@@ -640,18 +641,18 @@ class Tracklet:
 
             dynamics = self.stats.get_dynamics(kp)
 
-            kf = KalmanFilter(dim_x=6, dim_z=3) # state = [dx, dy, dz, dvx, dvy, dvz]
+            kf = KalmanFilter(dim_x=6, dim_z=3)  # state = [dx, dy, dz, dvx, dvy, dvz]
             dt = 1.0
 
             # State transition with velocity damping
             damp = self.config.offset_velocity_damping
             kf.F = np.array([
-                [1,    0,    0,  dt,     0,    0],
-                [0,    1,    0,    0,   dt,    0],
-                [0,    0,    1,    0,    0,   dt],
-                [0,    0,    0, damp,    0,    0],
-                [0,    0,    0,    0, damp,    0],
-                [0,    0,    0,    0,    0, damp],
+                [1, 0, 0, dt, 0, 0],
+                [0, 1, 0, 0, dt, 0],
+                [0, 0, 1, 0, 0, dt],
+                [0, 0, 0, damp, 0, 0],
+                [0, 0, 0, 0, damp, 0],
+                [0, 0, 0, 0, 0, damp],
             ], dtype=float)
 
             # Observation = offset position only
