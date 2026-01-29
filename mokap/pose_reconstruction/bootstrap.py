@@ -14,7 +14,6 @@ import matplotlib.pyplot as plt
 from lucida import CameraRig
 from scipy.stats import median_abs_deviation
 
-from mokap.mokap_io import load_skeleton_sleap
 from mokap.pose_reconstruction.configs import MIN_PROCESS_NOISE, MAX_PROCESS_NOISE
 from mokap.pose_reconstruction.datatypes import PointSoup
 from mokap.pose_reconstruction.skeleton import (Bone, Skeleton, SkeletonStats,
@@ -358,8 +357,7 @@ if __name__ == "__main__":
 
     # Load stuff
     rig = CameraRig.load(rig_file)
-    # skeleton = Skeleton.load(input_dir)
-    skeleton = load_skeleton_sleap(input_dir)
+    skeleton = Skeleton.load(input_dir)
     soup = PointSoup.load(soup_file, keypoints_order=skeleton.keypoints, cameras_order=rig.names)
 
     print(f"Loaded point soup from {soup_file}")

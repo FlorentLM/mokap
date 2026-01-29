@@ -52,7 +52,7 @@ class PointSoup:
         self.ray_keypoint_indices = self._as_array(ray_keypoint_indices, (0,), np.int16)
         self.ray_frame_indices = self._as_array(ray_frame_indices, (0,), np.int32)
 
-        self.camera_masks = self._as_array(camera_masks, (0,), dtype=np.uint64) # bitmask of contributing cameras
+        self.camera_masks = self._as_array(camera_masks, (0,), dtype=np.uint64)  # bitmask of contributing cameras
 
         # Metadata
         self.keypoint_names = keypoint_names or []
@@ -109,17 +109,18 @@ class PointSoup:
 
     @staticmethod
     def _as_array(data, shape, dtype):
-        if not bool(np.any(data)):
+        if data is None or len(data) == 0:
             return np.empty(shape, dtype=dtype)
         return np.asarray(data, dtype=dtype)
 
     def _sort_inplace(self):
         """Sorts all point and ray arrays by their respective frame indices."""
 
+        # check if already sorted
         if len(self.frame_indices) > 1 and np.all(self.frame_indices[:-1] <= self.frame_indices[1:]):
-            return
+            pass
 
-        if len(self.frame_indices) > 0:
+        elif len(self.frame_indices) > 0:
             p_idx = np.argsort(self.frame_indices)
 
             self.positions = self.positions[p_idx]
@@ -150,7 +151,9 @@ class PointSoup:
 
         groups = np.split(order, splits[:-1])
         unique_ids = sorted_kp[splits[:-1]]
+
         for kp_id, g in zip(unique_ids, groups):
+            # Safe check to prevent wrapping indices
             if 0 <= kp_id < len(self.keypoint_names):
                 result[self.keypoint_names[kp_id]] = g
 
@@ -314,7 +317,11 @@ class PointSoup:
 
         df = self.to_dataframe()
 
-        # Filter keypoints if requested
+        # Filter for reconstructed points only
+        # TODO: maybe this filtering should go in the bootstrap
+        if "status" in df.columns:
+            df = df.filter(pl.col("status") == "reconstructed")
+
         if keypoint_filter is not None:
             df = df.filter(pl.col('keypoint').is_in(keypoint_filter))
 
@@ -863,7 +870,7 @@ class Tracklet:
             self.offset_kfs[kp].update(local_offset)
 
             # Update rest offset
-            #alpha = 0.02
+            # alpha = 0.02
             alpha = 0.1  # TODO: Not sure how slow this EMA should be
             self.rest_offsets[kp] = ema_update(self.rest_offsets[kp], local_offset, alpha=alpha)
 

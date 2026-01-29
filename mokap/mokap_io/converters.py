@@ -26,31 +26,30 @@ def dataframe_to_soup(
     """
     from mokap.pose_reconstruction.datatypes import PointSoup
 
-    # Split by status
-    if "status" not in dataframe.columns:
-        points_df = dataframe
-        rays_df = dataframe.head(0)
-    else:
+    if "status" in dataframe.columns:
         points_df = dataframe.filter(pl.col("status") == "reconstructed")
         rays_df = dataframe.filter(pl.col("status") == "ray")
+    else:
+        # assume everything is a point if status is missing
+        points_df = dataframe
+        rays_df = dataframe.head(0)
 
     kp_to_idx = {name: i for i, name in enumerate(keypoints_order)}
 
-    # Helper to validate keypoint mapping
-    def _map_keypoints(names_list: list) -> np.ndarray:
+    def _map_keypoints(names_series: pl.Series) -> np.ndarray:
+        # safe mapping with validation
+
+        names_list = names_series.to_list()
         indices = [kp_to_idx.get(kp, -1) for kp in names_list]
         indices = np.array(indices, dtype=np.int16)
 
-        unmapped_mask = indices == -1
-        if np.any(unmapped_mask):
-            bad_names = np.unique(np.array(names_list)[unmapped_mask])
-            shown = bad_names[:5].tolist()
-
-            if len(bad_names) > 5:
-                shown.append("...")
+        if np.any(indices == -1):
+            bad_indices = np.where(indices == -1)[0]
+            bad_names = sorted(list(set(names_list[i] for i in bad_indices[:50])))
             raise ValueError(
-                f"Data contains keypoints not present in the provided skeleton definition: {shown}. "
-                f"Check case-sensitivity or skeleton versions."
+                f"Validation Error: Found keypoints in data that are not in the skeleton.\n"
+                f"Unknown names: {bad_names}\n"
+                f"Check case-sensitivity or skeleton version."
             )
         return indices
 
@@ -60,8 +59,7 @@ def dataframe_to_soup(
         confidences = points_df["confidence"].to_numpy().astype(np.float32)
         frame_indices = points_df["frame"].to_numpy().astype(np.int32)
 
-        # Use helper with validation
-        kp_indices = _map_keypoints(points_df["keypoint"].to_list())
+        kp_indices = _map_keypoints(points_df["keypoint"])
 
         if "reprojection_error" in points_df.columns:
             reproj_errors = points_df["reprojection_error"].to_numpy().astype(np.float32)
@@ -87,7 +85,7 @@ def dataframe_to_soup(
         ray_confidences = rays_df["confidence"].to_numpy().astype(np.float32)
         ray_frame_indices = rays_df["frame"].to_numpy().astype(np.int32)
 
-        ray_kp_indices = _map_keypoints(rays_df["keypoint"].to_list())
+        ray_kp_indices = _map_keypoints(rays_df["keypoint"])
     else:
         ray_origins = np.empty((0, 3), dtype=np.float32)
         ray_directions = np.empty((0, 3), dtype=np.float32)
@@ -125,18 +123,18 @@ def soup_to_dataframe(soup: 'PointSoup') -> pl.DataFrame:
     """
     rows = []
 
+    def _get_name(idx):
+        if 0 <= idx < len(soup.keypoint_names):
+            return soup.keypoint_names[idx]
+        return f"unknown_{idx}"
+
     # Reconstructed points
     for i in range(soup.nb_points):
         kp_idx = soup.keypoint_indices[i]
 
-        if 0 <= kp_idx < len(soup.keypoint_names):
-            kp_name = soup.keypoint_names[kp_idx]
-        else:
-            kp_name = f"unknown_{kp_idx}"
-
         rows.append({
             "frame": int(soup.frame_indices[i]),
-            "keypoint": kp_name,
+            "keypoint": _get_name(kp_idx),
             "x": float(soup.positions[i, 0]),
             "y": float(soup.positions[i, 1]),
             "z": float(soup.positions[i, 2]),
@@ -160,14 +158,9 @@ def soup_to_dataframe(soup: 'PointSoup') -> pl.DataFrame:
     for i in range(soup.nb_rays):
         kp_idx = soup.ray_keypoint_indices[i]
 
-        if 0 <= kp_idx < len(soup.keypoint_names):
-            kp_name = soup.keypoint_names[kp_idx]
-        else:
-            kp_name = f"unknown_{kp_idx}"
-
         rows.append({
             "frame": int(soup.ray_frame_indices[i]),
-            "keypoint": kp_name,
+            "keypoint": _get_name(kp_idx),
             "x": float(soup.ray_origins[i, 0]),
             "y": float(soup.ray_origins[i, 1]),
             "z": float(soup.ray_origins[i, 2]),
