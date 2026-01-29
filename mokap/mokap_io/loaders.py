@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Optional, Tuple, Union, Dict, Any
+from typing import TYPE_CHECKING, List, Optional, Tuple, Union, Dict, Any, Sequence
 import json
 import yaml
 import numpy as np
@@ -69,32 +69,31 @@ def load_dataframe(
 
 def load_point_soup(
     path: Union[str, Path],
-    keypoint_names: List[str],
-    camera_names: List[str],
+    keypoints_order: Sequence[str],
+    cameras_order: Sequence[str],
 ) -> 'PointSoup':
     """
     Load a PointSoup from parquet/CSV, or pickle (legacy).
 
     Args:
         path: Path to data file
-        keypoint_names: Ordered keypoint names for index mapping
-        camera_names: Ordered camera names for mask decoding
+        keypoints_order: Ordered keypoint names for index mapping
+        cameras_order: Ordered camera names for mask decoding
     """
     from .converters import dataframe_to_soup
 
     path = Path(path)
 
-    # Legacy pickle support
     if path.suffix == ".pkl":
         import pickle
         with open(path, 'rb') as f:
             return pickle.load(f)
 
     df = load_dataframe(path, schema_name='Points3D', validate=True)
-    return dataframe_to_soup(df, keypoint_names, camera_names)
+    return dataframe_to_soup(df, keypoints_order, cameras_order)
 
 
-def load_skeleton_toml(path: Union[str, Path]) -> 'Skeleton':
+def load_skeleton(path: Union[str, Path]) -> 'Skeleton':
     """
     Load a skeleton definition from a TOML file.
 

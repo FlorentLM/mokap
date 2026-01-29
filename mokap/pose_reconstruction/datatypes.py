@@ -283,8 +283,9 @@ class PointSoup:
         """
         Save to file (parquet recommended, pickle supported).
         """
-        from mokap.mokap_io import save_point_soup
-        save_point_soup(self, path)
+        from mokap.mokap_io import soup_to_dataframe, save_dataframe
+        df = soup_to_dataframe(self)
+        save_dataframe(df, path, schema_name='Points3D', validate=True)
 
     @classmethod
     def load(
@@ -304,17 +305,10 @@ class PointSoup:
         from mokap.mokap_io import load_point_soup
         return load_point_soup(path, keypoints_order, cameras_order)
 
-    # Legacy compatibility
-
-    def to_df(self, keypoint_filter: Optional[List[str]] = None):
+    def to_pandas(self, keypoint_filter: Optional[List[str]] = None):
         """
-        Returns a pandas DataFrame for backwards compatibility.
+        Returns a pandas DataFrame.
         """
-        warnings.warn(
-            "PointSoup.to_df() is deprecated. Use to_dataframe() instead.",
-            DeprecationWarning,
-            stacklevel=2
-        )
         import polars as pl
 
         df = self.to_dataframe()
@@ -324,37 +318,6 @@ class PointSoup:
             df = df.filter(pl.col('keypoint').is_in(keypoint_filter))
 
         return df.to_pandas()
-
-    @classmethod
-    def from_file(cls, file_path) -> 'PointSoup':
-        """
-        DEPRECATED: Use PointSoup.load() instead.
-        """
-        warnings.warn(
-            "PointSoup.from_file() is deprecated. "
-            "Use PointSoup.load(path, keypoint_names, camera_names) instead.",
-            DeprecationWarning,
-            stacklevel=2
-        )
-        import pickle
-        from pathlib import Path
-        file_path = Path(file_path)
-        return pickle.load(file_path.open('rb'))
-
-    def to_file(self, save_path):
-        """
-        DEPRECATED: Use save() instead.
-        """
-        warnings.warn(
-            "PointSoup.to_file() is deprecated. Use save() instead.",
-            DeprecationWarning,
-            stacklevel=2
-        )
-        import pickle
-        from pathlib import Path
-        save_path = Path(save_path)
-        with open(save_path, 'wb') as f:
-            pickle.dump(self, f)
 
 
 class TimestepData:
@@ -1043,16 +1006,3 @@ class Tracklet:
             'age': self.age,
             'time_since_update': self.time_since_update,
         }
-
-    # Legacy compatibility
-
-    def to_record(self, frame_idx: int) -> dict:
-        """
-        DEPRECATED: Use to_dict() instead.
-        """
-        warnings.warn(
-            "Tracklet.to_record() is deprecated. Use to_dict(frame_idx) instead.",
-            DeprecationWarning,
-            stacklevel=2
-        )
-        return self.to_dict(frame_idx)

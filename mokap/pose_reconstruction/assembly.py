@@ -9,8 +9,10 @@ from collections import defaultdict
 import numpy as np
 import networkx as nx
 from alive_progress import alive_bar
+from lucida import CameraRig
 from scipy.optimize import linear_sum_assignment
 
+from mokap.mokap_io import load_skeleton_sleap
 from mokap.pose_reconstruction.skeleton import Bone, Skeleton, SkeletonStats
 from mokap.pose_reconstruction.datatypes import Node3D, Pose3D, PointSoup, Tracklet, TimestepData
 from mokap.pose_reconstruction.configs import AssemblerConfig, TrackerConfig, TrackletConfig
@@ -592,9 +594,12 @@ class MultiObjectTracker:
         self.config = config
         self.soup = soup
 
-        self._active_tracklets: Dict[int, Tracklet] = {}   # track_idx -> Tracklet (updated this frame)
+        self._active_tracklets: Dict[int, Tracklet] = {}  # track_idx -> Tracklet (updated this frame)
         self._pending_tracklets: Dict[int, Tracklet] = {}  # track_idx -> Tracklet (coasting)
-        # TODO: Maybe store terminated tracklets instead of pruning them?
+        self._terminated_tracklets: Dict[int, Tracklet] = {}  # track_idx -> Tracklet (finished)
+
+        # Track history: track_idx -> list of (frame_idx, tracklet_snapshot_dict)
+        self._track_history: Dict[int, List[Tuple[int, dict]]] = {}
 
         self._next_track_idx = 0
         self._current_frame = -1
@@ -614,9 +619,14 @@ class MultiObjectTracker:
         return list(self._pending_tracklets.values())
 
     @property
+    def terminated_tracklets(self) -> List[Tracklet]:
+        """Tracklets that have been terminated."""
+        return list(self._terminated_tracklets.values())
+
+    @property
     def tracklets(self) -> List[Tracklet]:
         """All tracklets (active + pending)."""
-        return self.active_tracklets + self.pending_tracklets
+        return self.active_tracklets + self.pending_tracklets + self.terminated_tracklets
 
     # Scoring helpers
 
@@ -700,7 +710,7 @@ class MultiObjectTracker:
         )
 
         if not frame_candidates:
-            self._prune_pending()
+            self._archive_pending()
             return
 
         # Association bonus for temporal continuity
@@ -712,7 +722,16 @@ class MultiObjectTracker:
         # Commit surviving hypotheses (extends existing, and initialises new ones)
         self._commit_tracklet_hypotheses(remaining_hypotheses, frame_idx)
 
-        self._prune_pending()
+        # Record history for active tracklets
+        for tracklet in self.active_tracklets:
+            if tracklet.track_idx not in self._track_history:
+                self._track_history[tracklet.track_idx] = []
+
+            self._track_history[tracklet.track_idx].append(
+                (frame_idx, tracklet.to_dict(frame_idx))
+            )
+
+        self._archive_pending()
 
     # Association and matching
 
@@ -874,30 +893,98 @@ class MultiObjectTracker:
 
     # Lifecycle and serialisation
 
-    # TODO: Should not prune at all, should just move them to a third internal store
+    def _archive_pending(self):
+        """Move stale or uncertain tracklets from pending to terminated."""
 
-    def _prune_pending(self):
-        """Remove stale or uncertain tracklets from pending."""
-
-        to_remove = []
+        to_terminate = []
 
         for track_idx, t in self._pending_tracklets.items():
 
             if t.time_since_update > self.config.max_tracklet_age:
-                to_remove.append(track_idx)
+                to_terminate.append(track_idx)
 
             elif np.sum(t.position_uncertainty) > self.config.uncertainty_threshold:
-                to_remove.append(track_idx)
+                to_terminate.append(track_idx)
 
-        for track_idx in to_remove:
-            del self._pending_tracklets[track_idx]
+        for track_idx in to_terminate:
+            tracklet = self._pending_tracklets.pop(track_idx)
+            self._terminated_tracklets[track_idx] = tracklet
 
-    def collect_records(self, frame_idx: int) -> List[dict]:
-        """
-        Collect serialisable records for all active tracklets.
-        Use this for building output data structures.
-        """
-        return [t.to_record(frame_idx) for t in self.active_tracklets]
+    def to_dataframe(self) -> 'pl.DataFrame':
+        # TODO: This is to be removed, it's just the tracklets_to_datframe logic
+
+        import polars as pl
+        from mokap.mokap_io.schemas import empty_dataframe
+
+        rows = []
+
+        for track_idx, history in self._track_history.items():
+            for frame_idx, snapshot in history:
+                keypoints = snapshot.get('keypoints', {})
+                scale = snapshot.get('scale', 1.0)
+                score = snapshot.get('score', 0.0)
+                health = snapshot.get('health', 1.0)
+                integrity = snapshot.get('anatomical_integrity', score)
+
+                pos_unc = snapshot.get('position_uncertainty', [0, 0, 0])
+                uncertainty = sum(pos_unc) if isinstance(pos_unc, (list, tuple)) else float(pos_unc)
+
+                velocity = snapshot.get('velocity', [0, 0, 0])
+                vel_x = velocity[0] if len(velocity) > 0 else 0.0
+                vel_y = velocity[1] if len(velocity) > 1 else 0.0
+                vel_z = velocity[2] if len(velocity) > 2 else 0.0
+
+                for kp_name, position in keypoints.items():
+                    if isinstance(position, (list, tuple)):
+                        x, y, z = position
+                    else:
+                        continue
+
+                    rows.append({
+                        "track_id": int(track_idx),
+                        "frame": int(frame_idx),
+                        "keypoint": kp_name,
+                        "x": float(x),
+                        "y": float(y),
+                        "z": float(z),
+                        "confidence": 1.0,
+                        "scale": float(scale),
+                        "anatomical_score": float(score),
+                        "health": float(health),
+                        "integrity": float(integrity),
+                        "uncertainty": float(uncertainty),
+                        "velocity_x": float(vel_x),
+                        "velocity_y": float(vel_y),
+                        "velocity_z": float(vel_z),
+                    })
+
+        if not rows:
+            return empty_dataframe('Tracks3D')
+
+        df = pl.from_dicts(rows)
+
+        df = df.with_columns([
+            pl.col("track_id").cast(pl.Int32),
+            pl.col("frame").cast(pl.Int32),
+            pl.col("x").cast(pl.Float32),
+            pl.col("y").cast(pl.Float32),
+            pl.col("z").cast(pl.Float32),
+            pl.col("confidence").cast(pl.Float32),
+            pl.col("scale").cast(pl.Float32),
+            pl.col("anatomical_score").cast(pl.Float32),
+            pl.col("health").cast(pl.Float32),
+            pl.col("integrity").cast(pl.Float32),
+            pl.col("uncertainty").cast(pl.Float32),
+            pl.col("velocity_x").cast(pl.Float32),
+            pl.col("velocity_y").cast(pl.Float32),
+            pl.col("velocity_z").cast(pl.Float32),
+        ])
+
+        return df.sort(["track_id", "frame", "keypoint"])
+
+    def save(self, path: 'Union[str, Path]') -> None:
+        from mokap.mokap_io import save_dataframe
+        save_dataframe(self.to_dataframe(), path, schema_name='Tracks3D', validate=True)
 
 
 ##
@@ -912,16 +999,20 @@ if __name__ == '__main__':
     DEBUG_PLOT = True
     SAVE_UPDATED_STATS = False
 
+    calib_dir = BASE_DIR / PREFIX / 'calibration'
     input_dir = BASE_DIR / PREFIX / 'inputs' / 'tracking'
     output_dir = BASE_DIR / PREFIX / 'outputs'
 
-    soup_file = output_dir / f"soup_session{SESSION}.pkl"
-    stats_file = output_dir / "skeleton_stats.json"
-    tracklets_file = output_dir / f'tracklets_session{SESSION}.pkl'
+    soup_file = output_dir / f'soup_session{SESSION}.parquet'
+    skel_file = output_dir / 'messor_skeleton.toml'
+    stats_file = output_dir / 'skeleton_stats.json'
+    rig_file = calib_dir / 'camera_rig.toml'  # TODO: remove dependency on this, order should be from the soup data
 
     # Load stuff
-    soup = PointSoup.from_file(soup_file)
-    skeleton = Skeleton.from_sleap(input_dir)
+    rig = CameraRig.load(rig_file)
+    # skeleton = Skeleton.load(input_dir)
+    skeleton = load_skeleton_sleap(input_dir)
+    soup = PointSoup.load(soup_file, keypoints_order=skeleton.keypoints, cameras_order=rig.names)
     stats = SkeletonStats.load(stats_file, skeleton)
 
     print(f"Loaded point soup from {soup_file}")
@@ -952,8 +1043,6 @@ if __name__ == '__main__':
     unique_frames = np.unique(soup.frame_indices)
     min_frame, max_frame = int(unique_frames[0]), int(unique_frames[-1])
 
-    records_by_track: Dict[int, List[dict]] = defaultdict(list)
-
     print(f"Tracking frames {min_frame} to {max_frame}...")
 
     with alive_bar(total=(max_frame - min_frame + 1), length=20, force_tty=True) as bar:
@@ -963,29 +1052,22 @@ if __name__ == '__main__':
 
             # Update skeleton stats from high-quality observations
             for tracklet in tracker.active_tracklets:
-
                 if tracklet.last_update_frame == frame_idx:
                     stats.update_anatomy(tracklet.hypothesis.positions)
 
-            # Collect records
-            for record in tracker.collect_records(frame_idx):
-                records_by_track[record['track_idx']].append(record)
-
             bar()
 
-    print(f"Tracking complete. Generated {len(records_by_track)} tracklets.")
+    print(f"Tracking complete. Generated {len(tracker._track_history)} tracks.")
 
     # Save tracking results
-    tracklets_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(tracklets_file, 'wb') as f:
-        pickle.dump(dict(records_by_track), f)
-    print(f"Saved to '{tracklets_file}'")
+    tracks_file = output_dir / f'tracks_session{SESSION}.parquet'
+    tracker.save(tracks_file)
+    print(f"Saved to '{tracks_file}'")
 
     if SAVE_UPDATED_STATS:
-        # Save updated stats
         stats.save(stats_file)
         print(f"Updated stats saved to '{stats_file}'")
 
     if DEBUG_PLOT:
         from mokap.pose_reconstruction.debug import TrackletViewer
-        viewer = TrackletViewer(soup, records_by_track, skeleton)
+        viewer = TrackletViewer(soup, tracker.to_dataframe(), skeleton)

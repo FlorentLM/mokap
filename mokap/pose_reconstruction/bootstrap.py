@@ -11,8 +11,10 @@ import numpy as np
 import pandas as pd
 import trackpy as tp
 import matplotlib.pyplot as plt
+from lucida import CameraRig
 from scipy.stats import median_abs_deviation
 
+from mokap.mokap_io import load_skeleton_sleap
 from mokap.pose_reconstruction.configs import MIN_PROCESS_NOISE, MAX_PROCESS_NOISE
 from mokap.pose_reconstruction.datatypes import PointSoup
 from mokap.pose_reconstruction.skeleton import (Bone, Skeleton, SkeletonStats,
@@ -32,7 +34,7 @@ def _run_trackpy(
     """
     tp.quiet()
 
-    df = soup.to_df()
+    df = soup.to_pandas()
 
     # Subset frames for speed if needed
     if df['frame'].nunique() > max_frames:
@@ -345,15 +347,20 @@ if __name__ == "__main__":
     SESSION = 22
     DEBUG_PLOT = True
 
+    calib_dir = BASE_DIR / PREFIX / 'calibration'
     input_dir = BASE_DIR / PREFIX / 'inputs' / 'tracking'
     output_dir = BASE_DIR / PREFIX / 'outputs'
 
-    soup_file = output_dir / f"soup_session{SESSION}.pkl"
-    stats_file = output_dir / "skeleton_stats.json"
+    soup_file = output_dir / f'soup_session{SESSION}.parquet'
+    skel_file = output_dir / 'messor_skeleton.toml'
+    stats_file = output_dir / 'skeleton_stats.json'
+    rig_file = calib_dir / 'camera_rig.toml'    # TODO: remove dependency on this, order should be from the soup data
 
     # Load stuff
-    soup = PointSoup.from_file(soup_file)
-    skeleton = Skeleton.from_sleap(input_dir)
+    rig = CameraRig.load(rig_file)
+    # skeleton = Skeleton.load(input_dir)
+    skeleton = load_skeleton_sleap(input_dir)
+    soup = PointSoup.load(soup_file, keypoints_order=skeleton.keypoints, cameras_order=rig.names)
 
     print(f"Loaded point soup from {soup_file}")
     print(f"Loaded skeleton with {len(skeleton.keypoints)} keypoints, {len(skeleton.bones)} bones")

@@ -14,6 +14,7 @@ from collections import defaultdict
 from typing import List, Dict
 import networkx as nx
 import numpy as np
+import polars as pl
 
 from lucida import CameraRig
 from lucida.geometry.backend import xp, set_at, xp_float
@@ -61,6 +62,10 @@ class Reconstructor:
         self.F = rig.F.copy()
         self.dist_model = str(rig.distortion_model)
 
+        # Build index mappings
+        self._cam_map = {name: i for i, name in enumerate(rig.names)}
+        self._kp_map = {name: i for i, name in enumerate(keypoint_names)}
+
     def _triangulate_reproj_wrapper(self, pixel_coords, weights):
         """Just a tiny internal wrapper for px->norm->3d->reproj because this is used twice."""
 
@@ -75,30 +80,36 @@ class Reconstructor:
         )
         return pts3d, reproj
 
-    def reconstruct(self, inputs: Dict[str, np.ndarray]) -> PointSoup:
+    def reconstruct(self, detections: pl.DataFrame) -> PointSoup:
         """
-        Main entry point. Processes a batch of frames.
+        Main entry point. Processes a batch of frames from a Points2D DataFrame.
 
         Args:
-            inputs: Dict with keys:
-                - 'coords': (N, 2) pixel coordinates
-                - 'cam_ids': (N,) camera indices
-                - 'frame_indices': (N,) frame indices
-                - 'kp_type_ids': (N,) keypoint type indices
-                - 'scores': (N,) detection confidences
+            detections: DataFrame with Points2D schema (frame, camera, keypoint, x, y, score)
 
         Returns:
             PointSoup with reconstructed 3D points and orphan rays
         """
-        coords = xp.asarray(inputs['coords'])
-        cam_ids = inputs['cam_ids']
-        frame_ids = inputs['frame_indices']
-        kp_ids = inputs['kp_type_ids']
-        scores = inputs['scores']
+        # Sort and prepare data
+        df = detections.sort(["frame", "keypoint", "camera"])
+
+        # Map strings to indices
+        df = df.with_columns([
+            pl.col("keypoint").replace(self._kp_map).cast(pl.Int16).alias("kp_id"),
+            pl.col("camera").replace(self._cam_map).cast(pl.Int8).alias("cam_id"),
+        ])
+
+        # Extract arrays
+        coords = df.select(["x", "y"]).to_numpy().astype(np.float32)
+        cam_ids = df["cam_id"].to_numpy()
+        frame_ids = df["frame"].to_numpy()
+        kp_ids = df["kp_id"].to_numpy()
+        scores = df["score"].to_numpy().astype(np.float32)
 
         # Undistort all points once
+        coords_xp = xp.asarray(coords)
         undist = undistort_points(
-            coords,
+            coords_xp,
             self.Ks[cam_ids],
             self.Ds[cam_ids],
             self.dist_model
@@ -133,7 +144,7 @@ class Reconstructor:
             results = self._triangulate_cliques(
                 cliques=cliques,
                 undist=undist,
-                raw=coords,
+                raw=coords_xp,
                 cam_ids=cam_ids,
                 scores=scores,
                 frame_ids=frame_ids
@@ -152,8 +163,16 @@ class Reconstructor:
                     used[det_idx] = True
 
         # Orphan rays for unused detections
-        orphan_mask = ~used & ~np.isnan(inputs['coords'][:, 0])
-        orphan_rays = self._get_rays(inputs, undist, orphan_mask)
+        orphan_mask = ~used & ~np.isnan(coords[:, 0])
+        orphan_rays = self._get_rays(
+            coords=coords,
+            cam_ids=cam_ids,
+            frame_ids=frame_ids,
+            kp_ids=kp_ids,
+            scores=scores,
+            undist=undist,
+            orphan_mask=orphan_mask
+        )
 
         return PointSoup(
             positions=np.array(out_pts, dtype=np.float32).reshape(-1, 3),
@@ -227,8 +246,6 @@ class Reconstructor:
             # Construct graph edges
             edges = list(zip(pairs_a[valid_pairs], pairs_b[valid_pairs]))
             if not edges:
-                # No valid edges, but maybe single-camera situation
-                # (shouldn't happen given min_views check, but this to be safe)
                 continue
 
             G = nx.Graph()
@@ -265,10 +282,7 @@ class Reconstructor:
             cam_ids: All camera IDs
             scores: All detection scores
             frame_ids: All frame IDs
-
-        Returns:
-            List of result dicts with keys: position, error, n_views, detections, cam_mask, frame
-        """
+     """
 
         # Score and sort cliques: prefer more views, then higher total confidence
         cliques_scored = []
@@ -345,7 +359,11 @@ class Reconstructor:
 
     def _get_rays(
             self,
-            inputs: Dict[str, np.ndarray],
+            coords: np.ndarray,
+            cam_ids: np.ndarray,
+            frame_ids: np.ndarray,
+            kp_ids: np.ndarray,
+            scores: np.ndarray,
             undist: xp.ndarray,
             orphan_mask: np.ndarray
     ) -> Dict[str, np.ndarray]:
@@ -355,7 +373,7 @@ class Reconstructor:
             return {}
 
         pts = undist[orphan_mask]
-        cams = inputs['cam_ids'][orphan_mask]
+        cams = cam_ids[orphan_mask]
 
         n_orphans = int(np.sum(orphan_mask))
         all_dirs = np.zeros((n_orphans, 3), dtype=np.float32)
@@ -376,18 +394,16 @@ class Reconstructor:
         return {
             'ray_origins': all_origins,
             'ray_directions': all_dirs,
-            'ray_confidences': inputs['scores'][orphan_mask],
-            'ray_keypoint_indices': inputs['kp_type_ids'][orphan_mask],
-            'ray_frame_indices': inputs['frame_indices'][orphan_mask]
+            'ray_confidences': scores[orphan_mask],
+            'ray_keypoint_indices': kp_ids[orphan_mask],
+            'ray_frame_indices': frame_ids[orphan_mask]
         }
 
 
 if __name__ == "__main__":
     import time
-    import polars as pl
     from pathlib import Path
-    from mokap.mokap_io import load_session
-    from mokap.pose_reconstruction.utils import prepare_reconstruction_input
+    from mokap.mokap_io import load_session, load_skeleton_sleap
 
     BASE_DIR = Path.home() / 'Desktop' / '3d_ant_data'
     PREFIX = '240905-1616'
@@ -400,11 +416,18 @@ if __name__ == "__main__":
     output_dir.mkdir(parents=True, exist_ok=True)
 
     rig_file = calib_dir / 'camera_rig.toml'
-    soup_file = output_dir / f"soup_session{SESSION}.pkl"
+    skel_file = output_dir / 'messor_skeleton.toml'
+    soup_file = output_dir / f"soup_session{SESSION}.parquet"
 
     rig = CameraRig.load(rig_file)
     df = load_session(input_dir, session=SESSION)
-    skeleton = Skeleton.load(input_dir)
+
+    if skel_file.is_file():
+        skeleton = Skeleton.load(skel_file)
+    else:
+        skeleton = load_skeleton_sleap(input_dir)
+
+    # TODO: soup should be saved *with* the keypoint and camera order and then it should be trusted
 
     reconstructor = Reconstructor(
         rig=rig,
@@ -427,31 +450,28 @@ if __name__ == "__main__":
 
         df_chunk = df.filter(pl.col("frame").is_in(chunk))
 
-        # TODO: `prepare_reconstruction_input` will be removed once the I/O formats are unified with CATAR
-        inputs = prepare_reconstruction_input(
-            df_chunk, rig.names, skeleton.keypoints
-        )
+        soup = reconstructor.reconstruct(df_chunk)
 
-        soup = reconstructor.reconstruct(inputs)
-
-        if soup.nb_points > 0 or len(soup.ray_origins) > 0:
+        if soup.nb_points > 0 or soup.nb_rays > 0:
             batches.append(soup)
             total_pts += soup.nb_points
-            total_rays += len(soup.ray_origins)
+            total_rays += soup.nb_rays
 
         elapsed = time.time() - t0
 
         frames_done = min(i + CHUNK_SIZE, len(all_frames))
         fps = frames_done / elapsed if elapsed > 0 else 0
 
-        print(f"  Chunk {i // CHUNK_SIZE}: {soup.nb_points} pts, {len(soup.ray_origins)} rays "
+        print(f"  Chunk {i // CHUNK_SIZE}: {soup.nb_points} pts, {soup.nb_rays} rays "
               f"({frames_done}/{len(all_frames)} frames, {fps:.1f} fps)")
 
     if batches:
         final_soup = PointSoup.concatenate(batches)
-        final_soup.to_file(soup_file)
+        final_soup.save(soup_file)
 
         total_time = time.time() - t0
+
+        skeleton.save(skel_file)
 
         print(f"\nDone. Saved {total_pts} points and {total_rays} rays to {soup_file}")
         print(f"Total time: {total_time:.2f}s ({len(all_frames) / total_time:.2f} fps)")

@@ -351,8 +351,8 @@ class Skeleton:
         Args:
             path: Output path (.toml)
         """
-        from mokap.mokap_io import save_skeleton_toml
-        save_skeleton_toml(self, path)
+        from mokap.mokap_io import save_skeleton
+        save_skeleton(self, path)
 
     @classmethod
     def load(cls, path: Union[Path, str]) -> 'Skeleton':
@@ -368,12 +368,12 @@ class Skeleton:
         Returns:
             Skeleton instance
         """
-        from mokap.mokap_io import load_skeleton_toml, load_skeleton_sleap
+        from mokap.mokap_io import load_skeleton, load_skeleton_sleap
 
         path = Path(path)
 
         if path.suffix == '.toml':
-            return load_skeleton_toml(path)
+            return load_skeleton(path)
         elif path.suffix == '.slp':
             return load_skeleton_sleap(path)
         else:
