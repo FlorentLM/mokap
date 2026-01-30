@@ -665,20 +665,26 @@ class MultiObjectTracker:
         Adds score bonuses to hypotheses that align well with existing tracklet predictions.
         """
 
-        with_predictions = [t for t in self.tracklets if t.predicted_keypoints]
+        predictions = [t.predicted_keypoints for t in self.pending_tracklets]
 
-        if not with_predictions:
+        # Filter out empty predictions if any
+        predictions = [p for p in predictions if p]
+
+        if not predictions:
             return
+
+        radius_sq = self.config.association_radius ** 2
 
         for cand in candidates:
             max_bonus = 0.0
 
-            for t in with_predictions:
-                dist_sq = self._calc_pose_distance(t.predicted_keypoints, cand.positions)
-                if dist_sq is not None:
+            for pred_kps in predictions:
 
+                dist_sq = self._calc_pose_distance(pred_kps, cand.positions)
+
+                if dist_sq is not None:
                     # Gaussian falloff based on squared distance
-                    bonus = np.exp(-0.5 * dist_sq / (self.config.association_radius ** 2))
+                    bonus = np.exp(-0.5 * dist_sq / radius_sq)
                     max_bonus = max(max_bonus, bonus)
 
             cand.competition_score += max_bonus * self.config.continuity_bonus
@@ -1010,8 +1016,7 @@ if __name__ == '__main__':
 
     # Load stuff
     rig = CameraRig.load(rig_file)
-    # skeleton = Skeleton.load(input_dir)
-    skeleton = load_skeleton_sleap(input_dir)
+    skeleton = Skeleton.load(skel_file)
     soup = PointSoup.load(soup_file, keypoints_order=skeleton.keypoints, cameras_order=rig.names)
     stats = SkeletonStats.load(stats_file, skeleton)
 
@@ -1057,7 +1062,7 @@ if __name__ == '__main__':
 
             bar()
 
-    print(f"Tracking complete. Generated {len(tracker._track_history)} tracks.")
+    print(f"Tracking complete. Generated {len(tracker.terminated_tracklets)} tracks.")
 
     # Save tracking results
     tracks_file = output_dir / f'tracks_session{SESSION}.parquet'

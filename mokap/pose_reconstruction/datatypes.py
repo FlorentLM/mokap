@@ -573,6 +573,8 @@ class Tracklet:
         self.offset_kfs: Dict[str, 'KalmanFilter'] = {}
         self._init_offset_kfs(initial_hypothesis)
 
+        self._cached_predictions: Optional[Dict[str, np.ndarray]] = None
+
     def _init_central_kf(self, hypothesis: 'Pose3D') -> 'KalmanFilter':
         """
         Central KF: state = [x, y, z, vx, vy, vz, scale]
@@ -699,6 +701,9 @@ class Tracklet:
     def predicted_keypoints(self) -> Dict[str, np.ndarray]:
         """Current predicted positions (without advancing time)."""
 
+        if self._cached_predictions is not None:
+            return self._cached_predictions
+
         central_pos = self.central_kf.x[:3, 0]
         scale = self.central_kf.x[6, 0]
 
@@ -714,6 +719,7 @@ class Tracklet:
             world_offset = self.body_rotation.T @ (blended_offset * scale)
             predictions[kp] = central_pos + world_offset
 
+        self._cached_predictions = predictions
         return predictions
 
     @property
@@ -814,12 +820,15 @@ class Tracklet:
             world_offset = self.body_rotation.T @ (blended_offset * scale)
             predictions[kp] = central_pos + world_offset
 
+        self._cached_predictions = predictions
         return predictions
 
     def update(self, hypothesis: 'Pose3D', frame_idx: int):
         """
         Update tracklet with new observation.
         """
+
+        self._cached_predictions = None
 
         self.time_since_update = 0
         self.last_update_frame = frame_idx
