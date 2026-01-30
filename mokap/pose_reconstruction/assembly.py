@@ -27,7 +27,7 @@ class SkeletonAssembler:
                  config: AssemblerConfig,
                  ):
         self.skeleton = skeleton
-        self.skeleton_stats = stats
+        self.stats = stats
         self.config = config
 
     # Public interface
@@ -68,7 +68,7 @@ class SkeletonAssembler:
         """Calculates a Gaussian bonus based on proximity to prediction."""
 
         dist = np.linalg.norm(node.position - predicted_pos)
-        sigma = self.config.prediction_bonus_sigma * self.skeleton_stats.reference_length_world
+        sigma = self.config.prediction_bonus_sigma * self.stats.reference_length_world
         bonus = self.config.prediction_bonus_weight * np.exp(-0.5 * (dist / sigma) ** 2)
 
         return bonus
@@ -114,14 +114,14 @@ class SkeletonAssembler:
                 continue
 
             observed_length = float(np.linalg.norm(candidate.position - existing_node.position))
-            expected_length = self.skeleton_stats.expected_length(bone) * current_scale
+            expected_length = self.stats.expected_length(bone) * current_scale
             bone_scale_ratio = observed_length / max(expected_length, 1e-6)
 
             if not (
                     1.0 / self.config.scale_consistency_factor < bone_scale_ratio < self.config.scale_consistency_factor):
                 return None  # this bone implies incompatible scale -> reject
 
-            score = self.skeleton_stats.score_bone(
+            score = self.stats.score_bone(
                 bone, candidate, existing_node,
                 scale=current_scale,
                 MAD_threshold=self.config.MAD_threshold
@@ -258,7 +258,7 @@ class SkeletonAssembler:
                 if bone not in self.skeleton:
                     continue
 
-                score = self.skeleton_stats.score_bone(
+                score = self.stats.score_bone(
                     bone, skel_A[kp_a], skel_B[kp_b],
                     scale=combined_scale,
                     MAD_threshold=self.config.MAD_threshold
@@ -340,7 +340,7 @@ class SkeletonAssembler:
         num_bones = 0
         iterations = 0
 
-        max_search_radius = self.skeleton_stats.reference_length_world * self.config.max_bone_len
+        max_search_radius = self.stats.reference_length_world * self.config.max_bone_len
 
         # Extract predictions from tracklet if available
         predictions = tracklet.predicted_keypoints if tracklet else None
@@ -355,7 +355,7 @@ class SkeletonAssembler:
             if not candidates:
                 break
 
-            current_scale = self.skeleton_stats.estimate_scale(
+            current_scale = self.stats.estimate_scale(
                 current_nodes,
                 min_scale=self.config.min_sane_scale,
                 max_scale=self.config.max_sane_scale
@@ -408,7 +408,7 @@ class SkeletonAssembler:
         return self._create_hypothesis(
             frozenset(current_nodes.values()),
             final_avg,
-            self.skeleton_stats.estimate_scale(current_nodes)
+            self.stats.estimate_scale(current_nodes)
         )
 
     def _filter_virtuals(
@@ -468,7 +468,7 @@ class SkeletonAssembler:
             search_radius = n_sigma * np.sqrt(np.sum(prediction_uncertainty))
         else:
             # Fallback: use a configured default (should rarely happen)
-            search_radius = self.config.guided_search_radius_fallback * self.skeleton_stats.reference_length_world
+            search_radius = self.config.guided_search_radius_fallback * self.stats.reference_length_world
 
         nearby_indices = frame_data.nearby(predicted_pos, search_radius)
 
@@ -545,7 +545,7 @@ class SkeletonAssembler:
 
                 bone = Bone(node_kp, target_type)
                 if bone in self.skeleton:
-                    expected_len = self.skeleton_stats.expected_length(bone)
+                    expected_len = self.stats.expected_length(bone)
                     virtual_nodes = frame_data.intersect_rays(
                         target_type, node.position, expected_len
                     )
@@ -578,9 +578,9 @@ class MultiObjectTracker:
 
     def __init__(
             self,
+            assembler: SkeletonAssembler,
             skeleton: Skeleton,
             stats: SkeletonStats,
-            assembler: SkeletonAssembler,
             config: TrackerConfig
     ):
         self.skeleton = skeleton
@@ -1026,9 +1026,9 @@ if __name__ == '__main__':
     )
 
     tracker = MultiObjectTracker(
+        assembler=assembler,
         skeleton=skeleton,
         stats=stats,
-        assembler=assembler,
         config=tracker_cfg
     )
 
