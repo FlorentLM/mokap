@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Optional, Tuple, Union, Dict, Any, Sequence
+from typing import TYPE_CHECKING, List, Optional, Tuple, Union, Dict, Any
 import json
 import yaml
 import numpy as np
@@ -11,11 +11,11 @@ try:
 except ImportError:
     import tomli as tomllib
 
-from .schemas import validate_dataframe, add_optional_columns
+from .schemas import validate_dataframe, add_optional_columns, SCHEMAS
+
 
 if TYPE_CHECKING:
     from mokap.pose_reconstruction.skeleton import Skeleton, SkeletonStats
-    from mokap.pose_reconstruction.datatypes import PointSoup
 
 
 def load_config(path: Union[str, Path] = 'config.yaml') -> Dict:
@@ -359,7 +359,6 @@ def load_session(
         DataFrame with Points2D schema
     """
     path = Path(path)
-
     if not path.exists():
         raise FileNotFoundError(f"Can't find {path.stem}!")
 
@@ -369,11 +368,15 @@ def load_session(
     else:
         parent_folder = path
 
-    # Check cache
     cache_file = parent_folder / f"session{session}_tracking.parquet"
+
+    # Check cache
     if cache_file.exists():
         print(f"Loading cached data from: {cache_file.name}")
-        return pl.read_parquet(cache_file)
+        df = pl.read_parquet(cache_file)
+
+        validate_dataframe(df, 'Points2D')
+        return df
 
     # Find matching files
     files = sorted(
@@ -384,35 +387,26 @@ def load_session(
 
     if not files:
         raise FileNotFoundError(
-            f"Can't find any tracking files for session '{session}' in {parent_folder}!"
+            f"No tracking files found for session '{session}' in {parent_folder}!"
         )
 
     dfs = []
-    loaded_slp, loaded_csv = 0, 0
-
     for f in files:
         if f.suffix == '.slp' and 'predictions' in f.stem:
             dfs.append(load_detections_sleap(f))
-            loaded_slp += 1
-        elif f.suffix == '.csv' and 'predictions' in f.stem:
-            dfs.append(pl.read_csv(f, separator=','))
-            loaded_csv += 1
 
-    if loaded_slp + loaded_csv == 0:
-        print("No files loaded...")
-    else:
-        parts = []
-        if loaded_slp > 0:
-            parts.append(f'{loaded_slp} SLEAP slp')
-        if loaded_csv > 0:
-            parts.append(f'{loaded_csv} SLEAP csv')
-        print(f"Loaded {' and '.join(parts)} files.")
+        elif f.suffix == '.csv' and 'predictions' in f.stem:
+            dfs.append(pl.read_csv(f))
 
     merged_df = _merge_detection_dfs(dfs, reset_tracks=True)
+    merged_df = add_optional_columns(merged_df, 'Points2D')
+    cast_ops = [pl.col(c.name).cast(c.polars_dtype) for c in SCHEMAS['Points2D']]
+    merged_df = merged_df.with_columns(cast_ops)
 
-    # Cache for next time
+    validate_dataframe(merged_df, 'Points2D')
+
     if not merged_df.is_empty():
-        print(f"Saving to cache: {cache_file.name}")
+        print(f"Saving 2D points to cache: {cache_file.name}")
         merged_df.write_parquet(cache_file)
 
     return merged_df
@@ -428,7 +422,7 @@ def _merge_detection_dfs(
         from .schemas import empty_dataframe
         return empty_dataframe('Points2D')
 
-    merged = pl.concat(dfs)
+    merged = pl.concat(dfs, how="diagonal")  # diagonal to handle slightly different CSV cols
 
     if reset_tracks:
         print("Creating globally unique track IDs...")
@@ -436,8 +430,8 @@ def _merge_detection_dfs(
             pl.concat_str(['camera', 'instance_id']).alias('instance_id')
         )
 
-    # Ensure consistent column order
-    final_cols = ['camera', 'frame', 'instance_id', 'keypoint', 'x', 'y', 'score']
-    available = [c for c in final_cols if c in merged.columns]
+    # Filter to only include columns defined in the Points2D schema
+    valid_cols = [c.name for c in SCHEMAS['Points2D']]
+    available = [c for c in valid_cols if c in merged.columns]
 
     return merged.select(available).sort(['camera', 'frame', 'instance_id'])

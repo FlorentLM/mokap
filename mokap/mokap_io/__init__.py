@@ -2,6 +2,7 @@ from .schemas import (
     SchemaValidationError,
     validate_dataframe,
     add_optional_columns,
+    detect_schema,
     empty_dataframe
 )
 
@@ -33,6 +34,7 @@ __all__ = [
     'SchemaValidationError',
     'validate_dataframe',
     'add_optional_columns',
+    'detect_schema',
     'empty_dataframe',
 
     # Loaders

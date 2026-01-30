@@ -124,7 +124,7 @@ class SchemaValidationError(Exception):
     pass
 
 
-def validate_dataframe(df: pl.DataFrame, schema_name: str) -> List[str]:
+def validate_dataframe(dataframe: pl.DataFrame, schema_name: str) -> List[str]:
     """
     Validate DataFrame against a schema.
     """
@@ -133,7 +133,7 @@ def validate_dataframe(df: pl.DataFrame, schema_name: str) -> List[str]:
     if schema_name not in SCHEMAS:
         raise SchemaValidationError(f"Unknown schema: {schema_name}")
 
-    columns = set(df.columns)
+    columns = set(dataframe.columns)
     required = _SCHEMA_REQUIRED[schema_name]
     optional = _SCHEMA_OPTIONAL[schema_name]
 
@@ -175,6 +175,20 @@ def add_optional_columns(dataframe: pl.DataFrame, schema_name: str) -> pl.DataFr
         if col.name not in existing and not col.required:
             dataframe = dataframe.with_columns(pl.lit(col.default).cast(col.polars_dtype).alias(col.name))
     return dataframe
+
+
+def detect_schema(dataframe: pl.DataFrame) -> str | None:
+    """
+    Automatically identify the schema of a DataFrame based on its columns.
+
+    Returns:
+        The name of the schema ('Points2D', 'Points3D', 'Tracks3D') or None.
+    """
+    df_cols = set(dataframe.columns)
+    for schema_name, required_cols in _SCHEMA_REQUIRED.items():
+        if required_cols.issubset(df_cols):
+            return schema_name
+    return None
 
 
 def empty_dataframe(schema_name: str) -> pl.DataFrame:
