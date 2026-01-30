@@ -9,7 +9,6 @@ Pipeline:
       - Greedily accept non-conflicting points (prefer more views)
   3. Collect orphan rays for unused detections
 """
-import logging
 from collections import defaultdict
 from typing import List, Dict
 import networkx as nx
@@ -22,9 +21,6 @@ from lucida.geometry import (undistort_points, px_to_ray, transform_vectors, pro
                              px_to_norm, triangulate_linear, epipolar_line_distance)
 
 from mokap.pose_reconstruction.datatypes import PointSoup
-from mokap.pose_reconstruction.skeleton import Skeleton
-
-logger = logging.getLogger(__name__)
 
 
 class Reconstructor:
@@ -404,6 +400,7 @@ if __name__ == "__main__":
     import time
     from pathlib import Path
     from mokap.mokap_io import load_session, load_skeleton_sleap
+    from mokap.pose_reconstruction.skeleton import Skeleton
 
     BASE_DIR = Path.home() / 'Desktop' / '3d_ant_data'
     PREFIX = '240905-1616'
@@ -427,8 +424,6 @@ if __name__ == "__main__":
     else:
         skeleton = load_skeleton_sleap(input_dir)
 
-    # TODO: soup should be saved *with* the keypoint and camera order and then it should be trusted
-
     reconstructor = Reconstructor(
         rig=rig,
         keypoint_names=skeleton.keypoints,  # TODO: not really needed (just for the soup metadata)
@@ -446,35 +441,35 @@ if __name__ == "__main__":
     print(f"Processing {len(all_frames)} frames...")
 
     for i in range(0, len(all_frames), CHUNK_SIZE):
-        chunk = all_frames[i: i + CHUNK_SIZE]
 
-        df_chunk = df.filter(pl.col("frame").is_in(chunk))
+        chunk_indices = all_frames[i: i + CHUNK_SIZE]
+        data_chunk = df.filter(pl.col("frame").is_in(chunk_indices))
 
-        soup = reconstructor.reconstruct(df_chunk)
+        soup_chunk = reconstructor.reconstruct(data_chunk)
 
-        if soup.nb_points > 0 or soup.nb_rays > 0:
-            batches.append(soup)
-            total_pts += soup.nb_points
-            total_rays += soup.nb_rays
+        if soup_chunk.nb_points > 0 or soup_chunk.nb_rays > 0:
+            batches.append(soup_chunk)
+            total_pts += soup_chunk.nb_points
+            total_rays += soup_chunk.nb_rays
 
         elapsed = time.time() - t0
 
         frames_done = min(i + CHUNK_SIZE, len(all_frames))
         fps = frames_done / elapsed if elapsed > 0 else 0
-
-        print(f"  Chunk {i // CHUNK_SIZE}: {soup.nb_points} pts, {soup.nb_rays} rays "
+        print(f"  Chunk {i // CHUNK_SIZE}: {soup_chunk.nb_points} pts, {soup_chunk.nb_rays} rays "
               f"({frames_done}/{len(all_frames)} frames, {fps:.1f} fps)")
 
-    if batches:
-        final_soup = PointSoup.concatenate(batches)
-        final_soup.save(soup_file)
-
-        total_time = time.time() - t0
-
-        skeleton.save(skel_file)
-
-        print(f"\nDone. Saved {total_pts} points and {total_rays} rays to {soup_file}")
-        print(f"Total time: {total_time:.2f}s ({len(all_frames) / total_time:.2f} fps)")
-
-    else:
+    if not batches:
         print("No points reconstructed.")
+        exit(0)
+
+
+    full_soup = PointSoup.concatenate(batches)
+
+    full_soup.save(soup_file)
+    skeleton.save(skel_file)
+
+    total_time = time.time() - t0
+
+    print(f"\nDone. Saved {total_pts} points and {total_rays} rays to {soup_file}")
+    print(f"Total time: {total_time:.2f}s ({len(all_frames) / total_time:.2f} fps)")

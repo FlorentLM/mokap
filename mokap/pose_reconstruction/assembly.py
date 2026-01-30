@@ -5,14 +5,10 @@ import logging
 from typing import Tuple, Optional, Dict, List, Set
 from itertools import combinations
 from collections import defaultdict
-
 import numpy as np
 import networkx as nx
-from alive_progress import alive_bar
-from lucida import CameraRig
 from scipy.optimize import linear_sum_assignment
 
-from mokap.mokap_io import load_skeleton_sleap
 from mokap.pose_reconstruction.skeleton import Bone, Skeleton, SkeletonStats
 from mokap.pose_reconstruction.datatypes import Node3D, Pose3D, PointSoup, Tracklet, TimestepData
 from mokap.pose_reconstruction.configs import AssemblerConfig, TrackerConfig, TrackletConfig
@@ -996,8 +992,8 @@ class MultiObjectTracker:
 ##
 
 if __name__ == '__main__':
-    import pickle
     from pathlib import Path
+    from alive_progress import alive_bar
 
     BASE_DIR = Path.home() / 'Desktop' / '3d_ant_data'
     PREFIX = '240905-1616'
@@ -1005,8 +1001,6 @@ if __name__ == '__main__':
     DEBUG_PLOT = True
     SAVE_UPDATED_STATS = False
 
-    calib_dir = BASE_DIR / PREFIX / 'calibration'
-    input_dir = BASE_DIR / PREFIX / 'inputs' / 'tracking'
     output_dir = BASE_DIR / PREFIX / 'outputs'
 
     soup_file = output_dir / f'soup_session{SESSION}.parquet'

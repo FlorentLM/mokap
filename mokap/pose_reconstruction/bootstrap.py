@@ -10,14 +10,12 @@ import polars as pl
 import numpy as np
 import pandas as pd
 import trackpy as tp
-import matplotlib.pyplot as plt
-from lucida import CameraRig
 from scipy.stats import median_abs_deviation
 
 from mokap.pose_reconstruction.configs import MIN_PROCESS_NOISE, MAX_PROCESS_NOISE
 from mokap.pose_reconstruction.datatypes import PointSoup
 from mokap.pose_reconstruction.skeleton import Bone, Skeleton, SkeletonStats, BoneStats, KeypointDynamics
-from mokap.pose_reconstruction.utils import plot_tracks_3d, robust_stats
+from mokap.pose_reconstruction.utils import robust_stats
 
 
 def _run_trackpy(
@@ -360,13 +358,14 @@ class DynamicsBootstrapper:
 
 if __name__ == "__main__":
     from pathlib import Path
+    import matplotlib.pyplot as plt
+    from mokap.pose_reconstruction.utils import plot_tracks_3d
 
     BASE_DIR = Path.home() / 'Desktop' / '3d_ant_data'
     PREFIX = '240905-1616'
     SESSION = 22
     DEBUG_PLOT = True
 
-    calib_dir = BASE_DIR / PREFIX / 'calibration'
     input_dir = BASE_DIR / PREFIX / 'inputs' / 'tracking'
     output_dir = BASE_DIR / PREFIX / 'outputs'
 
@@ -374,14 +373,12 @@ if __name__ == "__main__":
     skel_file = output_dir / 'messor_skeleton.toml'
     stats_file = output_dir / 'skeleton_stats.json'
 
-    # Load stuff
     skeleton = Skeleton.load(input_dir)
     soup = PointSoup.load(soup_file)
 
     print(f"Loaded point soup from {soup_file}")
     print(f"Loaded skeleton with {len(skeleton.keypoints)} keypoints, {len(skeleton.bones)} bones")
 
-    # Run anatomy bootstrap
     anat = AnatomyBootstrapper(
         skeleton=skeleton,
         default_variability=0.1,
@@ -414,7 +411,6 @@ if __name__ == "__main__":
 
     ##
 
-    # Visualization
     if DEBUG_PLOT:
         ref_len = stats_anatomy.reference_length_world
 
