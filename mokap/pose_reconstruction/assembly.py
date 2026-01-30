@@ -23,11 +23,11 @@ class SkeletonAssembler:
     """
     def __init__(self,
                  skeleton: Skeleton,
-                 skeleton_stats: SkeletonStats,
+                 stats: SkeletonStats,
                  config: AssemblerConfig,
                  ):
         self.skeleton = skeleton
-        self.skeleton_stats = skeleton_stats
+        self.skeleton_stats = stats
         self.config = config
 
     # Public interface
@@ -1021,7 +1021,7 @@ if __name__ == '__main__':
 
     assembler = SkeletonAssembler(
         skeleton=skeleton,
-        skeleton_stats=stats,
+        stats=stats,
         config=assembler_cfg,
     )
 
