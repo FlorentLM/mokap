@@ -239,7 +239,7 @@ class Skeleton:
             return item in self._keypoint_set
 
     def __repr__(self):
-        return f"Skeleton('{self.name}', kps={len(self.keypoints)}, bones={len(self.bones)})"
+        return f"Skeleton('{self.name}', {len(self.keypoints)} keypoints, {len(self.bones)} bones)"
 
     def _build_canonical_map(self) -> Dict[str, str]:
         """Build a mapping from each keypoint to its canonical name."""
