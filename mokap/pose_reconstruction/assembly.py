@@ -1012,12 +1012,10 @@ if __name__ == '__main__':
     soup_file = output_dir / f'soup_session{SESSION}.parquet'
     skel_file = output_dir / 'messor_skeleton.toml'
     stats_file = output_dir / 'skeleton_stats.json'
-    rig_file = calib_dir / 'camera_rig.toml'  # TODO: remove dependency on this, order should be from the soup data
 
     # Load stuff
-    rig = CameraRig.load(rig_file)
     skeleton = Skeleton.load(skel_file)
-    soup = PointSoup.load(soup_file, keypoints_order=skeleton.keypoints, cameras_order=rig.names)
+    soup = PointSoup.load(soup_file)
     stats = SkeletonStats.load(stats_file, skeleton)
 
     print(f"Loaded point soup from {soup_file}")

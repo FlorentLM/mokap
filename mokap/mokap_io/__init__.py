@@ -8,7 +8,6 @@ from .schemas import (
 from .loaders import (
     load_dataframe,
     load_config,
-    load_point_soup,
     load_skeleton,
     load_skeleton_sleap,
     load_skeleton_stats,
@@ -39,7 +38,6 @@ __all__ = [
     # Loaders
     'load_dataframe',
     'load_config',
-    'load_point_soup',
     'load_skeleton',
     'load_skeleton_sleap',
     'load_skeleton_stats',

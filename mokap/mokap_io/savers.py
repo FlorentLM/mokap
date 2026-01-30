@@ -1,19 +1,21 @@
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, Union, Sequence
+from typing import TYPE_CHECKING, Optional, Union, Sequence, Dict, Any
 import json
 import polars as pl
+import pyarrow.parquet as pq
 
 from .schemas import validate_dataframe
 
 if TYPE_CHECKING:
     from mokap.pose_reconstruction.skeleton import Skeleton, SkeletonStats, SkeletonMetadata
-    from mokap.pose_reconstruction.datatypes import PointSoup, Tracklet
+    from mokap.pose_reconstruction.datatypes import Tracklet
 
 
 def save_dataframe(
     dataframe: pl.DataFrame,
     path: Union[str, Path],
     schema_name: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
     validate: bool = True
 ) -> None:
     """
@@ -23,6 +25,7 @@ def save_dataframe(
         dataframe: DataFrame to save
         path: Output path (.parquet or .csv)
         schema_name: Schema to validate against (required if validate=True)
+        metadata: Optional dictionary of key-value pairs to embed (Parquet only)
         validate: Whether to validate before saving
     """
     path = Path(path)
@@ -34,8 +37,20 @@ def save_dataframe(
         validate_dataframe(dataframe, schema_name)
 
     if path.suffix == ".parquet":
-        dataframe.write_parquet(path)
+        if metadata:
+            table = dataframe.to_arrow()
+            existing_meta = table.schema.metadata or {}
+            combined_meta = {
+                **{k: v for k, v in existing_meta.items()},
+                **{k.encode('utf-8'): v.encode('utf-8') for k, v in metadata.items()}
+            }
+            table = table.replace_schema_metadata(combined_meta)
+            pq.write_table(table, str(path))
+        else:
+            dataframe.write_parquet(path)
     elif path.suffix == ".csv":
+        if metadata:
+            print("[WARN] Metadata ignored when saving to CSV.")
         dataframe.write_csv(path)
     else:
         raise ValueError(f"Unsupported file format: {path.suffix}")

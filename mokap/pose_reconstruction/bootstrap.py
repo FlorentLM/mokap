@@ -6,7 +6,7 @@ DynamicsBootstrapper: Learns motion dynamics (process noise, association weights
 """
 from collections import defaultdict
 from typing import Dict, Tuple, Optional, List
-
+import polars as pl
 import numpy as np
 import pandas as pd
 import trackpy as tp
@@ -16,42 +16,62 @@ from scipy.stats import median_abs_deviation
 
 from mokap.pose_reconstruction.configs import MIN_PROCESS_NOISE, MAX_PROCESS_NOISE
 from mokap.pose_reconstruction.datatypes import PointSoup
-from mokap.pose_reconstruction.skeleton import (Bone, Skeleton, SkeletonStats,
-                                                BoneStats, KeypointDynamics)
+from mokap.pose_reconstruction.skeleton import Bone, Skeleton, SkeletonStats, BoneStats, KeypointDynamics
 from mokap.pose_reconstruction.utils import plot_tracks_3d, robust_stats
 
 
-# TODO: This should ideally be done just once and reused
 def _run_trackpy(
         soup: PointSoup,
         search_range: float,
         memory: int = 0,
-        max_frames: int = 4000
+        max_frames: int = 4000,
+        keypoint_filter: Optional[List[str]] = None
 ) -> pd.DataFrame:
     """
     Run trackpy linking on point soup (per keypoint type independently).
     """
     tp.quiet()
 
-    df = soup.to_pandas()
+    polars_df = soup.to_dataframe()
 
-    # Subset frames for speed if needed
-    if df['frame'].nunique() > max_frames:
-        f_min = df['frame'].min()
-        df = df[df['frame'] < f_min + max_frames]
+    # Min / max frames
+    min_frame = polars_df['frame'].min()
+    if (polars_df['frame'].max() - min_frame) > max_frames:
+        polars_df = polars_df.filter(pl.col('frame') < (min_frame + max_frames))
 
-    # Link per keypoint type
-    df['particle'] = -1
-    for name, group in df.groupby('keypoint'):
+    # Filter for reconstructed points only
+    if "status" in polars_df.columns:
+        polars_df = polars_df.filter(pl.col("status") == "reconstructed")
+
+    if keypoint_filter is not None:
+        polars_df = polars_df.filter(pl.col('keypoint').is_in(keypoint_filter))
+
+    partitions = polars_df.partition_by("keypoint", as_dict=True)
+
+    results = []
+
+    # 4. Process chunks
+    for kp_name, sub_pldf in partitions.items():
+
+        pdf = sub_pldf.to_pandas()
+
         linked = tp.link_df(
-            group,
+            pdf,
             search_range=search_range,
             pos_columns=['x', 'y', 'z'],
+            t_column='frame',
             memory=memory
         )
-        df.loc[linked.index, 'particle'] = linked['particle']
 
-    return df
+        if 'keypoint' not in linked.columns:
+            linked['keypoint'] = kp_name
+
+        results.append(linked)
+
+    if not results:
+        return pd.DataFrame()
+
+    return pd.concat(results, ignore_index=True)
 
 
 class AnatomyBootstrapper:
@@ -353,12 +373,10 @@ if __name__ == "__main__":
     soup_file = output_dir / f'soup_session{SESSION}.parquet'
     skel_file = output_dir / 'messor_skeleton.toml'
     stats_file = output_dir / 'skeleton_stats.json'
-    rig_file = calib_dir / 'camera_rig.toml'    # TODO: remove dependency on this, order should be from the soup data
 
     # Load stuff
-    rig = CameraRig.load(rig_file)
     skeleton = Skeleton.load(input_dir)
-    soup = PointSoup.load(soup_file, keypoints_order=skeleton.keypoints, cameras_order=rig.names)
+    soup = PointSoup.load(soup_file)
 
     print(f"Loaded point soup from {soup_file}")
     print(f"Loaded skeleton with {len(skeleton.keypoints)} keypoints, {len(skeleton.bones)} bones")

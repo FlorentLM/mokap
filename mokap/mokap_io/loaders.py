@@ -4,6 +4,7 @@ import json
 import yaml
 import numpy as np
 import polars as pl
+import pyarrow.parquet as pq
 
 try:
     import tomllib
@@ -41,8 +42,9 @@ def load_config(path: Union[str, Path] = 'config.yaml') -> Dict:
 def load_dataframe(
     path: Union[str, Path],
     schema_name: Optional[str] = None,
-    validate: bool = True
-) -> pl.DataFrame:
+    validate: bool = True,
+    return_metadata: bool = False
+) -> Union[pl.DataFrame, Tuple[pl.DataFrame, Dict[str, str]]]:
     """
     Load a DataFrame from parquet or CSV.
 
@@ -50,12 +52,25 @@ def load_dataframe(
         path: Path to .parquet or .csv file
         schema_name: Schema to validate against ('Points2D', 'Points3D', 'Tracks3D')
         validate: Whether to validate (raises on missing required columns)
+        return_metadata: If True, returns (DataFrame, metadata_dict)
     """
     path = Path(path)
 
     if path.suffix == ".parquet":
         df = pl.read_parquet(path)
+
+        if return_metadata:
+            # try except just to peek
+            try:
+                arrow_meta = pq.read_schema(str(path)).metadata or {}
+                metadata = {k.decode('utf-8'): v.decode('utf-8')
+                            for k, v in arrow_meta.items() if k is not None and v is not None}
+            except Exception:
+                pass
+
     elif path.suffix == ".csv":
+        if return_metadata:
+            print("[WARN] You passed `return_metadata=True` but CSV exports don't contain metadata.")
         df = pl.read_csv(path, comment_prefix="#")
     else:
         raise ValueError(f"Unsupported file format: {path.suffix}")
@@ -64,33 +79,10 @@ def load_dataframe(
         validate_dataframe(df, schema_name)
         df = add_optional_columns(df, schema_name)
 
+    if return_metadata:
+        return df, metadata
+
     return df
-
-
-def load_point_soup(
-    path: Union[str, Path],
-    keypoints_order: Sequence[str],
-    cameras_order: Sequence[str],
-) -> 'PointSoup':
-    """
-    Load a PointSoup from parquet/CSV, or pickle (legacy).
-
-    Args:
-        path: Path to data file
-        keypoints_order: Ordered keypoint names for index mapping
-        cameras_order: Ordered camera names for mask decoding
-    """
-    from .converters import dataframe_to_soup
-
-    path = Path(path)
-
-    if path.suffix == ".pkl":
-        import pickle
-        with open(path, 'rb') as f:
-            return pickle.load(f)
-
-    df = load_dataframe(path, schema_name='Points3D', validate=True)
-    return dataframe_to_soup(df, keypoints_order, cameras_order)
 
 
 def load_skeleton(path: Union[str, Path]) -> 'Skeleton':
@@ -266,23 +258,6 @@ def load_skeleton_stats(
                 stats.keypoint_dynamics[k] = KeypointDynamics.from_dict(v)
 
     return stats
-
-
-def load_tracks(
-    path: Union[str, Path],
-    validate: bool = True
-) -> pl.DataFrame:
-    """
-    Load tracking results from file.
-
-    Args:
-        path: Path to .parquet or .csv file
-        validate: Whether to validate schema
-
-    Returns:
-        DataFrame with Tracks3D schema
-    """
-    return load_dataframe(path, schema_name='Tracks3D', validate=validate)
 
 
 def load_detections_sleap(path: Union[str, Path]) -> pl.DataFrame:

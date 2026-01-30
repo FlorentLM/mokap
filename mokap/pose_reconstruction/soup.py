@@ -419,9 +419,9 @@ if __name__ == "__main__":
     skel_file = output_dir / 'messor_skeleton.toml'
     soup_file = output_dir / f"soup_session{SESSION}.parquet"
 
-    rig = CameraRig.load(rig_file)
     df = load_session(input_dir, session=SESSION)
 
+    rig = CameraRig.load(rig_file)
     if skel_file.is_file():
         skeleton = Skeleton.load(skel_file)
     else:

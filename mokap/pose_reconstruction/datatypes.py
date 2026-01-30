@@ -1,3 +1,4 @@
+import json
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -6,7 +7,6 @@ import numpy as np
 from filterpy.common import Q_discrete_white_noise
 from filterpy.kalman import KalmanFilter
 from scipy.spatial import cKDTree
-
 from lucida.geometry import intersect_ray_sphere
 from mokap.pose_reconstruction.skeleton import SkeletonStats, Skeleton
 from mokap.pose_reconstruction.utils import ema_update
@@ -269,63 +269,76 @@ class PointSoup:
     def from_dataframe(
         cls,
         df: 'pl.DataFrame',
-        keypoint_names: Sequence[str],
-        camera_names: Sequence[str],
+        keypoints_order: Sequence[str],  # TODO: can this be improved?
+        cameras_order: Sequence[str],
     ) -> 'PointSoup':
         """
         Create a PointSoup from a Points3D DataFrame.
 
         Args:
             df: DataFrame with Points3D schema
-            keypoint_names: Ordered keypoint names (for index mapping)
-            camera_names: Ordered camera names (for mask decoding)
+            keypoints_order: Ordered keypoint names (for index mapping)
+            cameras_order: Ordered camera names (for mask decoding)
         """
         from mokap.mokap_io import dataframe_to_soup
-        return dataframe_to_soup(df, keypoint_names, camera_names)
+        return dataframe_to_soup(df, keypoints_order, cameras_order)
 
     def save(self, path: Union[str, Path]) -> None:
         """
         Save to file (parquet recommended, pickle supported).
         """
-        from mokap.mokap_io import soup_to_dataframe, save_dataframe
-        df = soup_to_dataframe(self)
-        save_dataframe(df, path, schema_name='Points3D', validate=True)
+        from mokap.mokap_io import save_dataframe
+
+        df = self.to_dataframe()
+
+        custom_meta = {
+            'mokap_keypoints': json.dumps(self.keypoint_names),
+            'mokap_cameras': json.dumps(self.camera_names)
+        }
+
+        save_dataframe(df, path, schema_name='Points3D', metadata=custom_meta, validate=True)
 
     @classmethod
-    def load(
-        cls,
+    def load(cls,
         path: Union[str, Path],
-        keypoints_order: Sequence[str],
-        cameras_order: Sequence[str],
+        keypoints_order: Optional[Sequence[str]] = None,
+        cameras_order: Optional[Sequence[str]] = None
     ) -> 'PointSoup':
         """
         Load from file.
 
         Args:
-            path: Path to data file (.parquet, .csv, or .pkl)
-            keypoints_order: Ordered keypoint names for index mapping
-            cameras_order: Ordered camera names for mask decoding
+            path: Path to data file
+            keypoints_order: Optional override. If None, attempts to read from file metadata.
+            cameras_order: Optional override. If None, attempts to read from file metadata.
         """
-        from mokap.mokap_io import load_point_soup
-        return load_point_soup(path, keypoints_order, cameras_order)
+        from mokap.mokap_io import load_dataframe
 
-    def to_pandas(self, keypoint_filter: Optional[List[str]] = None):
-        """
-        Returns a pandas DataFrame.
-        """
-        import polars as pl
+        path = Path(path)
 
-        df = self.to_dataframe()
+        if path.suffix == ".pkl":
+            import pickle
+            with open(path, 'rb') as f:
+                return pickle.load(f)
 
-        # Filter for reconstructed points only
-        # TODO: maybe this filtering should go in the bootstrap
-        if "status" in df.columns:
-            df = df.filter(pl.col("status") == "reconstructed")
+        df, metadata = load_dataframe(path, schema_name='Points3D', validate=True, return_metadata=True)
 
-        if keypoint_filter is not None:
-            df = df.filter(pl.col('keypoint').is_in(keypoint_filter))
+        # Extract keypoints order (priority: arg > metadata > error)
+        if keypoints_order is None:
+            if 'mokap_keypoints' in metadata:
+                keypoints_order = json.loads(metadata['mokap_keypoints'])
+            else:
+                raise ValueError("keypoints_order not provided and missing from file metadata.")
 
-        return df.to_pandas()
+        # Extract cameras order (priority: argument > metadata > empty)
+        if cameras_order is None:
+            if 'mokap_cameras' in metadata:
+                cameras_order = json.loads(metadata['mokap_cameras'])
+            else:
+                cameras_order = []
+
+        return cls.from_dataframe(df, keypoints_order, cameras_order)
+
 
 
 class TimestepData:
