@@ -333,6 +333,7 @@ def _sleap_to_polars(slp_content, camera_name: str, session: str) -> pl.DataFram
                     "y": float(y),
                     "score": float(score),
                     "source": "sleap",
+                    "is_manual": bool(is_manual),
                 })
 
     if not rows:

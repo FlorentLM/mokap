@@ -58,6 +58,7 @@ POINTS_2D = [
     Column("score", "Float32", True, 1.0, "Detection confidence [0-1]"),
     Column("instance_id", "Utf8", False, "0", "Instance ID (multi-individual)"),
     Column("source", "Utf8", False, "unknown", "Detection source (sleap, dlc, catar, etc.)"),
+    Column("is_manual", "Boolean", False, False, "True if the annotation was manually labeled (not predicted)"),
 ]
 
 # 3D point soup: One row per triangulated point or orphan ray
