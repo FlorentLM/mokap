@@ -578,7 +578,6 @@ class MultiObjectTracker:
 
     def __init__(
             self,
-            soup: PointSoup,
             skeleton: Skeleton,
             stats: SkeletonStats,
             assembler: SkeletonAssembler,
@@ -588,7 +587,6 @@ class MultiObjectTracker:
         self.stats = stats
         self.assembler = assembler
         self.config = config
-        self.soup = soup
 
         self._active_tracklets: Dict[int, Tracklet] = {}  # track_idx -> Tracklet (updated this frame)
         self._pending_tracklets: Dict[int, Tracklet] = {}  # track_idx -> Tracklet (coasting)
@@ -691,7 +689,7 @@ class MultiObjectTracker:
 
     # Public interface
 
-    def update(self, frame_idx: int):
+    def update(self, frame_idx: int, frame_data: TimestepData): # TODO: This should maybe accept something more flexible than TimestepData
         """Process a single frame."""
 
         self._current_frame = frame_idx
@@ -705,7 +703,6 @@ class MultiObjectTracker:
             t.predict(frame_idx)
 
         # Generate and resolve hypotheses
-        frame_data = TimestepData(self.soup[frame_idx])
         frame_candidates = self.assembler.assemble(
             frame_data,
             tracklets=list(self._pending_tracklets.values())
@@ -1029,7 +1026,6 @@ if __name__ == '__main__':
     )
 
     tracker = MultiObjectTracker(
-        soup=soup,
         skeleton=skeleton,
         stats=stats,
         assembler=assembler,
@@ -1045,7 +1041,7 @@ if __name__ == '__main__':
     with alive_bar(total=(max_frame - min_frame + 1), length=20, force_tty=True) as bar:
 
         for frame_idx in range(min_frame, max_frame + 1):
-            tracker.update(frame_idx)
+            tracker.update(frame_idx, TimestepData(soup[frame_idx]))
 
             # Update skeleton stats from high-quality observations
             for tracklet in tracker.active_tracklets:
