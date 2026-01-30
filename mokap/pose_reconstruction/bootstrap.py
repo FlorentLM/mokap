@@ -48,13 +48,15 @@ def _run_trackpy(
 
     results = []
 
-    # 4. Process chunks
     for kp_name, sub_pldf in partitions.items():
 
-        pdf = sub_pldf.to_pandas()
+        if isinstance(kp_name, tuple):
+            kp_name = kp_name[0]
+
+        pandas_df = sub_pldf.to_pandas()
 
         linked = tp.link_df(
-            pdf,
+            pandas_df,
             search_range=search_range,
             pos_columns=['x', 'y', 'z'],
             t_column='frame',
@@ -64,12 +66,12 @@ def _run_trackpy(
         if 'keypoint' not in linked.columns:
             linked['keypoint'] = kp_name
 
-        results.append(linked)
+        results.append(pl.from_pandas(linked))
 
     if not results:
-        return pd.DataFrame()
+        return polars_df.clear().with_columns(pl.lit(0, dtype=pl.Int64).alias("particle"))
 
-    return pd.concat(results, ignore_index=True)
+    return pl.concat(results)
 
 
 class AnatomyBootstrapper:
@@ -135,31 +137,47 @@ class AnatomyBootstrapper:
         canon_pair_stats: Dict[str, List[Tuple[float, float]]] = defaultdict(list)
 
         for bone in self.skeleton.bones:
-            # Inner-join dataframe on 'frame' to find co-occurring detections
-            df_k1 = df[df['keypoint'] == bone.k1][['frame', 'x', 'y', 'z', 'particle']]
-            df_k2 = df[df['keypoint'] == bone.k2][['frame', 'x', 'y', 'z', 'particle']]
-            pairs = df_k1.merge(df_k2, on='frame', suffixes=('_1', '_2'))
 
-            if pairs.empty:
+            pairs = (
+                df.filter(pl.col('keypoint') == bone.k1)
+                .join(
+                    df.filter(pl.col('keypoint') == bone.k2),
+                    on='frame',
+                    how='inner',
+                    suffix='_2'
+                )
+            )
+
+            if pairs.height == 0:
                 continue
 
-            # Calculate distances
-            pos1 = pairs[['x_1', 'y_1', 'z_1']].values
-            pos2 = pairs[['x_2', 'y_2', 'z_2']].values
-            pairs['dist'] = np.linalg.norm(pos1 - pos2, axis=1)
+            # Calculate distance and filter
+            pairs = pairs.with_columns(
+                dist = (
+                    (pl.col('x') - pl.col('x_2')).pow(2) +
+                    (pl.col('y') - pl.col('y_2')).pow(2) +
+                    (pl.col('z') - pl.col('z_2')).pow(2)
+                ).sqrt()
+            ).filter(
+                pl.col('dist') < self.max_bone_length
+            )
 
-            # Filter by max bone length
-            pairs = pairs[pairs['dist'] < self.max_bone_length]
+            if pairs.height == 0:
+                continue
 
-            # Canonical key for symmetry pooling
             canon_key = self.skeleton.canonical(bone)
 
-            # Group by tracklet pairs to get intra-individual stats
-            for (p1, p2), group in pairs.groupby(['particle_1', 'particle_2']):
-                if len(group) < self.min_tracklet_length:
+            # Group by pair of tracklet IDs (particle, particle_2)
+            grouped = pairs.group_by(['particle', 'particle_2']).agg(
+                pl.col('dist')
+            )
+
+            for row in grouped.iter_rows(named=True):
+                lengths = np.array(row['dist'])
+
+                if len(lengths) < self.min_tracklet_length:
                     continue
 
-                lengths = group['dist'].values
                 median_len = float(np.median(lengths))
                 mad = float(median_abs_deviation(lengths))
 
@@ -182,8 +200,7 @@ class AnatomyBootstrapper:
             # Fallback: median of all bone lengths
             all_lengths = [l for lengths in canon_all_lengths.values() for l in lengths]
             reference_length = float(np.median(all_lengths)) if all_lengths else 1.0
-            print(f"[Anatomy] Warning: Reference bone has insufficient data. "
-                  f"Using fallback: {reference_length:.3f}")
+            print(f"[Anatomy] Warning: Reference bone has insufficient data. Using fallback: {reference_length:.3f}")
 
         if np.isnan(reference_length) or reference_length <= 0:
             reference_length = 1.0
@@ -265,10 +282,8 @@ class DynamicsBootstrapper:
     def process(self, soup: PointSoup, max_frames: int = 4000) -> 'SkeletonStats':
         """
         Process point soup and return dynamics parameters per keypoint.
-
-        Returns dict mapping keypoint name -> {process_noise, measurement_noise,
-                                                association_weight, source}
         """
+
         df = _run_trackpy(
             soup=soup,
             search_range=self.max_displacement,
@@ -285,37 +300,53 @@ class DynamicsBootstrapper:
             lambda: {"vel": [], "acc": []}
         )
 
-        for (name, particle), track in df.groupby(['keypoint', 'particle']):
-            if particle == -1 or len(track) < self.min_track_length:
-                continue
+        # Partition by Keypoint
+        kp_partitions = df.partition_by("keypoint", as_dict=True)
 
-            track = track.sort_values('frame')
+        for name, sub_df in kp_partitions.items():
 
-            # Split into contiguous segments (no frame jumps)
-            frame_diffs = np.diff(track['frame'].values)
-            jump_indices = np.where(frame_diffs > 1)[0] + 1
-            segments = np.split(track[['x', 'y', 'z']].values, jump_indices)
+            if isinstance(name, tuple):
+                name = name[0]
 
-            for seg_pos in segments:
-                if len(seg_pos) < 4:
+            # Further partition by particle ID within this keypoint
+            particle_partitions = sub_df.partition_by("particle", as_dict=True)
+
+            for particle, track in particle_partitions.items():
+                if particle == -1 or track.height < self.min_track_length:
                     continue
 
-                # Velocity (dx/dt)
-                vel_vec = np.diff(seg_pos, axis=0)
-                vel = np.linalg.norm(vel_vec, axis=1)
+                track = track.sort("frame")
 
-                # Acceleration (dv/dt)
-                acc_vec = np.diff(vel_vec, axis=0)
-                acc = np.linalg.norm(acc_vec, axis=1)
+                frames = track["frame"].to_numpy()
+                coords = track.select(["x", "y", "z"]).to_numpy()
 
-                canon_name = self.skeleton.canonical(name)
-                canon_stats[canon_name]["vel"].extend(vel.tolist())
-                canon_stats[canon_name]["acc"].extend(acc.tolist())
+                # Split into contiguous segments (no frame jumps)
+                frame_diffs = np.diff(frames)
+                jump_indices = np.where(frame_diffs > 1)[0] + 1
 
-                if self._debug:
-                    self.debug_velocities[canon_name].extend(vel.tolist())
-                    if len(self.debug_tracks[canon_name]) < 200:
-                        self.debug_tracks[canon_name].append(track)
+                # Split coordinates based on jumps
+                segments = np.split(coords, jump_indices)
+
+                for seg_pos in segments:
+                    if len(seg_pos) < 4:
+                        continue
+
+                    # Velocity (dx/dt)
+                    vel_vec = np.diff(seg_pos, axis=0)
+                    vel = np.linalg.norm(vel_vec, axis=1)
+
+                    # Acceleration (dv/dt)
+                    acc_vec = np.diff(vel_vec, axis=0)
+                    acc = np.linalg.norm(acc_vec, axis=1)
+
+                    canon_name = self.skeleton.canonical(name)
+                    canon_stats[canon_name]["vel"].extend(vel.tolist())
+                    canon_stats[canon_name]["acc"].extend(acc.tolist())
+
+                    if self._debug:
+                        self.debug_velocities[canon_name].extend(vel.tolist())
+                        if len(self.debug_tracks[canon_name]) < 200:
+                            self.debug_tracks[canon_name].append(track)
 
         # Derive final parameters per keypoint
 
@@ -558,8 +589,8 @@ if __name__ == "__main__":
             (p for p in preferred if p in dyn.debug_tracks),
             next(iter(dyn.debug_tracks), None),
         )
-        if chosen and dyn.debug_tracks[chosen]:
-            tracks_df = pd.concat(dyn.debug_tracks[chosen])
+        if chosen:
+            tracks_df = pl.concat(dyn.debug_tracks[chosen])
             plot_tracks_3d(ax7, tracks_df, f"Tracks: {chosen}")
         else:
             ax7.text(0, 0, 0, "No long tracks")

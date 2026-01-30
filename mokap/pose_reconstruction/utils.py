@@ -1,6 +1,5 @@
-import warnings
 import numpy as np
-import pandas as pd
+import polars as pl
 import networkx as nx
 from typing import List, Tuple
 from scipy.stats import median_abs_deviation
@@ -107,14 +106,17 @@ def ema_update(existing: float, new: float, alpha: float = 0.01):
     return (1 - alpha) * existing + alpha * new
 
 
-def plot_tracks_3d(ax, tracks_df: pd.DataFrame, title: str):
+def plot_tracks_3d(ax, tracks_df: pl.DataFrame, title: str):
     ax.set_title(title)
-    pids = tracks_df["particle"].unique()
+
+    pids = tracks_df["particle"].unique().to_numpy()
+
     if len(pids) > 200:
         pids = np.random.choice(pids, 200, replace=False)
-    for pid in pids:
-        t = tracks_df[tracks_df["particle"] == pid].sort_values("frame")
-        ax.plot(t.x, t.y, t.z, linewidth=0.5, alpha=0.6)
+        tracks_df = tracks_df.filter(pl.col("particle").is_in(pids))
+
+    for t in tracks_df.sort("frame").partition_by("particle"):
+        ax.plot(t["x"], t["y"], t["z"], linewidth=0.5, alpha=0.6)
 
     ax.set_xlabel("X")
     ax.set_ylabel("Y")
@@ -130,17 +132,3 @@ def plot_tracks_3d(ax, tracks_df: pd.DataFrame, title: str):
     ax.set_xlim3d(centers[0] - radius, centers[0] + radius)
     ax.set_ylim3d(centers[1] - radius, centers[1] + radius)
     ax.set_zlim3d(centers[2] - radius, centers[2] + radius)
-
-
-# DEPRECATED
-
-def prepare_reconstruction_input(df, cameras, keypoints):
-
-    warnings.warn(
-        "utils.prepare_reconstruction_input() is deprecated. "
-        "Use mokap_io.prepare_reconstruction_input() instead.",
-        DeprecationWarning,
-        stacklevel=2
-    )
-    from mokap.mokap_io import prepare_reconstruction_input as _prepare
-    return _prepare(df, cameras, keypoints)
