@@ -210,7 +210,6 @@ class LiveViewBase(Base):
 
         # clock and counter
         self._fps_clock = time.monotonic()
-        self._last_frame_number_for_fps = 0
         self._capture_fps_deque = deque(maxlen=5)
 
         # This timer is for DISPLAY only (updating the QImage)
@@ -483,33 +482,38 @@ class LiveViewBase(Base):
             return
 
         now = time.monotonic()
-        dt = now - self._fps_clock
 
-        if dt > 0 and self._mainwindow.manager.acquiring:
-            current_frame_number = self._current_frame_data.get('frame_number', 0)
+        if self._mainwindow.manager.acquiring:
+            # Prefer device-derived capture_fps (IC4 case). For other cameras
+            # fall back to the camera-reported framerate so their own timing
+            # logic is preserved.
+            capture_fps = self._current_frame_data.get('capture_fps')
 
-            frames_acquired = current_frame_number - self._last_frame_number_for_fps
+            if capture_fps is not None:
+                used_fps = float(capture_fps)
+            else:
+                try:
+                    used_fps = float(self._camera.framerate) if self._camera.framerate is not None else 0.0
+                except Exception:
+                    used_fps = 0.0
 
-            if frames_acquired > 0:
-                current_acquisition_fps = frames_acquired / dt
-                self._capture_fps_deque.append(current_acquisition_fps)
-                avg_fps = sum(self._capture_fps_deque) / len(self._capture_fps_deque)
+            self._capture_fps_deque.append(float(used_fps))
+            avg_fps = sum(self._capture_fps_deque) / len(self._capture_fps_deque)
 
-                target_framerate = self._camera.framerate
+            target_framerate = self._camera.framerate
 
-                if abs(avg_fps - target_framerate) > (target_framerate * 0.1):  # 10% tolerance
-                    if not self._warning:  # only emit if state changed
-                        self._warning = True
-                        self.warning_changed.emit(True)
-                else:
-                    if self._warning:  # only emit if state changed
-                        self._warning = False
-                        self.warning_changed.emit(False)
+            if target_framerate and target_framerate > 0 and abs(avg_fps - target_framerate) > (target_framerate * 0.1):  # 10% tolerance
+                if not self._warning:  # only emit if state changed
+                    self._warning = True
+                    self.warning_changed.emit(True)
+            else:
+                if self._warning:  # only emit if state changed
+                    self._warning = False
+                    self.warning_changed.emit(False)
 
-                self.capturefps_value.setText(f"{avg_fps:.2f} fps")
+            self.capturefps_value.setText(f"{avg_fps:.2f} fps")
 
             self._fps_clock = now
-            self._last_frame_number_for_fps = current_frame_number
 
         params_to_poll = ['exposure', 'framerate', 'gain', 'black_level', 'gamma']
 

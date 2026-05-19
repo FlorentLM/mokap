@@ -5,6 +5,7 @@ import queue
 import shutil
 import subprocess
 import time
+from collections import deque
 from datetime import datetime
 from multiprocessing.dummy import current_process
 from pathlib import Path
@@ -15,6 +16,7 @@ import numpy as np
 from PIL import Image
 
 from mokap.core.cameras import CameraFactory, AbstractCamera, CAMERAS_COLOURS
+from mokap.core.cameras.ic4imaging import IC4ImagingCamera
 from mokap.core.triggers import AbstractTrigger, CameraTrigger, RaspberryTrigger, ArduinoTrigger, FTDITrigger
 from mokap.core.writers import FrameWriter, ImageSequenceWriter, FFmpegWriter
 
@@ -427,12 +429,54 @@ class MultiCam:
         cam = self.cameras[cam_idx]
         writer_queue = self._writer_queues[cam_idx]
         lock = self._latest_frame_locks[cam_idx]
+        fps_intervals_ns = deque(maxlen=5)
+        last_unique_signature = None
+        last_unique_arrival_ns = None
 
         cam.start_grabbing()
         while self._acquiring.is_set():
             try:
                 frame, frame_data = cam.grab_frame(timeout_ms=1000)
                 if frame is not None:
+                    signature = frame_data.get('frame_signature') if frame_data else None
+                    arrival_ns = frame_data.get('host_arrival_monotonic_ns') if frame_data else None
+
+                    if signature is not None and signature == last_unique_signature:
+                        continue
+
+                    if arrival_ns is None:
+                        arrival_ns = time.monotonic_ns()
+
+                    if last_unique_arrival_ns is not None:
+                        delta_ns = arrival_ns - last_unique_arrival_ns
+                        if delta_ns > 0:
+                            fps_intervals_ns.append(delta_ns)
+
+                    last_unique_signature = signature
+                    last_unique_arrival_ns = arrival_ns
+
+                    if fps_intervals_ns:
+                        avg_interval_ns = sum(fps_intervals_ns) / len(fps_intervals_ns)
+                        capture_fps = 1_000_000_000.0 / avg_interval_ns if avg_interval_ns > 0 else 0.0
+                    else:
+                        capture_fps = 0.0
+
+                    if frame_data is None:
+                        frame_data = {}
+
+                    # Only populate the capture_fps metadata for IC4 cameras.
+                    # Other camera backends should continue to use their own
+                    # reported framerate values.
+                    if isinstance(cam, IC4ImagingCamera):
+                        frame_data['capture_fps'] = capture_fps
+                        frame_data['capture_interval_ns'] = int(round(sum(fps_intervals_ns) / len(fps_intervals_ns))) if fps_intervals_ns else None
+                    else:
+                        # ensure we don't accidentally carry over a capture_fps from elsewhere
+                        frame_data.pop('capture_fps', None)
+                        frame_data.pop('capture_interval_ns', None)
+
+                    frame_data['host_arrival_monotonic_ns'] = arrival_ns
+
                     # Update the shared buffer for any other thread to read
                     with lock:
                         self._latest_frames[cam_idx] = (frame, frame_data)
@@ -723,31 +767,40 @@ class MultiCam:
 
         # TODO: Similar setters for other properties
 
-        new_framerate = float(value)
+        new_framerate = int(round(value))
 
         # for hardware trigger, update internal value and the trigger itself
         self._framerate = new_framerate
-        if self._acquiring.is_set() and self._trigger_instance:
-            # only update if already running (if not, trigger will pick up new value when it starts)
-            self._trigger_instance.start(self._framerate)
+        if self.hardware_triggered:
+            if self._acquiring.is_set() and self._trigger_instance:
+                # only update if already running (if not, trigger will pick up new value when it starts)
+                self._trigger_instance.start(self._framerate)
 
-        else:
-            # for software trigger, broadcast to all cameras and then verify
-            self.set_all_cameras('framerate', new_framerate)
-
-            all_cams_synced = True
             for cam in self.cameras:
-                if cam.framerate != new_framerate:
-                    logger.warning(f"Camera {cam.name} could not be set to {new_framerate} fps. Actual: {cam.framerate} fps.")
-                    all_cams_synced = False
-                    break
+                try:
+                    cam.framerate = self._framerate
+                except Exception as e:
+                    logger.error(f"Could not cache trigger framerate on camera {cam.name}: {e}")
 
-            if all_cams_synced:
-                self._framerate = new_framerate
-                logger.debug(f"All cameras successfully set to {new_framerate} fps.")
-            else:
-                self._framerate = None
-                logger.warning("Not all cameras could be set to the requested framerate. System framerate is now undefined.")
+            logger.debug(f"Hardware trigger frequency updated to {self._framerate} Hz.")
+            return
+
+        # for software trigger, broadcast to all cameras and then verify
+        self.set_all_cameras('framerate', new_framerate)
+
+        all_cams_synced = True
+        for cam in self.cameras:
+            if cam.framerate != new_framerate:
+                logger.warning(f"Camera {cam.name} could not be set to {new_framerate} fps. Actual: {cam.framerate} fps.")
+                all_cams_synced = False
+                break
+
+        if all_cams_synced:
+            self._framerate = new_framerate
+            logger.debug(f"All cameras successfully set to {new_framerate} fps.")
+        else:
+            self._framerate = None
+            logger.warning("Not all cameras could be set to the requested framerate. System framerate is now undefined.")
 
     @property
     def nb_cameras(self) -> int:

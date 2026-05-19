@@ -172,6 +172,7 @@ class RecordingLiveView(LiveViewBase):
 
             # For floats, we only want to scale them if their range is small (i.e. they need decimal precision)
             should_scale = is_float and max_val < 1000
+            is_integer_only = label == 'framerate'
 
             if label == 'exposure':
                 slider_min_pos, slider_max_pos = 0, 1000
@@ -189,7 +190,7 @@ class RecordingLiveView(LiveViewBase):
 
                 value_text = pretty_microseconds(param_value)
 
-            elif should_scale:
+            elif should_scale and not is_integer_only:
                 # For small floats, use a scale to map them to an integer slider
                 digits = 2
                 scale = 10 ** digits
@@ -201,12 +202,18 @@ class RecordingLiveView(LiveViewBase):
                 value_text = f"{param_value:.2f}"
             else:
                 # For ints and large linear floats (like framerate), it's straightforward
-                slider.setMinimum(int(min_val))
-                slider.setMaximum(int(max_val))
+                slider.setMinimum(int(round(min_val)))
+                slider.setMaximum(int(round(max_val)))
                 slider.setSingleStep(1)
-                slider.setValue(int(param_value))
+                slider.setPageStep(1)
+                slider.setValue(int(round(param_value)))
                 self.camera_controls_sliders_scales[label] = 1
-                value_text = f"{int(param_value)}"
+                value_text = f"{int(round(param_value))}"
+
+            if is_integer_only:
+                slider.setTracking(True)
+                slider.setTickPosition(QSlider.TicksBelow)
+                slider.setTickInterval(1)
 
             slider.setMinimumWidth(100)
             slider.valueChanged.connect(lambda value, lbl=label: self._slider_changed(lbl, value))
@@ -403,8 +410,9 @@ class RecordingLiveView(LiveViewBase):
             value_label.setText(pretty_microseconds(value))
         elif scale == 1:
             # Direct integer mapping (no scaling needed)
-            slider.setValue(int(value))
-            value_label.setText(f'{int(value)}')
+            int_value = int(round(value))
+            slider.setValue(int_value)
+            value_label.setText(f'{int_value}')
         else:
             # Scaled mapping (multiply by scale factor to get integer slider position)
             slider.setValue(int(value * scale))
@@ -475,6 +483,10 @@ class RecordingLiveView(LiveViewBase):
 
         scale = self.camera_controls_sliders_scales.get(label, 1)
 
+        if label == 'framerate':
+            self.camera_controls_sliders_labels[label].setText(f'{int_value}')
+            return
+
         if scale == 'log':
             params = self.log_slider_params[label]
             value_float = self._inv_log_map(int_value, **params)
@@ -492,16 +504,26 @@ class RecordingLiveView(LiveViewBase):
         slider = self.camera_controls_sliders[label]
         scale = self.camera_controls_sliders_scales.get(label, 1)
 
-        if scale == 'log':
+        if label == 'framerate':
+            value = int(slider.value())
+        elif scale == 'log':
             params = self.log_slider_params[label]
             value = self._inv_log_map(slider.value(), **params)
         else:
-            value = slider.value() / scale
+            value = slider.value() if scale == 1 else slider.value() / scale
 
-        if self._val_in_sync[label].isChecked():
+        if label == 'framerate':
+            self._mainwindow.manager.framerate = int(value)
+
+            for window in self._mainwindow.video_windows:
+                if hasattr(window, '_val_in_sync') and label in window._val_in_sync:
+                    if window._val_in_sync[label].isChecked():
+                        window.update_slider_value(label, value)
+                        window._last_polled_values[label] = value
+        elif self._val_in_sync[label].isChecked():
             # Tell the manager to broadcast the setting to everyone
             self._mainwindow.manager.set_all_cameras(label, value)
-            
+
             # Immediately update ALL synced camera windows' sliders
             for window in self._mainwindow.video_windows:
                 if hasattr(window, '_val_in_sync') and label in window._val_in_sync:
@@ -511,12 +533,12 @@ class RecordingLiveView(LiveViewBase):
                         window.update_slider_value(label, actual_value)
                         window._last_polled_values[label] = actual_value
         else:
-            # Set the parameter only on this specific camera
+            # Set the parameter only on this specific camera.
             setattr(self._camera, label, value)
 
         # After setting the value, immediately read it back
         # to get the actual clamped value that the hardware accepted
-        actual_value_set = getattr(self._camera, label)
+        actual_value_set = int(self._mainwindow.manager.framerate) if label == 'framerate' else getattr(self._camera, label)
 
         # tell the UI to update with this *actual* value
         self.update_slider_value(label, actual_value_set)

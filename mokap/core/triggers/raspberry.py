@@ -126,7 +126,7 @@ class RaspberryTrigger(AbstractTrigger):
         except Exception as e:
             logger.debug(f"Could not check GPIO permissions: {e}")
 
-    def start(self, frequency: float, duty_cycle_percent: int = 50):
+    def start(self, frequency: float, duty_cycle_percent: int = 6):
         """
         Starts the PWM signal on the configured GPIO pin
 
@@ -138,13 +138,15 @@ class RaspberryTrigger(AbstractTrigger):
             logger.error("Cannot start trigger: not connected.")
             return
 
+        frequency = int(round(frequency))
+
         if self.pi_version == 5:
-            self._start_gpiozero(frequency, duty_cycle_percent)
+            self._restart_gpiozero(frequency, duty_cycle_percent)
         elif self.pi_version == 4:
             self._start_pigpio(frequency, duty_cycle_percent)
         else:
             # Unknown version: try gpiozero first (Pi 5), fallback to pigpio (Pi 4)
-            self._start_gpiozero(frequency, duty_cycle_percent)
+            self._restart_gpiozero(frequency, duty_cycle_percent)
 
     def _start_pigpio(self, frequency: float, duty_cycle_percent: int):
         """Start PWM using pigpio (Pi 4)"""
@@ -212,6 +214,21 @@ class RaspberryTrigger(AbstractTrigger):
         except Exception as e:
             logger.error(f"Failed to start gpiozero PWM: {e}")
 
+    def _stop_gpiozero_process(self):
+        """Stops the gpiozero PWM worker without closing the SSH connection."""
+        command = f"pkill -f 'PWMOutputDevice.*{self.gpio_pin}' || true"
+
+        try:
+            self.client.exec_command(command)
+        except Exception as e:
+            logger.debug(f"Failed to stop gpiozero PWM worker cleanly: {e}")
+
+    def _restart_gpiozero(self, frequency: float, duty_cycle_percent: int):
+        """Restart gpiozero PWM so runtime frequency updates take effect immediately."""
+        self._stop_gpiozero_process()
+        time.sleep(0.05)
+        self._start_gpiozero(frequency, duty_cycle_percent)
+
 
 
     def stop(self):
@@ -251,15 +268,9 @@ class RaspberryTrigger(AbstractTrigger):
 
     def _stop_gpiozero(self):
         """Stop PWM using gpiozero (Pi 5) - kills background process"""
-        # Kill the background PWM process
-        command = f"pkill -f 'PWMOutputDevice.*{self.gpio_pin}' || true; sleep 0.2"
-
         try:
-            stdin, stdout, stderr = self.client.exec_command(command)
-            err = stderr.read().decode().strip()
-            if err and "Killed" not in err:
-                logger.debug(f"Stop output: {err}")
-            
+            self._stop_gpiozero_process()
+            time.sleep(0.2)
             logger.info(f"Trigger stopped (gpiozero). GPIO {self.gpio_pin} PWM process terminated.")
 
         except Exception as e:
@@ -278,28 +289,28 @@ class RaspberryTrigger(AbstractTrigger):
             logger.info("Trigger disconnected.")
 
 
-if __name__ == '__main__':
-    # This just a debug mini script
-    # .env file with the required variables is needed
-    # you also need a config.yaml file in the project root
-    # (or to pass the config dictionary directly)
+# if __name__ == '__main__':
+#     # This just a debug mini script
+#     # .env file with the required variables is needed
+#     # you also need a config.yaml file in the project root
+#     # (or to pass the config dictionary directly)
 
-    secs = 5
-    freq = 10
+#     secs = 5
+#     freq = 10
 
-    print("--- Testing RaspberryTrigger ---")
+#     print("--- Testing RaspberryTrigger ---")
 
-    try:
-        with RaspberryTrigger() as trigger:
-            if trigger.connected:
-                print(f"Starting trigger for {secs} seconds...")
-                trigger.start(frequency=freq)
-                time.sleep(secs)
-                print("Stopping trigger...")
+#     try:
+#         with RaspberryTrigger() as trigger:
+#             if trigger.connected:
+#                 print(f"Starting trigger for {secs} seconds...")
+#                 trigger.start(frequency=freq)
+#                 time.sleep(secs)
+#                 print("Stopping trigger...")
 
-        print("\nTest complete. Trigger should be stopped and disconnected.")
+#         print("\nTest complete. Trigger should be stopped and disconnected.")
 
-    except EnvironmentError as e:
-        print(f"\nConfiguration Error: Please check your .env file. Details: {e}")
-    except Exception as e:
-        print(f"\nAn unexpected error occurred during the test: {e}")
+#     except EnvironmentError as e:
+#         print(f"\nConfiguration Error: Please check your .env file. Details: {e}")
+#     except Exception as e:
+#         print(f"\nAn unexpected error occurred during the test: {e}")

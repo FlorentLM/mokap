@@ -1,5 +1,6 @@
 import logging
 import time
+import queue
 
 import imagingcontrol4 as ic4
 import numpy as np
@@ -50,8 +51,10 @@ def _build_feature_mapping():
 FEATURE_MAPPING = _build_feature_mapping()
 
 class _QueueSinkListener(ic4.QueueSinkListener):
-    def __init__(self, buffer_count: int):
+    def __init__(self, buffer_count: int, frame_queue: queue.Queue):
+        super().__init__()
         self._buffer_count = buffer_count
+        self._queue = frame_queue
 
     def sink_connected(self, sink, image_type, min_buffers_required) -> bool:
         sink.alloc_and_queue_buffers(max(self._buffer_count, min_buffers_required))
@@ -61,7 +64,46 @@ class _QueueSinkListener(ic4.QueueSinkListener):
         pass
 
     def frames_queued(self, sink):
-        pass
+        # Safely extract the buffer on the IC4 thread
+        buffer = sink.pop_output_buffer()
+        if buffer is not None:
+            try:
+
+                # Use getattr to bypass ctypes isolation issues
+                last_arrival = getattr(self, '_last_arrival_ms', 0.0)
+                
+                current_ms = time.monotonic_ns() / 1_000_000.0
+                delta_ms = current_ms - last_arrival if last_arrival else 0.0
+                
+                # Update the attribute safely
+                self._last_arrival_ms = current_ms
+
+                # 2. Extract camera internal hardware timestamp
+                hw_timestamp_ns = int(buffer.meta_data.device_timestamp_ns)
+                hw_timestamp_ms = hw_timestamp_ns / 1_000_000.0
+                frame_num = int(buffer.meta_data.device_frame_number)
+
+                # 3. Print the log statement
+                logger.info(
+                    f"[LISTENER] Frame #{frame_num} received | "
+                    f"System Time: {current_ms:.2f} ms | "
+                    f"Delta: {delta_ms:.2f} ms | "
+                    f"HW Timestamp: {hw_timestamp_ms:.2f} ms"
+                )
+
+                # Wrap or copy the array on the callback thread
+                image_arr = buffer.numpy_wrap().copy()
+                meta = {
+                    'frame_number': int(buffer.meta_data.device_frame_number),
+                    'timestamp': int(buffer.meta_data.device_timestamp_ns),
+                }
+                # Hand it off to the consumer thread without blocking
+                self._queue.put_nowait((image_arr, meta))
+            except queue.Full:
+                logger.warning("Internal frame queue overflow. Frame dropped.")
+            finally:
+                buffer.release()
+
 
 class IC4ImagingCamera(GenICamCamera):
     """
@@ -73,7 +115,8 @@ class IC4ImagingCamera(GenICamCamera):
         self._device_info = device_info
         self._grabber: Optional[ic4.Grabber] = None
         self._sink: Optional[ic4.QueueSink] = None
-        self._sink_buffer_count = 10
+        self._sink_buffer_count = 4
+        self._last_frame_signature: Optional[Tuple[int, int]] = None
         self._warned_features = set()
 
         super().__init__(unique_id=device_info.serial)
@@ -109,11 +152,14 @@ class IC4ImagingCamera(GenICamCamera):
 
     def start_grabbing(self) -> None:
         if self.is_connected and not self.is_grabbing:
+            self._frame_queue = queue.Queue(maxsize=10) # Prevent memory ballooning
             if not self._sink or not self._sink.is_attached:
                 self._sink = ic4.QueueSink(
-                    _QueueSinkListener(self._sink_buffer_count),
-                    max_output_buffers=0,
+                    _QueueSinkListener(self._sink_buffer_count,self._frame_queue),
+                    max_output_buffers=1,
                 )
+
+            self._last_frame_signature = None
 
             try:
                 # The sink listener queues buffers during sink_connected so the stream can start immediately.
@@ -139,38 +185,45 @@ class IC4ImagingCamera(GenICamCamera):
             return None, None
 
         try:
-            deadline = time.monotonic() + (timeout_ms / 1000.0)
-            image = None
-            while image is None:
-                image = self._sink.try_pop_output_buffer()
-                if image is not None:
-                    break
+            # Convert milliseconds to seconds for Python's queue timeout implementation
+            timeout_sec = timeout_ms / 1000.0
+            while True:
+                #image = self._sink.pop_output_buffer()
+                # Retrieve the frame array and metadata pushed by the background Listener thread
+                image_arr, meta = self._frame_queue.get(timeout=timeout_sec)
 
-                if timeout_ms <= 0 or time.monotonic() >= deadline:
-                    return None, None
+                frame_number = meta['frame_number']
+                frame_timestamp = meta['timestamp']
+                frame_signature = (frame_number, frame_timestamp)
 
-                time.sleep(0.001)
+                if frame_signature == self._last_frame_signature:
+                    logger.debug(
+                        f"{self.unique_id}: dropping duplicate IC4 buffer frame_number={frame_number} "
+                        f"timestamp={frame_timestamp}"
+                    )
+                    continue
 
-            if image is None:
-                raise IOError("Grab failed: Timeout")
+                self._last_frame_signature = frame_signature
 
-            try:
-                image_arr = image.numpy_wrap().copy()
+                #image_arr = image.numpy_wrap().copy()
+                host_arrival_ns = time.monotonic_ns()
 
                 frame_meta = {
-                    'frame_number': image.meta_data.device_frame_number,
-                    'timestamp': image.meta_data.device_timestamp_ns 
+                    'frame_number': frame_number,
+                    'timestamp': frame_timestamp,
+                    'host_arrival_monotonic_ns': host_arrival_ns,
+                    'frame_signature': frame_signature,
                 }
 
                 return image_arr, frame_meta
-            finally:
-                image.release()
+                # finally:
+                #     image.release()
 
-        except ic4.IC4Exception as e:
-            if e.code == ic4.ErrorCode.NoData:
-                # Return None so the manager loop knows to just skip this iteration
-                return None, None
-            raise IOError(f"Failed to grab frame: {e}")
+        except queue.Empty:
+            # allow manager loop to continue cleanly
+            return None, None
+        except Exception as e:
+            raise IOError(f"Failed to grab frame from queue: {e}")
         
     # --- GenICamCamera abstract contract ---
 
@@ -274,6 +327,9 @@ class IC4ImagingCamera(GenICamCamera):
 
     @property
     def framerate(self) -> float:
+        if self.hardware_triggered and self._framerate is not None:
+            return self._framerate
+
         try:
             self._framerate = float(self._get_feature_value('AcquisitionFrameRate'))
         except AttributeError:
@@ -283,14 +339,22 @@ class IC4ImagingCamera(GenICamCamera):
     @framerate.setter
     def framerate(self, value: float):
         try:
-            if not self.hardware_triggered:
-                try:
-                    self._set_feature_value('AcquisitionMode', 'Continuous')
-                except AttributeError:
-                    pass
+            self._framerate = float(value)
+
+            if self.hardware_triggered:
+                logger.debug(
+                    f"{self.unique_id}: hardware trigger is active; caching framerate {self._framerate} "
+                    f"without programming AcquisitionFrameRate"
+                )
+                return
+
+            try:
+                self._set_feature_value('AcquisitionMode', 'Continuous')
+            except AttributeError:
+                pass
 
             min_fps, max_fps = self.framerate_range
-            clamped_value = max(min_fps, min(value, max_fps))
+            clamped_value = max(min_fps, min(self._framerate, max_fps))
 
             actual_value = self._set_feature_value('AcquisitionFrameRate', clamped_value)
             self._framerate = actual_value
@@ -399,60 +463,172 @@ class IC4ImagingCamera(GenICamCamera):
     @hardware_triggered.setter
     def hardware_triggered(self, enabled: bool):
         """
-        Override parent to handle IC4's trigger configuration.
-        IC4 cameras don't have TriggerSource - trigger input is fixed to the Hirose connector.
-        We just enable/disable TriggerMode and set activation edge.
+        Configure IC4's trigger configuration.
+        Ensures proper register hierarchy: Selector -> Modifiers -> Mode Activation.
         """
+        logger.debug(
+            f"Configuring hardware_triggered={enabled} for {self.unique_id} "
+            f"(current={self._hardware_triggered})"
+        )
+
         if enabled:
             try:
-                # Set which trigger to use (only FrameStart available)
+                # 1. ALWAYS select the target state first. 
+                # On many TIS sensors, changing this instantly resets TriggerMode to Off.
+                logger.debug(f"{self.unique_id}: setting TriggerSelector to FrameStart")
                 self._set_feature_value('TriggerSelector', 'FrameStart')
-            except AttributeError:
-                logger.debug("TriggerSelector not available")
+                
+                # 2. Configure timing, masks, and Overlap/Fast operation modes while state is flexible
+                self._configure_trigger_features()
 
-            try:
-                # Enable trigger mode
+                # 3. Choose the physical signal edge 
+                actual_activation = None
+                try:
+                    logger.debug(f"{self.unique_id}: setting TriggerActivation to FallingEdge")
+                    self._set_feature_value('TriggerActivation', 'FallingEdge')
+                    actual_activation = self._get_feature_value('TriggerActivation')
+                except Exception as e1:
+                    logger.debug(f"{self.unique_id}: FallingEdge unavailable ({e1}); trying RisingEdge")
+                    try:
+                        logger.debug(f"{self.unique_id}: setting TriggerActivation to RisingEdge")
+                        self._set_feature_value('TriggerActivation', 'RisingEdge')
+                        actual_activation = self._get_feature_value('TriggerActivation')
+                    except Exception as e2:
+                        logger.warning(f"{self.unique_id}: TriggerActivation modification failed: {e2}")
+
+                if actual_activation:
+                    logger.debug(f"{self.unique_id}: TriggerActivation finalized as {actual_activation}")
+
+                # 4. ARM THE STATE MACHINE LAST.
+                # Now the overlap values configured in step 2 will actively latch.
+                logger.debug(f"{self.unique_id}: enabling TriggerMode")
                 self._set_feature_value('TriggerMode', 'On')
-                logger.debug(f"Enabled trigger mode on {self.unique_id}")
+                
+                # Verify registration success
+                trigger_mode_value = self._get_feature_value('TriggerMode')
+                logger.debug(f"{self.unique_id}: TriggerMode verified active as: {trigger_mode_value}")
+
+                self._hardware_triggered = True
+                logger.info(f"Hardware trigger enabled on {self.unique_id}")
+            
+                            # [DIAGNOSTIC TEST BLOCK]
+                logger.info(f"=== {self.unique_id} HARDWARE TRIGGER SPEED CAPABILITY PROFILE ===")
+                for feature in ['ResultingFrameRate', 'AcquisitionFrameRate', 'AcquisitionFrameRateLimit', 'DeviceLinkThroughputLimit', 'ACQUISITION_BURST_FRAME_COUNT','ACQUISITION_BURST_INTERVAL','ACQUISITION_FRAME_RATE','ACQUISITION_MODE']:
+                    try:
+                        val = self._get_feature_value(feature)
+                        logger.info(f"   > {feature}: {val}")
+                        available_entries = self._get_feature_entries(feature)
+                        logger.info(f"   > {feature} is currently set to: '{val}' (Available choices: {available_entries})")
+                    except Exception:
+                        logger.info(f"   > {feature}: Not Supported/Readable")
+                # =========================================================================
+
             except AttributeError as e:
-                logger.error(f"Cannot enable TriggerMode: {e}")
+                logger.error(f"{self.unique_id}: Critical error setting up hardware trigger framework: {e}")
                 self._hardware_triggered = False
                 return
 
-            try:
-                # Try FallingEdge first (camera default), then fallback to RisingEdge
-                # Both work with PWM since we generate both edges, but must match camera's expectation
-                actual_value = None
-                
-                try:
-                    self._set_feature_value('TriggerActivation', 'FallingEdge')
-                    # Verify what was actually set
-                    actual_value = self._get_feature_value('TriggerActivation')
-                    logger.debug(f"TriggerActivation set request: FallingEdge → actual value: {actual_value}")
-                except Exception as e1:
-                    logger.debug(f"FallingEdge not available: {e1}, trying RisingEdge")
-                    try:
-                        self._set_feature_value('TriggerActivation', 'RisingEdge')
-                        actual_value = self._get_feature_value('TriggerActivation')
-                        logger.debug(f"TriggerActivation set request: RisingEdge → actual value: {actual_value}")
-                    except Exception as e2:
-                        logger.warning(f"Neither FallingEdge nor RisingEdge available: {e1} / {e2}")
-                        actual_value = None
-                
-                if actual_value is None:
-                    logger.warning("Could not set TriggerActivation. Camera will use its default (likely FallingEdge)")
-                        
-            except AttributeError:
-                logger.debug("TriggerActivation not available, using camera default")
-
-            self._hardware_triggered = True
-            logger.info(f"Hardware trigger enabled on {self.unique_id}")
-
         else:
+            # Disarming loop
             try:
+                logger.debug(f"{self.unique_id}: disabling TriggerMode")
                 self._set_feature_value('TriggerMode', 'Off')
-                logger.debug(f"Disabled trigger mode on {self.unique_id}")
+                trigger_mode_value = self._get_feature_value('TriggerMode')
+                logger.debug(f"{self.unique_id}: TriggerMode readback after disable is {trigger_mode_value}")
+                logger.info(f"Disabled trigger mode on {self.unique_id}")
             except AttributeError:
-                logger.debug("TriggerMode disable failed")
+                logger.debug(f"{self.unique_id}: TriggerMode disable bypassed or unsupported")
             
             self._hardware_triggered = False
+
+
+
+    def _feature_exists(self, name: str) -> bool:
+        try:
+            prop_id = self._get_prop_id(name)
+            return self._grabber is not None and self._grabber.device_property_map.find(prop_id) is not None
+        except ic4.IC4Exception:
+            return False
+
+    def _set_feature_if_available(self, name: str, value: Any) -> Optional[Any]:
+        if not self._feature_exists(name):
+            return None
+
+        try:
+            return self._set_feature_value(name, value)
+        except AttributeError:
+            return None
+
+    def _set_first_supported_enum(self, name: str, candidates: list[str]) -> Optional[Any]:
+        if not self._feature_exists(name):
+            return None
+
+        for candidate in candidates:
+            actual_value = self._set_feature_value(name, candidate)
+            try:
+                readback = self._get_feature_value(name)
+            except AttributeError:
+                readback = actual_value
+
+            if str(readback).lower() == str(candidate).lower():
+                return readback
+
+        return None
+
+    def _configure_trigger_features(self) -> None:
+            """
+            Configure internal camera delays and overlap registers.
+            Must run BEFORE TriggerMode is explicitly set to 'On'.
+            """
+
+            try:
+                self._set_feature_value('TriggerMode', 'Off')
+                logger.debug(f"{self.unique_id}: TriggerMode temporarily forced Off for configuration")
+            except AttributeError as e:
+                logger.warning(f"{self.unique_id}: Could not force TriggerMode Off during configuration: {e}")
+                
+            logger.debug(f"{self.unique_id}: Tuning trigger-dependent filters and overlap buffers")
+
+            # Strip line noise and line bouncing delays that could miss fast 60Hz pulses
+            self._set_feature_if_available('TriggerDelay', 0.0)
+            self._set_feature_if_available('TriggerMask', 0.0)
+            self._set_feature_if_available('TriggerDebouncer', 0.0)
+            self._set_feature_if_available('TriggerDenoise', 0.0)
+            self._set_feature_if_available('IMXLowLatencyTriggerMode', False)             # Keep Low Latency FALSE because it explicitly blocks Trigger Overlap
+
+            # Unlock the IMX Sensor's fast timing registers.
+            # This clears the internal hardware block that causes 'Access Denied' on TriggerOverlap.
+            if self._feature_exists('IMXTriggerTiming'):
+                timing_set = self._set_first_supported_enum('IMXTriggerTiming', ['Fast', 'HighSpeed', 'Overlap'])
+                logger.debug(f"{self.unique_id}: IMXTriggerTiming configured to: {timing_set}")
+
+            # --- DYNAMIC SPEED GOVERNOR FIX ---
+            # Query the camera's actual maximum allowed frame rate and apply it.
+            # This opens the internal readiness gate completely.
+            try:
+                max_fps = float(self._get_feature_max_value('AcquisitionFrameRate'))
+                if max_fps > 0:
+                    self._set_feature_value('AcquisitionFrameRate', max_fps)
+                    logger.debug(f"{self.unique_id}: Internal frame clock window headroom maximized to {max_fps} FPS")
+                else:
+                    # Fallback to safe overhead if max query fails or returns 0
+                    self._set_feature_value('AcquisitionFrameRate', 120.0)
+            except Exception as e:
+                logger.warning(f"{self.unique_id}: Failed to maximize internal clock window: {e}")
+
+            # Force the sensor into full frame-rate pipeline overlap modes
+            # This allows exposure sequence N+1 to run concurrently with readout sequence N.
+            operation_set = self._set_first_supported_enum('TriggerOperation', ['Fast', 'Overlap'])
+            overlap_set = self._set_first_supported_enum('TriggerOverlap', ['ReadOut', 'PreviousFrame'])
+            
+            logger.debug(f"{self.unique_id}: TriggerOperation set to {operation_set}, TriggerOverlap set to {overlap_set}")
+
+            # --- DIAGNOSTIC READBACK ---
+            logger.info(f"=== {self.unique_id} TRIGGER OVERLAP CONFIGURATION CHECK ===")
+            for feat in ['TriggerOperation', 'TriggerOverlap']:
+                try:
+                    current_val = self._get_feature_value(feat)
+                    available_entries = self._get_feature_entries(feat)
+                    logger.info(f"   > {feat} is currently set to: '{current_val}' (Available choices: {available_entries})")
+                except Exception as e:
+                    logger.info(f"   > {feat} read error: {e}")
