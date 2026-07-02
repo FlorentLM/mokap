@@ -170,7 +170,7 @@ class FLIRCamera(GenICamCamera):
         except PySpin.SpinnakerException as e:
             raise AttributeError(f"Failed to get feature '{name}': {e}") from e
 
-    def _set_feature_value(self, name: str, value: Any) -> Any:
+    def _set_feature(self, name: str, value: Any) -> Any:
         try:
             node = self._get_nodemap().GetNode(name)
 

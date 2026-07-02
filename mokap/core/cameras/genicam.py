@@ -33,6 +33,26 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         self._gamma: Optional[float] = None
         self._roi: Optional[Tuple[int, int, int, int]] = None
 
+    def _try_set_feature(self, feature_names: Union[str, list[str]], value: Any, required: bool = False) -> Any:
+        """
+        Attempt to set a feature. If required=False, warn instead of raising.
+        """
+        if isinstance(feature_names, str):
+            feature_names = [feature_names]
+
+        for name in feature_names:
+            try:
+                return self._set_feature(name, value)
+            except AttributeError:
+                continue
+
+        # if it gets here none of the names worked
+        if required:
+            raise AttributeError(f'Could not set any of {feature_names} to {value}. Feature missing or locked.')
+        else:
+            logger.debug(f'Skipping setting {feature_names[0]} to {value} (feature not supported by {self.name}).')
+            return None
+
     def _apply_configuration(self, config: Optional[Dict[str, Any]] = None):
         """ Applies a set of initial parameters to the camera """
         if not self.is_connected:
@@ -85,10 +105,10 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         if settings['roi']:
             self.roi = settings['roi']
         else:
-            self._set_feature_value('OffsetX', 0)
-            self._set_feature_value('OffsetY', 0)
-            self._set_feature_value('Width', self._get_feature_max_value('Width'))
-            self._set_feature_value('Height', self._get_feature_max_value('Height'))
+            self._try_set_feature('OffsetX', 0)
+            self._try_set_feature('OffsetY', 0)
+            self._try_set_feature('Width', self._get_feature_max_value('Width'))
+            self._try_set_feature('Height', self._get_feature_max_value('Height'))
 
         self._roi = (
             self._get_feature_value('OffsetX'), self._get_feature_value('OffsetY'),
@@ -101,9 +121,9 @@ class GenICamCamera(AbstractCamera, abc.ABC):
     # Hooks for subclasses
     def _pre_apply_configuration(self, settings: Dict[str, Any]):
         """ A hook for subclasses to run code before the main configuration is applied """
-        self._set_feature_value('AcquisitionMode', 'Continuous')
-        self._set_feature_value('ExposureAuto', 'Off')
-        self._set_feature_value('GainAuto', 'Off')
+        self._try_set_feature('AcquisitionMode', 'Continuous')
+        self._try_set_feature('ExposureAuto', 'Off')
+        self._try_set_feature('GainAuto', 'Off')
 
     def _post_apply_configuration(self, settings: Dict[str, Any]):
         """ A hook for subclasses to run code after the main configuration is applied """
@@ -126,7 +146,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         pass
 
     @abc.abstractmethod
-    def _set_feature_value(self, name: str, value: Any) -> Any:
+    def _set_feature(self, name: str, value: Any) -> Any:
         """ Vendor-specific implementation to set a feature's value. Should return the actual value set """
         pass
 
@@ -151,7 +171,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
 
     @black_level.setter
     def black_level(self, value: float):
-        self._black_level = self._set_feature_value('BlackLevel', value)
+        self._black_level = self._try_set_feature('BlackLevel', value)
 
     @property
     def black_level_range(self) -> Tuple[float, float]:
@@ -163,7 +183,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
 
     @gain.setter
     def gain(self, value: float):
-        self._gain = self._set_feature_value('Gain', value)
+        self._gain = self._try_set_feature('Gain', value)
 
     @property
     def gain_range(self) -> Tuple[float, float]:
@@ -176,10 +196,10 @@ class GenICamCamera(AbstractCamera, abc.ABC):
     @gamma.setter
     def gamma(self, value: float):
         try:  # some cameras apparently require GammaEnable
-            self._set_feature_value('GammaEnable', True)
+            self._try_set_feature('GammaEnable', True)
         except AttributeError:
             pass
-        self._gamma = self._set_feature_value('Gamma', value)
+        self._gamma = self._try_set_feature('Gamma', value)
 
     @property
     def gamma_range(self) -> Tuple[float, float]:
@@ -191,7 +211,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
 
     @exposure.setter
     def exposure(self, value: float):
-        self._exposure = self._set_feature_value('ExposureTime', value)
+        self._exposure = self._try_set_feature('ExposureTime', value)
         # After setting exposure, the max framerate might have decreased
         # re-apply the current framerate setting to ensure it's still valid or let the framerate setter handle clamping
         self.framerate = self._framerate
@@ -216,10 +236,10 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         # if not hardware triggered
         try:
             # enable framerate control
-            self._set_feature_value('AcquisitionFrameRateEnable', True)
+            self._try_set_feature('AcquisitionFrameRateEnable', True)
 
             # set the target framerate. The setter will clamp it
-            actual_value_set = self._set_feature_value('AcquisitionFrameRate', value)
+            actual_value_set = self._try_set_feature('AcquisitionFrameRate', value)
 
             # update the cached value with what was actually set
             self._framerate = actual_value_set
@@ -242,12 +262,12 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         try:
             min_fps = self._get_feature_min_value('AcquisitionFrameRate')
             # Disabling manual control allows to query the current maximum *possible* framerate
-            self._set_feature_value('AcquisitionFrameRateEnable', False)
+            self._try_set_feature('AcquisitionFrameRateEnable', False)
             max_fps = self._get_feature_value('ResultingFrameRate')
 
             # reactivate if needed
             if not self.hardware_triggered:
-                self._set_feature_value('AcquisitionFrameRateEnable', True)
+                self._try_set_feature('AcquisitionFrameRateEnable', True)
 
             return float(min_fps), float(max_fps)
 
@@ -266,7 +286,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         if was_grabbing:
             self.stop_grabbing()
         try:
-            self._pixel_format = self._set_feature_value('PixelFormat', value)
+            self._pixel_format = self._try_set_feature('PixelFormat', value)
         finally:
             if was_grabbing:
                 self.start_grabbing()
@@ -285,17 +305,17 @@ class GenICamCamera(AbstractCamera, abc.ABC):
             # apparently some SDKs use integers, others use strings so we do a bit of voodoo here
             trigger_source = f"Line{''.join([char for char in str(self._trigger_line) if char.isdigit()])}"
 
-            self._set_feature_value('TriggerSelector', 'FrameStart')
-            self._set_feature_value('TriggerMode', 'On')
-            self._set_feature_value('TriggerSource', trigger_source)
+            self._try_set_feature('TriggerSelector', 'FrameStart')
+            self._try_set_feature('TriggerMode', 'On')
+            self._try_set_feature('TriggerSource', trigger_source)
             try:
-                self._set_feature_value('AcquisitionFrameRateEnable', False)
+                self._try_set_feature('AcquisitionFrameRateEnable', False)
             except AttributeError:
                 pass
         else:
-            self._set_feature_value('TriggerMode', 'Off')
+            self._try_set_feature('TriggerMode', 'Off')
             try:
-                self._set_feature_value('AcquisitionFrameRateEnable', True)
+                self._try_set_feature('AcquisitionFrameRateEnable', True)
             except AttributeError:
                 pass
         self._hardware_triggered = enabled
@@ -311,18 +331,29 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         if was_grabbing:
             self.stop_grabbing()
 
-        h_val = self._set_feature_value('BinningHorizontal', value)
-        v_val = self._set_feature_value('BinningVertical', value)
+        try:
+            h_val = self._try_set_feature('BinningHorizontal', value)
+            v_val = self._try_set_feature('BinningVertical', value)
+        except AttributeError:
+            try:
+                val = self._try_set_feature('Binning', value)
+                h_val, v_val = val, val
+            except AttributeError:
+                logger.warning(f'Camera {self.name} does not support Binning.')
+                # ROI update not needed if binning didn't change, so return
+                if was_grabbing:
+                    self.start_grabbing()
+                return
 
         if h_val != v_val:
             logger.warning(f"Binning mismatch! H={h_val} V={v_val}")
 
         self._binning = h_val
 
-        self._set_feature_value('OffsetX', 0)
-        self._set_feature_value('OffsetY', 0)
-        self._set_feature_value('Width', self._get_feature_max_value('Width'))
-        self._set_feature_value('Height', self._get_feature_max_value('Height'))
+        self._try_set_feature('OffsetX', 0)
+        self._try_set_feature('OffsetY', 0)
+        self._try_set_feature('Width', self._get_feature_max_value('Width'))
+        self._try_set_feature('Height', self._get_feature_max_value('Height'))
 
         self._roi = (0, 0, self._get_feature_value('Width'), self._get_feature_value('Height'))
 
@@ -336,9 +367,17 @@ class GenICamCamera(AbstractCamera, abc.ABC):
     @binning_mode.setter
     def binning_mode(self, value: str):
         mode = 'Average' if value.lower() in ['a', 'avg', 'average'] else 'Sum'
-        h_mode = self._set_feature_value('BinningHorizontalMode', mode)
-        self._set_feature_value('BinningVerticalMode', mode)
-        self._binning_mode = h_mode
+
+        try:
+            h_mode = self._try_set_feature('BinningHorizontalMode', mode)
+            self._try_set_feature('BinningVerticalMode', mode)
+            self._binning_mode = h_mode
+        except AttributeError:
+            try:
+                # Fallback
+                self._binning_mode = self._try_set_feature('BinningMode', mode)
+            except AttributeError:
+                logger.debug(f'Camera {self.name} does not support setting Binning Mode.')
 
     @property
     def available_binning_modes(self) -> list[str]:
@@ -381,16 +420,16 @@ class GenICamCamera(AbstractCamera, abc.ABC):
 
                 # Disable auto-centering if it exists to ensure manual offsets are applied correctly
                 try:
-                    self._set_feature_value('CenterX', False)
-                    self._set_feature_value('CenterY', False)
+                    self._try_set_feature('CenterX', False)
+                    self._try_set_feature('CenterY', False)
                 except AttributeError:
                     pass  # Features don't exist, which is fine
 
                 # Set size first, then offset
-                self._set_feature_value('Width', width)
-                self._set_feature_value('Height', height)
-                self._set_feature_value('OffsetX', off_x)
-                self._set_feature_value('OffsetY', off_y)
+                self._try_set_feature('Width', width)
+                self._try_set_feature('Height', height)
+                self._try_set_feature('OffsetX', off_x)
+                self._try_set_feature('OffsetY', off_y)
 
             elif len(value) == 2:
                 # Centered ROI: (width, height)
@@ -399,10 +438,10 @@ class GenICamCamera(AbstractCamera, abc.ABC):
                 # try to use the camera's built-in centering feature
                 try:
                     # Set size first, then enable centering
-                    self._set_feature_value('Width', width)
-                    self._set_feature_value('Height', height)
-                    self._set_feature_value('CenterX', True)
-                    self._set_feature_value('CenterY', True)
+                    self._try_set_feature('Width', width)
+                    self._try_set_feature('Height', height)
+                    self._try_set_feature('CenterX', True)
+                    self._try_set_feature('CenterY', True)
                     logger.debug(f"Used camera's built-in centering for ROI ({width}x{height}) on {self.name}.")
 
                 except AttributeError:
@@ -410,8 +449,8 @@ class GenICamCamera(AbstractCamera, abc.ABC):
                     logger.debug(f"Camera {self.name} lacks CenterX/Y support. Calculating centered ROI manually.")
 
                     # Set size first, and get the actual values that were set (they might be clamped)
-                    actual_width = self._set_feature_value('Width', width)
-                    actual_height = self._set_feature_value('Height', height)
+                    actual_width = self._try_set_feature('Width', width)
+                    actual_height = self._try_set_feature('Height', height)
 
                     # Get max dimensions for offset calculation (respects current binning, etc)
                     max_w = self._get_feature_max_value('Width')
@@ -422,8 +461,8 @@ class GenICamCamera(AbstractCamera, abc.ABC):
                     off_y = (max_h - actual_height) // 2
 
                     # The SDK should handle rounding to the nearest valid increment
-                    self._set_feature_value('OffsetX', off_x)
-                    self._set_feature_value('OffsetY', off_y)
+                    self._try_set_feature('OffsetX', off_x)
+                    self._try_set_feature('OffsetY', off_y)
             else:
                 raise ValueError(f"ROI must be a sequence of 2 or 4 elements, but got {len(value)}.")
 

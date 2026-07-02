@@ -40,7 +40,7 @@ class BaslerCamera(GenICamCamera):
 
         super()._pre_apply_configuration(settings)  # call parent class's hook
 
-        self._set_feature_value('UserSetSelector', 'Default')
+        self._try_set_feature('UserSetSelector', 'Default')
         self._ptr.UserSetLoad.Execute()
 
     def disconnect(self) -> None:
@@ -92,7 +92,7 @@ class BaslerCamera(GenICamCamera):
         except geni.GenericException as e:
             raise AttributeError(f"Failed to get feature '{name}': {e}") from e
 
-    def _set_feature_value(self, name: str, value: Any) -> Any:
+    def _set_feature(self, name: str, value: Any) -> Any:
         try:
             node = self._ptr.GetNodeMap().GetNode(name)
             if not geni.IsWritable(node):
