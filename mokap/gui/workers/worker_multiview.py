@@ -154,6 +154,18 @@ class MultiviewWorker(CalibrationProcessingWorker):
             self._points_2d[data.camera_name] = payload.points2D if payload.points2D is not None else self._nopoints_2d
             self._points_ids[data.camera_name] = payload.pointsIDs if payload.pointsIDs is not None else self._nopoints_ids
 
+    @staticmethod
+    def to_gl(points):
+        if points is None or points.shape[0] == 0:
+            return points
+        return rotate_points(points, angle_degrees=180, axis=[1.0, 0.0, 0.0])
+
+    @staticmethod
+    def to_gl_batch(points_batch):
+        if points_batch is None or points_batch.shape[0] == 0:
+            return points_batch
+        return rotate_points(points_batch, angle_degrees=180, axis=[1.0, 0.0, 0.0])
+
     def _compute_3d_scene(self):
         """ Periodically calculates and emits all data needed for the 3D view """
 
@@ -187,9 +199,9 @@ class MultiviewWorker(CalibrationProcessingWorker):
         # Mask out frustums for cameras whose intrinsics haven't arrived yet
         # This prevents rendering a valid pose with an invalid (identity) K matrix
         masked_frustums = xp.where(
-            ready_mask[:, None, None],
+            xp.asarray(ready_mask[:, None, None]),
             frustums_points_all,
-            cam_centres[:, None, :]  # Collapse the frustum to a single point if not ready
+            xp.asarray(cam_centres[:, None, :])  # Collapse the frustum to a single point if not ready
         )
 
         # Proceed with the rest of the rendering using the safe, masked data
@@ -221,9 +233,9 @@ class MultiviewWorker(CalibrationProcessingWorker):
         # Stage > 0: Cameras are static, the board moves
         elif self._current_stage > 0:
 
-            if self.multiview_tool and self.multiview_tool.curent_object_pose is not None:
+            if self.multiview_tool and self.multiview_tool.current_object_pose is not None:
                 # If we have a valid board pose, transform the board object points
-                board_pose = self.multiview_tool.curent_object_pose
+                board_pose = self.multiview_tool.current_object_pose
                 board_3d = (board_pose @ self._object_points_hom.T).T[:, :3]
 
                 # Detections are the specific points from the transformed board
@@ -239,16 +251,6 @@ class MultiviewWorker(CalibrationProcessingWorker):
             # In Stage > 0 but without a board pose yet, board_3d remains None
             # and detections_3d remains a list of empty arrays. This is fine,
             # as it will correctly show just the static cameras until a board is detected
-
-        def to_gl(points):
-            if points is None or points.shape[0] == 0:
-                return points
-            return rotate_points(points, angle_degrees=180, axis=[1.0, 0.0, 0.0])
-
-        def to_gl_batch(points_batch):
-            if points_batch is None or points_batch.shape[0] == 0:
-                return points_batch
-            return rotate_points(points_batch, angle_degrees=180, axis=[1.0, 0.0, 0.0])
 
         scene_data = {
             'ready_mask': ready_mask,

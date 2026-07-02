@@ -74,6 +74,10 @@ class BaslerCamera(GenICamCamera):
                 return grab_result.Array, {'frame_number': grab_result.ImageNumber, 'timestamp': grab_result.TimeStamp}
             else:
                 raise IOError(f"Grab failed: {grab_result.GetErrorCode()} {grab_result.GetErrorDescription()}")
+
+        except geni.GenericException as e:
+            raise TimeoutError(f'Grab timed out or failed: {e}') from e
+
         finally:
             if 'grab_result' in locals() and grab_result:
                 grab_result.Release()

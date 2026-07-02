@@ -197,40 +197,80 @@ class FFmpegWriter(FrameWriter):
     """ Writes frames to a video file by piping them to an FFmpeg subprocess """
 
     _available_encoders = None
-    _encoders_lock = threading.Lock()  # we generally create writers from multiple threads at once
+    _encoders_lock = threading.Lock()
 
     def __init__(self, filepath: Path, ffmpeg_path: str, params: Dict, use_gpu: bool, **kwargs):
         super().__init__(filepath, **kwargs)
 
         self.proc: Optional[subprocess.Popen] = None
 
+        # Resolve FFmpeg executable
         which_ffmpeg = shutil.which(ffmpeg_path)
         if not which_ffmpeg:
-            raise OSError(f"Can't find FFmpeg. Is it installed?")
+            raise OSError(f"Can't find FFmpeg at '{ffmpeg_path}'.")
+        self.ffmpeg_path = Path(which_ffmpeg).resolve()
 
-        path = Path(which_ffmpeg)
-        if not os.access(path, os.X_OK):
-            raise PermissionError(f"Can't run FFmpeg from `{path.as_posix()}`. Is it executable?.")
+        candidates = self._get_priority_candidates(params, use_gpu)
 
-        self.ffmpeg_path = path.resolve()
-        print(self.ffmpeg_path)
+        success = False
+        last_error = 'No candidates available'
 
-        if use_gpu:
-            # Allow user override first
-            param_key = params.get('profile')
-            if not param_key:
-                # If no override, auto-detect
-                param_key = self._get_best_profile_key(ffmpeg_path, params)
-        else:
-            param_key = 'cpu_x265'
+        for profile_key in candidates:
+            logger.debug(f"Attempting FFmpeg profile: '{profile_key}' for {self.cam_name}")
 
-        encoder_params_str = params.get(param_key)
-        if not encoder_params_str:
-            raise ValueError(f"FFmpeg profile '{param_key}' not found in config's 'params' section.")
+            try:
+                command_list = self._build_command(profile_key, params, filepath)
 
-        # Pixel formats
+                # Start the subprocess, redirecting stdout/stderr to prevent console spam
+                self.proc = subprocess.Popen(
+                    command_list,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    # stderr=subprocess.DEVNULL
+                    # stdout=subprocess.PIPE,         # for debug
+                    stderr=subprocess.PIPE  # for debug
+                )
 
-        # map camera format to FFmpeg input format
+                # Probe encoding abilities
+                import time
+                time.sleep(0.2)
+
+                # Check if it crashed
+                if self.proc.poll() is None:
+                    # Still running, looks good
+                    logger.info(f"FFmpeg initialized for {self.cam_name} using '{profile_key}'")
+                    self._encoding_params = {
+                        'format': 'ffmpeg_video',
+                        'encoder_profile': profile_key,
+                        'command': ' '.join(command_list)
+                    }
+                    success = True
+                    break
+                else:
+                    # It crashed. Try next candidate
+                    _, err_data = self.proc.communicate()
+                    last_error = err_data.decode('utf-8', errors='ignore').strip()
+                    logger.warning(
+                        f"Profile '{profile_key}' failed: {last_error.splitlines()[-1] if last_error else 'Unknown'}")
+                    self.proc = None
+                    continue
+
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(f"Error spawning FFmpeg with profile '{profile_key}': {e}")
+                self.proc = None
+                continue
+
+        if not success:
+            raise RuntimeError(
+                f'FFmpegWriter failed to start any viable encoder for {self.cam_name}. Last error: {last_error}')
+
+    def _build_command(self, profile_key: str, params: Dict, filepath: Path) -> list[str]:
+        """Builds the argument list for subprocess.Popen"""
+
+        encoder_params_str = params.get(profile_key, "")
+
+        # Map camera pixel format to FFmpeg input format
         input_format_map = {
             'Mono8': 'gray',
             'BayerRG8': 'bayer_rggr8',
@@ -243,64 +283,43 @@ class FFmpegWriter(FrameWriter):
             'Mono12': 'gray12le',
             'Mono16': 'gray16le',
         }
-        input_pixel_fmt = input_format_map.get(self.pixel_format)
+        input_pixel_fmt = input_format_map.get(self.pixel_format, 'gray')
 
-        if not input_pixel_fmt:
-            raise ValueError(f"Unsupported pixel_format '{self.pixel_format}' for FFmpegWriter.")
-
-        # Determine output format, and if we are doing a high-bit-depth encode
         high_bitdepth = self.pixel_format in ('Mono10', 'Mono12', 'Mono16')
-        extra_encoder_args = ""
+        extra_args = []
 
-        if 'vaapi' in param_key:
-            # VAAPI needs a filter chain with hwupload
-            vaapi_format = 'p010' if high_bitdepth else 'nv12'
-            extra_encoder_args = f"-vf format={vaapi_format},hwupload"
+        # Handle specific encoder requirements
+        if 'vaapi' in profile_key:
+            fmt = 'p010' if high_bitdepth else 'nv12'
+            extra_args.extend(['-vf', f'format={fmt},hwupload'])
 
-        elif 'videotoolbox' in param_key:
-            # Inject the correct profile if not already specified by the user in the config
-            if "-profile" not in encoder_params_str:
-                profile_arg = "-profile main10" if high_bitdepth else "-profile main"
-                extra_encoder_args = profile_arg
+        elif 'videotoolbox' in profile_key and "-profile" not in encoder_params_str:
+            extra_args.extend(['-profile', 'main10' if high_bitdepth else 'main'])
 
-        else:  # Covers cpu, nvenc, qsv, amf
-            # These encoders use the standard -pix_fmt flag at the end
+        elif '-pix_fmt' not in encoder_params_str:
             if high_bitdepth:
-                # Hardware encoders prefer p010le, software prefers yuv420p10le
-                output_pixel_fmt = 'p010le' if use_gpu else 'yuv420p10le'
+                fmt = 'p010le' if (
+                            'nvenc' in profile_key or 'qsv' in profile_key or 'amf' in profile_key) else 'yuv420p10le'
             else:
-                output_pixel_fmt = 'yuv420p'
-            extra_encoder_args  = f"-pix_fmt {output_pixel_fmt}"
+                fmt = 'yuv420p'
+            extra_args.extend(['-pix_fmt', fmt])
 
-        # Build the command
-        input_args = (
-            f"-y -s {self.width}x{self.height} -f rawvideo "
-            f"-framerate {self.framerate:.3f} -pix_fmt {input_pixel_fmt} -i pipe:0"
-        )
+        # Assemble
+        cmd = [
+            str(self.ffmpeg_path), '-hide_banner', '-y',
+            '-s', f'{self.width}x{self.height}',
+            '-f', 'rawvideo',
+            '-framerate', f'{self.framerate:.3f}',
+            '-pix_fmt', input_pixel_fmt,
+            '-i', 'pipe:0'
+        ]
 
-        # Add the dynamically determined pixel format to the encoder params
-        full_encoder_params = f"{encoder_params_str} {extra_encoder_args}"
+        # Add profile params and extra args
+        cmd.extend(shlex.split(encoder_params_str))
+        cmd.extend(extra_args)
+        cmd.append(str(filepath))
 
-        command = f"{shlex.quote(str(self.ffmpeg_path))} -hide_banner {input_args} {full_encoder_params} {shlex.quote(str(filepath))}"
-
-        logger.debug(f"FFmpeg command for '{self.cam_name}': {command}")
-
-        # Store metadata
-        self._encoding_params = {
-            'format': 'ffmpeg_video',
-            'encoder_profile': param_key,
-            'command': command
-        }
-
-        # Start the subprocess, redirecting stdout/stderr to prevent console spam
-        self.proc = subprocess.Popen(
-            shlex.split(command),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-            # stdout=subprocess.PIPE,         # for debug
-            # stderr=subprocess.PIPE          # for debug
-        )
+        return cmd
 
     @staticmethod
     def _get_available_encoders(ffmpeg_path: str) -> set:
@@ -317,7 +336,7 @@ class FFmpegWriter(FrameWriter):
             if FFmpegWriter._available_encoders is not None:
                 return FFmpegWriter._available_encoders
 
-            logger.debug("Querying FFmpeg for available encoders...")
+            logger.debug('Querying FFmpeg for available encoders...')
             try:
                 result = subprocess.check_output(
                     [ffmpeg_path, '-hide_banner', '-encoders'],
@@ -335,37 +354,41 @@ class FFmpegWriter(FrameWriter):
                         encoders.add(parts[1])
 
                 FFmpegWriter._available_encoders = encoders
-                logger.debug(f"Found encoders: {FFmpegWriter._available_encoders}")
+                logger.debug(f'Found encoders: {FFmpegWriter._available_encoders}')
                 return FFmpegWriter._available_encoders
+
             except (subprocess.CalledProcessError, FileNotFoundError) as e:
-                logger.error(f"Could not query FFmpeg for encoders: {e}")
+                logger.error(f'Could not query FFmpeg for encoders: {e}')
                 FFmpegWriter._available_encoders = set()  # cache failure
                 return FFmpegWriter._available_encoders
 
-    def _get_best_profile_key(self, ffmpeg_path: str, params: Dict) -> str:
+    def _get_priority_candidates(self, params: Dict, use_gpu: bool) -> list[str]:
         """
-        Automatically determines the best encoder profile to use
+        Returns a list of profile keys to try, from best to worst fallback
         (based on OS, available hardware, and a predefined priority list)
         """
+
+        available_encoders = self._get_available_encoders(str(self.ffmpeg_path))
+        system = platform.system()
 
         # Priority is defined as: Best quality/efficiency first
         # We prefer AV1 > HEVC, and Hardware > Software
         PRIORITY_MAP = {
             'Linux': [
-                ('gpu_arc_av1', 'av1_qsv'),
                 ('gpu_nvenc_h265', 'hevc_nvenc'),
-                ('gpu_nvenc_h264', 'h264_nvenc'),
-                ('gpu_vaapi', 'hevc_vaapi'),
                 ('gpu_arc_hevc', 'hevc_qsv'),
+                ('gpu_nvenc_h264', 'h264_nvenc'),
+                ('gpu_arc_av1', 'av1_qsv'),
+                ('gpu_vaapi', 'hevc_vaapi'),
                 ('cpu_h265', 'libx265'),
                 ('cpu_h264', 'libx264'),
             ],
             'Windows': [
-                ('gpu_arc_av1', 'av1_qsv'),
                 ('gpu_nvenc_h265', 'hevc_nvenc'),
-                ('gpu_nvenc_h264', 'h264_nvenc'),
-                ('gpu_amf', 'hevc_amf'),
                 ('gpu_arc_hevc', 'hevc_qsv'),
+                ('gpu_nvenc_h264', 'h264_nvenc'),
+                ('gpu_arc_av1', 'av1_qsv'),
+                ('gpu_amf', 'hevc_amf'),
                 ('cpu_h265', 'libx265'),
                 ('cpu_h264', 'libx264'),
             ],
@@ -376,21 +399,25 @@ class FFmpegWriter(FrameWriter):
             ]
         }
 
-        available_encoders = self._get_available_encoders(ffmpeg_path)
-        system = platform.system()
+        candidates = []
 
-        priority_list = PRIORITY_MAP.get(system, [])
-        if not priority_list:
-            logger.warning(f"Unsupported OS '{system}' for auto-selection. Falling back to CPU.")
-            return 'cpu_x265'  # a safe default
+        # user manually specified a profile in config, put that first
+        if params.get('profile') and params['profile'] in params:
+            candidates.append(params['profile'])
 
-        for profile_key, encoder_name in priority_list:
-            if profile_key in params and encoder_name in available_encoders:
-                logger.info(f"Auto-selected FFmpeg profile: '{profile_key}' (using '{encoder_name}')")
-                return profile_key
+        # Add hardware candidates if GPU is requested
+        if use_gpu:
+            for profile_key, encoder_name in PRIORITY_MAP.get(system, []):
+                if profile_key in params and encoder_name in available_encoders:
+                    if profile_key not in candidates:
+                        candidates.append(profile_key)
 
-        logger.warning("No suitable high-priority encoder found. Check FFmpeg build and drivers.")
-        return 'cpu_x264'  # absolute fallback
+        # Always add CPU fallbacks at the end
+        for cpu_key in ['cpu_h265', 'cpu_h264', 'cpu_x265', 'cpu_x264']:
+            if cpu_key in params and cpu_key not in candidates:
+                candidates.append(cpu_key)
+
+        return candidates
 
     def _write_frame(self, frame: np.ndarray, frame_data: Dict[str, Any]):
 
@@ -400,21 +427,34 @@ class FFmpegWriter(FrameWriter):
                 self.proc.stdin.write(frame.tobytes())
 
             except (IOError, BrokenPipeError) as e:
+                # FFmpeg has crashed?
+                err_str = 'Unknown error'
+                if self.proc.stderr:
+                    _, err_data = self.proc.communicate()
+                    if err_data:
+                        err_str = err_data.decode('utf-8', errors='ignore').strip()
 
-                # This can happen if FFmpeg closes unexpectedly
-                logger.error(f"Failed to write to FFmpeg process: {e}")
+                logger.error(
+                    f'FFmpeg process for {self.cam_name} terminated unexpectedly!\nFFmpeg Error Output:\n{err_str}')
 
-                # We can try to get more info from stderr if it was captured
-                self.close()  # Attempt to clean up
-                raise IOError("FFmpeg process terminated unexpectedly.") from e
+                self.close()
+                raise IOError(f'FFmpeg process failed: {err_str}') from e
 
     def close(self):
         if not self.proc:
             return
 
-        # Gracefully close the input pipe and wait for FFmpeg to finish encoding
+        # Gracefully close input pipe
         if self.proc.stdin:
-            self.proc.stdin.flush()
-            self.proc.stdin.close()
-        self.proc.wait(timeout=10)
+            try:
+                self.proc.stdin.flush()
+                self.proc.stdin.close()
+            except (BrokenPipeError, ValueError, OSError):
+                logger.debug('FFmpeg stdin was already closed or broken.')
+        try:
+            self.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            logger.warning('FFmpeg did not exit gracefully. Terminating...')
+            self.proc.terminate()
+
         self.proc = None

@@ -859,6 +859,6 @@ class MultiviewCalibrationTool:
             return None
 
     @property
-    def curent_object_pose(self) -> Optional[xp.ndarray]:
+    def current_object_pose(self) -> Optional[xp.ndarray]:
         """Most recent object pose in world coordinates."""
         return self._current_object_pose

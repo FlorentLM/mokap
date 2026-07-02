@@ -789,7 +789,7 @@ class MainControls(QMainWindow, SnapMixin):
 
             # Draw monitor number text on top of everything
             text_item = QGraphicsTextItem(f"{i}")
-            text_item.setDefaultTextColor(QColor.fromString('#ffffffff'))
+            text_item.setDefaultTextColor(QColor('#ffffffff'))
             text_item.setFont(QFont("Monospace", 9))
             text_rect = text_item.boundingRect()
             text_item.setPos(mx + 2, my + mh - text_rect.height() - 2)

@@ -34,6 +34,7 @@ class ProcessingWorker(QObject):
         super().__init__(*args, **kwargs)
         self._paused = False
 
+    @Slot(bool)
     def set_paused(self, paused: bool):
         self._paused = paused
 

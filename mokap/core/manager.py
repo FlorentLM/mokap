@@ -34,12 +34,12 @@ class MultiCam:
                  config:         Optional[Dict] = None,
                  session_name:   Optional[str] = None):
 
-        # --- Configuration ---
+        # Configuration
         self.config = config if config else fileio.read_config('config.yaml')
         self._base_folder = Path(self.config.get('base_path', './MokapRecordings'))
         self._base_folder.mkdir(parents=True, exist_ok=True)
 
-        # --- State Management ---
+        # State Management
         self._acquiring = Event()
         self._recording = Event()
         self._threads: List[Thread] = []
@@ -52,7 +52,7 @@ class MultiCam:
         # internal value for the framerate used to broadcast to all cameras
         self._framerate = self.config.get('framerate', 60)
 
-        # --- Hardware and Cameras ---
+        # Hardware and Cameras
         self.cameras: List[AbstractCamera] = []
         self.camera_colours: Dict[str, str] = {}
         self._camera_setting_overrides: Dict[str, Dict] = {}
@@ -62,7 +62,7 @@ class MultiCam:
         self._trigger_instance: Optional[AbstractTrigger] = None
         self._initialize_trigger()
 
-        ## --- Threading Resources ---
+        # Threading Resources
         self.buffer_size = self.config.get('frame_buffer_size', 200)
 
         # shared state for the most recent frame protected by a lock
@@ -80,11 +80,13 @@ class MultiCam:
         for event in self._finished_saving_events:
             event.set()
 
-        # --- Metadata ---
+        # Metadata
         self._metadata = {'sessions': []}
 
     def _initialize_trigger(self):
+        """ Setup hardware trigger and handle configuration mismatches """
 
+        # No trigger asked, nothing to do here
         if not self.config.get('hardware_trigger', False):
             self._trigger_instance = None
             return
@@ -92,34 +94,19 @@ class MultiCam:
         trigger_conf = self.config.get('trigger', {})
         trigger_type = trigger_conf.get('type', '')
 
+        # Try instantiate trigger
         if not trigger_type:
-            logger.error(
-                "Config contains 'hardware_trigger: true', but no trigger 'type' found. Running without hardware trigger.")
+            logger.error("Config contains 'hardware_trigger: true', but no trigger 'type' found.")
             self._trigger_instance = None
-            return
 
-        if trigger_type == 'camera':
+        elif trigger_type == 'camera':
             primary_cam_name = trigger_conf.get('name')
-            
-            if not primary_cam_name:
-                logger.error("Camera trigger requires 'name' in config. Disabling trigger.")
-                self._trigger_instance = None
-                return
-
             primary_camera = next((cam for cam in self.cameras if cam.name == primary_cam_name), None)
-
-            if not primary_camera:
-                logger.error(
-                    f"Camera '{primary_cam_name}' for trigger not found among connected cameras. Disabling trigger.")
+            if primary_camera:
+                self._trigger_instance = CameraTrigger(primary_camera=primary_camera, config=trigger_conf)
+            else:
+                logger.error(f"Trigger camera '{primary_cam_name}' not found.")
                 self._trigger_instance = None
-                return
-
-            # if primary_camera.hardware_triggered:
-            #     logger.warning(
-            #         f"Primary camera '{primary_cam_name}' was configured with 'hardware_trigger: true'.\n"
-            #         f"This will be overridden, as it cannot be both a primary and a secondary.")
-
-            self._trigger_instance = CameraTrigger(primary_camera=primary_camera, config=trigger_conf)
 
         elif trigger_type == 'raspberry':
             self._trigger_instance = RaspberryTrigger(config=trigger_conf)
@@ -129,15 +116,21 @@ class MultiCam:
 
         elif trigger_type == 'ftdi':
             self._trigger_instance = FTDITrigger(config=trigger_conf)
-            logger.info("FTDI Trigger is not recommended for high-precision applications.")
 
         else:
-            logger.error(f"Trigger 'type' '{trigger_type}' is not valid. Running without hardware trigger.")
+            logger.error(f"Trigger 'type' '{trigger_type}' is invalid.")
             self._trigger_instance = None
 
+        # trigger was created but failed to connect, null it out
         if self._trigger_instance and not self._trigger_instance.connected:
-            logger.error("Failed to connect to trigger. Running without hardware trigger.")
+            logger.error('Hardware trigger device failed to connect.')
             self._trigger_instance = None
+
+        # if this point is reached but self._trigger_instance is None, cameras are currently stuck
+        # waiting for a pulse, so we force them back to software mode
+        if self._trigger_instance is None:
+            logger.warning('No valid hardware trigger found. Forcing all cameras to software trigger mode.')
+            self.set_all_cameras('hardware_triggered', False)
 
     def connect_cameras(self):
         """ Discovers and connects to all available cameras using the camera factory """
@@ -435,10 +428,13 @@ class MultiCam:
                         except queue.Full:
                             logger.warning(f"Cam {cam.name}: Writer queue is full. Recording frame dropped.")
 
-            except (IOError, RuntimeError) as e:
+            except Exception as e:
                 if self._acquiring.is_set():
                     logger.error(f"Grabber thread for {cam.name} failed: {e}")
-                    time.sleep(1)
+
+                    # Otherwise pause briefly to prevent CPU spinning
+                    if not isinstance(e, TimeoutError):
+                        time.sleep(1)
 
         cam.stop_grabbing()
 
@@ -665,7 +661,7 @@ class MultiCam:
             except Exception as e:
                 logger.error(f"Could not set '{parameter}' on camera {cam.name}: {e}")
 
-    # --- Session and Metadata Management ---
+    # Session and Metadata Management
 
     @property
     def session_name(self) -> str:
