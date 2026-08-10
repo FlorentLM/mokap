@@ -59,11 +59,11 @@ class CameraTrigger(AbstractTrigger):
             logger.debug(f"Set primary camera '{self.primary_camera.name}' framerate to {self.primary_camera.framerate} Hz.")
 
             # set the line output
-            self.primary_camera._set_feature_value('LineSelector', self._output_line)
-            self.primary_camera._set_feature_value('LineMode', 'Output')
+            self.primary_camera._try_set_feature('LineSelector', self._output_line)
+            self.primary_camera._try_set_feature('LineMode', 'Output')
 
             # 'ExposureActive' means the line will be high during exposure
-            self.primary_camera._set_feature_value('LineSource', 'ExposureActive')
+            self.primary_camera._try_set_feature('LineSource', 'ExposureActive')
 
             logger.info(f"Trigger started at {frequency} Hz.")
 
@@ -81,10 +81,10 @@ class CameraTrigger(AbstractTrigger):
         try:
             logger.debug(f"Stopping trigger output from primary camera '{self.primary_camera.name}'.")
 
-            self.primary_camera._set_feature_value('LineSelector', self._output_line)
+            self.primary_camera._try_set_feature('LineSelector', self._output_line)
 
             # set the line mode back to a safe default like input
-            self.primary_camera._set_feature_value('LineMode', 'Input')
+            self.primary_camera._try_set_feature('LineMode', 'Input')
 
         except AttributeError as e:
             # this might fail if the camera was disconnected abruptly, which is fine

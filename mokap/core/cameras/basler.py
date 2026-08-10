@@ -27,7 +27,7 @@ class BaslerCamera(GenICamCamera):
 
         super()._pre_apply_configuration(settings)  # call parent class's hook
 
-        self._set_feature_value('UserSetSelector', 'Default')
+        self._try_set_feature('UserSetSelector', 'Default')
         self._ptr.UserSetLoad.Execute()
 
         try:
@@ -40,10 +40,10 @@ class BaslerCamera(GenICamCamera):
 
     def _get_node_map(self):
 
-        if not self._cam_ptr or not self.is_connected:
+        if not self._ptr or not self.is_connected:
             raise RuntimeError("Basler camera is not initialized.")
 
-        return self._cam_ptr.GetNodeMap()
+        return self._ptr.GetNodeMap()
 
     def _get_feature_value(self, name: str) -> Any:
         try:
@@ -167,6 +167,14 @@ class BaslerCamera(GenICamCamera):
                 # if grab failed but did not raise an exception, raise one
                 desc = grab_result.GetErrorDescription() if grab_result else "Unknown"
                 raise IOError(f"Grab failed: {desc}")
+
+        except geni.GenericException as e:
+            # Pylon raises this (among other things) on RetrieveResult timeout
+            if not self._ptr.IsGrabbing():
+                logger.warning(f"Camera {self.unique_id} stopped grabbing unexpectedly. Restarting engine.")
+                self._is_grabbing = False
+                # Next call to grab_frame will trigger StartGrabbing() above
+            raise TimeoutError(f'Grab timed out or failed: {e}') from e
 
         except Exception as e:
             # Check if the camera stopped grabbing unexpectedly (e.g. buffer cancelled)

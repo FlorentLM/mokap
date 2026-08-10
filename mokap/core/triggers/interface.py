@@ -2,7 +2,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Optional, Dict
 from dotenv import load_dotenv
-from mokap.utils.fileio import read_config
+from mokap.mokap_io import load_config
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -15,7 +15,7 @@ class AbstractTrigger(ABC):
     """
 
     def __init__(self, config: Optional[Dict] = None):
-        self._config = config if config else read_config(Path(__file__).parents[3] / 'config.yaml').get('trigger', {})
+        self._config = config if config else load_config(Path(__file__).parents[3] / 'config.yaml').get('trigger', {})
         self._connected: bool = False
         load_dotenv()
 

@@ -174,7 +174,12 @@ class FLIRCamera(GenICamCamera):
 
             enum_node = PySpin.CEnumerationPtr(node)
 
-            return [entry.GetSymbolic() for entry in enum_node.GetEntries()]
+            entries = []
+            for entry in enum_node.GetEntries():
+                if PySpin.IsAvailable(entry) and PySpin.IsReadable(entry):
+                    entries.append(entry.GetSymbolic())
+
+            return entries
 
         except PySpin.SpinnakerException as e:
             raise AttributeError(f"Failed to get entries for feature '{name}': {e}") from e
@@ -203,10 +208,9 @@ class FLIRCamera(GenICamCamera):
 
         if self._cam_ptr and self._is_connected: self._cam_ptr.DeInit()
 
-        # PySpin's garbage collection requires deleting the camera pointer object
+        # PySpin's garbage collection requires releasing the camera pointer object
         # to release the camera itself
         if hasattr(self, '_cam_ptr') and self._cam_ptr is not None:
-            del self._cam_ptr
             self._cam_ptr = None
 
         self._is_connected = False
@@ -267,13 +271,19 @@ class FLIRCamera(GenICamCamera):
 
                 quad_0 = PySpin.ImageUtilityPolarization.ExtractPolarQuadrant(image_result, 0)
                 image_arr = quad_0.GetNDArray().copy()
-                frame_meta['pixel_format'] = self._POL_PATTERN.sub('', self._pixel_format)
+                frame_meta['pixel_format'] = self._POL_PATTERN.sub('', self.pixel_format)
 
             else:
                 # IMPORTANT: GetNDArray returns a view: must copy it!!
                 image_arr = image_result.GetNDArray().copy()
 
             return image_arr, frame_meta
+
+        except PySpin.SpinnakerException as e:
+            err_str = str(e).lower()
+            if 'timeout' in err_str or 'wait time expired' in err_str:
+                raise TimeoutError(f'FLIR Grab timed out: {e}') from e
+            raise IOError(f'FLIR Grab failed: {e}') from e
 
         finally:
             if 'image_result' in locals() and image_result:

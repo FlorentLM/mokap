@@ -2,14 +2,14 @@
 import sys
 from mokap.gui import QApplication, MainControls, QMessageBox
 from mokap.core.controller import CameraController
-from mokap.utils import fileio
+from mokap.mokap_io import load_config
 
 
 def main():
     """ Main entry point for the Mokap GUI """
 
     try:
-        config = fileio.read_config('./config.yaml')
+        config = load_config('./config.yaml')
     except FileNotFoundError:
         QMessageBox.critical(None, "Error", "Configuration file 'config.yaml' not found. Please create one.")
         sys.exit(1)

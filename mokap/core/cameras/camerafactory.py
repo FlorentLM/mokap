@@ -78,6 +78,8 @@ class CameraFactory:
             logger.error(f"Error during Basler discovery: {e}")
 
         # Discover FLIR cameras
+        system = None
+        cam_list = None
         try:
 
             import PySpin
@@ -112,14 +114,24 @@ class CameraFactory:
                     'native_object': None  # should not keep a ref to the pointer, otherwise we get device busy
                 })
 
-                del cam  # also we must explicitly delete this to release the reference
-
-                cam_list.Clear()  # This is safe because we are not holding the ref to the pointer
-                system.ReleaseInstance()
+                del cam  # must explicitly delete this to release the reference before next iteration
 
         except ImportError:
             logger.debug("PySpin SDK not found. Skipping FLIR camera discovery.")
-            pass
+
+        except Exception as e:
+            logger.error(f"Error during FLIR discovery: {e}")
+
+        finally:
+            # list should be clearewd and system instance released even if no camera was found
+            # (otherwise the reference is leaked and PySpin complains)
+            try:
+                if cam_list is not None:
+                    cam_list.Clear()
+                if system is not None:
+                    system.ReleaseInstance()
+            except Exception as e:
+                logger.debug(f"FLIR discovery cleanup failed: {e}")
 
         # Discover webcams
         try:

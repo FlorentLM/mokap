@@ -1,6 +1,8 @@
 import json
 import logging
+import math
 import os
+import platform
 import queue
 import shutil
 import subprocess
@@ -16,8 +18,9 @@ from PIL import Image
 from mokap.core.cameras import CameraFactory, AbstractCamera, CAMERAS_COLOURS
 from mokap.core.triggers import AbstractTrigger, CameraTrigger, RaspberryTrigger, ArduinoTrigger, FTDITrigger
 from mokap.core.writers import FrameWriter, ImageSequenceWriter, FFmpegWriter
-from mokap.utils import fileio, general
-from mokap.utils.system import setup_ulimit, safe_replace
+from mokap.mokap_io import load_config
+from mokap.utils import general
+from mokap.utils.system import setup_ulimit, safe_replace, exists_check, rm_if_empty
 
 logger = logging.getLogger(__name__)
 
@@ -44,14 +47,16 @@ class CameraController:
                  session_name: Optional[str] = None):
 
         # Configuration
-        self.config = config if config else fileio.read_config('config.yaml')
+        self.config = config if config else load_config('config.yaml')
         self._base_folder = Path(self.config.get('base_path', './MokapRecordings'))
         self._base_folder.mkdir(parents=True, exist_ok=True)
 
         # State management
         self._acquiring = Event()
         self._recording = Event()
+        self._record_lock = Lock()
         self._threads: List[Thread] = []
+        self._correction_threads: List[Thread] = []
 
         self._session_name = ""
         self.session_name = session_name  # use setter to initialize
@@ -187,8 +192,8 @@ class CameraController:
                 logger.error(f"Could not set framerate on camera {cam.name}: {e}")
 
         # Verify all cameras accepted the framerate
-        if not all(cam.framerate == new_framerate for cam in self.cameras):
-            self._framerate = None
+        # (rel_tol because cameras clamp/quantize, e.g. 59.9988 for requested 60 fps)
+        if not all(math.isclose(cam.framerate, new_framerate, rel_tol=1e-3) for cam in self.cameras):
             logger.warning("Not all cameras could be set to the requested framerate.")
         else:
             logger.debug(f"All cameras successfully set to {new_framerate} fps.")
@@ -215,30 +220,23 @@ class CameraController:
         trigger_type = trigger_conf.get('type', '')
 
         if not trigger_type:
-            logger.error(
-                "Config contains 'hardware_trigger: true', but no trigger 'type' found."
-                " Running without hardware trigger.")
+            logger.error("Config contains 'hardware_trigger: true', but no trigger 'type' found.")
             self._trigger_instance = None
-            return
 
-        if trigger_type == 'camera':
+        elif trigger_type == 'camera':
             primary_cam_name = trigger_conf.get('name')
 
             if not primary_cam_name:
                 logger.error("Camera trigger requires 'name' in config. Disabling trigger.")
                 self._trigger_instance = None
-                return
+            else:
+                primary_camera = next((cam for cam in self.cameras if cam.name == primary_cam_name), None)
 
-            primary_camera = next((cam for cam in self.cameras if cam.name == primary_cam_name), None)
-
-            if not primary_camera:
-                logger.error(
-                    f"Camera '{primary_cam_name}' for trigger not found among connected cameras."
-                    f" Disabling trigger.")
-                self._trigger_instance = None
-                return
-
-            self._trigger_instance = CameraTrigger(primary_camera=primary_camera, config=trigger_conf)
+                if not primary_camera:
+                    logger.error(f"Camera '{primary_cam_name}' for trigger not found among connected cameras.")
+                    self._trigger_instance = None
+                else:
+                    self._trigger_instance = CameraTrigger(primary_camera=primary_camera, config=trigger_conf)
 
         elif trigger_type == 'raspberry':
             self._trigger_instance = RaspberryTrigger(config=trigger_conf)
@@ -251,14 +249,19 @@ class CameraController:
             logger.info("FTDI Trigger is not recommended for high-precision applications.")
 
         else:
-            logger.error(f"Trigger 'type' '{trigger_type}' is not valid."
-                         f" Running without hardware trigger.")
+            logger.error(f"Trigger 'type' '{trigger_type}' is not valid.")
             self._trigger_instance = None
 
+        # trigger created but failed to connect -> nulled
         if self._trigger_instance and not self._trigger_instance.connected:
-            logger.error("Failed to connect to trigger."
-                         " Running without hardware trigger.")
+            logger.error('Hardware trigger device failed to connect.')
             self._trigger_instance = None
+
+        # if this point is reached but self._trigger_instance is None : cameras are stuck waiting for a pulse
+        # -> force them to software trigger
+        if self._trigger_instance is None:
+            logger.warning('No valid hardware trigger found. Forcing all cameras to software trigger mode.')
+            self.hardware_triggered = False
 
     # ─────────────────────────────── Camera connection ───────────────────────────────
 
@@ -428,117 +431,143 @@ class CameraController:
             self._trigger_instance.stop()
 
         # Clean up session folder if it's empty
-        general.rm_if_empty(self.full_path)
+        rm_if_empty(self.full_path)
 
         logger.info("Acquisition stopped.")
 
     # ─────────────────────────────── Recording control ───────────────────────────────
 
+    @staticmethod
+    def _set_process_priority(high: bool):
+        """Raises or restores process priority (Windows only; priority classes don't exist elsewhere)."""
+
+        if platform.system() != 'Windows':
+            return
+        try:
+            priority = psutil.HIGH_PRIORITY_CLASS if high else psutil.NORMAL_PRIORITY_CLASS
+            psutil.Process().nice(priority)
+        except psutil.Error as e:
+            logger.debug(f"Could not change process priority: {e}")
+
     def start_recording(self):
         """Begins a recording session, signaling the writer threads to save frames."""
 
-        psutil.Process().nice(psutil.HIGH_PRIORITY_CLASS)  # Windows
+        with self._record_lock:
 
-        if not self._acquiring.is_set():
-            logger.error("Cannot record, acquisition is not running.")
-            return
+            if not self._acquiring.is_set():
+                logger.error("Cannot record, acquisition is not running.")
+                return
 
-        if self._recording.is_set():
-            logger.warning("Already recording.")
-            return
+            if self._recording.is_set():
+                logger.warning("Already recording.")
+                return
 
-        # Prepare metadata snapshot for this session
-        keys_order = ['exposure', 'gain', 'gamma', 'black_level', 'pixel_format',
-                      'binning', 'binning_mode', 'roi', 'save_format']
-        session_config = {k: self.config[k] for k in keys_order if k in self.config}
+            self._set_process_priority(high=True)
 
-        if session_config.get('save_format') != 'mp4' and self.config.get('save_quality'):
-            session_config['save_quality'] = self.config.get('save_quality')
+            # Prepare metadata snapshot for this session
+            keys_order = ['exposure', 'gain', 'gamma', 'black_level', 'pixel_format',
+                          'binning', 'binning_mode', 'roi', 'save_format']
+            session_config = {k: self.config[k] for k in keys_order if k in self.config}
 
-        # Prepare metadata for this new session
-        session_metadata = {
-            'session_nb': len(self._metadata['sessions']),
-            'start_time': datetime.now().timestamp(),
-            'end_time': None,
-            'duration': 0.0,
-            'hardware_triggered': self.hardware_triggered
-        }
-        if self.hardware_triggered:
-            session_metadata['trigger_frequency'] = self.framerate
-        session_metadata.update(session_config)
-        session_metadata['cameras'] = {}  # this will be populated at the end of a recording
+            if session_config.get('save_format') != 'mp4' and self.config.get('save_quality'):
+                session_config['save_quality'] = self.config.get('save_quality')
 
-        self._metadata['sessions'].append(session_metadata)
+            # Prepare metadata for this new session
+            session_metadata = {
+                'session_nb': len(self._metadata['sessions']),
+                'start_time': datetime.now().timestamp(),
+                'end_time': None,
+                'duration': 0.0,
+                'hardware_triggered': self.hardware_triggered
+            }
+            if self.hardware_triggered:
+                session_metadata['trigger_frequency'] = self.framerate
+            session_metadata.update(session_config)
+            session_metadata['cameras'] = {}  # this will be populated at the end of a recording
 
-        # Reset the frame counters for the new session
-        self._session_frame_counts = [0] * self.nb_cameras
+            self._metadata['sessions'].append(session_metadata)
 
-        # signal that writers can start
-        self._recording.set()
+            # Reset the frame counters for the new session
+            self._session_frame_counts = [0] * self.nb_cameras
 
-        logger.info(f"Recording started. Saving to: {self.full_path}")
+            # signal that writers can start
+            self._recording.set()
+
+            logger.info(f"Recording started. Saving to: {self.full_path}")
 
     def stop_recording(self):
-        """Pauses the current recording session, finalizing files."""
+        """Pauses the current recording session, and finalises files."""
 
-        if not self._recording.is_set():
-            return
+        with self._record_lock:
 
-        end_ts = datetime.now().timestamp()
+            if not self._recording.is_set():
+                return
 
-        self._recording.clear()
+            end_ts = datetime.now().timestamp()
 
-        logger.info("Finishing writing for current session...")
+            self._recording.clear()
 
-        # We calculate and store session duration *before* asking the threads to stop
-        curr_session = self._metadata['sessions'][-1]
+            logger.info("Finishing writing for current session...")
 
-        start_ts = curr_session['start_time']
-        duration = end_ts - start_ts if end_ts > start_ts else 0.0
+            # We calculate and store session duration *before* asking the threads to stop
+            curr_session = self._metadata['sessions'][-1]
 
-        curr_session['end_time'] = end_ts
-        curr_session['duration'] = duration
+            start_ts = curr_session['start_time']
+            duration = end_ts - start_ts if end_ts > start_ts else 0.0
 
-        # Wait for all writer threads to confirm they have finished
-        for event in self._finished_saving_events:
-            event.wait(timeout=5.0)
+            curr_session['end_time'] = end_ts
+            curr_session['duration'] = duration
 
-        cameras_data = {}
-        for i, cam in enumerate(self.cameras):
-            frames = self._session_frame_counts[i]
-            actual_fps = (frames / duration) if duration > 0 else 0.0
+            # Wait for all writer threads to confirm they have finished
+            for event in self._finished_saving_events:
+                if not event.wait(timeout=5.0):
+                    logger.warning("A writer did not confirm completion within 5s. Metadata may be incomplete.")
 
-            diff = abs(cam.framerate - actual_fps)
+            cameras_data = {}
+            corrections: List[Tuple[Path, float, float]] = []
+            for i, cam in enumerate(self.cameras):
+                frames = self._session_frame_counts[i]
+                actual_fps = (frames / duration) if duration > 0 else 0.0
 
-            # Correct the video files framerates if needed
-            save_format = (self.config.get('sources', {})
-                           .get(cam.name, {})
-                           .get('save_format', self.config.get('save_format', 'mp4')))
+                diff = abs(cam.framerate - actual_fps)
 
-            if save_format == 'mp4' and frames > 0 and diff > 0.05:
-                video_path = self.full_path / f"{self.session_name}_{cam.name}_session{curr_session['session_nb']}.mp4"
-                self._correct_video_framerate(video_path, actual_fps)
+                # Correct the video files framerates if needed
+                save_format = (self.config.get('sources', {})
+                               .get(cam.name, {})
+                               .get('save_format', self.config.get('save_format', 'mp4')))
 
-            # Build the final data block for this camera
-            cam_data_block = {
-                'serial': cam.unique_id,
-                'model': CameraFactory.get_camera_info(cam.unique_id)['model'],
-                'frames_recorded': frames,
-                'theoretical_framerate': cam.framerate,
-                'actual_framerate': round(actual_fps, 3),
-                'encoding': self._session_encoding_params[i]
-            }
+                if save_format == 'mp4' and frames > 0 and diff > 0.05:
+                    video_path = self.full_path / f"{self.session_name}_{cam.name}_session{curr_session['session_nb']}.mp4"
+                    corrections.append((video_path, cam.framerate, actual_fps))
 
-            overrides = self._camera_setting_overrides.get(cam.name, {})
-            if overrides:
-                cam_data_block['settings_overrides'] = overrides
+                # Build the final data block for this camera
+                cam_data_block = {
+                    'serial': cam.unique_id,
+                    'model': CameraFactory.get_camera_info(cam.unique_id)['model'],
+                    'frames_recorded': frames,
+                    'theoretical_framerate': cam.framerate,
+                    'actual_framerate': round(actual_fps, 3),
+                    'encoding': self._session_encoding_params[i]
+                }
 
-            cameras_data[cam.name] = cam_data_block
+                overrides = self._camera_setting_overrides.get(cam.name, {})
+                if overrides:
+                    cam_data_block['settings_overrides'] = overrides
 
-        curr_session['cameras'] = cameras_data
-        self.save_metadata()
+                cameras_data[cam.name] = cam_data_block
 
-        logger.info("Recording paused. Files saved.")
+            curr_session['cameras'] = cameras_data
+            self.save_metadata()
+
+            if corrections:
+                self._correction_threads = [t for t in self._correction_threads if t.is_alive()]
+                correction_thread = Thread(target=self._run_framerate_corrections, args=(corrections,))
+                correction_thread.start()
+                self._correction_threads.append(correction_thread)
+
+            self._set_process_priority(high=False)
+
+            logger.info("Recording paused. Files saved.")
 
     # ─────────────────────────────── Threading ───────────────────────────────
 
@@ -565,10 +594,13 @@ class CameraController:
                         except queue.Full:
                             logger.warning(f"Cam {cam.name}: Writer queue is full. Recording frame dropped.")
 
-            except (IOError, RuntimeError) as e:
+            except Exception as e:
                 if self._acquiring.is_set():
                     logger.error(f"Grabber thread for {cam.name} failed: {e}")
-                    time.sleep(1)
+
+                    # Timeouts are expected/frequent (e.g. missed trigger pulse)
+                    if not isinstance(e, TimeoutError):
+                        time.sleep(1)
 
         cam.stop_grabbing()
 
@@ -605,10 +637,7 @@ class CameraController:
                     continue  # skip to the next loop iteration to try again
 
                 except Exception as e:
-                    logger.error(f"Failed to create writer for {cam.name}: {e}")
-                    self._recording.clear()  # this is debatable, but prevents getting stuck in an error loop
-
-                    self._finished_saving_events[cam_idx].set()
+                    self._abort_recording(cam_idx, e)
                     continue
 
             # State B - Actively writing frames
@@ -620,31 +649,61 @@ class CameraController:
                 except Empty:
                     # this is less critical, just means a momentary lull in frames
                     continue
+                except Exception as e:
+                    # A failed write is usually fatal (disk full, dead FFmpeg pipe),
+                    # so the whole session should abort (but still finalising metadata like a normal stop)
+                    self._abort_recording(cam_idx, e)
+                    continue
 
             # State C - Recording has been paused/stopped
-            if not self._recording.is_set() and writer:
+            if not self._recording.is_set() and not self._finished_saving_events[cam_idx].is_set():
                 # The recording flag was turned off, so we need to finalize
                 # First drain any remaining frames from the queue
-                while not w_queue.empty():
-                    try:
-                        frame, frame_data = w_queue.get_nowait()
-                        writer.write(frame, frame_data)
-                    except Empty:
-                        break
+                if writer:
+                    while not w_queue.empty():
+                        try:
+                            frame, frame_data = w_queue.get_nowait()
+                            writer.write(frame, frame_data)
+                        except Empty:
+                            break
+                        except Exception as e:
+                            logger.error(f"Writer for {cam.name} failed while draining queue: {e}")
+                            break
 
-                # Now close the writer and report back its info
-                self._session_frame_counts[cam_idx] = writer.frame_count
-                self._session_encoding_params[cam_idx] = writer.encoding_params
-
-                writer.close()
-
-                self._writers[cam_idx] = None  # set writer to None to signal it's closed
-                self._finished_saving_events[cam_idx].set()
+                self._finalize_writer(cam_idx)
 
             # State D - Idle, not recording
             if not self._recording.is_set() and self._writers[cam_idx] is None:
-                # To prevent this thread from busy-waiting, we can sleep
+                # sleep to prevent this thread from busy-waiting
                 time.sleep(0.1)
+
+        # Safety: if acquisition stops with a writer still open, finalise it
+        self._finalize_writer(cam_idx)
+
+    def _abort_recording(self, cam_idx: int, error: Exception):
+        """
+        Called from a writer thread when writing fails irrecoverably (disk full, dead FFmpeg pipe etc). Finalises the write.
+        """
+        logger.error(f"Writer for {self.cameras[cam_idx].name} failed: {error}. Aborting recording session.")
+        self._finalize_writer(cam_idx)
+        self.stop_recording()
+
+    def _finalize_writer(self, cam_idx: int):
+        """Closes a camera's writer (if open), records its stats, and signals completion."""
+
+        writer = self._writers[cam_idx]
+        if writer is not None:
+            self._session_frame_counts[cam_idx] = writer.frame_count
+            self._session_encoding_params[cam_idx] = writer.encoding_params
+
+            try:
+                writer.close()
+            except Exception as e:
+                logger.error(f"Error closing writer for {self.cameras[cam_idx].name}: {e}")
+
+            self._writers[cam_idx] = None  # set writer to None to signal it's closed
+
+        self._finished_saving_events[cam_idx].set()
 
     def _create_writer(self, cam: AbstractCamera, session_idx: int) -> FrameWriter:
         """Factory method to instantiate the correct writer based on config."""
@@ -693,10 +752,16 @@ class CameraController:
                 **writer_params
             )
 
-    def _correct_video_framerate(self, filepath: Path, actual_fps: float):
+    def _run_framerate_corrections(self, corrections: List[Tuple[Path, float, float]]):
+        """Background worker that applies framerate corrections to a batch of recorded files."""
+
+        for video_path, nominal_fps, actual_fps in corrections:
+            self._correct_video_framerate(video_path, nominal_fps, actual_fps)
+
+    def _correct_video_framerate(self, filepath: Path, nominal_fps: float, actual_fps: float):
         """Corrects the framerate metadata in a video file without re-encoding."""
 
-        if not filepath.exists() or actual_fps <= 0:
+        if not filepath.exists() or actual_fps <= 0 or nominal_fps <= 0:
             return
 
         ffmpeg_path = shutil.which(self.config.get('ffmpeg', {}).get('path', 'ffmpeg'))
@@ -706,19 +771,20 @@ class CameraController:
         logger.info(f"Correcting framerate for {filepath.name} to {actual_fps:.3f} fps.")
         temp_filepath = filepath.with_suffix('.temp.mp4')
 
+        scale = nominal_fps / actual_fps
+
         command = [
-            ffmpeg_path,
+            ffmpeg_path, '-y',
+            '-itsscale', f'{scale:.6f}',
             '-i', str(filepath.resolve()),
             '-c', 'copy',
-            '-r', f'{actual_fps:.3f}',
             str(temp_filepath)
         ]
 
         try:
-            p = subprocess.run(command, check=True, capture_output=True, text=True)
-            if p.returncode == 0:
-                if not safe_replace(str(temp_filepath), str(filepath)):
-                    logger.error(f"Could not rename {temp_filepath}.")
+            subprocess.run(command, check=True, capture_output=True, text=True)
+            if not safe_replace(str(temp_filepath), str(filepath)):
+                logger.error(f"Could not rename {temp_filepath}.")
 
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             logger.error(f"FFmpeg failed to correct framerate for {filepath.name}: {e}")
@@ -754,10 +820,10 @@ class CameraController:
         frames, frames_datas = zip(*current_frames)
 
         # We only have one frame per camera, so we check if their IDs match
-        first_frame_id = frames_datas[0].get('frame_id')
+        first_frame_id = frames_datas[0].get('frame_number')
         is_synchronized = False
         if first_frame_id is not None:
-            if all(dat.get('frame_id') == first_frame_id for dat in frames_datas[1:]):
+            if all(dat.get('frame_number') == first_frame_id for dat in frames_datas[1:]):
                 is_synchronized = True
 
         # Save
@@ -796,7 +862,7 @@ class CameraController:
         if not name:
             name = datetime.now().strftime('%y%m%d-%H%M%S')
 
-        new_folder = general.exists_check(self._base_folder / name)
+        new_folder = exists_check(self._base_folder / name)
         new_folder.mkdir(parents=True, exist_ok=False)
         self._session_name = new_folder.name
 
