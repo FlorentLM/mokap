@@ -270,8 +270,15 @@ class CameraController:
 
         logger.debug("Discovering cameras...")
 
+        configured_sources = self.config.get('sources', {})
+        if not configured_sources:
+            logger.warning("No cameras defined in the 'sources' section of the config file.")
+            return
+
+        wants_webcams = any(str(c.get('vendor', '')).lower() == 'webcam' for c in configured_sources.values())
+
         # Get a list of all physically present devices from the factory
-        all_discovered_devices = CameraFactory.discover_cameras()
+        all_discovered_devices = CameraFactory.discover_cameras(include_webcams=wants_webcams)
 
         if not all_discovered_devices:
             logger.warning("No cameras found.")
@@ -281,12 +288,6 @@ class CameraController:
         device_lookup = {dev['serial']: dev for dev in all_discovered_devices}
 
         claimed_serials = set()
-
-        # Get the camera configurations from the config file
-        configured_sources = self.config.get('sources', {})
-        if not configured_sources:
-            logger.warning("No cameras defined in the 'sources' section of the config file.")
-            return
 
         # Define the list of global keys that can be applied to cameras
         valid_global_settings = [

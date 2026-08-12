@@ -51,7 +51,7 @@ class CameraFactory:
     _discovered_devices = []
 
     @staticmethod
-    def discover_cameras() -> List[Dict[str, str]]:
+    def discover_cameras(include_webcams: bool = True) -> List[Dict[str, str]]:
         """
         Scan for all connected cameras from supported vendors.
         Returns a list of dictionaries, each with info about a camera.
@@ -134,23 +134,25 @@ class CameraFactory:
                 logger.debug(f"FLIR discovery cleanup failed: {e}")
 
         # Discover webcams
-        try:
-            # We call the discover_webcams function which returns WebcamCamera instances
-            found_webcams = discover_webcams()
+        if include_webcams:
+            try:
+                # We call the discover_webcams function which returns WebcamCamera instances
+                found_webcams = discover_webcams()
 
-            for cam_instance in found_webcams:
-                CameraFactory._discovered_devices.append({
-                    'vendor': 'Webcam',
-                    'model': f'OpenCV Camera Index {cam_instance._index}',
-                    'serial': cam_instance.unique_id,
-                    'native_object': cam_instance._index  # Store the index needed for creation
-                })
-                # We don't need the instance itself anymore, just its info
-                del cam_instance
+                for cam_instance in found_webcams:
+                    CameraFactory._discovered_devices.append({
+                        'vendor': 'Webcam',
+                        'model': f'OpenCV Camera Index {cam_instance._index}',
+                        'serial': cam_instance.unique_id,
+                        'native_object': cam_instance._index  # Store the index needed for creation
+                    })
+                    # We don't need the instance itself anymore, just its info
+                    del cam_instance
 
-        except Exception as e:
-            logger.error(f"Error during Webcam discovery: {e}")
-            pass
+            except Exception as e:
+                logger.error(f"Error during Webcam discovery: {e}")
+        else:
+            logger.debug("Skipping webcam discovery (no 'webcam' vendor configured).")
 
         return CameraFactory._discovered_devices
 
