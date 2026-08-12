@@ -12,14 +12,13 @@ from pathlib import Path
 from queue import Queue, Empty
 from threading import Thread, Event, Lock
 from typing import List, Dict, Optional, Tuple, Any
+import cv2
 import numpy as np
 import psutil
-from PIL import Image
 from mokap.core.cameras import CameraFactory, AbstractCamera, CAMERAS_COLOURS
 from mokap.core.triggers import AbstractTrigger, CameraTrigger, RaspberryTrigger, ArduinoTrigger, FTDITrigger
-from mokap.core.writers import FrameWriter, ImageSequenceWriter, FFmpegWriter
+from mokap.core.writers import FrameWriter, ImageSequenceWriter, FFmpegWriter, prepare_frame
 from mokap.mokap_io import load_config
-from mokap.utils import general
 from mokap.utils.system import setup_ulimit, safe_replace, exists_check, rm_if_empty
 
 logger = logging.getLogger(__name__)
@@ -58,6 +57,8 @@ class CameraController:
         self._threads: List[Thread] = []
         self._correction_threads: List[Thread] = []
 
+        self._acquisition_start_ns: Optional[int] = None
+
         self._session_name = ""
         self.session_name = session_name  # use setter to initialize
 
@@ -89,6 +90,10 @@ class CameraController:
 
         self._session_frame_counts: List[int] = [0] * self.nb_cameras
         self._session_encoding_params: List[Dict] = [{} for _ in self.cameras]
+
+        # First/last recorded frame's metadata per camera this session
+        self._session_first_frame_meta: List[Optional[Dict]] = [None] * self.nb_cameras
+        self._session_last_frame_meta: List[Optional[Dict]] = [None] * self.nb_cameras
 
         self._finished_saving_events: List[Event] = [Event() for _ in self.cameras]
         for event in self._finished_saving_events:
@@ -398,13 +403,15 @@ class CameraController:
         self._acquiring.set()
         self._threads = []
 
+        self._acquisition_start_ns = time.monotonic_ns()
+
         if self.hardware_triggered:
             self._trigger_instance.start(self._framerate)
 
         for i, cam in enumerate(self.cameras):
-            # Start one grabber, one writer, and one display thread per camera
-            g = Thread(target=self._grabber_thread, args=(i,))
-            w = Thread(target=self._writer_thread, args=(i,))
+            # Start one grabber and one writer thread per camera
+            g = Thread(target=self._grabber_thread, args=(i,), daemon=True)
+            w = Thread(target=self._writer_thread, args=(i,), daemon=True)
             self._threads.extend([g, w])
             g.start()
             w.start()
@@ -412,13 +419,13 @@ class CameraController:
         logger.info(f"Acquisition started with {self.nb_cameras} cameras.")
 
     def stop_acquisition(self):
-        """Stops all background threads."""
+        """Stops all acquisition threads."""
 
         if not self._acquiring.is_set():
             return
 
         if self._recording.is_set():
-            self.stop_recording()  # Gracefully finish recording
+            self.stop_recording()  # returns immediately, finalisation continues in background
 
         self._acquiring.clear()
 
@@ -426,6 +433,12 @@ class CameraController:
 
         for thread in self._threads:
             thread.join(timeout=2.0)
+            if thread.is_alive():
+                logger.debug(f"Thread {thread.name} is still finishing in the background.")
+
+        pending_corrections = sum(1 for t in self._correction_threads if t.is_alive())
+        if pending_corrections:
+            logger.info(f"Framerate correction still running in the background.")
 
         # stop trigger if enabled
         if self.hardware_triggered:
@@ -453,8 +466,11 @@ class CameraController:
     def start_recording(self):
         """Begins a recording session, signaling the writer threads to save frames."""
 
-        with self._record_lock:
+        if not self._record_lock.acquire(blocking=False):
+            logger.warning("Cannot start recording: still finishing the previous session.")
+            return
 
+        try:
             if not self._acquiring.is_set():
                 logger.error("Cannot record, acquisition is not running.")
                 return
@@ -464,6 +480,8 @@ class CameraController:
                 return
 
             self._set_process_priority(high=True)
+
+            self.full_path.mkdir(parents=True, exist_ok=True)
 
             # Prepare metadata snapshot for this session
             keys_order = ['exposure', 'gain', 'gamma', 'black_level', 'pixel_format',
@@ -490,17 +508,22 @@ class CameraController:
 
             # Reset the frame counters for the new session
             self._session_frame_counts = [0] * self.nb_cameras
+            self._session_first_frame_meta = [None] * self.nb_cameras
+            self._session_last_frame_meta = [None] * self.nb_cameras
 
             # signal that writers can start
             self._recording.set()
 
             logger.info(f"Recording started. Saving to: {self.full_path}")
+        finally:
+            self._record_lock.release()
 
     def stop_recording(self):
-        """Pauses the current recording session, and finalises files."""
+        """Pauses the current recording session"""
 
-        with self._record_lock:
-
+        self._record_lock.acquire()
+        handed_off = False
+        try:
             if not self._recording.is_set():
                 return
 
@@ -519,10 +542,23 @@ class CameraController:
             curr_session['end_time'] = end_ts
             curr_session['duration'] = duration
 
+            finalize_thread = Thread(target=self._finalize_session, args=(curr_session, duration), daemon=True)
+            finalize_thread.start()
+            handed_off = True
+        finally:
+            if not handed_off:
+                self._record_lock.release()
+
+    def _finalize_session(self, curr_session: Dict[str, Any], duration: float):
+        """
+        Background worker for stop_recording(): waits for writers to close, builds
+        session metadata block, saves metadata.json, kicks off framerate corrections.
+        """
+        try:
             # Wait for all writer threads to confirm they have finished
             for event in self._finished_saving_events:
-                if not event.wait(timeout=5.0):
-                    logger.warning("A writer did not confirm completion within 5s. Metadata may be incomplete.")
+                if not event.wait(timeout=30.0):
+                    logger.warning("A writer did not confirm completion within 30s. Metadata may be incomplete.")
 
             cameras_data = {}
             corrections: List[Tuple[Path, float, float]] = []
@@ -530,26 +566,42 @@ class CameraController:
                 frames = self._session_frame_counts[i]
                 actual_fps = (frames / duration) if duration > 0 else 0.0
 
-                diff = abs(cam.framerate - actual_fps)
-
-                # Correct the video files framerates if needed
                 save_format = (self.config.get('sources', {})
                                .get(cam.name, {})
                                .get('save_format', self.config.get('save_format', 'mp4')))
 
-                if save_format == 'mp4' and frames > 0 and diff > 0.05:
+                if save_format == 'mp4' and frames > 0:
                     video_path = self.full_path / f"{self.session_name}_{cam.name}_session{curr_session['session_nb']}.mp4"
                     corrections.append((video_path, cam.framerate, actual_fps))
 
                 # Build the final data block for this camera
                 cam_data_block = {
                     'serial': cam.unique_id,
-                    'model': CameraFactory.get_camera_info(cam.unique_id)['model'],
+                    'model': cam.model,
                     'frames_recorded': frames,
                     'theoretical_framerate': cam.framerate,
                     'actual_framerate': round(actual_fps, 3),
                     'encoding': self._session_encoding_params[i]
                 }
+
+                # Cross-camera sync summary
+                first_meta = self._session_first_frame_meta[i] or {}
+                last_meta = self._session_last_frame_meta[i] or {}
+                first_sync, last_sync = first_meta.get('sync_index'), last_meta.get('sync_index')
+
+                sync_block = {
+                    'first_frame_number': first_meta.get('frame_number'),
+                    'last_frame_number': last_meta.get('frame_number'),
+                    'first_timestamp': first_meta.get('timestamp'),
+                    'last_timestamp': last_meta.get('timestamp'),
+                    'first_sync_index': first_sync,
+                    'last_sync_index': last_sync,
+                }
+                if first_sync is not None and last_sync is not None:
+                    # Expected frame count vs. what was actually recorded
+                    sync_block['estimated_dropped_frames'] = max(0, (last_sync - first_sync + 1) - frames)
+
+                cam_data_block['sync'] = sync_block
 
                 overrides = self._camera_setting_overrides.get(cam.name, {})
                 if overrides:
@@ -569,8 +621,21 @@ class CameraController:
             self._set_process_priority(high=False)
 
             logger.info("Recording paused. Files saved.")
+        finally:
+            self._record_lock.release()
 
     # ─────────────────────────────── Threading ───────────────────────────────
+
+    def _compute_sync_index(self) -> Optional[int]:
+        """
+        Computes a frame index that is comparable across cameras
+        """
+        if self._acquisition_start_ns is None or not self._framerate or self._framerate <= 0:
+            return None
+
+        period_ns = 1e9 / self._framerate
+        elapsed_ns = time.monotonic_ns() - self._acquisition_start_ns
+        return round(elapsed_ns / period_ns)
 
     def _grabber_thread(self, cam_idx: int):
         """Dedicated thread to continuously grab frames from a single camera."""
@@ -584,6 +649,8 @@ class CameraController:
             try:
                 frame, frame_data = cam.grab_frame(timeout_ms=2000)
                 if frame is not None:
+                    frame_data['sync_index'] = self._compute_sync_index()
+
                     # Update the shared buffer for any other thread to read
                     with lock:
                         self._latest_frames[cam_idx] = (frame, frame_data)
@@ -630,6 +697,7 @@ class CameraController:
                     logger.debug(f"Writer for {cam.name} created: {type(writer).__name__}")
 
                     writer.write(first_frame, first_frame_data)
+                    self._record_frame_meta(cam_idx, first_frame_data)
 
                 except Empty:
                     # If we timeout waiting for the first frame, it means the
@@ -647,6 +715,7 @@ class CameraController:
                 try:
                     frame, frame_data = w_queue.get(timeout=1.0)
                     writer.write(frame, frame_data)
+                    self._record_frame_meta(cam_idx, frame_data)
                 except Empty:
                     # this is less critical, just means a momentary lull in frames
                     continue
@@ -665,6 +734,7 @@ class CameraController:
                         try:
                             frame, frame_data = w_queue.get_nowait()
                             writer.write(frame, frame_data)
+                            self._record_frame_meta(cam_idx, frame_data)
                         except Empty:
                             break
                         except Exception as e:
@@ -688,6 +758,14 @@ class CameraController:
         logger.error(f"Writer for {self.cameras[cam_idx].name} failed: {error}. Aborting recording session.")
         self._finalize_writer(cam_idx)
         self.stop_recording()
+
+    def _record_frame_meta(self, cam_idx: int, frame_data: Dict[str, Any]):
+        """
+        Tracks first and last frame metadata written this session (per-camera frame_number/timestamp/sync_index)
+        """
+        if self._session_first_frame_meta[cam_idx] is None:
+            self._session_first_frame_meta[cam_idx] = frame_data
+        self._session_last_frame_meta[cam_idx] = frame_data
 
     def _finalize_writer(self, cam_idx: int):
         """Closes a camera's writer (if open), records its stats, and signals completion."""
@@ -754,22 +832,26 @@ class CameraController:
             )
 
     def _run_framerate_corrections(self, corrections: List[Tuple[Path, float, float]]):
-        """Background worker that applies framerate corrections to a batch of recorded files."""
+        """Background worker that remuxes a batch of recorded files to their true measured framerate."""
 
         for video_path, nominal_fps, actual_fps in corrections:
             self._correct_video_framerate(video_path, nominal_fps, actual_fps)
 
     def _correct_video_framerate(self, filepath: Path, nominal_fps: float, actual_fps: float):
-        """Corrects the framerate metadata in a video file without re-encoding."""
+        """
+        Remuxes a video file to the true measured framerate
+        """
 
         if not filepath.exists() or actual_fps <= 0 or nominal_fps <= 0:
             return
 
         ffmpeg_path = shutil.which(self.config.get('ffmpeg', {}).get('path', 'ffmpeg'))
         if not ffmpeg_path or not os.access(ffmpeg_path, os.X_OK):
+            logger.warning(f"Could not find FFmpeg to remux {filepath.name}; leaving file as-is.")
             return
 
-        logger.info(f"Correcting framerate for {filepath.name} to {actual_fps:.3f} fps.")
+        logger.info(f"Remuxing {filepath.name} and correcting framerate to {actual_fps:.3f} fps.")
+
         temp_filepath = filepath.with_suffix('.temp.mp4')
 
         scale = nominal_fps / actual_fps
@@ -788,7 +870,7 @@ class CameraController:
                 logger.error(f"Could not rename {temp_filepath}.")
 
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            logger.error(f"FFmpeg failed to correct framerate for {filepath.name}: {e}")
+            logger.error(f"FFmpeg failed to remux {filepath.name}: {e}")
 
             if isinstance(e, subprocess.CalledProcessError):
                 logger.error(f"FFmpeg stderr:\n{e.stderr}")
@@ -821,10 +903,10 @@ class CameraController:
         frames, frames_datas = zip(*current_frames)
 
         # We only have one frame per camera, so we check if their IDs match
-        first_frame_id = frames_datas[0].get('frame_number')
+        first_frame_id = frames_datas[0].get('sync_index')
         is_synchronized = False
         if first_frame_id is not None:
-            if all(dat.get('frame_number') == first_frame_id for dat in frames_datas[1:]):
+            if all(dat.get('sync_index') == first_frame_id for dat in frames_datas[1:]):
                 is_synchronized = True
 
         # Save
@@ -838,7 +920,11 @@ class CameraController:
         now = datetime.now().strftime('%y%m%d-%H%M%S')
         for i, cam in enumerate(self.cameras):
             try:
-                Image.fromarray(frames[i]).save(self.full_path / f"snapshot_{now}_{cam.name}.png")
+                img_to_save = prepare_frame(frames[i], cam.pixel_format)
+                snapshot_path = self.full_path / f"snapshot_{now}_{cam.name}.png"
+
+                if not cv2.imwrite(str(snapshot_path.resolve()), img_to_save):
+                    raise IOError("cv2.imwrite() failed, check file path and permissions.")
 
             except Exception as e:
                 logger.error(f"Could not save snapshot for camera {cam.name}: {e}")
@@ -864,7 +950,6 @@ class CameraController:
             name = datetime.now().strftime('%y%m%d-%H%M%S')
 
         new_folder = exists_check(self._base_folder / name)
-        new_folder.mkdir(parents=True, exist_ok=False)
         self._session_name = new_folder.name
 
     @property

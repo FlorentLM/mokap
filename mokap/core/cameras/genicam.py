@@ -34,6 +34,8 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         self._gamma: Optional[float] = None
         self._roi: Optional[Tuple[int, int, int, int]] = None
 
+        self._framerate_range_cache: Optional[Tuple[float, float]] = None
+
     def _try_set_feature(self, feature_names: Any, value: Any, required: bool = False) -> Any:
         """Attempt to set a feature. If required=False, warn instead of raising."""
         if isinstance(feature_names, str):
@@ -237,10 +239,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
 
     @gamma.setter
     def gamma(self, value: float):
-        try:  # some cameras apparently require GammaEnable
-            self._try_set_feature('GammaEnable', True)
-        except AttributeError:
-            pass
+        self._try_set_feature('GammaEnable', True)  # some cameras apparently require this first
         self._gamma = self._try_set_feature('Gamma', value)
 
     @property
@@ -254,6 +253,8 @@ class GenICamCamera(AbstractCamera, abc.ABC):
 
     @binning.setter
     def binning(self, value: int):
+        self._framerate_range_cache = None  # binning affects readout time, invalidate the cache
+
         was_grabbing = self.is_grabbing
         if was_grabbing:
             self.stop_grabbing()
@@ -323,19 +324,17 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         self._framerate = value
 
         if not self.hardware_triggered:
-            try:
-                # enable framerate control
-                self._try_set_feature('AcquisitionFrameRateEnable', True)
+            # enable framerate control
+            self._try_set_feature('AcquisitionFrameRateEnable', True)
 
-                # set the target framerate. The setter will clamp it
-                actual_value_set = self._try_set_feature('AcquisitionFrameRate', value)
+            # set the target framerate. The setter will clamp it
+            actual_value_set = self._try_set_feature('AcquisitionFrameRate', value)
 
+            if actual_value_set is not None:
                 # update the cached value with what was actually set
                 self._framerate = actual_value_set
                 logger.debug(f"[{self.name}] Set framerate to {self._framerate} fps.")
-
-            except AttributeError:
-
+            else:
                 # Fallback for cameras that might not support explicit framerate control
                 logger.warning(f"Camera {self.name} does not support explicit framerate control.")
 
@@ -352,6 +351,10 @@ class GenICamCamera(AbstractCamera, abc.ABC):
 
     @property
     def framerate_range(self) -> Tuple[float, float]:
+
+        if self._framerate_range_cache is not None:
+            return self._framerate_range_cache
+
         try:
             min_fps = self._get_feature_min_value('AcquisitionFrameRate')
             # Disabling manual control allows to query the current maximum *possible* framerate
@@ -362,10 +365,11 @@ class GenICamCamera(AbstractCamera, abc.ABC):
             if not self.hardware_triggered:
                 self._try_set_feature('AcquisitionFrameRateEnable', True)
 
-            return float(min_fps), float(max_fps)
+            self._framerate_range_cache = (float(min_fps), float(max_fps))
+            return self._framerate_range_cache
 
         except AttributeError:
-            # fallback if the feature isn't available
+            # fallback if the feature isn't available (not cached, so retry in case it was transient)
             logger.warning(f"Could not determine settable framerate range for {self.unique_id}.")
             return 0.5, 500.0
 
@@ -377,6 +381,8 @@ class GenICamCamera(AbstractCamera, abc.ABC):
 
     @roi.setter
     def roi(self, value: Sequence[int]):
+        self._framerate_range_cache = None  # ROI affects readout time, invalidate cache
+
         was_grabbing = self.is_grabbing
 
         try:
@@ -384,12 +390,10 @@ class GenICamCamera(AbstractCamera, abc.ABC):
                 # Standard ROI: (offset_x, offset_y, width, height)
                 off_x, off_y, width, height = value
 
-                # Disable auto-centering if it exists to ensure manual offsets are applied correctly
-                try:
-                    self._try_set_feature('CenterX', False)
-                    self._try_set_feature('CenterY', False)
-                except AttributeError:
-                    pass  # Features don't exist, which is fine
+                # Disable auto-centering if it exists, to ensure manual offsets are applied correctly
+                # (no-op if the features don't exist)
+                self._try_set_feature('CenterX', False)
+                self._try_set_feature('CenterY', False)
 
                 # Set size first, then offset
                 self._try_set_feature('Width', width)
@@ -401,30 +405,28 @@ class GenICamCamera(AbstractCamera, abc.ABC):
                 # Centered ROI: (width, height)
                 width, height = value
 
-                # try to use the camera's built-in centering feature
-                try:
-                    # Set size first, then enable centering
-                    self._try_set_feature('Width', width)
-                    self._try_set_feature('Height', height)
-                    self._try_set_feature('CenterX', True)
-                    self._try_set_feature('CenterY', True)
+                # Set size first, and get the actual values that were set (they might be clamped)
+                actual_width = self._try_set_feature('Width', width)
+                actual_height = self._try_set_feature('Height', height)
+
+                # Try camera's built-in centering feature
+                center_x = self._try_set_feature('CenterX', True)
+                center_y = self._try_set_feature('CenterY', True)
+
+                if center_x is not None and center_y is not None:
                     logger.debug(f"Used camera's built-in centering for ROI ({width}x{height}) on {self.name}.")
-
-                except AttributeError:
-                    # if camera does not support CenterX/Y, calculate and set offset manually
-                    logger.debug(f"Camera {self.name} lacks CenterX/Y support. Calculating centered ROI manually.")
-
-                    # Set size first, and get the actual values that were set (they might be clamped)
-                    actual_width = self._try_set_feature('Width', width)
-                    actual_height = self._try_set_feature('Height', height)
+                else:
+                    # Camera doesn't support CenterX/Y (or Width/Height itself), calculate the offsets
+                    logger.debug(f"Camera {self.name} lacks CenterX/Y support. Calculating centered ROI.")
 
                     # Get max dimensions for offset calculation (respects current binning, etc)
                     max_w = self._get_feature_max_value('Width')
                     max_h = self._get_feature_max_value('Height')
 
-                    # Calculate centered offsets based on actual width/height
-                    off_x = (max_w - actual_width) // 2
-                    off_y = (max_h - actual_height) // 2
+                    # Calculate centered offsets based on actual width/height (fallback to the
+                    # requested size if even Width/Height itself wasn't settable)
+                    off_x = (max_w - (actual_width if actual_width is not None else width)) // 2
+                    off_y = (max_h - (actual_height if actual_height is not None else height)) // 2
 
                     # The SDK should handle rounding to the nearest valid increment
                     self._try_set_feature('OffsetX', off_x)
@@ -449,6 +451,8 @@ class GenICamCamera(AbstractCamera, abc.ABC):
 
     @pixel_format.setter
     def pixel_format(self, value: str):
+        self._framerate_range_cache = None  # bit depth affects readout time, invalidate cache
+
         was_grabbing = self.is_grabbing
         if was_grabbing:
             self.stop_grabbing()
@@ -470,6 +474,8 @@ class GenICamCamera(AbstractCamera, abc.ABC):
 
     @hardware_triggered.setter
     def hardware_triggered(self, enabled: bool):
+        self._framerate_range_cache = None  # trigger mode affects the achievable range, invalidate cache
+
         if enabled:
             # apparently some SDKs use integers, others use strings so we do a bit of voodoo here
             trigger_source = f"Line{''.join([char for char in str(self._trigger_line) if char.isdigit()])}"
@@ -477,16 +483,10 @@ class GenICamCamera(AbstractCamera, abc.ABC):
             self._try_set_feature('TriggerSelector', 'FrameStart')
             self._try_set_feature('TriggerMode', 'On')
             self._try_set_feature('TriggerSource', trigger_source)
-            try:
-                self._try_set_feature('AcquisitionFrameRateEnable', False)
-            except AttributeError:
-                pass
+            self._try_set_feature('AcquisitionFrameRateEnable', False)
         else:
             self._try_set_feature('TriggerMode', 'Off')
-            try:
-                self._try_set_feature('AcquisitionFrameRateEnable', True)
-            except AttributeError:
-                pass
+            self._try_set_feature('AcquisitionFrameRateEnable', True)
         self._hardware_triggered = enabled
         self.framerate = self._framerate
 

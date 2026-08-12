@@ -18,6 +18,48 @@ logger = logging.getLogger(__name__)
 DEBUG = False
 
 
+def prepare_frame(frame: np.ndarray, pixel_format: str, supports_16bit: bool = True) -> np.ndarray:
+    """
+    Converts a camera frame (Bayer/RGB/RGBA/high-bitdepth Mono) into a BGR (or mono) array for cv2.imwrite
+    """
+
+    # High bit-depth monochrome
+    if pixel_format in ('Mono10', 'Mono12', 'Mono16'):
+        if supports_16bit:
+            # Preserve bit depth for PNG/TIFF
+            # Scale up to 16bit range
+            if pixel_format == 'Mono10':
+                return frame.astype(np.uint16) << 6
+
+            if pixel_format == 'Mono12':
+                return frame.astype(np.uint16) << 4
+
+            return frame  # Mono16 is already uint16
+        else:
+            # Convert to 8 bit for JPG/BMP etc
+            # (this is lossy)
+            shift = {'Mono10': 2, 'Mono12': 4, 'Mono16': 8}[pixel_format]
+            return (frame >> shift).astype(np.uint8)
+
+    # Bayer pattern to BGR
+    bayer_map = {
+        'BayerRG8': cv2.COLOR_BAYER_RG2BGR, 'BayerGR8': cv2.COLOR_BAYER_GR2BGR,
+        'BayerGB8': cv2.COLOR_BAYER_GB2BGR, 'BayerBG8': cv2.COLOR_BAYER_BG2BGR,
+    }
+    if pixel_format in bayer_map:
+        return cv2.cvtColor(frame, bayer_map[pixel_format])
+
+    # Standard colour conversions
+    if pixel_format == 'RGB8':
+        return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+    if pixel_format == 'RGBA8':
+        return cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+
+    # 8 bit mono or already BGR, return as is
+    return frame
+
+
 class FrameWriter(ABC):
     """
     Abstract base class for writing frames to disk.
@@ -132,52 +174,12 @@ class ImageSequenceWriter(FrameWriter):
         # Ensure output directory exists
         self.filepath.mkdir(parents=True, exist_ok=True)
 
-    def _prepare_frame(self, frame: np.ndarray) -> np.ndarray:
-        """Converts the input frame to a format savable by cv2.imwrite."""
-
-        # High bit-depth monochrome
-        if self.pixel_format in ('Mono10', 'Mono12', 'Mono16'):
-            if self._supports_16bit:
-                # Preserve bit depth for PNG/TIFF
-                # Scale up to full 16-bit range
-                if self.pixel_format == 'Mono10':
-                    return frame.astype(np.uint16) << 6
-
-                if self.pixel_format == 'Mono12':
-                    return frame.astype(np.uint16) << 4
-
-                return frame  # Mono16 is already uint16
-            else:
-                # Convert to 8-bit for JPG/BMP etc
-                # (this is a lossy conversion)
-                shift = {'Mono10': 2, 'Mono12': 4, 'Mono16': 8}[self.pixel_format]
-                return (frame >> shift).astype(np.uint8)
-
-        # Bayer pattern to BGR Conversion
-        bayer_map = {
-            'BayerRG8': cv2.COLOR_BAYER_RG2BGR, 'BayerGR8': cv2.COLOR_BAYER_GR2BGR,
-            'BayerGB8': cv2.COLOR_BAYER_GB2BGR, 'BayerBG8': cv2.COLOR_BAYER_BG2BGR,
-        }
-        if self.pixel_format in bayer_map:
-            return cv2.cvtColor(frame, bayer_map[self.pixel_format])
-
-        # Standard color format conversions
-        if self.pixel_format == 'RGB8':
-            return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-
-        if self.pixel_format == 'RGBA8':
-            return cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
-
-        # 8-bit Mono or already BGR
-        # if it's Mono8, BGR8, or unknown, return as is
-        return frame
-
     def _write_frame(self, frame: np.ndarray, frame_data: Dict[str, Any]):
 
         image_path = self.filepath / f"{str(self.frame_count).zfill(9)}.{self.ext}"
 
         try:
-            img_to_write = self._prepare_frame(frame)
+            img_to_write = prepare_frame(frame, self.pixel_format, self._supports_16bit)
 
             success = cv2.imwrite(str(image_path.resolve()), img_to_write, self._imwrite_params)
             if not success:
