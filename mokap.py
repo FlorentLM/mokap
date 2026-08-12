@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import sys
+from pathlib import Path
 from mokap.gui import QApplication, MainControls, QMessageBox
 from mokap.core.controller import CameraController
 from mokap.mokap_io import load_config
@@ -8,13 +9,14 @@ from mokap.mokap_io import load_config
 def main():
     """ Main entry point for the Mokap GUI """
 
-    try:
-        config = load_config('./config.yaml')
-    except FileNotFoundError:
+    app = QApplication(sys.argv)
+
+    config_path = Path('./config.yaml')
+    if not config_path.exists() and not config_path.with_suffix('.yml').exists():
         QMessageBox.critical(None, "Error", "Configuration file 'config.yaml' not found. Please create one.")
         sys.exit(1)
 
-    app = QApplication(sys.argv)
+    config = load_config(config_path)
 
     cc = CameraController(config=config)
 
