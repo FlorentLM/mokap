@@ -203,16 +203,22 @@ def get_size(path: Union[Path, str]) -> int:
     if os.path.isfile(path):
         return os.stat(path).st_size    # single file: one stat call
 
+    if not os.path.exists(path):
+        return 0
+
     # directory: recursive call
     total = 0
-    with os.scandir(path) as it:
-        for entry in it:
-            try:
-                if entry.is_dir(follow_symlinks=False):
-                    total += get_size(entry.path)
-                else:
-                    # DirEntry.stat() is cached, no extra syscall if already fetched
-                    total += entry.stat(follow_symlinks=False).st_size
-            except:
-                pass
+    try:
+        with os.scandir(path) as it:
+            for entry in it:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        total += get_size(entry.path)
+                    else:
+                        # DirEntry.stat() is cached, no extra syscall if already fetched
+                        total += entry.stat(follow_symlinks=False).st_size
+                except:
+                    pass
+    except FileNotFoundError:
+        return 0
     return total

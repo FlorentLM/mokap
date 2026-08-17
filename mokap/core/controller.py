@@ -101,7 +101,7 @@ class CameraController:
 
         self._metadata = {'sessions': []}
 
-    # ─────────────────────────────── Camera property pass-through ───────────────────────────────
+    # Camera property pass-through
 
     def __getattr__(self, name: str) -> Any:
         """
@@ -171,7 +171,7 @@ class CameraController:
             return (max(mins), min(maxes))
         return None
 
-    # ─────────────────────────────── Framerate (special case) ───────────────────────────────
+    # Framerate (special case)
 
     @property
     def framerate(self) -> Optional[float]:
@@ -213,7 +213,7 @@ class CameraController:
         """Returns the actual measured framerate for all cameras."""
         return tuple(round(cam.measured_framerate, 2) for cam in self.cameras)
 
-    # ─────────────────────────────── Trigger setup ───────────────────────────────
+    # Trigger setup
 
     def _initialize_trigger(self):
 
@@ -268,7 +268,7 @@ class CameraController:
             logger.warning('No valid hardware trigger found. Forcing all cameras to software trigger mode.')
             self.hardware_triggered = False
 
-    # ─────────────────────────────── Camera connection ───────────────────────────────
+    # Camera connection
 
     def connect_cameras(self):
         """Discovers and connects to all available cameras using the camera factory."""
@@ -387,7 +387,7 @@ class CameraController:
 
         logger.info("All cameras disconnected.")
 
-    # ─────────────────────────────── Acquisition control ───────────────────────────────
+    # Acquisition control
 
     def start_acquisition(self):
         """Starts all background threads for grabbing and displaying frames."""
@@ -449,7 +449,7 @@ class CameraController:
 
         logger.info("Acquisition stopped.")
 
-    # ─────────────────────────────── Recording control ───────────────────────────────
+    # Recording control
 
     @staticmethod
     def _set_process_priority(high: bool):
@@ -464,7 +464,7 @@ class CameraController:
             logger.debug(f"Could not change process priority: {e}")
 
     def start_recording(self):
-        """Begins a recording session, signaling the writer threads to save frames."""
+        """Begins a recording session, signalling the writer threads to save frames."""
 
         if not self._record_lock.acquire(blocking=False):
             logger.warning("Cannot start recording: still finishing the previous session.")
@@ -624,7 +624,7 @@ class CameraController:
         finally:
             self._record_lock.release()
 
-    # ─────────────────────────────── Threading ───────────────────────────────
+    # Threading
 
     def _compute_sync_index(self) -> Optional[int]:
         """
@@ -935,7 +935,7 @@ class CameraController:
 
         return success
 
-    # ─────────────────────────────── Session and metadata ───────────────────────────────
+    # Session and metadata
 
     @property
     def session_name(self) -> str:
@@ -958,11 +958,12 @@ class CameraController:
 
     def save_metadata(self):
         """Saves the current session metadata to a JSON file."""
+        self.full_path.mkdir(parents=True, exist_ok=True)
         meta_path = self.full_path / 'metadata.json'
         with open(meta_path, 'w', encoding='utf-8') as f:
             json.dump(self._metadata, f, ensure_ascii=False, indent=4)
 
-    # ─────────────────────────────── Properties ───────────────────────────────
+    # Properties
 
     @property
     def nb_cameras(self) -> int:
@@ -997,7 +998,7 @@ class CameraController:
         """Alias for camera_colours."""
         return self.camera_colours
 
-    # ─────────────────────────────── Context manager ───────────────────────────────
+    # Context manager
 
     def __enter__(self):
         """Context manager entry: starts acquisition."""

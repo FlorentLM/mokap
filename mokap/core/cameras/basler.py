@@ -20,7 +20,7 @@ class BaslerCamera(GenICamCamera):
         self._ptr: Optional[pylon.InstantCamera] = None
         super().__init__(unique_id=pylon_device_info.GetSerialNumber())
 
-    # ────── Hooks ──────
+    # Hooks
 
     def _pre_apply_configuration(self, settings: Dict[str, Any]):
         """Basler-specific hook."""
@@ -36,7 +36,11 @@ class BaslerCamera(GenICamCamera):
         except Exception:
             pass
 
-    # ────── GenICam abstract contract (Basler-specific implementation) ──────
+        self._try_set_feature('ExposureMode', 'Timed')
+        self._try_set_feature('TriggerDelay', 0.0)
+        self._try_set_feature('LineDebouncerTime', 5.0)     # small debounce so trigger pulses aren't dropped as line noise
+
+    # GenICam abstract contract (Basler-specific implementation)
 
     def _get_node_map(self):
 
@@ -116,7 +120,7 @@ class BaslerCamera(GenICamCamera):
         except geni.GenericException as e:
             raise AttributeError(f"Failed to get entries for feature '{name}': {e}") from e
 
-    # ────── Core methods ──────
+    # Core methods
 
     def connect(self, config: Optional[Dict[str, Any]] = None) -> None:
         if self.is_connected:
@@ -162,7 +166,18 @@ class BaslerCamera(GenICamCamera):
             if grab_result and grab_result.GrabSucceeded():
                 ts = grab_result.TimeStamp
                 self._timestamp_buffer.append(ts)
-                return grab_result.Array, {'frame_number': grab_result.ImageNumber, 'timestamp': ts}
+
+                try:
+                    # pylon's Array creates a copy by default, so it is safe
+                    frame = grab_result.Array
+                except ValueError:
+                    # Some pylon builds don't expose Bayer/Mono raw formats through Array...
+                    width, height = grab_result.GetWidth(), grab_result.GetHeight()
+                    padding_x = grab_result.GetPaddingX() if hasattr(grab_result, 'GetPaddingX') else 0
+                    raw = np.frombuffer(grab_result.GetBuffer(), dtype=np.uint8)
+                    frame = raw.reshape((height, width + padding_x))[:, :width].copy()
+
+                return frame, {'frame_number': grab_result.ImageNumber, 'timestamp': ts}
             else:
                 # if grab failed but did not raise an exception, raise one
                 desc = grab_result.GetErrorDescription() if grab_result else "Unknown"

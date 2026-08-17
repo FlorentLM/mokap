@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from mokap.core.cameras.basler import BaslerCamera
     from mokap.core.cameras.flir import FLIRCamera
+    from mokap.core.cameras.ic4imaging import IC4ImagingCamera
 
 
 def discover_webcams(max_to_check: int = 10):
@@ -133,6 +134,30 @@ class CameraFactory:
             except Exception as e:
                 logger.debug(f"FLIR discovery cleanup failed: {e}")
 
+        # Discover IC4 cameras
+        try:
+            import imagingcontrol4 as ic4
+
+            try:
+                ic4.Library.init()
+            except Exception as e:
+                if 'already called' not in str(e).lower():
+                    raise
+
+            for device_info in ic4.DeviceEnum.devices():
+                CameraFactory._discovered_devices.append({
+                    'vendor': 'ICImaging',
+                    'model': device_info.model_name,
+                    'serial': device_info.serial,
+                    'native_object': device_info  # SDK-specific object
+                })
+
+        except ImportError:
+            logger.debug('IC Imaging Control 4 SDK not found. Skipping IC Imaging camera discovery.')
+
+        except Exception as e:
+            logger.error(f'Error during IC Imaging discovery: {e}')
+
         # Discover webcams
         if include_webcams:
             try:
@@ -249,6 +274,24 @@ class CameraFactory:
 
                 if system:
                     system.ReleaseInstance()
+                return None
+
+        elif vendor == 'icimaging':
+            try:
+                from mokap.core.cameras.ic4imaging import IC4ImagingCamera
+
+                native_obj = device_info.get('native_object')
+                if native_obj is None:
+                    logger.error("IC Imaging device info is missing the DeviceInfo object.")
+                    return None
+                return IC4ImagingCamera(native_obj)
+
+            except ImportError:
+                logger.error("Cannot create IC Imaging camera. Is the imagingcontrol4 SDK installed?")
+                return None
+
+            except Exception as e:
+                logger.error(f"Error creating IC Imaging camera instance: {e}")
                 return None
 
         elif vendor == 'webcam':

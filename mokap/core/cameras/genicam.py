@@ -119,7 +119,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         # Allow subclasses to run post-configuration hooks if needed
         self._post_apply_configuration(settings)
 
-    # ────── Hooks ──────
+    # Hooks
 
     def _pre_apply_configuration(self, settings: Dict[str, Any]):
         """A hook for subclasses to run code before the main configuration is applied."""
@@ -142,7 +142,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
             logger.error(f"Could not retrieve range for '{name}': {e}")
             return 0.0, 0.0
 
-    # ────── GenICam abstract contract (overridden by vendor implementations) ──────
+    # GenICam abstract contract (overridden by vendor implementations)
 
     @abc.abstractmethod
     def _get_node_map(self) -> Any:
@@ -174,7 +174,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         """Vendor-specific implementation to get all enum entries for a feature."""
         pass
 
-    # ────── Core camera control properties ──────
+    # Core camera control properties
 
     @property
     def exposure(self) -> float:
@@ -373,7 +373,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
             logger.warning(f"Could not determine settable framerate range for {self.unique_id}.")
             return 0.5, 500.0
 
-    # ────── Image format and ROI properties ──────
+    # Image format and ROI properties
 
     @property
     def roi(self) -> Tuple[int, int, int, int]:
@@ -466,7 +466,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
     def available_pixel_formats(self) -> List[str]:
         return self._get_feature_entries('PixelFormat')
 
-    # ────── Triggering and synchronization ──────
+    # Triggering and synchronization
 
     @property
     def hardware_triggered(self) -> bool:
@@ -480,9 +480,13 @@ class GenICamCamera(AbstractCamera, abc.ABC):
             # apparently some SDKs use integers, others use strings so we do a bit of voodoo here
             trigger_source = f"Line{''.join([char for char in str(self._trigger_line) if char.isdigit()])}"
 
+            self._try_set_feature('LineSelector', trigger_source)
+            self._try_set_feature('LineMode', 'Input')
+
             self._try_set_feature('TriggerSelector', 'FrameStart')
             self._try_set_feature('TriggerMode', 'On')
             self._try_set_feature('TriggerSource', trigger_source)
+            self._try_set_feature('TriggerActivation', 'RisingEdge')
             self._try_set_feature('AcquisitionFrameRateEnable', False)
         else:
             self._try_set_feature('TriggerMode', 'Off')
@@ -490,7 +494,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         self._hardware_triggered = enabled
         self.framerate = self._framerate
 
-    # ────── Sensor information (ro) ──────
+    # Sensor information (ro)
 
     @property
     def resolution(self) -> Tuple[int, int]:
@@ -510,7 +514,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
         # Similar to sensor_size, PixelSize is not strictly standard in the main namespace.
         return None
 
-    # ────── Other (ro) information properties ──────
+    # Other (ro) information properties
 
     @property
     def model(self) -> str:
