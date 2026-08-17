@@ -88,7 +88,7 @@ class WebcamCamera(AbstractCamera):
         val = self._get_cv2_property(prop_id)
         return val != -1.0
 
-    # ────── Core methods ──────
+    # Core methods
 
     def connect(self, config: Optional[Dict[str, Any]] = None) -> None:
         if self.is_connected:
@@ -149,7 +149,7 @@ class WebcamCamera(AbstractCamera):
         }
         return frame, metadata
 
-    # ────── Properties ──────
+    # Properties
 
     @property
     def exposure(self) -> float:
@@ -216,7 +216,7 @@ class WebcamCamera(AbstractCamera):
             return 0.0, 0.0
         return _FALLBACK_RANGES['gamma']
 
-    # ────── Industrial Features (Explicitly Unsupported) ──────
+    # Industrial Features (Explicitly Unsupported)
 
     @property
     def binning(self) -> int:
@@ -302,7 +302,7 @@ class WebcamCamera(AbstractCamera):
     def available_pixel_formats(self) -> List[str]:
         return ['BGR8']
 
-    # ────── Read-Only Info ──────
+    # Read-Only Info
 
     @property
     def resolution(self) -> Tuple[int, int]:
@@ -318,7 +318,7 @@ class WebcamCamera(AbstractCamera):
     def pixel_pitch(self) -> Optional[float]:
         return None
 
-    # ────── Other (ro) information properties ──────
+    # Other (ro) information properties
 
     @property
     def model(self) -> str:

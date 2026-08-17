@@ -35,7 +35,7 @@ class FLIRCamera(GenICamCamera):
 
         super().__init__(unique_id=unique_id)
 
-    # ────── Hooks ──────
+    # Hooks
 
     def _pre_apply_configuration(self, settings: Dict[str, Any]):
         """FLIR-specific hook."""
@@ -50,7 +50,7 @@ class FLIRCamera(GenICamCamera):
 
         super()._pre_apply_configuration(settings)  # call parent class's hook
 
-    # ────── GenICam abstract contract (FLIR-specific implementation) ──────
+    # GenICam abstract contract (FLIR-specific implementation)
 
     def _get_node_map(self):
 
@@ -184,7 +184,7 @@ class FLIRCamera(GenICamCamera):
         except PySpin.SpinnakerException as e:
             raise AttributeError(f"Failed to get entries for feature '{name}': {e}") from e
 
-    # ────── Core methods ──────
+    # Core methods
 
     def connect(self, config: Optional[Dict[str, Any]] = None) -> None:
 

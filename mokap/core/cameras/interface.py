@@ -43,7 +43,7 @@ class AbstractCamera(abc.ABC):
     def is_grabbing(self) -> bool:
         return self._is_grabbing
 
-    # ────── Core methods ──────
+    # Core methods
 
     @abc.abstractmethod
     def connect(self, config: Optional[Dict[str, Any]] = None) -> None:
@@ -76,7 +76,7 @@ class AbstractCamera(abc.ABC):
         """
         pass
 
-    # ────── Core camera control properties ──────
+    # Core camera control properties
 
     @property
     @abc.abstractmethod
@@ -212,7 +212,7 @@ class AbstractCamera(abc.ABC):
 
         return 1e9 / avg_diff_ns
 
-    # ────── Image format and ROI properties ──────
+    # Image format and ROI properties
 
     @property
     @abc.abstractmethod
@@ -254,7 +254,7 @@ class AbstractCamera(abc.ABC):
         """Returns a list of available pixel format strings."""
         pass
 
-    # ────── Triggering and synchronization ──────
+    # Triggering and synchronization
 
     @property
     @abc.abstractmethod
@@ -267,7 +267,7 @@ class AbstractCamera(abc.ABC):
     def hardware_triggered(self, enabled: bool):
         pass
 
-    # ────── Sensor information (ro) ──────
+    # Sensor information (ro)
 
     @property
     @abc.abstractmethod
@@ -287,7 +287,7 @@ class AbstractCamera(abc.ABC):
         """Pixel pitch in micrometers (μm). Can be derived from sensor_size/sensor_resolution."""
         pass
 
-    # ────── Other (ro) information properties ──────
+    # Other (ro) information properties
 
     @property
     @abc.abstractmethod
