@@ -548,18 +548,44 @@ class FFmpegWriter(FrameWriter):
             # Process might already be dead, which is fine
             pass
 
-        # Wait for FFmpeg to finish writing the file
-        try:
-            self.proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            logger.warning(f"FFmpeg process for {self.cam_name} timed out during close. Forcing termination.")
+        # Wait for FFmpeg to finish writing the file. The remaining backlog can be large
+        # so a fixed deadline would kill a healthy encode, so keep waiting as long as the output file keeps growing
+        stall_timeout = 10.0
+        hard_cap = 300.0
+        poll_interval = 0.5
+
+        start = time.monotonic()
+        last_size = -1
+        last_progress = start
+
+        while True:
             try:
-                self.proc.terminate()
-                self.proc.wait(timeout=5)
+                self.proc.wait(timeout=poll_interval)
+                break  # exited cleanly
             except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait()
-            except Exception:
                 pass
+
+            now = time.monotonic()
+            try:
+                current_size = os.path.getsize(self.filepath)
+            except OSError:
+                current_size = -1
+
+            if current_size != last_size:
+                last_size = current_size
+                last_progress = now
+
+            if now - last_progress > stall_timeout or now - start > hard_cap:
+                logger.warning(f"FFmpeg process for {self.cam_name} stopped making progress during close."
+                               f" Forcing termination.")
+                try:
+                    self.proc.terminate()
+                    self.proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.proc.kill()
+                    self.proc.wait()
+                except Exception:
+                    pass
+                break
 
         self.proc = None

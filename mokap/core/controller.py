@@ -557,8 +557,13 @@ class CameraController:
         try:
             # Wait for all writer threads to confirm they have finished
             for event in self._finished_saving_events:
-                if not event.wait(timeout=30.0):
-                    logger.warning("A writer did not confirm completion within 30s. Metadata may be incomplete.")
+                waited = 0.0
+                while not event.wait(timeout=15.0):
+                    waited += 15.0
+                    if waited >= 300.0:
+                        logger.warning("A writer did not confirm completion within 300s. Metadata may be incomplete.")
+                        break
+                    logger.info("Still waiting for a writer to finish closing its file...")
 
             cameras_data = {}
             corrections: List[Tuple[Path, float, float]] = []
@@ -978,6 +983,22 @@ class CameraController:
     def recording(self) -> bool:
         """Returns True if recording is active."""
         return self._recording.is_set()
+
+    @property
+    def busy_finalizing(self) -> bool:
+        """
+        True while a stopped session is still being finalised in the background (writers
+        closing / metadata being written / remux running). Callers that are about to exit
+        the process wait for this to clear, or the daemon threads doing that work
+        get killed mid-write.
+        """
+        if self._record_lock.acquire(blocking=False):
+            self._record_lock.release()
+            lock_busy = False
+        else:
+            lock_busy = True
+
+        return lock_busy or any(t.is_alive() for t in self._correction_threads)
 
     @property
     def hardware_triggered(self) -> bool:

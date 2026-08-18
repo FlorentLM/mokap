@@ -499,7 +499,7 @@ class GenICamCamera(AbstractCamera, abc.ABC):
     @property
     def resolution(self) -> Tuple[int, int]:
         try:  # try GenICam standard names
-            return self._get_feature_max_value('WidthMax'), self._get_feature_max_value('HeightMax')
+            return self._get_feature_value('WidthMax'), self._get_feature_value('HeightMax')
         except AttributeError:  # fallback for some SDKs (Spinnaker)
             return self._get_feature_value('SensorWidth'), self._get_feature_value('SensorHeight')
 
